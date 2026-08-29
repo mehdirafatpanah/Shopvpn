@@ -45,6 +45,8 @@ from config import BOT_TOKEN, DB_PATH, OWNER_ID, MAX_TEST_PER_USER, resolve_db_p
 import plisio_client
 import exchange_rate
 import crypto_payment
+import abangateway_client
+import abangateway_payment
 from database import Database, MENU_BUTTON_META, DEFAULT_MENU_ORDER
 from miniapp.auth import validate_init_data
 from sub_info import fetch_sub_info
@@ -516,6 +518,8 @@ def api_custom_config_info(auth=Depends(get_verified_user)):
         "reseller_available": is_reseller and reseller_credit > 0 and bool(reseller_server),
         "crypto_enabled": db.get_setting("crypto_payment_enabled", "0") == "1"
         and bool(_resolve_plisio_key(db)) and bool(API_BASE_URL),
+        "abangateway_enabled": db.get_setting("abangateway_payment_enabled", "0") == "1"
+        and bool(_resolve_abangateway_key(db)) and bool(API_BASE_URL),
         "card_number": db.get_setting("card_number"), "card_holder": db.get_setting("card_holder"),
     }
 
@@ -619,6 +623,8 @@ async def api_create_custom_config(body: CustomConfigPurchase, auth=Depends(requ
         "card_number": db.get_setting("card_number"), "card_holder": db.get_setting("card_holder"),
         "crypto_enabled": db.get_setting("crypto_payment_enabled", "0") == "1"
         and bool(_resolve_plisio_key(db)) and bool(API_BASE_URL),
+        "abangateway_enabled": db.get_setting("abangateway_payment_enabled", "0") == "1"
+        and bool(_resolve_abangateway_key(db)) and bool(API_BASE_URL),
     }
 
 
@@ -728,8 +734,6 @@ async def api_test_config_claim(auth=Depends(require_joined)):
 @app.get("/api/referral")
 async def api_referral(auth=Depends(get_verified_user)):
     tg_id, db, tenant = auth
-    if db.get_setting("referral_button_enabled", "1") != "1":
-        return {"enabled": False}
     commission_on = db.get_setting("referral_enabled", "1") == "1"
     fc_on = db.get_setting("referral_free_config_enabled", "0") == "1"
     ib_on = db.get_setting("referral_invite_bonus_enabled", "0") == "1"
@@ -1143,6 +1147,7 @@ async def api_create_order(body: OrderCreate, auth=Depends(require_joined)):
         "quantity": quantity,
         "card_number": db.get_setting("card_number"), "card_holder": db.get_setting("card_holder"),
         "crypto_enabled": db.get_setting("crypto_payment_enabled", "0") == "1" and bool(_resolve_plisio_key(db)) and bool(API_BASE_URL),
+        "abangateway_enabled": db.get_setting("abangateway_payment_enabled", "0") == "1" and bool(_resolve_abangateway_key(db)) and bool(API_BASE_URL),
     }
 
 
@@ -1218,6 +1223,216 @@ async def api_wallet_crypto_invoice(body: CryptoWalletInvoiceRequest, auth=Depen
     )
     result["topup_id"] = body.topup_id
     return result
+
+
+# ---------------------------------------------------------------------------
+# پرداخت کارت‌به‌کارت خودکار (آبان گیت وی)
+# ---------------------------------------------------------------------------
+
+def _resolve_abangateway_key(db: Database) -> str:
+    return abangateway_payment.resolve_api_key(db)
+
+
+async def _create_abangateway_invoice_for(
+    db: Database, tenant, tg_id: int, kind: str, ref_id: int, amount_toman: int,
+    order_name: str,
+):
+    try:
+        return await abangateway_payment.create_invoice_for(
+            db, tenant.tenant_id, tg_id, kind, ref_id, amount_toman, order_name,
+        )
+    except abangateway_payment.AbanGatewayPaymentError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/orders/{order_id}/abangateway-invoice")
+async def api_order_abangateway_invoice(order_id: int, auth=Depends(require_joined)):
+    tg_id, db, tenant = auth
+    order = db.get_order(order_id)
+    if not order or order["user_id"] != tg_id:
+        raise HTTPException(status_code=404, detail="سفارش یافت نشد.")
+    if order["status"] != "pending":
+        raise HTTPException(status_code=400, detail="این سفارش قبلاً بررسی شده است.")
+    if order["is_custom_config"]:
+        order_label = f"کانفیگ شخصی #{order_id} - {order['custom_username']}"
+    else:
+        product = db.get_product(order["product_id"])
+        order_label = f"سفارش #{order_id} - {product['name'] if product else ''}"
+    result = await _create_abangateway_invoice_for(
+        db, tenant, tg_id, "order", order_id, order["final_price"],
+        order_name=order_label,
+    )
+    return result
+
+
+class AbanGatewayWalletInvoiceRequest(BaseModel):
+    topup_id: int
+
+
+@app.post("/api/wallet/abangateway-invoice")
+async def api_wallet_abangateway_invoice(body: AbanGatewayWalletInvoiceRequest, auth=Depends(require_joined)):
+    tg_id, db, tenant = auth
+    topup = db.get_topup(body.topup_id)
+    if not topup or topup["user_id"] != tg_id:
+        raise HTTPException(status_code=404, detail="درخواست شارژ یافت نشد.")
+    if topup["status"] != "pending":
+        raise HTTPException(status_code=400, detail="این درخواست شارژ قبلاً بررسی شده است.")
+    result = await _create_abangateway_invoice_for(
+        db, tenant, tg_id, "wallet_topup", body.topup_id, topup["amount"],
+        order_name=f"شارژ کیف پول #{body.topup_id}",
+    )
+    result["topup_id"] = body.topup_id
+    return result
+
+
+@app.post("/api/webhooks/abangateway")
+async def api_abangateway_webhook(request: Request, tenant: Tenant = Depends(get_tenant)):
+    """
+    توجه مهم: مستندات رسمی آبان گیت وی قالب دقیق بدنه‌ی وب‌هوک (و امضای آن) را مشخص
+    نکرده است. بنابراین این هندلر به هیچ فیلدی از بدنه (مثل status) اعتماد نمی‌کند؛
+    فقط از آن برای پیدا کردن invoice_id استفاده می‌شود و سپس با کلید API خودمان
+    (که در بدنه‌ی وب‌هوک قابل جعل نیست) وضعیت واقعی از سمت آبان گیت وی استعلام و
+    verify می‌شود. abangateway_payment.try_verify_and_finalize منبع حقیقت است.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        try:
+            form = await request.form()
+            body = dict(form)
+        except Exception:
+            body = {}
+
+    invoice_id = abangateway_payment.extract_invoice_id_from_webhook(body or {})
+    if not invoice_id:
+        # اگر شناسه در بدنه پیدا نشد، شاید در کوئری‌استرینگ آمده باشد
+        invoice_id = request.query_params.get("invoice_id")
+    if not invoice_id:
+        raise HTTPException(status_code=400, detail="شناسه‌ی فاکتور در وب‌هوک پیدا نشد.")
+
+    db = tenant.db
+    invoice = db.get_abangateway_invoice_by_invoice_id(invoice_id)
+    if not invoice:
+        return {"status": "ignored"}
+
+    result = await abangateway_payment.try_verify_and_finalize(db, invoice)
+    if result != "verified_now":
+        # already_delivered / not_paid_yet / expired / cancelled / error:...
+        return {"status": result}
+
+    if invoice["kind"] == "wallet_topup":
+        db.approve_topup(invoice["ref_id"])
+        try:
+            async with aiohttp.ClientSession() as session:
+                await session.post(
+                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+                    json={
+                        "chat_id": invoice["user_id"],
+                        "text": f"✅ پرداخت تایید شد و {invoice['amount_toman']:,} تومان به کیف پول شما اضافه شد.",
+                    },
+                )
+        except Exception:
+            pass
+        return {"status": "ok"}
+
+    # invoice["kind"] == "order"
+    order_id = invoice["ref_id"]
+    order = db.get_order(order_id)
+    if not order or order["status"] != "pending":
+        return {"status": "ok"}
+
+    if order["is_custom_config"]:
+        # ساخت کانفیگ شخصی نیازمند panel provider است که در این سرور مستقل هم در
+        # دسترس است؛ برای سادگی و یکسان بودن با مسیر «بررسی دستی» در بات، همان
+        # منطق مشترک abangateway_payment.finalize_paid_order استفاده می‌شود، اما
+        # چون این سرور به آبجکت aiogram Bot دسترسی ندارد، فقط سفارش را به کاربر
+        # اطلاع می‌دهیم که از داخل بات دکمه‌ی «بررسی وضعیت پرداخت» را بزند.
+        try:
+            async with aiohttp.ClientSession() as session:
+                await session.post(
+                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+                    json={
+                        "chat_id": order["user_id"],
+                        "text": "✅ پرداخت شما تایید شد!\nبرای دریافت کانفیگ شخصی، به بات برگرد و روی دکمه‌ی "
+                                "«🔄 بررسی وضعیت پرداخت» زیر همان پیام فاکتور بزن.",
+                    },
+                )
+        except Exception:
+            pass
+        return {"status": "ok"}
+
+    product = db.get_product(order["product_id"])
+    if product and product["is_auto_provision"]:
+        quantity = order["quantity"] or 1
+        try:
+            if product["provision_server_id"]:
+                prov_results = await provision_direct(db, product, quantity, user_id=order["user_id"], order_id=order_id)
+            else:
+                prov_results = await provision_auto_config(db, product, quantity, user_id=order["user_id"], order_id=order_id)
+        except (ProvisionError, DirectProvisionError) as e:
+            admin_ids = db.list_admins()
+            async with aiohttp.ClientSession() as session:
+                for admin_id in admin_ids:
+                    try:
+                        await session.post(
+                            f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+                            json={
+                                "chat_id": admin_id,
+                                "text": f"⚠️ سفارش #{order_id} با آبان گیت وی پرداخت شد ولی ساخت خودکار کانفیگ ناموفق بود: {e}\nلطفاً دستی رسیدگی کنید.",
+                            },
+                        )
+                    except Exception:
+                        pass
+            return {"status": "ok"}
+
+        db.approve_order_auto(order_id)
+        db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or product["price"])
+        links_text = "\n".join(r["subscription_url"] for r in prov_results)
+        try:
+            async with aiohttp.ClientSession() as session:
+                await session.post(
+                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+                    json={
+                        "chat_id": order["user_id"],
+                        "text": f"✅ پرداخت تایید شد!\n📦 محصول: {product['name']}\n\n{links_text}",
+                    },
+                )
+        except Exception:
+            pass
+        return {"status": "ok"}
+
+    quantity = order["quantity"] or 1
+    results = db.take_unused_configs(order["product_id"], order["user_id"], quantity)
+    if results:
+        db.approve_order(order_id, [r["id"] for r in results])
+        db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or (product["price"] if product else 0))
+        links = "\n".join(r["link"] for r in results)
+        try:
+            async with aiohttp.ClientSession() as session:
+                await session.post(
+                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+                    json={
+                        "chat_id": order["user_id"],
+                        "text": f"✅ پرداخت تایید شد!\n📦 محصول: {product['name'] if product else ''}\n\n{links}",
+                    },
+                )
+        except Exception:
+            pass
+    else:
+        admin_ids = db.list_admins()
+        async with aiohttp.ClientSession() as session:
+            for admin_id in admin_ids:
+                try:
+                    await session.post(
+                        f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+                        json={
+                            "chat_id": admin_id,
+                            "text": f"⚠️ سفارش #{order_id} با آبان گیت وی پرداخت شد ولی موجودی هم‌زمان تمام شده. لطفاً دستی رسیدگی کنید.",
+                        },
+                    )
+                except Exception:
+                    pass
+    return {"status": "ok"}
 
 
 @app.post("/api/webhooks/plisio")
@@ -1404,6 +1619,7 @@ def api_topup_request(body: TopupCreate, auth=Depends(require_joined)):
         "card_holder": db.get_setting("card_holder"),
         "note": "مبلغ را واریز کرده و عکس رسید را همینجا ارسال کنید.",
         "crypto_enabled": db.get_setting("crypto_payment_enabled", "0") == "1" and bool(_resolve_plisio_key(db)) and bool(API_BASE_URL),
+        "abangateway_enabled": db.get_setting("abangateway_payment_enabled", "0") == "1" and bool(_resolve_abangateway_key(db)) and bool(API_BASE_URL),
     }
 
 
@@ -1538,10 +1754,6 @@ class MenuButtonUpdate(BaseModel):
 class MenuLayoutUpdate(BaseModel):
     order: list[str]
     buttons: list[MenuButtonUpdate]
-    # کلیدهایی که باید قبل‌شان یک ردیف جدید در منو شروع شود؛ اگر ارسال نشود
-    # (None) یعنی فرانت‌اند هنوز چیدمان آزاد را ویرایش نکرده و تنظیم قبلی
-    # (تعداد ستون ثابت یا چیدمان سفارشی قبلی) دست‌نخورده باقی می‌ماند.
-    row_breaks: Optional[list[str]] = None
 
 
 @app.get("/api/admin/check")
@@ -1560,8 +1772,6 @@ def api_admin_get_menu(auth=Depends(require_senior_admin)):
     _, db, _ = auth
     settings = db.get_all_settings()
     order = db.get_menu_order()
-    row_breaks = db.get_menu_row_breaks()
-    break_set = set(row_breaks) if row_breaks is not None else None
     result = []
     for key in order:
         meta = MENU_BUTTON_META.get(key)
@@ -1581,9 +1791,6 @@ def api_admin_get_menu(auth=Depends(require_senior_admin)):
             item["style"] = settings.get(f"{key}_style", "")
         if meta["toggle_key"]:
             item["enabled"] = settings.get(meta["toggle_key"], "1") == "1"
-        # break_before یعنی این دکمه یک ردیف جدید شروع می‌کند (نه کنار دکمه‌ی
-        # قبلی). None یعنی هنوز چیدمان آزاد سفارشی نشده (حالت قدیمی ستون ثابت).
-        item["break_before"] = (key in break_set) if break_set is not None else None
         result.append(item)
     return result
 
@@ -1603,8 +1810,6 @@ def api_admin_save_menu(body: MenuLayoutUpdate, auth=Depends(require_senior_admi
         if meta["toggle_key"] and btn.enabled is not None:
             db.set_setting(meta["toggle_key"], "1" if btn.enabled else "0")
     db.set_menu_order(body.order)
-    if body.row_breaks is not None:
-        db.set_menu_row_breaks(body.row_breaks)
     return {"status": "ok"}
 
 
@@ -2796,6 +3001,32 @@ def api_admin_set_crypto_settings(body: CryptoSettingsUpdate, auth=Depends(requi
         raise HTTPException(status_code=400, detail="نرخ تبدیل نمی‌تواند منفی باشد.")
     db.set_setting("crypto_payment_enabled", "1" if body.enabled else "0")
     db.set_setting("usd_to_toman_rate", str(body.usd_to_toman_rate))
+    return {"status": "ok"}
+
+
+class AbanGatewaySettingsUpdate(BaseModel):
+    enabled: bool
+
+
+@app.get("/api/admin/settings/abangateway")
+def api_admin_get_abangateway_settings(auth=Depends(require_senior_admin)):
+    _, db, _ = auth
+    api_key = _resolve_abangateway_key(db)
+    return {
+        "enabled": db.get_setting("abangateway_payment_enabled", "0") == "1",
+        "has_own_key": bool(db.get_setting("abangateway_api_key", "")),
+        "gateway_configured": bool(api_key) and bool(API_BASE_URL),
+        "key_source": abangateway_payment.resolve_api_key_source(db),
+    }
+
+
+@app.post("/api/admin/settings/abangateway")
+def api_admin_set_abangateway_settings(body: AbanGatewaySettingsUpdate, auth=Depends(require_senior_admin)):
+    _, db, _ = auth
+    api_key = _resolve_abangateway_key(db)
+    if body.enabled and (not api_key or not API_BASE_URL):
+        raise HTTPException(status_code=400, detail="ابتدا از داخل بات، پنل مدیریت → «تنظیم درگاه آبان گیت وی» را انجام بده. (اگر بازم فعال نمی‌شه، یعنی MINIAPP_URL روی سرور تنظیم نشده.)")
+    db.set_setting("abangateway_payment_enabled", "1" if body.enabled else "0")
     return {"status": "ok"}
 
 
