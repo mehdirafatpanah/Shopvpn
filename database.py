@@ -779,6 +779,11 @@ class Database:
             ("panel_servers", "used_for_reseller", "INTEGER DEFAULT 0"),
             ("panel_servers", "xui_inbound_id", "INTEGER"),
             ("panel_servers", "xui_sub_base_url", "TEXT"),
+            # چند-inbound برای 3X-UI: از این به بعد یک سرور می‌تواند همزمان چند
+            # inbound برای ساخت کاربر جدید داشته باشد (JSON array از id ها، مثلاً
+            # "[1,2,3]"). ستون قدیمی xui_inbound_id (تک‌مقداری) برای سازگاری با
+            # نصب‌های قبلی حذف نشده و به‌عنوان fallback خوانده می‌شود.
+            ("panel_servers", "xui_inbound_ids", "TEXT"),
             ("products", "is_auto_provision", "INTEGER DEFAULT 0"),
             ("products", "auto_provision_volume_gb", "INTEGER"),
             ("products", "provision_server_id", "INTEGER"),
@@ -3514,7 +3519,7 @@ class Database:
         allowed = {"name", "panel_type", "api_url", "api_username", "api_password",
                    "default_group", "is_active", "template_username", "group_ids", "proxy_settings",
                    "used_for_custom_config", "used_for_test_config", "used_for_reseller",
-                   "xui_inbound_id", "xui_sub_base_url"}
+                   "xui_inbound_id", "xui_inbound_ids", "xui_sub_base_url"}
         sets, values = [], []
         for k, v in fields.items():
             if k in allowed and v is not None:

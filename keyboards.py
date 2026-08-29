@@ -1328,11 +1328,18 @@ def panel_type_select_kb() -> InlineKeyboardMarkup:
     ])
 
 
-def inbound_select_kb(inbounds) -> InlineKeyboardMarkup:
+def inbound_select_kb(inbounds, selected_ids=None) -> InlineKeyboardMarkup:
+    """کیبورد چند-انتخابی inbound ها: با هر تپ روی یک ردیف، تیک آن toggle می‌شود
+    (بدون بستن پیام) و دکمه‌ی «تایید» در پایین وضعیت انتخاب فعلی را ادامه‌ی فلو
+    می‌برد. selected_ids لیست id های تیک‌خورده‌ی فعلی است."""
+    selected_ids = selected_ids or []
     rows = []
     for ib in inbounds:
-        label = f"#{ib['id']} {ib['remark']} ({ib['protocol']}:{ib['port']})"
-        rows.append([InlineKeyboardButton(text=label, callback_data=f"adm_xui_inbound:{ib['id']}")])
+        mark = "✅" if ib["id"] in selected_ids else "◻️"
+        label = f"{mark} #{ib['id']} {ib['remark']} ({ib['protocol']}:{ib['port']})"
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"adm_xui_inbound_toggle:{ib['id']}")])
+    confirm_label = f"✅ تایید ({len(selected_ids)} انتخاب‌شده)" if selected_ids else "✅ تایید انتخاب"
+    rows.append([InlineKeyboardButton(text=confirm_label, callback_data="adm_xui_inbound_confirm")])
     rows.append([InlineKeyboardButton(text="❌ انصراف", callback_data="cancel_flow")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

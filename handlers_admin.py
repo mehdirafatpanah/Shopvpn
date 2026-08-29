@@ -33,7 +33,7 @@ import crypto_payment
 import abangateway_payment
 from panel_providers import (
     get_provider, PanelError, PanelUsernameTakenError, PANEL_TYPE_LABELS,
-    SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES,
+    SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES, parse_xui_inbound_ids,
 )
 from reseller_auto_provision import provision_auto_config, ProvisionError
 from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
@@ -169,8 +169,10 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     def panel_server_readiness_text(server) -> str:
         if server["panel_type"] in SUB_BASE_URL_PANEL_TYPES:
             if server["panel_type"] in INBOUND_SELECT_PANEL_TYPES:
-                if server["xui_inbound_id"] and server["xui_sub_base_url"]:
-                    return f"inbound #{server['xui_inbound_id']} تنظیم شده"
+                ids = parse_xui_inbound_ids(server)
+                if ids and server["xui_sub_base_url"]:
+                    ids_text = "، ".join(f"#{i}" for i in ids)
+                    return f"{len(ids)} inbound تنظیم شده ({ids_text})"
                 return "⚠️ inbound/آدرس Subscription هنوز تنظیم نشده"
             if server["xui_sub_base_url"]:
                 return "✅ آدرس Subscription تنظیم شده"
@@ -2178,9 +2180,12 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 await state.clear()
                 await message.answer("⛔️ این پنل هیچ inbound ای ندارد. اول از داخل پنل یک inbound بساز.")
                 return
-            await state.update_data(server_id=server_id)
+            await state.update_data(server_id=server_id, inbounds=inbounds, selected_inbound_ids=[])
             await state.set_state(AdminAddPanelServer.waiting_inbound_select)
-            await message.answer("کدام inbound برای ساخت کاربرهای جدید استفاده شود؟", reply_markup=kb.inbound_select_kb(inbounds))
+            await message.answer(
+                "کدام inbound(ها) برای ساخت کاربرهای جدید استفاده شود؟ (می‌توانی چند مورد را تیک بزنی)",
+                reply_markup=kb.inbound_select_kb(inbounds, []),
+            )
             return
 
         if data["panel_type"] in SUB_BASE_URL_PANEL_TYPES:
@@ -2205,10 +2210,30 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             "کانفیگ‌های شخصی جدید استفاده می‌شود."
         )
 
-    @router.callback_query(F.data.startswith("adm_xui_inbound:"), AdminAddPanelServer.waiting_inbound_select)
-    async def cb_panel_server_inbound_selected(call: CallbackQuery, state: FSMContext):
+    @router.callback_query(F.data.startswith("adm_xui_inbound_toggle:"), AdminAddPanelServer.waiting_inbound_select)
+    async def cb_panel_server_inbound_toggle(call: CallbackQuery, state: FSMContext):
         inbound_id = int(call.data.split(":")[1])
-        await state.update_data(inbound_id=inbound_id)
+        data = await state.get_data()
+        selected = list(data.get("selected_inbound_ids") or [])
+        if inbound_id in selected:
+            selected.remove(inbound_id)
+        else:
+            selected.append(inbound_id)
+        await state.update_data(selected_inbound_ids=selected)
+        await call.answer()
+        try:
+            await call.message.edit_reply_markup(reply_markup=kb.inbound_select_kb(data.get("inbounds") or [], selected))
+        except TelegramBadRequest:
+            pass
+
+    @router.callback_query(F.data == "adm_xui_inbound_confirm", AdminAddPanelServer.waiting_inbound_select)
+    async def cb_panel_server_inbound_confirm(call: CallbackQuery, state: FSMContext):
+        data = await state.get_data()
+        selected = data.get("selected_inbound_ids") or []
+        if not selected:
+            await call.answer("حداقل یک inbound را تیک بزن.", show_alert=True)
+            return
+        await state.update_data(inbound_ids=selected)
         await state.set_state(AdminAddPanelServer.waiting_sub_base_url)
         await call.answer()
         await call.message.answer(
@@ -2223,8 +2248,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await message.answer("آدرس باید با http:// یا https:// شروع شود.")
             return
         data = await state.get_data()
-        if "inbound_id" in data:
-            (await asyncio.to_thread(db.update_panel_server, data["server_id"], xui_inbound_id=data["inbound_id"], xui_sub_base_url=url))
+        if "inbound_ids" in data:
+            import json as _json
+            (await asyncio.to_thread(db.update_panel_server, data["server_id"], xui_inbound_ids=_json.dumps(data["inbound_ids"]), xui_sub_base_url=url))
         else:
             (await asyncio.to_thread(db.update_panel_server, data["server_id"], xui_sub_base_url=url))
         await state.clear()
