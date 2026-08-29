@@ -2916,6 +2916,12 @@ class VolumeReminderSettingsUpdate(BaseModel):
 class CryptoSettingsUpdate(BaseModel):
     enabled: bool
     usd_to_toman_rate: int
+    api_key: Optional[str] = None
+
+
+class CardSettingsUpdate(BaseModel):
+    card_number: str
+    card_holder: str
 
 
 @app.get("/api/admin/settings/referral")
@@ -2999,6 +3005,7 @@ def api_admin_get_crypto_settings(auth=Depends(require_senior_admin)):
         "enabled": db.get_setting("crypto_payment_enabled", "0") == "1",
         "usd_to_toman_rate": int(float(db.get_setting("usd_to_toman_rate", "0") or 0)),
         "has_own_key": bool(db.get_setting("plisio_api_key", "")),
+        "masked_key": (f"...{api_key[-4:]}" if api_key else ""),
         "gateway_configured": bool(api_key) and bool(API_BASE_URL),
         "key_source": crypto_payment.resolve_plisio_key_source(db),
     }
@@ -3006,19 +3013,46 @@ def api_admin_get_crypto_settings(auth=Depends(require_senior_admin)):
 
 @app.post("/api/admin/settings/crypto")
 def api_admin_set_crypto_settings(body: CryptoSettingsUpdate, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    api_key = _resolve_plisio_key(db)
-    if body.enabled and (not api_key or not API_BASE_URL):
-        raise HTTPException(status_code=400, detail="ابتدا از داخل بات، پنل مدیریت → «تنظیم درگاه کریپتو» را انجام بده. (اگر بازم فعال نمی‌شه، یعنی MINIAPP_URL روی سرور تنظیم نشده.)")
+    admin_id, db, _ = auth
     if body.usd_to_toman_rate < 0:
         raise HTTPException(status_code=400, detail="نرخ تبدیل نمی‌تواند منفی باشد.")
+    if body.api_key is not None:
+        new_key = body.api_key.strip()
+        db.set_setting("plisio_api_key", new_key)
+        db.log_admin_action(admin_id, "plisio_key_change", "API Key کریپتو از مینی‌اپ تغییر کرد." if new_key else "API Key کریپتو از مینی‌اپ حذف شد.")
+    api_key = _resolve_plisio_key(db)
+    if body.enabled and (not api_key or not API_BASE_URL):
+        raise HTTPException(status_code=400, detail="ابتدا کلید API درگاه کریپتو را تنظیم کن. (اگر بازم فعال نمی‌شه، یعنی MINIAPP_URL روی سرور تنظیم نشده.)")
     db.set_setting("crypto_payment_enabled", "1" if body.enabled else "0")
     db.set_setting("usd_to_toman_rate", str(body.usd_to_toman_rate))
     return {"status": "ok"}
 
 
+@app.get("/api/admin/settings/card")
+def api_admin_get_card_settings(auth=Depends(require_senior_admin)):
+    _, db, _ = auth
+    return {
+        "card_number": db.get_setting("card_number", "") or "",
+        "card_holder": db.get_setting("card_holder", "") or "",
+    }
+
+
+@app.post("/api/admin/settings/card")
+def api_admin_set_card_settings(body: CardSettingsUpdate, auth=Depends(require_senior_admin)):
+    admin_id, db, _ = auth
+    card_number = body.card_number.strip()
+    card_holder = body.card_holder.strip()
+    if not card_number or not card_holder:
+        raise HTTPException(status_code=400, detail="شماره کارت و نام صاحب کارت نمی‌توانند خالی باشند.")
+    db.set_setting("card_number", card_number)
+    db.set_setting("card_holder", card_holder)
+    db.log_admin_action(admin_id, "card_change", f"شماره کارت جدید: {card_number} | به نام: {card_holder} (مینی‌اپ)")
+    return {"status": "ok"}
+
+
 class AbanGatewaySettingsUpdate(BaseModel):
     enabled: bool
+    api_key: Optional[str] = None
 
 
 @app.get("/api/admin/settings/abangateway")
@@ -3028,6 +3062,7 @@ def api_admin_get_abangateway_settings(auth=Depends(require_senior_admin)):
     return {
         "enabled": db.get_setting("abangateway_payment_enabled", "0") == "1",
         "has_own_key": bool(db.get_setting("abangateway_api_key", "")),
+        "masked_key": (f"...{api_key[-4:]}" if api_key else ""),
         "gateway_configured": bool(api_key) and bool(API_BASE_URL),
         "key_source": abangateway_payment.resolve_api_key_source(db),
     }
@@ -3035,10 +3070,14 @@ def api_admin_get_abangateway_settings(auth=Depends(require_senior_admin)):
 
 @app.post("/api/admin/settings/abangateway")
 def api_admin_set_abangateway_settings(body: AbanGatewaySettingsUpdate, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
+    admin_id, db, _ = auth
+    if body.api_key is not None:
+        new_key = body.api_key.strip()
+        db.set_setting("abangateway_api_key", new_key)
+        db.log_admin_action(admin_id, "abangateway_key_change", "API Key آبان گیت وی از مینی‌اپ تغییر کرد." if new_key else "API Key آبان گیت وی از مینی‌اپ حذف شد.")
     api_key = _resolve_abangateway_key(db)
     if body.enabled and (not api_key or not API_BASE_URL):
-        raise HTTPException(status_code=400, detail="ابتدا از داخل بات، پنل مدیریت → «تنظیم درگاه آبان گیت وی» را انجام بده. (اگر بازم فعال نمی‌شه، یعنی MINIAPP_URL روی سرور تنظیم نشده.)")
+        raise HTTPException(status_code=400, detail="ابتدا کلید API آبان گیت وی را تنظیم کن. (اگر بازم فعال نمی‌شه، یعنی MINIAPP_URL روی سرور تنظیم نشده.)")
     db.set_setting("abangateway_payment_enabled", "1" if body.enabled else "0")
     return {"status": "ok"}
 
