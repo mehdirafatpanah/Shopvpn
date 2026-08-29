@@ -1290,7 +1290,32 @@ async function loadSubInfo(orderId, link) {
 // ---------------------------------------------------------------------------
 // کارت بانکی + آپلود رسید (مشترک بین «شارژ کیف پول» و «پرداخت سفارش»)
 // ---------------------------------------------------------------------------
-function renderReceiptCard(box, { amount, cardNumber, cardHolder, sendReceipt, successText, cryptoEnabled, createCryptoInvoice }) {
+// کش ساده برای لیست درگاه‌های سفارشی فعال (در طول یک نشست کافی است یک‌بار بگیریم)
+let _customGatewaysCache = null;
+async function fetchCustomGateways() {
+  if (_customGatewaysCache) return _customGatewaysCache;
+  try {
+    _customGatewaysCache = await api("/api/gateways");
+  } catch (e) {
+    _customGatewaysCache = [];
+  }
+  return _customGatewaysCache;
+}
+
+function renderReceiptCard(box, { amount, cardNumber, cardHolder, sendReceipt, successText, cryptoEnabled, createCryptoInvoice, customGateways, createCustomGatewayInvoice }) {
+  customGateways = customGateways || [];
+  const customGatewaysHtml = customGateways.length ? `
+    <div style="display:flex;align-items:center;gap:8px;margin:16px 0">
+      <div style="flex:1;height:1px;background:var(--border,rgba(255,255,255,.1))"></div>
+      <span class="hint-text" style="margin:0">یا</span>
+      <div style="flex:1;height:1px;background:var(--border,rgba(255,255,255,.1))"></div>
+    </div>
+    ${customGateways.map(gw => `
+      <button class="btn outline custom-gw-btn" data-key="${gw.key}" style="width:100%;margin-bottom:8px">🔌 پرداخت با ${escHtml(gw.name)}</button>
+    `).join("")}
+    <div id="custom-gw-error" class="field-error"></div>
+  ` : "";
+
   box.innerHTML = `
     <h3><span class="ic">💳</span>واریز و ارسال رسید</h3>
     <div class="bank-card">
@@ -1326,6 +1351,8 @@ function renderReceiptCard(box, { amount, cardNumber, cardHolder, sendReceipt, s
       <button class="btn outline" id="pay-crypto-btn" style="width:100%">🪙 پرداخت با ارز دیجیتال (تایید آنی)</button>
       <div id="crypto-pay-error" class="field-error"></div>
     ` : ""}
+
+    ${customGatewaysHtml}
   `;
 
   box.querySelector("#copy-card-btn").onclick = () => {
@@ -1390,6 +1417,40 @@ function renderReceiptCard(box, { amount, cardNumber, cardHolder, sendReceipt, s
         cryptoBtn.textContent = "🪙 پرداخت با ارز دیجیتال (تایید آنی)";
       }
     };
+  }
+
+  if (customGateways.length && createCustomGatewayInvoice) {
+    const cgErr = box.querySelector("#custom-gw-error");
+    box.querySelectorAll(".custom-gw-btn").forEach((btn) => {
+      const gwName = btn.textContent;
+      btn.onclick = async () => {
+        cgErr.textContent = "";
+        box.querySelectorAll(".custom-gw-btn").forEach((b) => (b.disabled = true));
+        btn.textContent = "در حال ساخت فاکتور...";
+        try {
+          const res = await createCustomGatewayInvoice(btn.dataset.key);
+          tg.HapticFeedback.notificationOccurred("success");
+          box.innerHTML = `
+            <div class="state-msg">
+              <span class="ic">🔌</span>
+              فاکتور پرداخت ساخته شد. روی دکمه‌ی زیر بزن و پرداخت رو تکمیل کن.
+              <br/>پس از تایید پرداخت، به‌صورت خودکار سفارش/کیف‌پول شما تسویه می‌شود.
+            </div>
+            <button class="btn" id="open-invoice-btn" style="width:100%;margin-top:12px">🔗 رفتن به صفحه‌ی پرداخت</button>
+          `;
+          if (res.invoice_url) {
+            box.querySelector("#open-invoice-btn").onclick = () => tg.openLink(res.invoice_url);
+            tg.openLink(res.invoice_url);
+          } else {
+            box.querySelector("#open-invoice-btn").style.display = "none";
+          }
+        } catch (e) {
+          cgErr.textContent = e.message;
+          box.querySelectorAll(".custom-gw-btn").forEach((b) => (b.disabled = false));
+          btn.textContent = gwName;
+        }
+      };
+    });
   }
 }
 
@@ -1550,6 +1611,7 @@ async function buyProduct(productId, quantity, code) {
         <div class="card" id="order-payment-card"></div>
       `;
       document.getElementById("back-to-store-btn").onclick = renderStore;
+      const customGateways = await fetchCustomGateways();
       renderReceiptCard(document.getElementById("order-payment-card"), {
         amount: result.final_price,
         cardNumber: result.card_number,
@@ -1562,6 +1624,8 @@ async function buyProduct(productId, quantity, code) {
         },
         cryptoEnabled: result.crypto_enabled,
         createCryptoInvoice: async () => api(`/api/orders/${result.order_id}/crypto-invoice`, { method: "POST" }),
+        customGateways,
+        createCustomGatewayInvoice: async (key) => api(`/api/orders/${result.order_id}/custom-invoice/${key}`, { method: "POST" }),
       });
     }
   } catch (e) {
@@ -1681,6 +1745,7 @@ async function submitCustomConfig(username, volumeGb, useCredit, info) {
         <div class="card" id="cc-payment-card"></div>
       `;
       document.getElementById("back-to-store-btn").onclick = renderStore;
+      const customGateways2 = await fetchCustomGateways();
       renderReceiptCard(document.getElementById("cc-payment-card"), {
         amount: result.final_price,
         cardNumber: result.card_number,
@@ -1693,6 +1758,8 @@ async function submitCustomConfig(username, volumeGb, useCredit, info) {
         },
         cryptoEnabled: result.crypto_enabled,
         createCryptoInvoice: async () => api(`/api/orders/${result.order_id}/crypto-invoice`, { method: "POST" }),
+        customGateways: customGateways2,
+        createCustomGatewayInvoice: async (key) => api(`/api/orders/${result.order_id}/custom-invoice/${key}`, { method: "POST" }),
       });
     }
   } catch (e) {
@@ -1844,8 +1911,9 @@ async function renderWallet() {
   }
 }
 
-function renderTopupPaymentStep(topupId, amount, cardNumber, cardHolder, cryptoEnabled) {
+async function renderTopupPaymentStep(topupId, amount, cardNumber, cardHolder, cryptoEnabled) {
   const box = document.getElementById("topup-card");
+  const customGateways = await fetchCustomGateways();
   renderReceiptCard(box, {
     amount, cardNumber, cardHolder,
     successText: "رسید ارسال شد. پس از تایید ادمین، کیف پول شما شارژ می‌شود.",
@@ -1857,6 +1925,8 @@ function renderTopupPaymentStep(topupId, amount, cardNumber, cardHolder, cryptoE
     },
     cryptoEnabled,
     createCryptoInvoice: async () => api("/api/wallet/crypto-invoice", { method: "POST", body: JSON.stringify({ topup_id: topupId }) }),
+    customGateways,
+    createCustomGatewayInvoice: async (key) => api(`/api/wallet/custom-invoice/${key}`, { method: "POST", body: JSON.stringify({ topup_id: topupId }) }),
   });
 }
 
@@ -4552,7 +4622,17 @@ async function renderAdminFinanceSection() {
         <button class="btn" id="fin-aban-save" style="margin-top:8px">💾 ذخیره</button>
         ${aban.has_own_key ? `<button class="btn outline danger" id="fin-aban-clear" style="margin-top:8px">🗑 حذف کلید و غیرفعال‌سازی</button>` : ""}
       </div>
+
+      <div class="card">
+        <div class="eyebrow" style="margin-top:0">🔌 درگاه‌های پرداخت سفارشی</div>
+        <p class="hint-text">هر درگاه دیگری غیر از موارد بالا (داخلی، خارجی، هرچی) رو با وصل‌کردن API خودش، بدون نوشتن کد اضافه کن.</p>
+        <button class="btn" id="fin-open-custom-gateways">🧩 مدیریت درگاه‌های سفارشی</button>
+      </div>
     `;
+
+    document.getElementById("fin-open-custom-gateways").onclick = () => {
+      window.location.href = withTenant("gateways.html");
+    };
 
     document.getElementById("fin-card-save").onclick = async () => {
       const errBox = document.getElementById("fin-card-error");

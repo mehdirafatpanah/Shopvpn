@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>درگاه‌های پرداخت سفارشی</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root{
+    --bg:#0a0e17; --card:#131a29; --border:#1f2937; --text:#e5e7eb; --muted:#9ca3af;
+    --accent:#3b82f6; --danger:#ef4444; --ok:#22c55e; --input:#0f1522;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--text);font-family:Tahoma,sans-serif;margin:0;padding:16px;font-size:14px}
+  h2{font-size:18px;margin:4px 0 16px}
+  h3{font-size:15px;margin:0 0 10px;color:var(--accent)}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:14px}
+  .row{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+  .row > *{flex:1;min-width:110px}
+  label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
+  input[type=text],input[type=number],select,textarea{
+    width:100%;background:var(--input);border:1px solid var(--border);color:var(--text);
+    border-radius:8px;padding:8px;font-family:inherit;font-size:13px;direction:ltr;text-align:left
+  }
+  textarea{min-height:70px;resize:vertical;font-family:monospace;font-size:12px}
+  .kv-row{display:flex;gap:6px;margin-bottom:6px}
+  .kv-row input{flex:1}
+  .kv-row button{flex:0 0 auto}
+  button{
+    background:var(--accent);color:#fff;border:none;border-radius:8px;padding:8px 14px;
+    cursor:pointer;font-size:13px;font-family:inherit
+  }
+  button.secondary{background:#374151}
+  button.danger{background:var(--danger)}
+  button.small{padding:5px 9px;font-size:12px}
+  .toggle{display:flex;align-items:center;gap:6px}
+  .gw-item{display:flex;justify-content:space-between;align-items:center;padding:10px;border:1px solid var(--border);border-radius:10px;margin-bottom:8px}
+  .badge{font-size:11px;padding:2px 8px;border-radius:20px}
+  .badge.on{background:rgba(34,197,94,.15);color:var(--ok)}
+  .badge.off{background:rgba(239,68,68,.15);color:var(--danger)}
+  .muted{color:var(--muted);font-size:12px}
+  .msg{padding:10px;border-radius:8px;margin-bottom:10px;font-size:13px}
+  .msg.ok{background:rgba(34,197,94,.12);color:var(--ok)}
+  .msg.err{background:rgba(239,68,68,.12);color:var(--danger)}
+  details summary{cursor:pointer;color:var(--accent);margin:10px 0 6px;font-size:13px}
+  .actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+  .hint{font-size:11px;color:var(--muted);margin-top:2px}
+  code{background:var(--input);padding:1px 5px;border-radius:4px;font-size:11px}
+</style>
+</head>
+<body>
+<a href="#" onclick="history.back();return false;" style="color:var(--accent);text-decoration:none;font-size:13px">← بازگشت</a>
+<h2>🔌 درگاه‌های پرداخت سفارشی</h2>
+<p class="muted">هر درگاهی که یک HTTP API داشته باشد را همین‌جا، بدون نوشتن کد، وصل کن.
+از پلیس‌هولدرهایی مثل <code>{amount}</code>, <code>{order_id}</code>, <code>{callback_url}</code>,
+<code>{webhook_url}</code> و هر فیلد اعتبارنامه (مثلاً <code>{api_key}</code>) داخل URL/هدر/بدنه استفاده کن.</p>
+
+<div id="msgBox"></div>
+<div id="list" class="card"><div class="muted">در حال بارگذاری...</div></div>
+
+<div class="card">
+  <h3 id="formTitle">➕ افزودن درگاه جدید</h3>
+  <form id="gwForm">
+    <input type="hidden" id="gwId">
+    <div class="row">
+      <div><label>نام نمایشی</label><input type="text" id="f_name" placeholder="مثلاً زرین‌پال" required></div>
+      <div><label>کلید یکتا (انگلیسی)</label><input type="text" id="f_key" placeholder="zarinpal" required></div>
+      <div class="toggle" style="flex:0 0 auto;align-self:flex-end;padding-bottom:8px">
+        <input type="checkbox" id="f_enabled"><label style="margin:0" for="f_enabled">فعال</label>
+      </div>
+    </div>
+
+    <details open><summary>🔑 اعتبارنامه (API Key و مشابه)</summary>
+      <div id="credRows"></div>
+      <button type="button" class="secondary small" onclick="addCredRow()">+ فیلد جدید</button>
+    </details>
+
+    <details><summary>📨 ساخت فاکتور (Create Invoice)</summary>
+      <div class="row">
+        <div><label>Method</label>
+          <select id="cr_method"><option>POST</option><option>GET</option></select>
+        </div>
+        <div style="flex:3"><label>URL</label><input type="text" id="cr_url" placeholder="https://gateway.example.com/api/invoice"></div>
+        <div><label>Body Type</label>
+          <select id="cr_body_type"><option value="json">JSON</option><option value="form">Form</option></select>
+        </div>
+      </div>
+      <label>Headers (هر خط: <code>Key: Value</code>)</label>
+      <textarea id="cr_headers" placeholder="Authorization: Bearer {api_key}"></textarea>
+      <label>Body (JSON)</label>
+      <textarea id="cr_body" placeholder='{"amount": "{amount}", "callback": "{callback_url}", "order_id": "{order_id}"}'></textarea>
+      <div class="row">
+        <div><label>مسیر لینک پرداخت در پاسخ</label><input type="text" id="cr_resp_url" placeholder="data.link"></div>
+        <div><label>مسیر شناسه‌ی تراکنش در پاسخ</label><input type="text" id="cr_resp_txn" placeholder="data.id"></div>
+      </div>
+      <p class="hint">مسیر یعنی محل فیلد داخل JSON پاسخ، مثلاً برای <code>{"data":{"id":"x"}}</code> بنویس <code>data.id</code></p>
+    </details>
+
+    <details><summary>✅ استعلام پرداخت (Verify) — برای درگاه‌هایی که کاربر را برمی‌گردانند</summary>
+      <div class="toggle"><input type="checkbox" id="v_enabled"><label style="margin:0" for="v_enabled">فعال باشد</label></div>
+      <div class="row">
+        <div><label>Method</label><select id="v_method"><option>POST</option><option>GET</option></select></div>
+        <div style="flex:3"><label>URL</label><input type="text" id="v_url" placeholder="https://gateway.example.com/api/verify"></div>
+        <div><label>Body Type</label><select id="v_body_type"><option value="json">JSON</option><option value="form">Form</option></select></div>
+      </div>
+      <label>Headers</label>
+      <textarea id="v_headers" placeholder="Authorization: Bearer {api_key}"></textarea>
+      <label>Body (JSON) — از {query.X} برای پارامترهای بازگشتی درگاه استفاده کن</label>
+      <textarea id="v_body" placeholder='{"authority": "{query.Authority}", "amount": "{amount}"}'></textarea>
+      <div class="row">
+        <div><label>مسیر وضعیت در پاسخ</label><input type="text" id="v_resp_status" placeholder="data.code"></div>
+        <div><label>مقادیر موفق (با کاما)</label><input type="text" id="v_resp_success" placeholder="100,101"></div>
+      </div>
+    </details>
+
+    <details><summary>📡 وب‌هوک (Webhook) — برای درگاه‌هایی که سرور به سرور خبر می‌دهند</summary>
+      <div class="toggle"><input type="checkbox" id="w_enabled"><label style="margin:0" for="w_enabled">فعال باشد</label></div>
+      <label>روش احراز هویت وب‌هوک</label>
+      <select id="w_auth_mode">
+        <option value="none">بدون احراز (فقط اتکا به شناسه‌ی تراکنش)</option>
+        <option value="header_secret">رمز ثابت در هدر</option>
+        <option value="query_secret">رمز ثابت در query string</option>
+        <option value="hmac_sha256">امضای HMAC-SHA256</option>
+      </select>
+      <div class="row">
+        <div><label>نام هدر (برای رمز/امضا)</label><input type="text" id="w_header_name" placeholder="X-Signature"></div>
+        <div><label>نام پارامتر query (برای رمز)</label><input type="text" id="w_query_param" placeholder="secret"></div>
+        <div><label>کدام فیلد اعتبارنامه = رمز</label><input type="text" id="w_secret_field" placeholder="webhook_secret"></div>
+      </div>
+      <div class="row">
+        <div><label>مسیر شناسه‌ی تراکنش در بدنه‌ی وب‌هوک</label><input type="text" id="w_map_txn" placeholder="txn_id"></div>
+        <div><label>مسیر وضعیت در بدنه</label><input type="text" id="w_map_status" placeholder="status"></div>
+        <div><label>مقادیر موفق (با کاما)</label><input type="text" id="w_map_success" placeholder="completed,paid"></div>
+      </div>
+    </details>
+
+    <div class="actions">
+      <button type="submit">💾 ذخیره</button>
+      <button type="button" class="secondary" onclick="testGateway()">🧪 تست اتصال (فاکتور واقعی ۱۰۰۰ تومانی)</button>
+      <button type="button" class="secondary" onclick="resetForm()">پاک کردن فرم</button>
+      <button type="button" class="danger" id="delBtn" style="display:none" onclick="deleteGateway()">🗑 حذف</button>
+    </div>
+  </form>
+</div>
+
+<script>
+const tg = window.Telegram.WebApp;
+try { tg.ready(); tg.expand(); } catch(e) {}
+const initData = tg.initData || "";
+const TENANT_ID = new URLSearchParams(window.location.search).get("b") || "";
+function withTenant(path){
+  if (!TENANT_ID) return path;
+  const sep = path.includes("?") ? "&" : "?";
+  return `${path}${sep}b=${encodeURIComponent(TENANT_ID)}`;
+}
+async function api(path, method, body){
+  const res = await fetch(withTenant(path), {
+    method: method || "GET",
+    headers: { "Content-Type": "application/json", "X-Init-Data": initData },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "خطای ناشناخته");
+  return data;
+}
+function showMsg(text, ok){
+  document.getElementById("msgBox").innerHTML =
+    `<div class="msg ${ok ? "ok" : "err"}">${text}</div>`;
+  setTimeout(() => { document.getElementById("msgBox").innerHTML = ""; }, 6000);
+}
+
+// ---- ردیف‌های دینامیک اعتبارنامه ----
+function addCredRow(name, label, secret, value){
+  const wrap = document.getElementById("credRows");
+  const div = document.createElement("div");
+  div.className = "kv-row";
+  div.innerHTML = `
+    <input type="text" placeholder="نام فیلد (مثل api_key)" class="cred-name" value="${name || ""}">
+    <input type="text" placeholder="برچسب نمایشی" class="cred-label" value="${label || ""}">
+    <input type="text" placeholder="مقدار" class="cred-value" value="${value || ""}">
+    <label class="toggle" style="flex:0 0 auto"><input type="checkbox" class="cred-secret" ${secret !== false ? "checked" : ""}> محرمانه</label>
+    <button type="button" class="small danger" onclick="this.parentElement.remove()">×</button>
+  `;
+  wrap.appendChild(div);
+}
+
+function headersToText(h){ return Object.entries(h || {}).map(([k,v]) => `${k}: ${v}`).join("\n"); }
+function textToHeaders(t){
+  const out = {};
+  (t || "").split("\n").forEach(line => {
+    const idx = line.indexOf(":");
+    if (idx > 0) out[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+  });
+  return out;
+}
+
+function resetForm(){
+  document.getElementById("gwForm").reset();
+  document.getElementById("gwId").value = "";
+  document.getElementById("credRows").innerHTML = "";
+  document.getElementById("formTitle").textContent = "➕ افزودن درگاه جدید";
+  document.getElementById("delBtn").style.display = "none";
+  document.getElementById("f_key").disabled = false;
+}
+
+function collectConfig(){
+  const creds = {}, credFields = [];
+  document.querySelectorAll("#credRows .kv-row").forEach(row => {
+    const name = row.querySelector(".cred-name").value.trim();
+    if (!name) return;
+    creds[name] = row.querySelector(".cred-value").value;
+    credFields.push({
+      name, label: row.querySelector(".cred-label").value.trim() || name,
+      secret: row.querySelector(".cred-secret").checked,
+    });
+  });
+  let cr_body = {}, v_body = {};
+  try { cr_body = JSON.parse(document.getElementById("cr_body").value || "{}"); } catch(e) { throw new Error("بدنه‌ی درخواست «ساخت فاکتور» JSON معتبر نیست."); }
+  try { v_body = JSON.parse(document.getElementById("v_body").value || "{}"); } catch(e) { throw new Error("بدنه‌ی درخواست «استعلام» JSON معتبر نیست."); }
+
+  return {
+    credential_fields: credFields,
+    credentials: creds,
+    create_request: {
+      method: document.getElementById("cr_method").value,
+      url: document.getElementById("cr_url").value.trim(),
+      headers: textToHeaders(document.getElementById("cr_headers").value),
+      body_type: document.getElementById("cr_body_type").value,
+      body: cr_body,
+    },
+    create_response: {
+      invoice_url_path: document.getElementById("cr_resp_url").value.trim(),
+      txn_id_path: document.getElementById("cr_resp_txn").value.trim(),
+    },
+    verify_enabled: document.getElementById("v_enabled").checked,
+    verify_request: {
+      method: document.getElementById("v_method").value,
+      url: document.getElementById("v_url").value.trim(),
+      headers: textToHeaders(document.getElementById("v_headers").value),
+      body_type: document.getElementById("v_body_type").value,
+      body: v_body,
+    },
+    verify_response: {
+      status_path: document.getElementById("v_resp_status").value.trim(),
+      success_values: document.getElementById("v_resp_success").value.split(",").map(s => s.trim()).filter(Boolean),
+    },
+    webhook_enabled: document.getElementById("w_enabled").checked,
+    webhook_auth: {
+      mode: document.getElementById("w_auth_mode").value,
+      header_name: document.getElementById("w_header_name").value.trim(),
+      query_param: document.getElementById("w_query_param").value.trim(),
+      secret_field: document.getElementById("w_secret_field").value.trim(),
+      hmac_algo: "sha256",
+    },
+    webhook_mapping: {
+      txn_id_path: document.getElementById("w_map_txn").value.trim(),
+      status_path: document.getElementById("w_map_status").value.trim(),
+      success_values: document.getElementById("w_map_success").value.split(",").map(s => s.trim()).filter(Boolean),
+    },
+  };
+}
+
+function fillForm(gw){
+  document.getElementById("gwId").value = gw.id;
+  document.getElementById("f_name").value = gw.name;
+  document.getElementById("f_key").value = gw.key;
+  document.getElementById("f_key").disabled = true;
+  document.getElementById("f_enabled").checked = gw.enabled;
+  document.getElementById("formTitle").textContent = `✏️ ویرایش: ${gw.name}`;
+  document.getElementById("delBtn").style.display = "inline-block";
+
+  const c = gw.config || {};
+  document.getElementById("credRows").innerHTML = "";
+  (c.credential_fields || []).forEach(f => addCredRow(f.name, f.label, f.secret, (c.credentials || {})[f.name] || ""));
+
+  const cr = c.create_request || {};
+  document.getElementById("cr_method").value = cr.method || "POST";
+  document.getElementById("cr_url").value = cr.url || "";
+  document.getElementById("cr_headers").value = headersToText(cr.headers);
+  document.getElementById("cr_body_type").value = cr.body_type || "json";
+  document.getElementById("cr_body").value = JSON.stringify(cr.body || {}, null, 2);
+  document.getElementById("cr_resp_url").value = (c.create_response || {}).invoice_url_path || "";
+  document.getElementById("cr_resp_txn").value = (c.create_response || {}).txn_id_path || "";
+
+  document.getElementById("v_enabled").checked = !!c.verify_enabled;
+  const vr = c.verify_request || {};
+  document.getElementById("v_method").value = vr.method || "POST";
+  document.getElementById("v_url").value = vr.url || "";
+  document.getElementById("v_headers").value = headersToText(vr.headers);
+  document.getElementById("v_body_type").value = vr.body_type || "json";
+  document.getElementById("v_body").value = JSON.stringify(vr.body || {}, null, 2);
+  document.getElementById("v_resp_status").value = (c.verify_response || {}).status_path || "";
+  document.getElementById("v_resp_success").value = ((c.verify_response || {}).success_values || []).join(",");
+
+  document.getElementById("w_enabled").checked = !!c.webhook_enabled;
+  const wa = c.webhook_auth || {};
+  document.getElementById("w_auth_mode").value = wa.mode || "none";
+  document.getElementById("w_header_name").value = wa.header_name || "";
+  document.getElementById("w_query_param").value = wa.query_param || "";
+  document.getElementById("w_secret_field").value = wa.secret_field || "";
+  const wm = c.webhook_mapping || {};
+  document.getElementById("w_map_txn").value = wm.txn_id_path || "";
+  document.getElementById("w_map_status").value = wm.status_path || "";
+  document.getElementById("w_map_success").value = (wm.success_values || []).join(",");
+
+  window.scrollTo({top: document.getElementById("gwForm").offsetTop - 10, behavior: "smooth"});
+}
+
+async function loadList(){
+  const list = document.getElementById("list");
+  try {
+    const rows = await api("/api/admin/gateways");
+    if (!rows.length){ list.innerHTML = '<div class="muted">هنوز درگاهی اضافه نشده.</div>'; return; }
+    list.innerHTML = "";
+    rows.forEach(gw => {
+      const div = document.createElement("div");
+      div.className = "gw-item";
+      div.innerHTML = `
+        <div>
+          <b>${gw.name}</b> <span class="muted">(${gw.key})</span>
+          <span class="badge ${gw.enabled ? "on" : "off"}">${gw.enabled ? "فعال" : "غیرفعال"}</span>
+        </div>
+        <button class="small secondary">ویرایش</button>
+      `;
+      div.querySelector("button").onclick = () => fillForm(gw);
+      list.appendChild(div);
+    });
+  } catch(e) { list.innerHTML = `<div class="msg err">${e.message}</div>`; }
+}
+
+document.getElementById("gwForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    const config = collectConfig();
+    const id = document.getElementById("gwId").value;
+    const payload = {
+      key: document.getElementById("f_key").value.trim(),
+      name: document.getElementById("f_name").value.trim(),
+      enabled: document.getElementById("f_enabled").checked,
+      config,
+    };
+    if (id) await api(`/api/admin/gateways/${id}`, "PUT", payload);
+    else await api("/api/admin/gateways", "POST", payload);
+    showMsg("ذخیره شد ✅", true);
+    resetForm();
+    loadList();
+  } catch(e) { showMsg(e.message, false); }
+});
+
+async function testGateway(){
+  const id = document.getElementById("gwId").value;
+  if (!id){ showMsg("اول درگاه را ذخیره کن، بعد تست بگیر.", false); return; }
+  try {
+    const r = await api(`/api/admin/gateways/${id}/test`, "POST", { amount_toman: 1000 });
+    if (r.success) showMsg(`✅ فاکتور آزمایشی ساخته شد. لینک: ${r.invoice_url || "(بدون لینک)"} — txn: ${r.txn_id}`, true);
+    else showMsg(`❌ ${r.error}`, false);
+  } catch(e) { showMsg(e.message, false); }
+}
+
+async function deleteGateway(){
+  const id = document.getElementById("gwId").value;
+  if (!id) return;
+  if (!confirm("این درگاه حذف شود؟")) return;
+  try {
+    await api(`/api/admin/gateways/${id}`, "DELETE");
+    showMsg("حذف شد.", true);
+    resetForm();
+    loadList();
+  } catch(e) { showMsg(e.message, false); }
+}
+
+addCredRow();
+loadList();
+</script>
+</body>
+</html>
