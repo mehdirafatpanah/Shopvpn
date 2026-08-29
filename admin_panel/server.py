@@ -19,7 +19,7 @@ import time
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import FastAPI, Request, Response, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
@@ -38,6 +38,7 @@ from stock_alerts import check_and_notify_low_stock
 from panel_providers import (
     get_provider, PanelError, PanelUsernameTakenError, PANEL_TYPE_LABELS,
     PROVIDERS, SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES, TEMPLATE_BASED_PANEL_TYPES,
+    parse_xui_inbound_ids,
 )
 from renewal_reminders import STATUS_KEY_LAST_RUN, STATUS_KEY_LAST_DATE_SENT, STATUS_KEY_LAST_VOLUME_SENT
 from backup import create_backup, restore_backup, is_valid_sqlite_db
@@ -1844,7 +1845,7 @@ class PanelServerUpdateBody(BaseModel):
     api_url: Optional[str] = None
     api_username: Optional[str] = None
     api_password: Optional[str] = None
-    xui_inbound_id: Optional[int] = None
+    xui_inbound_ids: Optional[List[int]] = None
     xui_sub_base_url: Optional[str] = None
 
 
@@ -1853,15 +1854,16 @@ class PanelServerTemplateBody(BaseModel):
 
 
 class PanelServerXuiConfigBody(BaseModel):
-    inbound_id: Optional[int] = None
+    inbound_ids: Optional[List[int]] = None
     sub_base_url: str
 
 
 def _panel_server_public(s) -> dict:
     is_sub_base_type = s["panel_type"] in SUB_BASE_URL_PANEL_TYPES
+    xui_inbound_ids = parse_xui_inbound_ids(s) if s["panel_type"] in INBOUND_SELECT_PANEL_TYPES else []
     if is_sub_base_type:
         needs_inbound = s["panel_type"] in INBOUND_SELECT_PANEL_TYPES
-        configured = bool(s["xui_sub_base_url"]) and (bool(s["xui_inbound_id"]) if needs_inbound else True)
+        configured = bool(s["xui_sub_base_url"]) and (bool(xui_inbound_ids) if needs_inbound else True)
     else:
         configured = bool(s["group_ids"] and s["proxy_settings"])
     return {
@@ -1869,7 +1871,7 @@ def _panel_server_public(s) -> dict:
         "type_label": PANEL_TYPE_LABELS.get(s["panel_type"], s["panel_type"]),
         "api_url": s["api_url"], "template_username": s["template_username"],
         "has_template": bool(s["group_ids"] and s["proxy_settings"]),
-        "xui_inbound_id": s["xui_inbound_id"], "xui_sub_base_url": s["xui_sub_base_url"],
+        "xui_inbound_ids": xui_inbound_ids, "xui_sub_base_url": s["xui_sub_base_url"],
         "is_configured": configured,
         "used_for_custom_config": bool(s["used_for_custom_config"]),
         "used_for_test_config": bool(s["used_for_test_config"]),
@@ -1969,12 +1971,15 @@ async def api_set_panel_server_xui_config(server_id: int, body: PanelServerXuiCo
         raise HTTPException(404, "یافت نشد.")
     if server["panel_type"] not in SUB_BASE_URL_PANEL_TYPES:
         raise HTTPException(400, "این سرور به این تنظیمات نیاز ندارد.")
-    if server["panel_type"] in INBOUND_SELECT_PANEL_TYPES and not body.inbound_id:
-        raise HTTPException(400, "انتخاب inbound برای این نوع پنل الزامی است.")
+    if server["panel_type"] in INBOUND_SELECT_PANEL_TYPES and not body.inbound_ids:
+        raise HTTPException(400, "انتخاب حداقل یک inbound برای این نوع پنل الزامی است.")
     url = body.sub_base_url.strip()
     if not url.startswith("http://") and not url.startswith("https://"):
         raise HTTPException(400, "آدرس Subscription باید با http:// یا https:// شروع شود.")
-    db.update_panel_server(server_id, xui_inbound_id=body.inbound_id, xui_sub_base_url=url)
+    update_kwargs = {"xui_sub_base_url": url}
+    if body.inbound_ids:
+        update_kwargs["xui_inbound_ids"] = json.dumps(body.inbound_ids)
+    db.update_panel_server(server_id, **update_kwargs)
     db.log_admin_action(admin["id"], "panel_update", f"xui-config سرور #{server_id} (پنل وب)", "panel", server_id)
     return {"ok": True}
 
@@ -2030,6 +2035,8 @@ def api_update_panel_server(server_id: int, body: PanelServerUpdateBody, admin=D
     if not server:
         raise HTTPException(404, "یافت نشد.")
     fields = {k: v for k, v in body.dict().items() if v is not None}
+    if "xui_inbound_ids" in fields:
+        fields["xui_inbound_ids"] = json.dumps(fields["xui_inbound_ids"])
     if fields:
         db.update_panel_server(server_id, **fields)
     db.log_admin_action(admin["id"], "panel_update", str(server_id), "panel", server_id)
