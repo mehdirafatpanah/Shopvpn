@@ -525,6 +525,7 @@ def admin_panel_kb(db, is_main_bot: bool = True) -> InlineKeyboardMarkup:
             current_row = []
     if current_row:
         rows.append(current_row)
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="back_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

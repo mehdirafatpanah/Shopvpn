@@ -190,6 +190,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         except Exception:
             pass
 
+    async def _notify_admin_panel_menu(bot: Bot, admin_tg_id: int):
+        """بعد از تایید/رد یک رسید یا درخواست، پنل مدیریت (منوی شیشه‌ای) دوباره
+        برای همان مدیر ارسال می‌شود؛ چون آن منو به پیام رسید چسبیده بود، نه به چت."""
+        try:
+            await bot.send_message(admin_tg_id, "🔧 پنل مدیریت:", reply_markup=kb.admin_panel_kb(db, is_main_bot))
+        except Exception:
+            pass
+
     async def _send_receipt(bot: Bot, chat_id: int, file_id: str, receipt_type: str, caption: str, reply_markup=None):
         """ارسال رسید ذخیره‌شده؛ رسیدهای قدیمی photo فرض می‌شوند."""
         if (receipt_type or "photo") == "document":
@@ -964,6 +972,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 except Exception:
                     pass
             await call.answer("سفارش تایید و کانفیگ شخصی روی پنل ساخته شد.")
+            await _notify_admin_panel_menu(bot, call.from_user.id)
             return
 
         product = (await asyncio.to_thread(db.get_product, order["product_id"]))
@@ -1001,6 +1010,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 except Exception:
                     pass
             await call.answer("سفارش تایید و کانفیگ به‌صورت خودکار ساخته شد.")
+            await _notify_admin_panel_menu(bot, call.from_user.id)
             return
 
         quantity = order["quantity"] or 1
@@ -1050,6 +1060,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             except Exception:
                 pass
         await call.answer("سفارش تایید و کانفیگ برای کاربر ارسال شد.")
+        await _notify_admin_panel_menu(bot, call.from_user.id)
 
     @router.callback_query(F.data.startswith("order_reject:"))
     async def cb_order_reject(call: CallbackQuery, bot: Bot):
@@ -1090,6 +1101,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             except Exception:
                 pass
         await call.answer("سفارش رد شد.")
+        await _notify_admin_panel_menu(bot, call.from_user.id)
 
     # -------------------------------------------------------------------
     # درخواست‌های شارژ کیف پول
@@ -1433,6 +1445,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             except Exception:
                 pass
         await call.answer("شارژ کیف پول تایید شد.")
+        await _notify_admin_panel_menu(bot, call.from_user.id)
 
     @router.callback_query(F.data.startswith("topup_reject:"))
     async def cb_topup_reject(call: CallbackQuery, bot: Bot):
@@ -1473,6 +1486,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             except Exception:
                 pass
         await call.answer("درخواست رد شد.")
+        await _notify_admin_panel_menu(bot, call.from_user.id)
 
     # -------------------------------------------------------------------
     # مدیریت کدهای تخفیف
