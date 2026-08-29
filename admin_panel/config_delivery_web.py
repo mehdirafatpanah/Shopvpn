@@ -6,7 +6,7 @@
 (از طریق admin_panel.telegram_notify) کار می‌کند.
 """
 
-from config_delivery import build_qr_bytes, build_delivery_caption, build_summary_text
+from config_delivery import build_qr_bytes, build_delivery_caption, build_summary_text, _delivery_flags
 from admin_panel.telegram_notify import send_message as tg_send, send_photo as tg_send_photo
 from config import BOT_TOKEN
 from sub_info import fetch_individual_links
@@ -43,11 +43,15 @@ async def deliver_config_to_user_web(
     links,
     final_price: int = None,
     order_id: int = None,
+    db=None,
 ) -> None:
-    """نسخه‌ی پنل وب مستقل از تحویل حرفه‌ای کانفیگ؛ همان خروجی‌ای که کاربر از خودِ بات می‌بیند."""
+    """نسخه‌ی پنل وب مستقل از تحویل حرفه‌ای کانفیگ؛ همان خروجی‌ای که کاربر از خودِ بات می‌بیند.
+    db برای خواندن تنظیمات deliver_sub_link_enabled / deliver_individual_configs_enabled لازم است
+    (اگر داده نشود، هر دو فعال فرض می‌شوند)."""
     if isinstance(links, str):
         links = [links]
     total = len(links)
+    sub_link_on, individual_on = _delivery_flags(db)
 
     for idx, link in enumerate(links, start=1):
         caption = build_delivery_caption(product_name, idx, total, order_id)
@@ -62,9 +66,10 @@ async def deliver_config_to_user_web(
             # اگر ساخت/ارسال QR به هر دلیلی ناموفق بود، حداقل متن اطلاعات برای کاربر ارسال شود
             await tg_send(BOT_TOKEN, user_tg_id, caption)
 
-        await tg_send(BOT_TOKEN, user_tg_id, f"🔗 لینک اشتراک شما (برای کپی):\n`{link}`", parse_mode="Markdown")
+        if sub_link_on:
+            await tg_send(BOT_TOKEN, user_tg_id, f"🔗 لینک اشتراک شما (برای کپی):\n`{link}`", parse_mode="Markdown")
 
-        if link.startswith(("http://", "https://")):
+        if individual_on and link.startswith(("http://", "https://")):
             try:
                 individual_links = await fetch_individual_links(link)
             except Exception:

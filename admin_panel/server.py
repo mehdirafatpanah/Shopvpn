@@ -904,7 +904,7 @@ async def api_approve_order(order_id: int, admin=Depends(require_permission("ord
         await notify_user(order["user_id"], "✅ کانفیگ شخصی شما ساخته شد!")
         asyncio.create_task(deliver_config_to_user_web(
             order["user_id"], "کانفیگ شخصی", result.subscription_url,
-            final_price=order["final_price"], order_id=order_id,
+            final_price=order["final_price"], order_id=order_id, db=db,
         ))
         return {"ok": True}
 
@@ -929,7 +929,7 @@ async def api_approve_order(order_id: int, admin=Depends(require_permission("ord
         await notify_user(order["user_id"], "✅ خرید شما تایید شد!")
         asyncio.create_task(deliver_config_to_user_web(
             order["user_id"], product["name"], links,
-            final_price=order["final_price"], order_id=order_id,
+            final_price=order["final_price"], order_id=order_id, db=db,
         ))
         return {"ok": True}
 
@@ -948,7 +948,7 @@ async def api_approve_order(order_id: int, admin=Depends(require_permission("ord
     await notify_user(order["user_id"], "✅ خرید شما تایید شد!")
     asyncio.create_task(deliver_config_to_user_web(
         order["user_id"], product["name"] if product else "", links,
-        final_price=order["final_price"], order_id=order_id,
+        final_price=order["final_price"], order_id=order_id, db=db,
     ))
     return {"ok": True}
 
