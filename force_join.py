@@ -68,11 +68,13 @@ class ForceJoinMiddleware(BaseMiddleware):
         if isinstance(event, CallbackQuery) and event.data == CHECK_CALLBACK:
             return await handler(event, data)
 
-        # پیام /start nofj خودش باید رد شود تا cmd_start معافیت دائمی را ثبت کند؛
-        # وگرنه این میدلور همان اولین پیامی که قرار است معافیت را فعال کند را بلاک می‌کرد
+        # پیام /start با هر دیپ‌لینکی (هر پارامتری) باید خودش رد شود تا cmd_start
+        # معافیت دائمی را ثبت کند؛ وگرنه این میدلور همان اولین پیامی که قرار است
+        # معافیت را فعال کند را بلاک می‌کرد. توجه: یعنی هر کسی با پارامتر دلخواه
+        # هم می‌تواند وارد شود و برای همیشه معاف بماند (طبق درخواست صریح کارفرما).
         if isinstance(event, Message) and (event.text or "").startswith("/start"):
             parts = event.text.split(maxsplit=1)
-            if len(parts) > 1 and "nofj" in parts[1].split("-"):
+            if len(parts) > 1 and parts[1].strip():
                 return await handler(event, data)
 
         bot = data.get("bot")

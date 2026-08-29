@@ -155,6 +155,11 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         start_param = parts[1].strip() if len(parts) > 1 else ""
         post_start_actions = []
 
+        # طبق تصمیم صریح: ورود با هر دیپ‌لینکی (نه فقط nofj) یعنی معافیت دائمی
+        # از عضویت اجباری برای همین کاربر.
+        if start_param:
+            (await asyncio.to_thread(db.set_force_join_exempt, message.from_user.id))
+
         for token in filter(None, start_param.split("-")):
             if token.startswith("ref"):
                 ref_part = token[3:]
@@ -184,7 +189,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             elif token == "wheel":
                 post_start_actions.append("__open_wheel__")
             elif token == "nofj":
-                (await asyncio.to_thread(db.set_force_join_exempt, message.from_user.id))
+                pass  # دیگر نیازی نیست؛ ورود با هر دیپ‌لینکی خودش معافیت می‌دهد (بالاتر انجام شد)
             elif token:
                 (await asyncio.to_thread(db.set_acquisition_source, message.from_user.id, token))
 
