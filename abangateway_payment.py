@@ -197,7 +197,7 @@ async def finalize_paid_order(db, bot, order_id: int, notify_admins_fn=None) -> 
         db.approve_custom_config_order(order_id)
         await deliver_config_to_user(
             bot, order["user_id"], "کانفیگ شخصی",
-            [result.subscription_url], final_price=order["final_price"], order_id=order_id,
+            [result.subscription_url], final_price=order["final_price"], order_id=order_id, db=db,
         )
     else:
         product = db.get_product(order["product_id"])
@@ -221,7 +221,7 @@ async def finalize_paid_order(db, bot, order_id: int, notify_admins_fn=None) -> 
             await check_and_notify_low_stock(bot.send_message, db, order["product_id"])
         await deliver_config_to_user(
             bot, order["user_id"], product["name"] if product else "",
-            links, final_price=order["final_price"], order_id=order_id,
+            links, final_price=order["final_price"], order_id=order_id, db=db,
         )
 
     reward_info = db.reward_referrer_if_first_purchase(order["user_id"], order["base_price"])

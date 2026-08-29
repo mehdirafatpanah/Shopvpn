@@ -964,7 +964,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 await bot.send_message(order["user_id"], "✅ کانفیگ شخصی شما ساخته شد!")
                 await deliver_config_to_user(
                     bot, order["user_id"], "کانفیگ شخصی",
-                    [result.subscription_url], final_price=order["final_price"], order_id=order_id,
+                    [result.subscription_url], final_price=order["final_price"], order_id=order_id, db=db,
                 )
                 await _notify_user_inline_menu(bot, order["user_id"])
             except Exception:
@@ -1002,7 +1002,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 await bot.send_message(order["user_id"], f"✅ خرید شما تایید شد!\n📦 محصول: {product['name']}")
                 await deliver_config_to_user(
                     bot, order["user_id"], product["name"],
-                    [r["subscription_url"] for r in prov_results], final_price=order["final_price"], order_id=order_id,
+                    [r["subscription_url"] for r in prov_results], final_price=order["final_price"], order_id=order_id, db=db,
                 )
                 await _notify_user_inline_menu(bot, order["user_id"])
             except Exception:
@@ -1052,6 +1052,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 [r["link"] for r in results],
                 final_price=order["final_price"],
                 order_id=order_id,
+                db=db,
             )
             await _notify_user_inline_menu(bot, order["user_id"])
         except Exception:
@@ -1946,6 +1947,46 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         (await asyncio.to_thread(db.set_setting, "custom_config_enabled", "0" if current == "1" else "1"))
         (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "custom_config_toggle", f"وضعیت جدید: {'0' if current == '1' else '1'}"))
         await safe_edit(call, "🛠 ساخت کانفیگ شخصی:", reply_markup=kb.custom_config_menu_kb(db, is_main_bot))
+        await call.answer("وضعیت تغییر کرد.")
+
+    # -------------------------------------------------------------------
+    # تنظیمات ارسال کانفیگ: فعال/غیرفعال بودن ارسال لینک اشتراک و
+    # ارسال جداگانه‌ی کانفیگ‌های تکی استخراج‌شده از آن (مستقل از هم)
+    # -------------------------------------------------------------------
+
+    @router.callback_query(F.data == "adm_delivery_settings")
+    async def cb_admin_delivery_settings(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        await replace_admin_view(
+            call,
+            "📤 تنظیمات ارسال کانفیگ\n\n"
+            "این دو مورد مستقل از هم قابل فعال/غیرفعال کردن هستند و روی همه‌ی مسیرهای "
+            "تحویل کانفیگ اثر می‌گذارند (بانک کانفیگ، محصول متصل به پنل، ساخت کانفیگ شخصی، کانفیگ تست):",
+            reply_markup=kb.delivery_settings_kb(db),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_deliver_sublink_toggle")
+    async def cb_admin_deliver_sublink_toggle(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        current = (await asyncio.to_thread(db.get_setting, "deliver_sub_link_enabled", "1"))
+        new_value = "0" if current != "0" else "1"
+        (await asyncio.to_thread(db.set_setting, "deliver_sub_link_enabled", new_value))
+        (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "deliver_sublink_toggle", f"وضعیت جدید: {new_value}"))
+        await safe_edit(call, "📤 تنظیمات ارسال کانفیگ:", reply_markup=kb.delivery_settings_kb(db))
+        await call.answer("وضعیت تغییر کرد.")
+
+    @router.callback_query(F.data == "adm_deliver_individual_toggle")
+    async def cb_admin_deliver_individual_toggle(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        current = (await asyncio.to_thread(db.get_setting, "deliver_individual_configs_enabled", "1"))
+        new_value = "0" if current != "0" else "1"
+        (await asyncio.to_thread(db.set_setting, "deliver_individual_configs_enabled", new_value))
+        (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "deliver_individual_toggle", f"وضعیت جدید: {new_value}"))
+        await safe_edit(call, "📤 تنظیمات ارسال کانفیگ:", reply_markup=kb.delivery_settings_kb(db))
         await call.answer("وضعیت تغییر کرد.")
 
     @router.callback_query(F.data == "adm_custom_config_edit_range")

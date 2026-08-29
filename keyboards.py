@@ -400,6 +400,7 @@ ADMIN_PANEL_ITEMS = [
     ("adm_volume_reminder_settings", "📉 یادآوری اتمام حجم", "adm_volume_reminder_settings"),
     ("adm_stock_alert_settings", "📦 آستانه‌ی هشدار موجودی", "adm_stock_alert_settings"),
     ("adm_custom_config_settings", "🛠 ساخت کانفیگ شخصی (پنل‌های VPN)", "adm_custom_config_settings"),
+    ("adm_delivery_settings", "📤 تنظیمات ارسال کانفیگ", "adm_delivery_settings"),
     ("adm_referral_settings", "🤝 تنظیمات زیرمجموعه‌گیری", "adm_referral_settings"),
     ("adm_resellers_menu", "🏪 مدیریت بات‌های نمایندگی", "adm_resellers_menu"),
     ("adm_credit_resellers_menu", "💳 نمایندگی حجمی (اعتبار)", "adm_credit_resellers_menu"),
@@ -445,6 +446,7 @@ ADMIN_PANEL_CATEGORIES = [
         "adm_random_cfg",
         "adm_test_menu",
         "adm_custom_config_settings",
+        "adm_delivery_settings",
     ]),
     ("resellers", "🤝 نمایندگی‌ها", [
         "adm_resellers_menu",
@@ -609,6 +611,21 @@ def admin_temp_message_duration_kb() -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton(text="✏️ مدت دلخواه (دقیقه)", callback_data="adm_tempmsg_dur:custom")],
         [InlineKeyboardButton(text="❌ انصراف", callback_data="adm_temp_message")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def delivery_settings_kb(db) -> InlineKeyboardMarkup:
+    """تنظیمات فعال/غیرفعال بودن ارسال لینک اشتراک و ارسال کانفیگ‌های تکی استخراج‌شده
+    (برای هر سه مسیر تحویل: بانک کانفیگ، محصول متصل به پنل، ساخت کانفیگ شخصی، و کانفیگ تست)."""
+    sub_link_on = db.get_setting("deliver_sub_link_enabled", "1") != "0"
+    individual_on = db.get_setting("deliver_individual_configs_enabled", "1") != "0"
+    sub_link_text = "✅ ارسال لینک اشتراک: فعال" if sub_link_on else "❌ ارسال لینک اشتراک: غیرفعال"
+    individual_text = "✅ ارسال کانفیگ‌های تکی: فعال" if individual_on else "❌ ارسال کانفیگ‌های تکی: غیرفعال"
+    rows = [
+        [InlineKeyboardButton(text=sub_link_text, callback_data="adm_deliver_sublink_toggle")],
+        [InlineKeyboardButton(text=individual_text, callback_data="adm_deliver_individual_toggle")],
+        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:products")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

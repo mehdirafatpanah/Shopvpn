@@ -120,6 +120,16 @@ async def _send_individual_configs(bot: Bot, user_tg_id: int, links: list) -> No
                 pass
 
 
+def _delivery_flags(db) -> tuple:
+    """خروجی: (ارسال لینک اشتراک فعال است؟, ارسال کانفیگ‌های تکی فعال است؟).
+    اگر db داده نشود (فراخوانی قدیمی بدون این پارامتر)، هر دو پیش‌فرض فعال‌اند."""
+    if db is None:
+        return True, True
+    sub_link_on = db.get_setting("deliver_sub_link_enabled", "1") != "0"
+    individual_on = db.get_setting("deliver_individual_configs_enabled", "1") != "0"
+    return sub_link_on, individual_on
+
+
 async def deliver_config_to_user(
     bot: Bot,
     user_tg_id: int,
@@ -127,6 +137,7 @@ async def deliver_config_to_user(
     links,
     final_price: int = None,
     order_id: int = None,
+    db=None,
 ) -> None:
     """
     ارسال حرفه‌ای کانفیگ(های) خریداری‌شده به کاربر: عکس QR کد لینک اشتراک + مشخصات
@@ -134,12 +145,17 @@ async def deliver_config_to_user(
     links می‌تواند یک لینک تکی (str) یا لیستی از لینک‌ها باشد (خرید با تعداد بیشتر از ۱)؛
     در حالت لیست، هر کانفیگ با شماره‌ی خودش (کانفیگ N از M) جداگانه ارسال می‌شود.
 
+    ارسال متن لینک اشتراک و ارسال کانفیگ‌های تکی هرکدام جدا از طریق تنظیمات
+    deliver_sub_link_enabled / deliver_individual_configs_enabled قابل فعال/غیرفعال‌سازی‌اند؛
+    پارامتر db برای خواندن این دو تنظیم لازم است (اگر داده نشود، هر دو فعال فرض می‌شوند).
+
     (نسخه‌ی aiogram - برای فراخوانی از داخل خودِ بات. برای پنل وب مستقل از
     admin_panel.config_delivery_web.deliver_config_to_user_web استفاده کن.)
     """
     if isinstance(links, str):
         links = [links]
     total = len(links)
+    sub_link_on, individual_on = _delivery_flags(db)
 
     for idx, link in enumerate(links, start=1):
         caption = build_delivery_caption(product_name, idx, total, order_id)
@@ -151,13 +167,14 @@ async def deliver_config_to_user(
             # اگر ساخت/ارسال QR به هر دلیلی ناموفق بود، حداقل متن اطلاعات برای کاربر ارسال شود
             await bot.send_message(user_tg_id, caption)
 
-        await bot.send_message(
-            user_tg_id,
-            f"🔗 لینک اشتراک شما (برای کپی):\n`{link}`",
-            parse_mode="Markdown",
-        )
+        if sub_link_on:
+            await bot.send_message(
+                user_tg_id,
+                f"🔗 لینک اشتراک شما (برای کپی):\n`{link}`",
+                parse_mode="Markdown",
+            )
 
-        if link.startswith(("http://", "https://")):
+        if individual_on and link.startswith(("http://", "https://")):
             try:
                 individual_links = await fetch_individual_links(link)
             except Exception:
