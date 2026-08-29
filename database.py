@@ -15,8 +15,12 @@ import secrets
 import threading
 import time
 import json
+import asyncio
+import logging
 from datetime import datetime, timedelta
 from contextlib import contextmanager
+
+logger = logging.getLogger("database")
 
 # مجوزهای granular پنل وب مدیریت. هر ادمین (به‌جز owner که همیشه دسترسی کامل
 # دارد) یک زیرمجموعه دلخواه از این کلیدها را می‌تواند داشته باشد.
@@ -1037,6 +1041,25 @@ class Database:
     def _invalidate_admin_cache(self):
         with self._lock:
             self._admin_cache = None
+
+    async def cache_autorefresh_loop(self):
+        """تسک پس‌زمینه‌ی اختیاری: به‌صورت دوره‌ای کش تنظیمات و ادمین‌ها را تازه نگه
+        می‌دارد. چون این پروژه چندپردازشی است (بات + مینی‌اپ روی یک دیتابیس)،
+        این تسک باعث می‌شود تغییری که پردازش دیگر انجام داده زودتر از انقضای
+        TTL طبیعی (کش تنظیمات/ادمین که در هر خواندن هم به‌صورت lazy چک می‌شود)
+        دیده شود. نبود این تسک مشکلی ایجاد نمی‌کند چون کش‌ها خودشان lazy
+        هم رفرش می‌شوند؛ این فقط یک بهینه‌سازی است. خطاهای گذرا هرگز کل بات
+        را کرش نمی‌دهند، فقط لاگ می‌شوند و حلقه ادامه پیدا می‌کند."""
+        interval = max(1, min(self._SETTINGS_CACHE_TTL, self._ADMIN_CACHE_TTL))
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                await asyncio.to_thread(self._load_settings_cache)
+                await asyncio.to_thread(self._load_admin_cache)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("خطا در cache_autorefresh_loop (نادیده گرفته شد): %s", e)
 
     def is_admin(self, tg_id: int) -> bool:
         self._maybe_reload_admin_cache()
