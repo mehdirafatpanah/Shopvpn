@@ -47,6 +47,7 @@ import exchange_rate
 import crypto_payment
 import abangateway_client
 import abangateway_payment
+import payment_engine
 from database import Database, MENU_BUTTON_META, DEFAULT_MENU_ORDER
 from admin_panel.config_delivery_web import deliver_config_to_user_web
 from miniapp.auth import validate_init_data
@@ -1442,6 +1443,397 @@ async def api_abangateway_webhook(request: Request, tenant: Tenant = Depends(get
                 except Exception:
                     pass
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# درگاه‌های پرداخت سفارشی/پویا — ادمین از پنل هر API‌ای را (بدون کد) وصل می‌کند
+# ---------------------------------------------------------------------------
+
+def _load_gateway(db: Database, gateway_id: int = None, gateway_key: str = None):
+    row = db.get_custom_gateway(gateway_id) if gateway_id else db.get_custom_gateway_by_key(gateway_key)
+    if not row:
+        raise HTTPException(status_code=404, detail="این درگاه پیدا نشد.")
+    try:
+        config = json.loads(row["config_json"])
+    except Exception:
+        config = {}
+    return row, config
+
+
+def _mask_gateway_row(row, config: dict) -> dict:
+    """برای پاسخ به ادمین: مقادیر محرمانه (credentials با secret=true) ماسک می‌شوند."""
+    creds = dict(config.get("credentials") or {})
+    masked_creds = {}
+    field_meta = {f.get("name"): f for f in (config.get("credential_fields") or [])}
+    for k, v in creds.items():
+        is_secret = field_meta.get(k, {}).get("secret", True)
+        if is_secret and v:
+            v = f"...{str(v)[-4:]}" if len(str(v)) > 4 else "•••"
+        masked_creds[k] = v
+    out_config = dict(config)
+    out_config["credentials"] = masked_creds
+    return {
+        "id": row["id"],
+        "key": row["gateway_key"],
+        "name": row["name"],
+        "enabled": bool(row["enabled"]),
+        "config": out_config,
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+class CustomGatewayIn(BaseModel):
+    key: str
+    name: str
+    enabled: bool = False
+    config: dict
+
+
+@app.get("/api/admin/gateways")
+def api_admin_list_gateways(auth=Depends(require_senior_admin)):
+    _, db, _ = auth
+    rows = db.list_custom_gateways()
+    out = []
+    for row in rows:
+        try:
+            config = json.loads(row["config_json"])
+        except Exception:
+            config = {}
+        out.append(_mask_gateway_row(row, config))
+    return out
+
+
+@app.get("/api/admin/gateways/{gateway_id}")
+def api_admin_get_gateway(gateway_id: int, auth=Depends(require_senior_admin)):
+    _, db, _ = auth
+    row, config = _load_gateway(db, gateway_id=gateway_id)
+    return _mask_gateway_row(row, config)
+
+
+@app.post("/api/admin/gateways")
+def api_admin_create_gateway(body: CustomGatewayIn, auth=Depends(require_senior_admin)):
+    admin_id, db, _ = auth
+    key = "".join(ch for ch in body.key.strip().lower() if ch.isalnum() or ch in ("-", "_"))
+    if not key:
+        raise HTTPException(status_code=400, detail="کلید درگاه نامعتبر است (فقط حروف/عدد انگلیسی، - و _).")
+    if db.get_custom_gateway_by_key(key):
+        raise HTTPException(status_code=400, detail="درگاهی با همین کلید قبلاً ثبت شده.")
+    gateway_id = db.create_custom_gateway(key, body.name.strip() or key, body.config, body.enabled)
+    db.log_admin_action(admin_id, "custom_gateway_create", f"درگاه سفارشی «{body.name}» ({key}) اضافه شد.")
+    row, config = _load_gateway(db, gateway_id=gateway_id)
+    return _mask_gateway_row(row, config)
+
+
+@app.put("/api/admin/gateways/{gateway_id}")
+def api_admin_update_gateway(gateway_id: int, body: CustomGatewayIn, auth=Depends(require_senior_admin)):
+    admin_id, db, _ = auth
+    row, existing_config = _load_gateway(db, gateway_id=gateway_id)
+
+    # مقادیر محرمانه‌ای که ادمین در فرم دست‌نخورده گذاشته (چون ماسک‌شده نمایش داده شده بودند)
+    # با «...abcd» شروع می‌شوند؛ این‌ها را با مقدار واقعی قبلی جایگزین می‌کن تا رمز از بین نرود.
+    new_creds = dict((body.config or {}).get("credentials") or {})
+    old_creds = dict(existing_config.get("credentials") or {})
+    for k, v in list(new_creds.items()):
+        if isinstance(v, str) and (v.startswith("...") or v == "•••") and k in old_creds:
+            new_creds[k] = old_creds[k]
+    body.config["credentials"] = new_creds
+
+    db.update_custom_gateway(gateway_id, name=body.name.strip() or row["name"],
+                              config=body.config, enabled=body.enabled)
+    db.log_admin_action(admin_id, "custom_gateway_update", f"درگاه سفارشی «{row['name']}» ویرایش شد.")
+    row, config = _load_gateway(db, gateway_id=gateway_id)
+    return _mask_gateway_row(row, config)
+
+
+@app.delete("/api/admin/gateways/{gateway_id}")
+def api_admin_delete_gateway(gateway_id: int, auth=Depends(require_senior_admin)):
+    admin_id, db, _ = auth
+    row, _ = _load_gateway(db, gateway_id=gateway_id)
+    db.delete_custom_gateway(gateway_id)
+    db.log_admin_action(admin_id, "custom_gateway_delete", f"درگاه سفارشی «{row['name']}» حذف شد.")
+    return {"status": "ok"}
+
+
+class CustomGatewayTestRequest(BaseModel):
+    amount_toman: int = 1000
+
+
+@app.post("/api/admin/gateways/{gateway_id}/test")
+async def api_admin_test_gateway(gateway_id: int, body: CustomGatewayTestRequest,
+                                  auth=Depends(require_senior_admin)):
+    """یک فاکتور واقعی آزمایشی (با مبلغ دلخواه، پیش‌فرض ۱۰۰۰ تومان) می‌سازد تا ادمین قبل از
+    فعال‌کردن درگاه برای کاربران، مطمئن شود URL/هدر/بدنه و مسیرهای پاسخ درست تنظیم شده‌اند.
+    توجه: چون این یک درخواست واقعی به API درگاه است، ممکن است یک فاکتور واقعی نزد آن درگاه بسازد."""
+    _, db, tenant = auth
+    row, config = _load_gateway(db, gateway_id=gateway_id)
+    gw = payment_engine.GenericGateway(config)
+    our_ref = f"test-{gateway_id}-{int(datetime.now(timezone.utc).timestamp())}"
+    try:
+        result = await gw.create_invoice(
+            amount=body.amount_toman, amount_toman=body.amount_toman,
+            order_id=our_ref, currency="IRT", description="تست اتصال درگاه",
+            tenant_id=tenant.tenant_id or "main",
+            callback_url=f"{API_BASE_URL}/api/pay/custom/{row['gateway_key']}/return?b={tenant.tenant_id}&txn={our_ref}",
+            webhook_url=f"{API_BASE_URL}/api/webhooks/custom/{row['gateway_key']}?b={tenant.tenant_id}",
+        )
+    except payment_engine.PaymentEngineError as e:
+        return {"success": False, "error": str(e)}
+    return {"success": True, "invoice_url": result.get("invoice_url"), "txn_id": result.get("txn_id")}
+
+
+@app.get("/api/gateways")
+def api_list_public_gateways(auth=Depends(require_joined)):
+    """لیست درگاه‌های فعال، برای نمایش به‌عنوان یک روش پرداخت در مینی‌اپ."""
+    _, db, _ = auth
+    rows = db.list_custom_gateways(only_enabled=True)
+    return [{"key": r["gateway_key"], "name": r["name"]} for r in rows]
+
+
+async def _complete_custom_gateway_payment(db: Database, tenant: "Tenant", invoice) -> None:
+    """بعد از تایید قطعی پرداخت یک درگاه سفارشی (چه از طریق webhook چه از طریق verify)،
+    سفارش/شارژ کیف پول را همان‌طور که برای Plisio/آبان‌گیت‌وی انجام می‌شود تکمیل و تحویل می‌دهد."""
+    if invoice["status"] == "completed":
+        return
+    db.update_custom_gateway_invoice_status(invoice["id"], "completed")
+
+    async def _notify(chat_id: int, text: str):
+        try:
+            async with aiohttp.ClientSession() as session:
+                await session.post(
+                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+                    json={"chat_id": chat_id, "text": text},
+                )
+        except Exception:
+            pass
+
+    if invoice["kind"] == "wallet_topup":
+        db.approve_topup(invoice["ref_id"])
+        await _notify(
+            invoice["user_id"],
+            f"✅ پرداخت تایید شد و {invoice['amount_toman']:,} تومان به کیف پول شما اضافه شد.",
+        )
+        return
+
+    order_id = invoice["ref_id"]
+    order = db.get_order(order_id)
+    if not order or order["status"] != "pending":
+        return
+
+    if order["is_custom_config"]:
+        await _notify(
+            order["user_id"],
+            "✅ پرداخت شما تایید شد!\nبرای دریافت کانفیگ شخصی، به بات برگرد و روی دکمه‌ی "
+            "«🔄 بررسی وضعیت پرداخت» زیر همان پیام فاکتور بزن.",
+        )
+        return
+
+    product = db.get_product(order["product_id"])
+    quantity = order["quantity"] or 1
+    if product and product["is_auto_provision"]:
+        try:
+            if product["provision_server_id"]:
+                prov_results = await provision_direct(db, product, quantity, user_id=order["user_id"], order_id=order_id)
+            else:
+                prov_results = await provision_auto_config(db, product, quantity, user_id=order["user_id"], order_id=order_id)
+        except (ProvisionError, DirectProvisionError) as e:
+            for admin_id in db.list_admins():
+                await _notify(
+                    admin_id,
+                    f"⚠️ سفارش #{order_id} با درگاه سفارشی پرداخت شد ولی ساخت خودکار کانفیگ ناموفق بود: {e}\n"
+                    f"لطفاً دستی رسیدگی کنید.",
+                )
+            return
+        db.approve_order_auto(order_id)
+        db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or product["price"])
+        await _notify(order["user_id"], f"✅ پرداخت تایید شد!\n📦 محصول: {product['name']}")
+        asyncio.create_task(deliver_config_to_user_web(
+            order["user_id"], product["name"], [r["subscription_url"] for r in prov_results],
+            final_price=order["final_price"], order_id=order_id, db=db, bot_token=tenant.bot_token,
+        ))
+        return
+
+    results = db.take_unused_configs(order["product_id"], order["user_id"], quantity)
+    if results:
+        db.approve_order(order_id, [r["id"] for r in results])
+        db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or (product["price"] if product else 0))
+        await _notify(order["user_id"], f"✅ پرداخت تایید شد!\n📦 محصول: {product['name'] if product else ''}")
+        asyncio.create_task(deliver_config_to_user_web(
+            order["user_id"], product["name"] if product else "", [r["link"] for r in results],
+            final_price=order["final_price"], order_id=order_id, db=db, bot_token=tenant.bot_token,
+        ))
+        await check_and_notify_low_stock(_notify, db, order["product_id"])
+    else:
+        for admin_id in db.list_admins():
+            await _notify(
+                admin_id,
+                f"⚠️ سفارش #{order_id} با درگاه سفارشی پرداخت شد ولی موجودی هم‌زمان تمام شده. لطفاً دستی رسیدگی کنید.",
+            )
+
+
+async def _create_custom_gateway_invoice_for(db: Database, tenant: "Tenant", tg_id: int,
+                                              gateway_key: str, kind: str, ref_id: int,
+                                              amount_toman: int, order_name: str) -> dict:
+    row, config = _load_gateway(db, gateway_key=gateway_key)
+    if not row["enabled"]:
+        raise HTTPException(status_code=400, detail="این درگاه فعال نیست.")
+    if not API_BASE_URL:
+        raise HTTPException(status_code=400, detail="آدرس مینی‌اپ (MINIAPP_URL) روی سرور تنظیم نشده است.")
+
+    existing = db.get_pending_custom_gateway_invoice_for_ref(row["id"], kind, ref_id)
+    if existing:
+        return {"invoice_url": existing["invoice_url"], "txn_id": existing["txn_id"]}
+
+    tenant_slug = tenant.tenant_id or "main"
+    our_ref = f"{kind}-{tenant_slug}-{ref_id}-{int(datetime.now(timezone.utc).timestamp())}"
+    gw = payment_engine.GenericGateway(config)
+    try:
+        result = await gw.create_invoice(
+            amount=amount_toman, amount_toman=amount_toman, order_id=our_ref,
+            currency="IRT", description=order_name, tenant_id=tenant_slug,
+            callback_url=f"{API_BASE_URL}/api/pay/custom/{gateway_key}/return?b={tenant.tenant_id}&txn={our_ref}",
+            webhook_url=f"{API_BASE_URL}/api/webhooks/custom/{gateway_key}?b={tenant.tenant_id}",
+        )
+    except payment_engine.PaymentEngineError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    invoice_id = db.create_custom_gateway_invoice(
+        row["id"], our_ref, kind, ref_id, tg_id, amount_toman, invoice_url=result.get("invoice_url"),
+    )
+    if result.get("txn_id") and result.get("txn_id") != our_ref:
+        db.set_custom_gateway_invoice_gateway_ref(invoice_id, result.get("txn_id"))
+    return {"invoice_url": result.get("invoice_url"), "txn_id": our_ref}
+
+
+@app.post("/api/orders/{order_id}/custom-invoice/{gateway_key}")
+async def api_order_custom_gateway_invoice(order_id: int, gateway_key: str, auth=Depends(require_joined)):
+    tg_id, db, tenant = auth
+    order = db.get_order(order_id)
+    if not order or order["user_id"] != tg_id:
+        raise HTTPException(status_code=404, detail="سفارش یافت نشد.")
+    if order["status"] != "pending":
+        raise HTTPException(status_code=400, detail="این سفارش قبلاً بررسی شده است.")
+    if order["is_custom_config"]:
+        order_label = f"کانفیگ شخصی #{order_id} - {order['custom_username']}"
+    else:
+        product = db.get_product(order["product_id"])
+        order_label = f"سفارش #{order_id} - {product['name'] if product else ''}"
+    return await _create_custom_gateway_invoice_for(
+        db, tenant, tg_id, gateway_key, "order", order_id, order["final_price"], order_label,
+    )
+
+
+class CustomGatewayWalletInvoiceRequest(BaseModel):
+    topup_id: int
+
+
+@app.post("/api/wallet/custom-invoice/{gateway_key}")
+async def api_wallet_custom_gateway_invoice(gateway_key: str, body: CustomGatewayWalletInvoiceRequest,
+                                             auth=Depends(require_joined)):
+    tg_id, db, tenant = auth
+    topup = db.get_topup(body.topup_id)
+    if not topup or topup["user_id"] != tg_id:
+        raise HTTPException(status_code=404, detail="درخواست شارژ یافت نشد.")
+    if topup["status"] != "pending":
+        raise HTTPException(status_code=400, detail="این درخواست شارژ قبلاً بررسی شده است.")
+    result = await _create_custom_gateway_invoice_for(
+        db, tenant, tg_id, gateway_key, "wallet_topup", body.topup_id, topup["amount"],
+        order_name=f"شارژ کیف پول #{body.topup_id}",
+    )
+    result["topup_id"] = body.topup_id
+    return result
+
+
+@app.post("/api/webhooks/custom/{gateway_key}")
+async def api_custom_gateway_webhook(gateway_key: str, request: Request, tenant: Tenant = Depends(get_tenant)):
+    db = tenant.db
+    row, config = _load_gateway(db, gateway_key=gateway_key)
+    gw = payment_engine.GenericGateway(config)
+
+    raw_body = await request.body()
+    try:
+        body = json.loads(raw_body) if raw_body else {}
+    except Exception:
+        try:
+            form = await request.form()
+            body = dict(form)
+        except Exception:
+            body = {}
+    query = dict(request.query_params)
+    headers = dict(request.headers)
+
+    if not gw.check_webhook_auth(headers, query, raw_body):
+        raise HTTPException(status_code=401, detail="احراز هویت وب‌هوک نامعتبر است.")
+
+    parsed = gw.parse_webhook(body, query)
+    ref_val = parsed.get("txn_id")
+    invoice = None
+    if ref_val:
+        invoice = db.get_custom_gateway_invoice_by_txn(row["id"], ref_val)
+        if not invoice:
+            invoice = db.get_custom_gateway_invoice_by_gateway_ref(row["id"], ref_val)
+    if not invoice and query.get("txn"):
+        invoice = db.get_custom_gateway_invoice_by_txn(row["id"], query.get("txn"))
+    if not invoice:
+        return {"status": "ignored"}
+
+    if parsed.get("success") is False:
+        db.update_custom_gateway_invoice_status(invoice["id"], "failed")
+        return {"status": "ok"}
+    if parsed.get("success") is None:
+        # نگاشت success_values تنظیم نشده؛ فقط وضعیت خام را ثبت کن، تصمیم نهایی
+        # را با endpoint استعلام (verify) یا برگشت کاربر بگیر.
+        db.update_custom_gateway_invoice_status(invoice["id"], "pending")
+        return {"status": "ok"}
+
+    await _complete_custom_gateway_payment(db, tenant, invoice)
+    return {"status": "ok"}
+
+
+@app.get("/api/pay/custom/{gateway_key}/return")
+async def api_custom_gateway_return(gateway_key: str, request: Request, txn: str = "",
+                                     tenant: Tenant = Depends(get_tenant)):
+    """کاربر پس از پرداخت، مرورگرش به این آدرس برمی‌گردد (برای درگاه‌هایی که بر پایه‌ی
+    verify API کار می‌کنند، نه webhook). یک صفحه‌ی HTML ساده نمایش می‌دهد و کاربر را
+    به مینی‌اپ برمی‌گرداند."""
+    db = tenant.db
+    row, config = _load_gateway(db, gateway_key=gateway_key)
+    invoice = db.get_custom_gateway_invoice_by_txn(row["id"], txn) if txn else None
+    if not invoice:
+        return HTMLResponse("<h3>فاکتور پیدا نشد.</h3>", status_code=404)
+
+    gw = payment_engine.GenericGateway(config)
+    query = dict(request.query_params)
+    success_text = "پرداخت شما تایید شد ✅"
+    ok = False
+    try:
+        if config.get("verify_enabled"):
+            result = await gw.verify(
+                amount=invoice["amount_toman"], amount_toman=invoice["amount_toman"],
+                order_id=invoice["txn_id"], gateway_ref=invoice["gateway_ref"] or "",
+                query=query, tenant_id=tenant.tenant_id or "main",
+            )
+            ok = bool(result.get("success"))
+        else:
+            # بدون verify_request: صرفاً به وب‌هوکی که قبلاً رسیده (اگر رسیده) تکیه می‌کنیم
+            ok = invoice["status"] == "completed"
+    except payment_engine.PaymentEngineError as e:
+        ok = False
+        success_text = f"خطا در استعلام پرداخت: {e}"
+
+    if ok:
+        await _complete_custom_gateway_payment(db, tenant, invoice)
+    else:
+        db.update_custom_gateway_invoice_status(invoice["id"], "failed")
+        if success_text == "پرداخت شما تایید شد ✅":
+            success_text = "پرداخت تایید نشد ❌ (اگر مبلغ از حساب شما کسر شده، با پشتیبانی تماس بگیرید)"
+
+    return HTMLResponse(
+        f"<html dir='rtl'><body style='font-family:sans-serif;text-align:center;padding:40px'>"
+        f"<h2>{success_text}</h2>"
+        f"<p>این صفحه را می‌توانید ببندید و به بات برگردید.</p>"
+        f"</body></html>"
+    )
 
 
 @app.post("/api/webhooks/plisio")
