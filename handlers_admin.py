@@ -4171,6 +4171,38 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await replace_admin_view(call, "🔗 ابزار دیپ‌لینک و پست کانال:", reply_markup=kb.deeplink_tools_menu_kb())
         await call.answer()
 
+    @router.callback_query(F.data == "adm_dl_params_list")
+    async def cb_dl_params_list(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        await state.clear()
+        me = await call.bot.get_me()
+        base = f"https://t.me/{me.username}?start="
+        text = (
+            "📋 <b>پارامترهای اصلی دیپ‌لینک (مربوط به منوی کاربر)</b>\n\n"
+            "این‌ها کلیدهایی هستند که به‌صورت خودکار توسط بات شناخته می‌شوند و "
+            "با ورود کاربر، همان بخش از منو مستقیم برایش باز می‌شود:\n\n"
+            f"🛒 <b>خرید</b> — <code>{base}buy</code>\n"
+            "باز شدن مستقیم منوی خرید (دسته‌بندی محصولات)\n\n"
+            f"🧪 <b>کانفیگ تست</b> — <code>{base}test</code>\n"
+            "باز شدن مستقیم فلوی دریافت کانفیگ تست رایگان\n\n"
+            f"🎡 <b>گردونه شانس</b> — <code>{base}wheel</code>\n"
+            "باز شدن مستقیم گردونه شانس\n\n"
+            f"🎟 <b>کد تخفیف</b> — <code>{base}disc_CODE</code>\n"
+            "اعمال خودکار کد تخفیف مشخص‌شده در اولین خرید کاربر\n\n"
+            f"🤝 <b>رفرال / زیرمجموعه‌گیری</b> — <code>{base}ref&lt;آیدی دعوت‌کننده&gt;</code>\n"
+            "ثبت کاربر جدید به‌عنوان زیرمجموعه‌ی همان آیدی\n\n"
+            "🏷 <b>پارامتر دلخواه</b> — هر متن دیگری که شناخته نشود، فقط "
+            "به‌عنوان «منبع ورود کاربر» (برای آمار کمپین) ثبت می‌شود و اکشنی "
+            "در منو باز نمی‌کند.\n\n"
+            "ℹ️ می‌توانید چند کلید را با «-» ترکیب کنید، مثلاً:\n"
+            f"<code>{base}buy-disc_SUMMER10</code>"
+        )
+        await safe_edit(
+            call, text, reply_markup=kb.admin_back_kb("adm_deeplink_tools"), parse_mode="HTML",
+        )
+        await call.answer()
+
     @router.callback_query(F.data == "adm_dl_build")
     async def cb_dl_build(call: CallbackQuery, state: FSMContext):
         if not senior_admin_only(call.from_user.id):

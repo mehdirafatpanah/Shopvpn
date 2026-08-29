@@ -692,12 +692,14 @@ def deeplink_tools_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔗 ساخت دیپ‌لینک تبلیغاتی", callback_data="adm_dl_build")],
         [InlineKeyboardButton(text="🖼 افزودن دکمه به پست کانال", callback_data="adm_dl_addbtn")],
+        [InlineKeyboardButton(text="📋 پارامترهای اصلی منوی کاربر", callback_data="adm_dl_params_list")],
         [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:marketing")],
     ])
 
 
 def deeplink_type_picker_kb(back_callback: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛒 خرید", callback_data="adm_dlp_type:buy")],
         [InlineKeyboardButton(text="🎟 کد تخفیف", callback_data="adm_dlp_type:disc")],
         [InlineKeyboardButton(text="🧪 کانفیگ تست", callback_data="adm_dlp_type:test")],
         [InlineKeyboardButton(text="🎡 گردونه شانس", callback_data="adm_dlp_type:wheel")],

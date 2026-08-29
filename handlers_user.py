@@ -148,6 +148,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         #   disc_CODE   اعمال خودکار کد تخفیف در اولین خرید
         #   test        باز کردن مستقیم فلوی کانفیگ تست
         #   wheel       باز کردن مستقیم گردونه شانس
+        #   buy         باز کردن مستقیم منوی خرید (دسته‌بندی‌ها)
         #   nofj        معافیت دائمی این کاربر از عضویت اجباری در کانال
         # هر پیشوند ناشناخته دیگر (مثلاً یک اسم کمپین دلخواه) صرفاً به‌عنوان
         # منبع ورود کاربر (acquisition_source) برای آمار تبلیغات ثبت می‌شود.
@@ -188,6 +189,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 post_start_actions.append("__open_test__")
             elif token == "wheel":
                 post_start_actions.append("__open_wheel__")
+            elif token == "buy":
+                post_start_actions.append("__open_buy__")
             elif token == "nofj":
                 pass  # دیگر نیازی نیست؛ ورود با هر دیپ‌لینکی خودش معافیت می‌دهد (بالاتر انجام شد)
             elif token:
@@ -202,6 +205,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 await get_test_config(message)
             elif action == "__open_wheel__":
                 await wheel_of_fortune(message, bot)
+            elif action == "__open_buy__":
+                await show_categories(message, state)
             else:
                 await message.answer(action)
 
