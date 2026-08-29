@@ -60,9 +60,20 @@ class ForceJoinMiddleware(BaseMiddleware):
         if self.db.is_admin(user.id):
             return await handler(event, data)
 
+        # کاربرانی که با دیپ‌لینک تبلیغاتی nofj وارد شده‌اند، برای همیشه معاف‌اند
+        if self.db.is_force_join_exempt(user.id):
+            return await handler(event, data)
+
         # دکمه‌ی «بررسی مجدد» باید همیشه خودش اجرا شود (نه اینکه دوباره بلاک شود)
         if isinstance(event, CallbackQuery) and event.data == CHECK_CALLBACK:
             return await handler(event, data)
+
+        # پیام /start nofj خودش باید رد شود تا cmd_start معافیت دائمی را ثبت کند؛
+        # وگرنه این میدلور همان اولین پیامی که قرار است معافیت را فعال کند را بلاک می‌کرد
+        if isinstance(event, Message) and (event.text or "").startswith("/start"):
+            parts = event.text.split(maxsplit=1)
+            if len(parts) > 1 and "nofj" in parts[1].split("-"):
+                return await handler(event, data)
 
         bot = data.get("bot")
         member = await is_channel_member(bot, settings["channel"], user.id)

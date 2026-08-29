@@ -142,27 +142,63 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             message.from_user.id, message.from_user.username or "", message.from_user.first_name or ""
         ))
 
-        # پردازش لینک دعوت زیرمجموعه‌گیری: /start ref123456789
-        # (نیازی به «کاربر جدید بودن» نیست؛ خود set_referred_by فقط وقتی کاربر
-        # هنوز referred_by ندارد آن را ثبت می‌کند - همین‌جا هم برای جلوگیری از
-        # اعمال چندباره‌ی پاداش‌های حالت ۲/۳، دقیقاً همان شرط را چک می‌کنیم)
+        # پردازش پارامتر دیپ‌لینک: /start <param>
+        # چند بخش با "-" قابل ترکیب هستند، مثلاً: nofj-disc_SUMMER10
+        #   ref<id>     زیرمجموعه‌گیری (منطق قبلی، بدون تغییر)
+        #   disc_CODE   اعمال خودکار کد تخفیف در اولین خرید
+        #   test        باز کردن مستقیم فلوی کانفیگ تست
+        #   wheel       باز کردن مستقیم گردونه شانس
+        #   nofj        معافیت دائمی این کاربر از عضویت اجباری در کانال
+        # هر پیشوند ناشناخته دیگر (مثلاً یک اسم کمپین دلخواه) صرفاً به‌عنوان
+        # منبع ورود کاربر (acquisition_source) برای آمار تبلیغات ثبت می‌شود.
         parts = (message.text or "").split(maxsplit=1)
-        if len(parts) > 1 and parts[1].startswith("ref"):
-            ref_part = parts[1][3:]
-            if ref_part.isdigit() and int(ref_part) != message.from_user.id:
-                referrer_id = int(ref_part)
-                already_referred = (await asyncio.to_thread(db.get_user, message.from_user.id))
-                already_referred = bool(already_referred and already_referred["referred_by"])
-                if not already_referred:
-                    (await asyncio.to_thread(db.set_referred_by, message.from_user.id, referrer_id))
-                    reward_info = (await asyncio.to_thread(
-                        db.apply_referral_invite_rewards, message.from_user.id, referrer_id
-                    ))
-                    await _handle_referral_invite_rewards(bot, referrer_id, reward_info)
+        start_param = parts[1].strip() if len(parts) > 1 else ""
+        post_start_actions = []
+
+        for token in filter(None, start_param.split("-")):
+            if token.startswith("ref"):
+                ref_part = token[3:]
+                if ref_part.isdigit() and int(ref_part) != message.from_user.id:
+                    referrer_id = int(ref_part)
+                    already_referred = (await asyncio.to_thread(db.get_user, message.from_user.id))
+                    already_referred = bool(already_referred and already_referred["referred_by"])
+                    if not already_referred:
+                        (await asyncio.to_thread(db.set_referred_by, message.from_user.id, referrer_id))
+                        reward_info = (await asyncio.to_thread(
+                            db.apply_referral_invite_rewards, message.from_user.id, referrer_id
+                        ))
+                        await _handle_referral_invite_rewards(bot, referrer_id, reward_info)
+            elif token.startswith("disc_"):
+                code = token[len("disc_"):]
+                code_row = (await asyncio.to_thread(db.get_discount_code, code))
+                if (await asyncio.to_thread(db.is_discount_code_valid, code_row)):
+                    await state.update_data(
+                        pending_discount_code_id=code_row["id"],
+                        pending_discount_code_label=code_row["code"],
+                    )
+                    post_start_actions.append(
+                        f"🎟 کد تخفیف «{code_row['code']}» فعال شد؛ در اولین خرید به‌صورت خودکار اعمال می‌شود."
+                    )
+            elif token == "test":
+                post_start_actions.append("__open_test__")
+            elif token == "wheel":
+                post_start_actions.append("__open_wheel__")
+            elif token == "nofj":
+                (await asyncio.to_thread(db.set_force_join_exempt, message.from_user.id))
+            elif token:
+                (await asyncio.to_thread(db.set_acquisition_source, message.from_user.id, token))
 
         welcome = (await asyncio.to_thread(db.get_setting, "welcome_text"))
         await message.answer(welcome, reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot))
         await _send_inline_main_menu(message, message.from_user.id)
+
+        for action in post_start_actions:
+            if action == "__open_test__":
+                await get_test_config(message)
+            elif action == "__open_wheel__":
+                await wheel_of_fortune(message, bot)
+            else:
+                await message.answer(action)
 
     async def _handle_referral_invite_rewards(bot: Bot, referrer_id: int, reward_info: dict):
         """پیام و تحویل جوایز حالت‌های ۲ و ۳ زیرمجموعه‌گیری (که با صرفِ دعوت، بدون
@@ -285,7 +321,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await call.message.edit_text("یک محصول را انتخاب کنید:", reply_markup=kb.products_kb(db, products, cat_id))
         await call.answer()
 
-    def _product_confirm_text(product, quantity: int, stock: int, wallet_credit: int) -> str:
+    def _product_confirm_text(product, quantity: int, stock: int, wallet_credit: int, discount_amount: int = 0, discount_label: str = "") -> str:
         stock_line = (
             "⚡️ این محصول خودکار و لحظه‌ای ساخته می‌شود (محدودیت موجودی ندارد)\n"
             if product["is_auto_provision"] else
@@ -297,14 +333,33 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             f"📝 توضیحات: {product['description'] or '---'}\n"
             f"{stock_line}"
         )
+        total_price = product["price"] * quantity
         if quantity > 1:
-            text += f"\n🔢 تعداد انتخابی: {quantity} عدد\n💵 جمع کل: {product['price'] * quantity:,} تومان\n"
+            text += f"\n🔢 تعداد انتخابی: {quantity} عدد\n💵 جمع کل: {total_price:,} تومان\n"
+        if discount_amount > 0:
+            text += f"\n🎟 کد تخفیف «{discount_label}» به‌صورت خودکار اعمال شد: -{discount_amount:,} تومان\n"
+            text += f"💵 مبلغ پس از تخفیف: {total_price - discount_amount:,} تومان\n"
         if wallet_credit > 0:
             text += f"\n👛 موجودی کیف پول شما: {wallet_credit:,} تومان (به‌صورت خودکار در پرداخت اعمال می‌شود)\n"
         return text
 
+    async def _apply_pending_discount(state: FSMContext, total_price: int):
+        """اگر از دیپ‌لینک کد تخفیف پندینگ داریم و هنوز روی این خرید اعمال نشده،
+        همین‌جا اعمالش می‌کند و مبلغ تخفیف/برچسب را برمی‌گرداند."""
+        data = await state.get_data()
+        pending_id = data.get("pending_discount_code_id")
+        if not pending_id:
+            return data.get("discount_amount", 0) or 0, ""
+        code_row = (await asyncio.to_thread(db.get_discount_code_by_id, pending_id))
+        if not (await asyncio.to_thread(db.is_discount_code_valid, code_row)):
+            await state.update_data(pending_discount_code_id=None, pending_discount_code_label=None)
+            return 0, ""
+        discount_amount = (await asyncio.to_thread(db.compute_discount_amount, code_row, total_price))
+        await state.update_data(discount_code_id=code_row["id"], discount_amount=discount_amount)
+        return discount_amount, code_row["code"]
+
     @router.callback_query(F.data.startswith("prod:"))
-    async def cb_product(call: CallbackQuery):
+    async def cb_product(call: CallbackQuery, state: FSMContext):
         product_id = int(call.data.split(":")[1])
         product = (await asyncio.to_thread(db.get_product, product_id))
         if not product:
@@ -318,11 +373,12 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await call.message.edit_text(text)
             await call.answer()
             return
-        text = _product_confirm_text(product, 1, stock, wallet_credit)
+        discount_amount, discount_label = await _apply_pending_discount(state, product["price"])
+        text = _product_confirm_text(product, 1, stock, wallet_credit, discount_amount, discount_label)
         await call.message.edit_text(text, reply_markup=kb.product_confirm_kb(db, product_id, 1, stock))
         await call.answer()
 
-    async def _cb_qty_change(call: CallbackQuery, delta: int):
+    async def _cb_qty_change(call: CallbackQuery, state: FSMContext, delta: int):
         _, product_id, quantity = call.data.split(":")
         product_id, quantity = int(product_id), int(quantity)
         product = (await asyncio.to_thread(db.get_product, product_id))
@@ -335,17 +391,18 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
         quantity = max(1, min(quantity + delta, stock))
         wallet_credit = (await asyncio.to_thread(db.get_wallet_credit, call.from_user.id))
-        text = _product_confirm_text(product, quantity, stock, wallet_credit)
+        discount_amount, discount_label = await _apply_pending_discount(state, product["price"] * quantity)
+        text = _product_confirm_text(product, quantity, stock, wallet_credit, discount_amount, discount_label)
         await call.message.edit_text(text, reply_markup=kb.product_confirm_kb(db, product_id, quantity, stock))
         await call.answer()
 
     @router.callback_query(F.data.startswith("qty_inc:"))
-    async def cb_qty_inc(call: CallbackQuery):
-        await _cb_qty_change(call, 1)
+    async def cb_qty_inc(call: CallbackQuery, state: FSMContext):
+        await _cb_qty_change(call, state, 1)
 
     @router.callback_query(F.data.startswith("qty_dec:"))
-    async def cb_qty_dec(call: CallbackQuery):
-        await _cb_qty_change(call, -1)
+    async def cb_qty_dec(call: CallbackQuery, state: FSMContext):
+        await _cb_qty_change(call, state, -1)
 
     @router.callback_query(F.data == "noop")
     async def cb_noop(call: CallbackQuery):
@@ -383,7 +440,11 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
         total_price = product["price"] * quantity
         discount_amount = (await asyncio.to_thread(db.compute_discount_amount, code_row, total_price))
-        await state.update_data(discount_code_id=code_row["id"], discount_amount=discount_amount)
+        # کد وارد شده دستی جایگزین کد پندینگِ احتمالی دیپ‌لینک می‌شود
+        await state.update_data(
+            discount_code_id=code_row["id"], discount_amount=discount_amount,
+            pending_discount_code_id=None, pending_discount_code_label=None,
+        )
         await state.set_state(None)
 
         wallet_credit = (await asyncio.to_thread(db.get_wallet_credit, message.from_user.id))
@@ -563,7 +624,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         ))
         order = (await asyncio.to_thread(db.get_order, order_id))
         await state.update_data(order_id=order_id)
-        await state.update_data(discount_code_id=None, discount_amount=0, discount_product_id=None)
+        await state.update_data(
+            discount_code_id=None, discount_amount=0, discount_product_id=None,
+            pending_discount_code_id=None, pending_discount_code_label=None,
+        )
 
         if order["final_price"] <= 0:
             await state.clear()

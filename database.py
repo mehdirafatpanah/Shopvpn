@@ -773,6 +773,8 @@ class Database:
             # مینی‌اپ)؛ سفارش‌هایی که همه‌ی کانفیگ‌هایشان حذف شده به این صورت از
             # لیست کاربر مخفی می‌شوند ولی برای گزارش‌های ادمین دست‌نخورده می‌مانند.
             ("orders", "user_deleted", "INTEGER DEFAULT 0"),
+            ("users", "force_join_exempt", "INTEGER DEFAULT 0"),
+            ("users", "acquisition_source", "TEXT"),
         ]
         for table, col, coltype in migrations:
             if not self._column_exists(conn, table, col):
@@ -3279,6 +3281,29 @@ class Database:
             "enabled": self.get_setting("force_join_enabled", "0") == "1",
             "channel": self.get_setting("force_join_channel", "").strip(),
         }
+
+    def is_force_join_exempt(self, tg_id: int) -> bool:
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT force_join_exempt FROM users WHERE telegram_id=?", (tg_id,)
+            ).fetchone()
+            return bool(row and row["force_join_exempt"])
+
+    def set_force_join_exempt(self, tg_id: int):
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE users SET force_join_exempt=1 WHERE telegram_id=?", (tg_id,)
+            )
+
+    def set_acquisition_source(self, tg_id: int, source: str):
+        """اولین منبع ورودی کاربر را ثبت می‌کند (برای آمار کمپین‌های تبلیغاتی)؛
+        اگر قبلاً ثبت شده باشد دوباره بازنویسی نمی‌شود."""
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE users SET acquisition_source=? "
+                "WHERE telegram_id=? AND (acquisition_source IS NULL OR acquisition_source='')",
+                (source, tg_id),
+            )
 
     # -----------------------------------------------------------------------
     # پنل‌های VPN (panel_servers) - برای ساخت کانفیگ شخصی
