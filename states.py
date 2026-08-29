@@ -232,3 +232,9 @@ class ResellerRequestFlow(StatesGroup):
 class AdminResellerRequestFlow(StatesGroup):
     waiting_price = State()
     waiting_reject_reason = State()
+
+
+class AdminTempMessage(StatesGroup):
+    waiting_target_id = State()
+    waiting_text = State()
+    waiting_custom_minutes = State()

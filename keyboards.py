@@ -415,6 +415,7 @@ ADMIN_PANEL_ITEMS = [
     ("adm_deeplink_tools", "🔗 دیپ‌لینک و پست کانال", "adm_deeplink_tools"),
     ("adm_stats", "📊 آمار فروش", "adm_stats"),
     ("adm_backup_menu", "🗄 بکاپ و بازیابی", "adm_backup_menu"),
+    ("adm_temp_message", "⏳ پیام موقت (خودحذف‌شونده)", "adm_temp_message"),
 ]
 
 
@@ -479,6 +480,7 @@ ADMIN_PANEL_CATEGORIES = [
     ("management", "👥 مدیریت و آمار", [
         "adm_stats",
         "adm_backup_menu",
+        "adm_temp_message",
     ]),
 ]
 
@@ -580,6 +582,31 @@ def admin_restore_confirm_kb() -> InlineKeyboardMarkup:
 def admin_restore_waiting_kb() -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="❌ انصراف", callback_data="adm_restore_cancel_wait")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_temp_message_target_kb() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="👤 به خودم", callback_data="adm_tempmsg_target:self")],
+        [InlineKeyboardButton(text="🔢 آیدی عددی کاربر", callback_data="adm_tempmsg_target:custom")],
+        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:management")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_temp_message_duration_kb() -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(text="۱ ساعت", callback_data="adm_tempmsg_dur:3600"),
+            InlineKeyboardButton(text="۶ ساعت", callback_data="adm_tempmsg_dur:21600"),
+        ],
+        [
+            InlineKeyboardButton(text="۱ روز", callback_data="adm_tempmsg_dur:86400"),
+            InlineKeyboardButton(text="۳ روز", callback_data="adm_tempmsg_dur:259200"),
+        ],
+        [InlineKeyboardButton(text="✏️ مدت دلخواه (دقیقه)", callback_data="adm_tempmsg_dur:custom")],
+        [InlineKeyboardButton(text="❌ انصراف", callback_data="adm_temp_message")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

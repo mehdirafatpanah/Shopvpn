@@ -78,7 +78,9 @@ from states import (
     AdminResetTestConfig,
     ResellerRequestFlow,
     AdminResellerRequestFlow,
+    AdminTempMessage,
 )
+from temp_messages import send_temp_message
 
 logger = logging.getLogger(__name__)
 
@@ -4066,6 +4068,96 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await message.answer(
             f"📢 پیام همگانی ارسال شد.\n✅ موفق: {success}\n❌ ناموفق: {failed}", reply_markup=kb.admin_category_kb(db, is_main_bot, "marketing")
         )
+
+    # -------------------------------------------------------------------
+    # پیام موقت (خودحذف‌شونده بعد از مدت مشخص)
+    # -------------------------------------------------------------------
+
+    def _duration_label_fa(seconds: int) -> str:
+        if seconds % 86400 == 0:
+            return f"{seconds // 86400} روز"
+        if seconds % 3600 == 0:
+            return f"{seconds // 3600} ساعت"
+        return f"{seconds // 60} دقیقه"
+
+    async def _finalize_temp_message(state: FSMContext, bot: Bot, seconds: int, answer_fn):
+        data = await state.get_data()
+        target_id = data.get("temp_target_id")
+        text = data.get("temp_text")
+        await state.clear()
+        if not target_id or not text:
+            await answer_fn("⚠️ اطلاعات پیام موقت ناقص بود؛ دوباره از اول شروع کن.")
+            return
+        try:
+            await send_temp_message(bot, db, target_id, text, seconds)
+            await answer_fn(f"✅ پیام ارسال شد و بعد از {_duration_label_fa(seconds)} خودش حذف می‌شود.")
+        except Exception:
+            logger.exception("ارسال پیام موقت ناموفق بود.")
+            await answer_fn("⚠️ ارسال پیام ناموفق بود؛ آیدی مقصد را بررسی کن.")
+
+    @router.callback_query(F.data == "adm_temp_message")
+    async def cb_admin_temp_message(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await state.clear()
+        await replace_admin_view(
+            call,
+            "⏳ پیام موقت: پیامی که بعد از مدت مشخص خودش حذف می‌شود (مثلاً یادداشت یا شماره کارت).\n\nمقصد را انتخاب کن:",
+            reply_markup=kb.admin_temp_message_target_kb(),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_tempmsg_target:"))
+    async def cb_tempmsg_target(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        choice = call.data.split(":", 1)[1]
+        if choice == "self":
+            await state.update_data(temp_target_id=call.from_user.id)
+            await state.set_state(AdminTempMessage.waiting_text)
+            await replace_admin_view(call, "متن پیام موقت را ارسال کن:", reply_markup=kb.admin_back_kb("adm_temp_message"))
+        else:
+            await state.set_state(AdminTempMessage.waiting_target_id)
+            await replace_admin_view(call, "آیدی عددی (Telegram ID) کاربر مقصد را ارسال کن:", reply_markup=kb.admin_back_kb("adm_temp_message"))
+        await call.answer()
+
+    @router.message(AdminTempMessage.waiting_target_id)
+    async def process_tempmsg_target_id(message: Message, state: FSMContext):
+        if not (message.text or "").strip().isdigit():
+            await message.answer("⚠️ آیدی نامعتبر است؛ فقط عدد ارسال کن.")
+            return
+        await state.update_data(temp_target_id=int(message.text.strip()))
+        await state.set_state(AdminTempMessage.waiting_text)
+        await message.answer("متن پیام موقت را ارسال کن:", reply_markup=kb.admin_back_kb("adm_temp_message"))
+
+    @router.message(AdminTempMessage.waiting_text)
+    async def process_tempmsg_text(message: Message, state: FSMContext):
+        if not (message.text or "").strip():
+            await message.answer("⚠️ فقط متن پشتیبانی می‌شود؛ یک پیام متنی ارسال کن.")
+            return
+        await state.update_data(temp_text=message.text)
+        await message.answer("⏱ بعد از چه مدت خودش حذف شود؟", reply_markup=kb.admin_temp_message_duration_kb())
+
+    @router.callback_query(F.data.startswith("adm_tempmsg_dur:"))
+    async def cb_tempmsg_duration(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        value = call.data.split(":", 1)[1]
+        if value == "custom":
+            await state.set_state(AdminTempMessage.waiting_custom_minutes)
+            await replace_admin_view(call, "مدت دلخواه را به دقیقه ارسال کن (مثلاً 45):", reply_markup=kb.admin_back_kb("adm_temp_message"))
+            await call.answer()
+            return
+        await call.answer("در حال ارسال...")
+        await _finalize_temp_message(state, call.bot, int(value), call.message.answer)
+
+    @router.message(AdminTempMessage.waiting_custom_minutes)
+    async def process_tempmsg_custom_minutes(message: Message, state: FSMContext, bot: Bot):
+        if not (message.text or "").strip().isdigit() or int(message.text.strip()) <= 0:
+            await message.answer("⚠️ فقط یک عدد صحیح مثبت (به دقیقه) ارسال کن.")
+            return
+        minutes = int(message.text.strip())
+        await _finalize_temp_message(state, bot, minutes * 60, message.answer)
 
     # -------------------------------------------------------------------
     # ابزار دیپ‌لینک تبلیغاتی + افزودن دکمه به پست کانال

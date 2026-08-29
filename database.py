@@ -670,6 +670,14 @@ class Database:
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE INDEX IF NOT EXISTS idx_push_subs_admin ON web_push_subscriptions(admin_id);
+
+                CREATE TABLE IF NOT EXISTS temp_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    delete_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_temp_messages_delete_at ON temp_messages(delete_at);
                 """
             )
 
@@ -3063,6 +3071,30 @@ class Database:
 
     def is_admin_online(self, tg_id: int, timeout_seconds: int = None) -> bool:
         return tg_id in self.get_online_admin_ids(timeout_seconds)
+
+    # -----------------------------------------------------------------------
+    # پیام‌های موقت (خودحذف‌شونده بعد از مدت مشخص)
+    # -----------------------------------------------------------------------
+
+    def schedule_temp_message(self, chat_id: int, message_id: int, delete_at: str):
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO temp_messages (chat_id, message_id, delete_at) VALUES (?, ?, ?)",
+                (chat_id, message_id, delete_at),
+            )
+
+    def pop_due_temp_messages(self) -> list:
+        """پیام‌های سررسیدشده را برمی‌گرداند و همزمان از جدول حذف می‌کند."""
+        now = datetime.utcnow().isoformat()
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT id, chat_id, message_id FROM temp_messages WHERE delete_at <= ?", (now,)
+            ).fetchall()
+            if rows:
+                conn.executemany(
+                    "DELETE FROM temp_messages WHERE id=?", [(r["id"],) for r in rows]
+                )
+            return [{"chat_id": r["chat_id"], "message_id": r["message_id"]} for r in rows]
 
     # -----------------------------------------------------------------------
     # مسیریابی مکالمه‌ی چت زنده (به اولین ادمین/مالک آنلاین)
