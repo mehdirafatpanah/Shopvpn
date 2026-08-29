@@ -25,6 +25,20 @@ _TIMEOUT = aiohttp.ClientTimeout(total=10)
 _CONFIG_SCHEMES = ("vless://", "vmess://", "trojan://", "ss://", "ssr://", "hysteria://", "hysteria2://", "hy2://", "tuic://")
 
 
+def _session() -> aiohttp.ClientSession:
+    """یک ClientSession با گواهی SSL غیرفعال می‌سازد.
+
+    چرا لازم است: سرور Subscription پنل‌های 3X-UI تقریباً همیشه با گواهی
+    self-signed یا روی http بالا می‌آید (دقیقاً همان دلیلی که در
+    panel_providers/threexui_provider.py هم verify گواهی غیرفعال شده)؛ بدون
+    این تنظیم، aiohttp با خطای SSL درخواست را رد می‌کند و fetch_individual_links/
+    fetch_sub_info برای این پنل‌ها همیشه silent-fail می‌شوند (لیست خالی/ok=False)
+    در حالی که خودِ لینک اشتراک در مرورگر یا اپ کاربر درست باز می‌شود. بقیه‌ی
+    پنل‌ها (که معمولاً گواهی معتبر دارند) از این غیرفعال‌سازی آسیبی نمی‌بینند."""
+    connector = aiohttp.TCPConnector(ssl=False)
+    return aiohttp.ClientSession(connector=connector, timeout=_TIMEOUT)
+
+
 def _b64_decode(value: str) -> str:
     try:
         padded = value + "=" * (-len(value) % 4)
@@ -43,7 +57,7 @@ async def fetch_individual_links(sub_url: str) -> list:
     fallback کند و فقط لینک اشتراک را نشان دهد.
     """
     try:
-        async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
+        async with _session() as session:
             async with session.get(sub_url, headers={"User-Agent": "v2rayNG/1.8.29"}) as resp:
                 if resp.status != 200:
                     return []
@@ -64,7 +78,7 @@ async def fetch_sub_info(link: str) -> dict:
       {"ok": False, "error": "..."} در صورت شکست
     """
     try:
-        async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
+        async with _session() as session:
             async with session.get(link, headers={"User-Agent": "v2rayNG/1.8.29"}) as resp:
                 headers = resp.headers
                 userinfo = headers.get("subscription-userinfo")
