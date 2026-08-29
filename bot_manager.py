@@ -248,7 +248,17 @@ class BotManager:
         return token in self.instances
 
     async def wait_all(self):
-        """تا وقتی حداقل یک بات در حال اجراست، برنامه را زنده نگه می‌دارد."""
+        """تا وقتی حداقل یک بات در حال اجراست، برنامه را زنده نگه می‌دارد.
+
+        قبلاً وقتی task یک بات (مثلاً به‌خاطر یک خطای غیرمنتظره یا حتی بدون
+        خطا) تمام می‌شد، همچنان داخل self.instances می‌ماند؛ در نتیجه از آن به
+        بعد asyncio.wait() در هر تکرار حلقه فوراً (چون آن task از قبل done
+        بود) بدون هیچ sleep واقعی برمی‌گشت - یک busy loop که روی همان تک event
+        loop مشترک تمام بات‌ها اجرا می‌شود و به‌شدت آن را اشغال می‌کند؛ از دید
+        کاربر دقیقاً شبیه «هیچ کلیدی جواب نمی‌دهد» است، بدون اینکه لزوماً
+        Exception ای هم لاگ شود (اگر آن task بدون خطا، فقط return شده باشد).
+        حالا بات از کار افتاده کامل پاک/متوقف می‌شود (تا از حلقه‌ی بعدی حذف
+        شود) و در هر تکرار یک sleep واقعی تضمین شده است."""
         while True:
             tasks = [inst["task"] for inst in self.instances.values()]
             if not tasks:
@@ -256,9 +266,15 @@ class BotManager:
                 continue
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
             for d in done:
-                exc = d.exception()
+                exc = d.exception() if not d.cancelled() else None
+                token = next((t for t, inst in self.instances.items() if inst["task"] is d), None)
                 if exc and not isinstance(exc, asyncio.CancelledError):
                     logger.error("یکی از بات‌ها با خطا متوقف شد: %s", exc)
+                else:
+                    logger.error("یکی از بات‌ها بدون خطای صریح polling را متوقف کرد (احتمالاً Conflict/قطع اتصال).")
+                if token:
+                    await self.stop_bot(token)
+            await asyncio.sleep(1)
 
     async def reconcile_resellers_loop(self, main_db, main_bot_token: str, interval: int = 10):
         """هر چند ثانیه یک‌بار وضعیت بات‌های نمایندگی را با جدول reseller_bots
