@@ -412,6 +412,7 @@ ADMIN_PANEL_ITEMS = [
     ("adm_edit_welcome", "📝 ویرایش پیام خوش‌آمد", "adm_edit_welcome"),
     ("adm_admins_menu", "👤 مدیریت ادمین‌ها", "adm_admins_menu"),
     ("adm_broadcast", "📢 پیام همگانی", "adm_broadcast"),
+    ("adm_deeplink_tools", "🔗 دیپ‌لینک و پست کانال", "adm_deeplink_tools"),
     ("adm_stats", "📊 آمار فروش", "adm_stats"),
     ("adm_backup_menu", "🗄 بکاپ و بازیابی", "adm_backup_menu"),
 ]
@@ -452,6 +453,7 @@ ADMIN_PANEL_CATEGORIES = [
         "adm_wheel_settings",
         "adm_referral_settings",
         "adm_broadcast",
+        "adm_deeplink_tools",
     ]),
     ("finance", "💰 مالی و پرداخت", [
         "adm_set_card",
@@ -657,6 +659,33 @@ def admin_back_kb(callback_data="adm_back_panel") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="⬅️ بازگشت به پنل مدیریت", callback_data=callback_data)]]
     )
+
+
+def deeplink_tools_menu_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔗 ساخت دیپ‌لینک تبلیغاتی", callback_data="adm_dl_build")],
+        [InlineKeyboardButton(text="🖼 افزودن دکمه به پست کانال", callback_data="adm_dl_addbtn")],
+        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:marketing")],
+    ])
+
+
+def deeplink_type_picker_kb(back_callback: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎟 کد تخفیف", callback_data="adm_dlp_type:disc")],
+        [InlineKeyboardButton(text="🧪 کانفیگ تست", callback_data="adm_dlp_type:test")],
+        [InlineKeyboardButton(text="🎡 گردونه شانس", callback_data="adm_dlp_type:wheel")],
+        [InlineKeyboardButton(text="🏷 پارامتر دلخواه (فقط آمار منبع)", callback_data="adm_dlp_type:custom")],
+        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data=back_callback)],
+    ])
+
+
+def deeplink_discount_picker_kb(codes, back_callback: str) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=f"🎟 {c['code']}", callback_data=f"adm_dlp_code:{c['id']}")]
+        for c in codes if c["is_active"]
+    ]
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data=back_callback)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def admin_categories_kb(categories) -> InlineKeyboardMarkup:

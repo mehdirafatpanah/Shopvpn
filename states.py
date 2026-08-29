@@ -77,6 +77,16 @@ class AdminBroadcast(StatesGroup):
     waiting_message = State()
 
 
+class AdminDeepLinkTools(StatesGroup):
+    waiting_custom_param = State()
+
+
+class AdminChannelButton(StatesGroup):
+    waiting_forward = State()
+    waiting_button_text = State()
+    waiting_custom_param = State()
+
+
 class AdminAddAdmin(StatesGroup):
     waiting_id = State()
 

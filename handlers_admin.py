@@ -7,6 +7,7 @@
 """
 
 import os
+import re
 import asyncio
 from datetime import date, timedelta
 import tempfile
@@ -48,6 +49,8 @@ from states import (
     AdminSetPlisio,
     AdminSetAbanGateway,
     AdminBroadcast,
+    AdminDeepLinkTools,
+    AdminChannelButton,
     AdminAddAdmin,
     AdminRemoveAdmin,
     AdminChangeRole,
@@ -4063,6 +4066,189 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await message.answer(
             f"📢 پیام همگانی ارسال شد.\n✅ موفق: {success}\n❌ ناموفق: {failed}", reply_markup=kb.admin_category_kb(db, is_main_bot, "marketing")
         )
+
+    # -------------------------------------------------------------------
+    # ابزار دیپ‌لینک تبلیغاتی + افزودن دکمه به پست کانال
+    # -------------------------------------------------------------------
+
+    @router.callback_query(F.data == "adm_deeplink_tools")
+    async def cb_deeplink_tools(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        await state.clear()
+        await replace_admin_view(call, "🔗 ابزار دیپ‌لینک و پست کانال:", reply_markup=kb.deeplink_tools_menu_kb())
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_dl_build")
+    async def cb_dl_build(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        await state.update_data(channel_chat_id=None, channel_message_id=None)
+        await safe_edit(
+            call, "چه نوع دیپ‌لینکی می‌خوای بسازی؟",
+            reply_markup=kb.deeplink_type_picker_kb("adm_deeplink_tools"),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_dl_addbtn")
+    async def cb_dl_addbtn(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        await state.set_state(AdminChannelButton.waiting_forward)
+        await replace_admin_view(
+            call,
+            "همون پستی که قبلاً تو کانال گذاشتی رو از کانال به اینجا فوروارد کن.\n"
+            "(بات باید تو کانال ادمین باشه و دسترسی «ویرایش پیام‌های دیگران» داشته باشه)",
+            reply_markup=kb.admin_back_kb("adm_deeplink_tools"),
+        )
+        await call.answer()
+
+    @router.message(AdminChannelButton.waiting_forward)
+    async def process_channel_forward(message: Message, state: FSMContext):
+        origin = getattr(message, "forward_origin", None)
+        chat_id, msg_id = None, None
+        if origin is not None and getattr(origin, "chat", None) is not None:
+            chat_id = origin.chat.id
+            msg_id = origin.message_id
+        elif getattr(message, "forward_from_chat", None) is not None:
+            chat_id = message.forward_from_chat.id
+            msg_id = message.forward_from_message_id
+
+        if not chat_id or not msg_id:
+            await message.answer(
+                "❌ این یک پیامِ فوروارد شده از کانال نبود. لطفاً خودِ پست کانال را فوروارد کن.",
+                reply_markup=kb.admin_back_kb("adm_deeplink_tools"),
+            )
+            return
+
+        await state.update_data(channel_chat_id=chat_id, channel_message_id=msg_id)
+        await state.set_state(AdminChannelButton.waiting_button_text)
+        await message.answer("متن دکمه رو بفرست (مثلاً: 🎁 خرید با ۳۰٪ تخفیف)")
+
+    @router.message(AdminChannelButton.waiting_button_text)
+    async def process_channel_button_text(message: Message, state: FSMContext):
+        button_text = (message.text or "").strip()
+        if not button_text:
+            await message.answer("متن دکمه نمی‌تواند خالی باشد. دوباره بفرست:")
+            return
+        await state.update_data(channel_button_text=button_text)
+        await message.answer(
+            "چه نوع دیپ‌لینکی به این دکمه وصل بشه؟",
+            reply_markup=kb.deeplink_type_picker_kb("adm_deeplink_tools"),
+        )
+
+    @router.callback_query(F.data.startswith("adm_dlp_type:"))
+    async def cb_dlp_type(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        dl_type = call.data.split(":", 1)[1]
+
+        if dl_type == "disc":
+            codes = (await asyncio.to_thread(db.list_discount_codes))
+            active_codes = [c for c in codes if c["is_active"]]
+            if not active_codes:
+                await safe_edit(
+                    call, "❌ هیچ کد تخفیف فعالی نداری. اول از «کدهای تخفیف» یکی بساز.",
+                    reply_markup=kb.admin_back_kb("adm_deeplink_tools"),
+                )
+                await call.answer()
+                return
+            await safe_edit(
+                call, "کدوم کد تخفیف؟",
+                reply_markup=kb.deeplink_discount_picker_kb(active_codes, "adm_dl_build"),
+            )
+            await call.answer()
+            return
+
+        if dl_type == "custom":
+            data = await state.get_data()
+            in_channel_flow = bool(data.get("channel_chat_id"))
+            await state.set_state(
+                AdminChannelButton.waiting_custom_param if in_channel_flow else AdminDeepLinkTools.waiting_custom_param
+            )
+            await safe_edit(call, "پارامتر دلخواه رو بفرست (فقط حروف/عدد/زیرخط، بدون فاصله):")
+            await call.answer()
+            return
+
+        await _finalize_deeplink(call, state, dl_type, call.bot)
+
+    @router.callback_query(F.data.startswith("adm_dlp_code:"))
+    async def cb_dlp_code(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        code_id = int(call.data.split(":", 1)[1])
+        code_row = (await asyncio.to_thread(db.get_discount_code_by_id, code_id))
+        if not code_row:
+            await call.answer("کد پیدا نشد.", show_alert=True)
+            return
+        await _finalize_deeplink(call, state, f"disc_{code_row['code']}", call.bot)
+
+    @router.message(AdminDeepLinkTools.waiting_custom_param)
+    async def process_dl_custom_param(message: Message, state: FSMContext, bot: Bot):
+        token = re.sub(r"[^A-Za-z0-9_]", "", (message.text or "").strip())
+        if not token:
+            await message.answer("پارامتر نامعتبر بود. فقط حروف/عدد/زیرخط بفرست:")
+            return
+        await state.clear()
+        me = await bot.get_me()
+        link = f"https://t.me/{me.username}?start={token}"
+        await message.answer(
+            f"🔗 دیپ‌لینک ساخته شد:\n\n`{link}`",
+            parse_mode="Markdown",
+            reply_markup=kb.admin_back_kb("adm_deeplink_tools"),
+        )
+
+    @router.message(AdminChannelButton.waiting_custom_param)
+    async def process_channel_custom_param(message: Message, state: FSMContext, bot: Bot):
+        token = re.sub(r"[^A-Za-z0-9_]", "", (message.text or "").strip())
+        if not token:
+            await message.answer("پارامتر نامعتبر بود. فقط حروف/عدد/زیرخط بفرست:")
+            return
+        await _finalize_channel_button(message, state, token, bot)
+
+    async def _finalize_deeplink(call: CallbackQuery, state: FSMContext, start_param: str, bot: Bot):
+        data = await state.get_data()
+        me = await bot.get_me()
+        link = f"https://t.me/{me.username}?start={start_param}"
+
+        if data.get("channel_chat_id"):
+            await _finalize_channel_button(call.message, state, start_param, bot, admin_id=call.from_user.id, edit_call=call)
+            return
+
+        await state.clear()
+        await call.message.answer(
+            f"🔗 دیپ‌لینک ساخته شد:\n\n`{link}`",
+            parse_mode="Markdown",
+            reply_markup=kb.admin_back_kb("adm_deeplink_tools"),
+        )
+        await call.answer()
+
+    async def _finalize_channel_button(message: Message, state: FSMContext, start_param: str, bot: Bot, admin_id: int = None, edit_call: CallbackQuery = None):
+        data = await state.get_data()
+        chat_id = data.get("channel_chat_id")
+        msg_id = data.get("channel_message_id")
+        button_text = data.get("channel_button_text", "🎁 مشاهده")
+        admin_id = admin_id if admin_id is not None else message.from_user.id
+        await state.clear()
+
+        me = await bot.get_me()
+        link = f"https://t.me/{me.username}?start={start_param}"
+        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=button_text, url=link)]])
+
+        try:
+            await bot.edit_message_reply_markup(chat_id=chat_id, message_id=msg_id, reply_markup=markup)
+            (await asyncio.to_thread(
+                db.log_admin_action, admin_id, "channel_button_add", f"دکمه به پست کانال اضافه شد | لینک: {link}"
+            ))
+            result_text = f"✅ دکمه به پست کانال اضافه شد.\n🔗 {link}"
+        except Exception as e:
+            result_text = f"❌ خطا در افزودن دکمه: {e}\n(احتمالاً بات ادمین کانال نیست یا دسترسی ویرایش پیام‌های دیگران را ندارد)"
+
+        if edit_call is not None:
+            await edit_call.message.answer(result_text, reply_markup=kb.admin_back_kb("adm_deeplink_tools"))
+            await edit_call.answer()
+        else:
+            await message.answer(result_text, reply_markup=kb.admin_back_kb("adm_deeplink_tools"))
 
     # -------------------------------------------------------------------
     # پاسخ به پیام پشتیبانی کاربر
