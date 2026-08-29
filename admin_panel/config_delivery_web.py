@@ -9,6 +9,32 @@
 from config_delivery import build_qr_bytes, build_delivery_caption, build_summary_text
 from admin_panel.telegram_notify import send_message as tg_send, send_photo as tg_send_photo
 from config import BOT_TOKEN
+from sub_info import fetch_individual_links
+
+
+async def _send_individual_configs_web(user_tg_id: int, links: list) -> None:
+    """معادل پنل وب _send_individual_configs در config_delivery.py؛ کانفیگ‌های تکی
+    استخراج‌شده از لینک اشتراک را (با رعایت سقف کاراکتری تلگرام) برای کاربر می‌فرستد.
+    کاملاً silent-fail است تا مانع تحویل اصلی سفارش نشود."""
+    header = "📋 کانفیگ‌های تکی این اشتراک (اگه لینک اشتراک رو نتونستی مستقیم اضافه کنی، هرکدوم از این‌ها رو تکی وارد کن):\n\n"
+    chunk = header
+    chunks = []
+    for c in links:
+        piece = f"`{c}`\n\n"
+        if len(chunk) + len(piece) > 3800:
+            chunks.append(chunk)
+            chunk = ""
+        chunk += piece
+    if chunk.strip():
+        chunks.append(chunk)
+
+    for part in chunks:
+        try:
+            ok = await tg_send(BOT_TOKEN, user_tg_id, part, parse_mode="Markdown")
+            if not ok:
+                await tg_send(BOT_TOKEN, user_tg_id, part)
+        except Exception:
+            pass
 
 
 async def deliver_config_to_user_web(
@@ -37,6 +63,14 @@ async def deliver_config_to_user_web(
             await tg_send(BOT_TOKEN, user_tg_id, caption)
 
         await tg_send(BOT_TOKEN, user_tg_id, f"🔗 لینک اشتراک شما (برای کپی):\n`{link}`", parse_mode="Markdown")
+
+        if link.startswith(("http://", "https://")):
+            try:
+                individual_links = await fetch_individual_links(link)
+            except Exception:
+                individual_links = []
+            if individual_links:
+                await _send_individual_configs_web(user_tg_id, individual_links)
 
     if final_price is not None:
         await tg_send(BOT_TOKEN, user_tg_id, build_summary_text(final_price, total))
