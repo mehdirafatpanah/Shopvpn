@@ -3078,16 +3078,22 @@ async function renderAdminPanelsSection() {
 
     if (adminPanelsView.level === "xui-config") {
       const inbounds = adminPanelsView.inbounds || [];
+      const preselected = new Set(adminPanelsView.selectedIds || []);
       body.innerHTML = `
         <div class="card">
           <div class="eyebrow" style="margin-top:0">⚙️ تنظیم Inbound برای «${adminPanelsView.name || ""}»</div>
-          <label class="field-label">کدام inbound برای ساخت کاربرهای جدید استفاده شود؟</label>
-          <select class="input" id="ps-xui-inbound" style="margin-bottom:10px">
-            ${inbounds.map((ib) => `<option value="${ib.id}">#${ib.id} - ${ib.remark || "بدون‌نام"} (${ib.protocol}:${ib.port})</option>`).join("")}
-          </select>
+          <label class="field-label">کدام inbound(ها) برای ساخت کاربرهای جدید استفاده شود؟ (می‌توانی چند مورد را تیک بزنی)</label>
+          <div id="ps-xui-inbound-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
+            ${inbounds.map((ib) => `
+              <label style="display:flex;align-items:center;gap:8px;background:var(--glass-bg);border:1px solid var(--glass-brd);border-radius:8px;padding:8px 10px;cursor:pointer">
+                <input type="checkbox" class="ps-xui-inbound-cb" value="${ib.id}" ${preselected.has(ib.id) ? "checked" : ""} />
+                <span>#${ib.id} - ${ib.remark || "بدون‌نام"} (${ib.protocol}:${ib.port})</span>
+              </label>
+            `).join("")}
+          </div>
           <label class="field-label">آدرس پایه‌ی Subscription پنل</label>
           <p class="hint-text" style="margin-top:0">همان چیزی که پنل موقع ساخت کاربر دستی نشانت می‌دهد، مثلاً https://domain:2096/sub یا https://domain/sub - بدون / انتهایی.</p>
-          <input class="input" id="ps-xui-suburl" type="text" placeholder="https://..." style="direction:ltr;text-align:left;margin-bottom:4px" />
+          <input class="input" id="ps-xui-suburl" type="text" placeholder="https://..." style="direction:ltr;text-align:left;margin-bottom:4px" value="${adminPanelsView.subBaseUrl || ""}" />
           <div class="field-error" id="ps-xui-error"></div>
           <div style="display:flex;gap:8px;margin-top:8px">
             <button class="btn" id="ps-xui-save">💾 ذخیره</button>
@@ -3102,15 +3108,15 @@ async function renderAdminPanelsSection() {
       document.getElementById("ps-xui-save").onclick = async () => {
         const errBox = document.getElementById("ps-xui-error");
         errBox.textContent = "";
-        const inbound_id = parseInt(document.getElementById("ps-xui-inbound").value, 10);
+        const inbound_ids = Array.from(document.querySelectorAll(".ps-xui-inbound-cb:checked")).map((cb) => parseInt(cb.value, 10));
         const sub_base_url = document.getElementById("ps-xui-suburl").value.trim();
-        if (!inbound_id || !sub_base_url) {
-          errBox.textContent = "هر دو فیلد الزامی هستند."; return;
+        if (!inbound_ids.length || !sub_base_url) {
+          errBox.textContent = "حداقل یک inbound و آدرس Subscription الزامی هستند."; return;
         }
         try {
           document.getElementById("ps-xui-save").disabled = true;
           await api(`/api/admin/panel-servers/${adminPanelsView.serverId}/xui-config`, {
-            method: "POST", body: JSON.stringify({ inbound_id, sub_base_url }),
+            method: "POST", body: JSON.stringify({ inbound_ids, sub_base_url }),
           });
           tg.HapticFeedback.notificationOccurred("success");
           notify("سرور 3X-UI با موفقیت تنظیم شد.");
@@ -3281,7 +3287,7 @@ async function renderAdminPanelsSection() {
               </div>
               <div class="hint-text" style="margin:4px 0 4px;direction:ltr;text-align:left">${s.api_url}</div>
               <div class="hint-text" style="margin:0 0 4px">${s.panel_type === "3xui"
-                ? (s.is_configured ? `⚙️ Inbound #${s.xui_inbound_id} تنظیم شده` : "⚠️ Inbound تنظیم نشده")
+                ? (s.is_configured ? `⚙️ ${s.xui_inbound_ids.length} Inbound تنظیم شده (${s.xui_inbound_ids.map((i) => "#" + i).join("، ")})` : "⚠️ Inbound تنظیم نشده")
                 : s.panel_type === "hiddify"
                 ? (s.is_configured ? "✅ آدرس Subscription تنظیم شده" : "⚠️ آدرس Subscription تنظیم نشده")
                 : (s.has_template ? `🧩 قالب از کاربر «${s.template_username}»` : "⚠️ قالب تنظیم نشده")}</div>
@@ -3378,10 +3384,15 @@ async function renderAdminPanelsSection() {
     document.querySelectorAll("[data-xui-inbound]").forEach((btn) => {
       btn.onclick = async () => {
         const serverId = btn.dataset.xuiInbound;
+        const server = servers.find((s) => String(s.id) === String(serverId));
         btn.textContent = "⏳...";
         try {
           const inbounds = await api(`/api/admin/panel-servers/${serverId}/xui-inbounds`);
-          adminPanelsView = { level: "xui-config", serverId, inbounds, name: btn.dataset.xuiName };
+          adminPanelsView = {
+            level: "xui-config", serverId, inbounds, name: btn.dataset.xuiName,
+            selectedIds: (server && server.xui_inbound_ids) || [],
+            subBaseUrl: (server && server.xui_sub_base_url) || "",
+          };
           renderAdminPanelsSection();
         } catch (e) { notify(e.message); btn.textContent = "⚙️ تنظیم Inbound"; }
       };
