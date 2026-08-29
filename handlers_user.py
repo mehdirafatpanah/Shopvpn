@@ -31,6 +31,7 @@ from sub_info import fetch_sub_info, format_sub_info_fa, fetch_individual_links
 from stock_alerts import check_and_notify_low_stock
 import crypto_payment
 import abangateway_payment
+import custom_gateway_payment
 from panel_providers import get_provider, PanelError, PanelUsernameTakenError
 from reseller_auto_provision import provision_auto_config, provision_test_config, ProvisionError
 from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
@@ -789,6 +790,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             reply_markup=kb.payment_choice_kb(
                 crypto_payment.crypto_payment_available(db),
                 abangateway_payment.abangateway_payment_available(db),
+                custom_gateway_payment.list_enabled_gateways(db),
             ),
         )
         await _schedule_card_msg_autodelete(call.message.chat.id, call.message.message_id)
@@ -863,6 +865,43 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 [InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["payment_url"])],
                 [InlineKeyboardButton(text="🔄 بررسی وضعیت پرداخت", callback_data=f"check_aban:{invoice_row['id']}")],
             ]),
+        )
+
+    @router.callback_query(F.data.startswith("pay_customgw:"), BuyFlow.waiting_receipt)
+    async def cb_pay_customgw_order(call: CallbackQuery, state: FSMContext):
+        data = await state.get_data()
+        order_id = data.get("order_id")
+        order = (await asyncio.to_thread(db.get_order, order_id)) if order_id else None
+        if not order or order["status"] != "pending":
+            await call.answer("سفارش معتبر یافت نشد.", show_alert=True)
+            return
+        gw_row = (await asyncio.to_thread(db.get_custom_gateway, int(call.data.split(":", 1)[1])))
+        if not gw_row or not gw_row["enabled"]:
+            await call.answer("این درگاه در دسترس نیست.", show_alert=True)
+            return
+        await call.answer("در حال ساخت فاکتور...")
+        product = (await asyncio.to_thread(db.get_product, order["product_id"]))
+        tenant_id = (await asyncio.to_thread(db.get_setting, "miniapp_tenant_id", ""))
+        try:
+            result = await custom_gateway_payment.create_invoice_for(
+                db, tenant_id, call.from_user.id, gw_row["gateway_key"], "order", order_id, order["final_price"],
+                order_name=f"سفارش #{order_id} - {product['name'] if product else ''}",
+            )
+        except custom_gateway_payment.CustomGatewayPaymentError as e:
+            await call.message.answer(f"⚠️ {e}")
+            return
+        if not result.get("invoice_url"):
+            await call.message.answer(
+                f"💠 فاکتور «{gw_row['name']}» ساخته شد ولی این درگاه لینک پرداخت برنگرداند.\n"
+                "پس از انجام پرداخت، سفارش به‌محض تایید درگاه به‌صورت خودکار تحویل داده می‌شود."
+            )
+            return
+        await call.message.answer(
+            f"💠 فاکتور پرداخت «{gw_row['name']}» ساخته شد. روی دکمه‌ی زیر بزن و پرداخت رو تکمیل کن.\n"
+            "به‌محض تایید پرداخت توسط درگاه، سفارش شما به‌صورت خودکار تحویل داده می‌شود.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["invoice_url"]),
+            ]]),
         )
 
     @router.message(BuyFlow.waiting_receipt, F.photo | F.document)
@@ -1060,6 +1099,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             reply_markup=kb.payment_choice_kb(
                 crypto_payment.crypto_payment_available(db),
                 abangateway_payment.abangateway_payment_available(db),
+                custom_gateway_payment.list_enabled_gateways(db),
             ),
         )
         await _schedule_card_msg_autodelete(sent.chat.id, sent.message_id)
@@ -1118,6 +1158,42 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 [InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["payment_url"])],
                 [InlineKeyboardButton(text="🔄 بررسی وضعیت پرداخت", callback_data=f"check_aban:{invoice_row['id']}")],
             ]),
+        )
+
+    @router.callback_query(F.data.startswith("pay_customgw:"), CustomConfigFlow.waiting_receipt)
+    async def cb_pay_customgw_custom_config(call: CallbackQuery, state: FSMContext):
+        data = await state.get_data()
+        order_id = data.get("order_id")
+        order = (await asyncio.to_thread(db.get_order, order_id)) if order_id else None
+        if not order or order["status"] != "pending":
+            await call.answer("سفارش معتبر یافت نشد.", show_alert=True)
+            return
+        gw_row = (await asyncio.to_thread(db.get_custom_gateway, int(call.data.split(":", 1)[1])))
+        if not gw_row or not gw_row["enabled"]:
+            await call.answer("این درگاه در دسترس نیست.", show_alert=True)
+            return
+        await call.answer("در حال ساخت فاکتور...")
+        tenant_id = (await asyncio.to_thread(db.get_setting, "miniapp_tenant_id", ""))
+        try:
+            result = await custom_gateway_payment.create_invoice_for(
+                db, tenant_id, call.from_user.id, gw_row["gateway_key"], "order", order_id, order["final_price"],
+                order_name=f"کانفیگ شخصی #{order_id} - {order['custom_username']}",
+            )
+        except custom_gateway_payment.CustomGatewayPaymentError as e:
+            await call.message.answer(f"⚠️ {e}")
+            return
+        if not result.get("invoice_url"):
+            await call.message.answer(
+                f"💠 فاکتور «{gw_row['name']}» ساخته شد ولی این درگاه لینک پرداخت برنگرداند.\n"
+                "پس از انجام پرداخت، کانفیگ به‌محض تایید درگاه به‌صورت خودکار ساخته می‌شود."
+            )
+            return
+        await call.message.answer(
+            f"💠 فاکتور پرداخت «{gw_row['name']}» ساخته شد. روی دکمه‌ی زیر بزن و پرداخت رو تکمیل کن.\n"
+            "به‌محض تایید پرداخت توسط درگاه، کانفیگ شما به‌صورت خودکار ساخته می‌شود.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["invoice_url"]),
+            ]]),
         )
 
     @router.message(CustomConfigFlow.waiting_receipt, F.photo | F.document)
@@ -1681,6 +1757,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             reply_markup=kb.payment_choice_kb(
                 crypto_payment.crypto_payment_available(db),
                 abangateway_payment.abangateway_payment_available(db),
+                custom_gateway_payment.list_enabled_gateways(db),
             ),
         )
         await _schedule_card_msg_autodelete(sent.chat.id, sent.message_id)
@@ -1739,6 +1816,42 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 [InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["payment_url"])],
                 [InlineKeyboardButton(text="🔄 بررسی وضعیت پرداخت", callback_data=f"check_aban:{invoice_row['id']}")],
             ]),
+        )
+
+    @router.callback_query(F.data.startswith("pay_customgw:"), WalletTopup.waiting_receipt)
+    async def cb_pay_customgw_topup(call: CallbackQuery, state: FSMContext):
+        data = await state.get_data()
+        amount = data.get("topup_amount")
+        if not amount:
+            await call.answer("درخواست معتبر یافت نشد.", show_alert=True)
+            return
+        gw_row = (await asyncio.to_thread(db.get_custom_gateway, int(call.data.split(":", 1)[1])))
+        if not gw_row or not gw_row["enabled"]:
+            await call.answer("این درگاه در دسترس نیست.", show_alert=True)
+            return
+        await call.answer("در حال ساخت فاکتور...")
+        topup_id = (await asyncio.to_thread(db.create_topup, call.from_user.id, amount))
+        tenant_id = (await asyncio.to_thread(db.get_setting, "miniapp_tenant_id", ""))
+        try:
+            result = await custom_gateway_payment.create_invoice_for(
+                db, tenant_id, call.from_user.id, gw_row["gateway_key"], "wallet_topup", topup_id, amount,
+                order_name=f"شارژ کیف پول #{topup_id}",
+            )
+        except custom_gateway_payment.CustomGatewayPaymentError as e:
+            await call.message.answer(f"⚠️ {e}")
+            return
+        if not result.get("invoice_url"):
+            await call.message.answer(
+                f"💠 فاکتور «{gw_row['name']}» ساخته شد ولی این درگاه لینک پرداخت برنگرداند.\n"
+                "پس از انجام پرداخت، کیف پول به‌محض تایید درگاه به‌صورت خودکار شارژ می‌شود."
+            )
+            return
+        await call.message.answer(
+            f"💠 فاکتور پرداخت «{gw_row['name']}» ساخته شد. روی دکمه‌ی زیر بزن و پرداخت رو تکمیل کن.\n"
+            "به‌محض تایید پرداخت توسط درگاه، کیف پول شما به‌صورت خودکار شارژ می‌شود.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["invoice_url"]),
+            ]]),
         )
 
     @router.message(WalletTopup.waiting_receipt, F.photo | F.document)

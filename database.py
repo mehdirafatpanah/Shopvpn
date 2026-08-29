@@ -576,6 +576,35 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_abangateway_invoices_ref ON abangateway_invoices(kind, ref_id);
 
                 -- ===================== ساخت کانفیگ شخصی (پنل‌های VPN) =====================
+                -- ===== درگاه‌های پرداخت سفارشی/پویا (تعریف‌شده توسط ادمین، بدون کد) =====
+                CREATE TABLE IF NOT EXISTS custom_gateways (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    gateway_key TEXT UNIQUE NOT NULL,   -- اسلاگ یکتا، مثلاً 'zarinpal' یا 'mygate'
+                    name TEXT NOT NULL,                 -- نام نمایشی برای کاربر/ادمین
+                    config_json TEXT NOT NULL,          -- کل تنظیمات (اعتبارنامه، create/verify/webhook)
+                    enabled INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS custom_gateway_invoices (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    gateway_id INTEGER NOT NULL,
+                    txn_id TEXT NOT NULL,               -- شناسه‌ی داخلی ما (merchant ref) - از قبل مشخص
+                    gateway_ref TEXT,                    -- شناسه‌ی فاکتور/تراکنش که خودِ درگاه برمی‌گرداند (اختیاری)
+                    kind TEXT NOT NULL,                 -- 'order' یا 'wallet_topup'
+                    ref_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    amount_toman INTEGER NOT NULL,
+                    invoice_url TEXT,
+                    status TEXT DEFAULT 'new',          -- new/pending/completed/failed/expired/cancelled
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_custom_gw_invoices_txn ON custom_gateway_invoices(gateway_id, txn_id);
+                CREATE INDEX IF NOT EXISTS idx_custom_gw_invoices_ref ON custom_gateway_invoices(gateway_id, kind, ref_id);
+
                 CREATE TABLE IF NOT EXISTS panel_servers (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
@@ -2824,6 +2853,133 @@ class Database:
             conn.execute(
                 "DELETE FROM abangateway_invoices WHERE status IN "
                 "('completed','expired','cancelled','error') "
+                "AND COALESCE(updated_at, created_at) < ?",
+                (cutoff,),
+            )
+
+    # -----------------------------------------------------------------------
+    # درگاه‌های پرداخت سفارشی/پویا (بدون کد، تعریف‌شده توسط ادمین)
+    # -----------------------------------------------------------------------
+
+    def create_custom_gateway(self, key: str, name: str, config: dict, enabled: bool = False) -> int:
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO custom_gateways (gateway_key, name, config_json, enabled) VALUES (?, ?, ?, ?)",
+                (key, name, json.dumps(config, ensure_ascii=False), 1 if enabled else 0),
+            )
+            return cur.lastrowid
+
+    def update_custom_gateway(self, gateway_id: int, name: str = None, config: dict = None,
+                               enabled: bool = None):
+        fields, values = [], []
+        if name is not None:
+            fields.append("name=?")
+            values.append(name)
+        if config is not None:
+            fields.append("config_json=?")
+            values.append(json.dumps(config, ensure_ascii=False))
+        if enabled is not None:
+            fields.append("enabled=?")
+            values.append(1 if enabled else 0)
+        if not fields:
+            return
+        fields.append("updated_at=?")
+        values.append(datetime.utcnow().isoformat())
+        values.append(gateway_id)
+        with self._get_conn() as conn:
+            conn.execute(f"UPDATE custom_gateways SET {', '.join(fields)} WHERE id=?", values)
+
+    def delete_custom_gateway(self, gateway_id: int):
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM custom_gateways WHERE id=?", (gateway_id,))
+            conn.execute("DELETE FROM custom_gateway_invoices WHERE gateway_id=?", (gateway_id,))
+
+    def get_custom_gateway(self, gateway_id: int):
+        with self._get_conn() as conn:
+            return conn.execute("SELECT * FROM custom_gateways WHERE id=?", (gateway_id,)).fetchone()
+
+    def get_custom_gateway_by_key(self, key: str):
+        with self._get_conn() as conn:
+            return conn.execute("SELECT * FROM custom_gateways WHERE gateway_key=?", (key,)).fetchone()
+
+    def list_custom_gateways(self, only_enabled: bool = False):
+        with self._get_conn() as conn:
+            if only_enabled:
+                return conn.execute(
+                    "SELECT * FROM custom_gateways WHERE enabled=1 ORDER BY id"
+                ).fetchall()
+            return conn.execute("SELECT * FROM custom_gateways ORDER BY id").fetchall()
+
+    def create_custom_gateway_invoice(self, gateway_id: int, txn_id: str, kind: str, ref_id: int,
+                                       user_id: int, amount_toman: int, invoice_url: str = None) -> int:
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO custom_gateway_invoices (gateway_id, txn_id, kind, ref_id, user_id, "
+                "amount_toman, invoice_url, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'new')",
+                (gateway_id, txn_id, kind, ref_id, user_id, amount_toman, invoice_url),
+            )
+            return cur.lastrowid
+
+    def get_custom_gateway_invoice_by_txn(self, gateway_id: int, txn_id: str):
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM custom_gateway_invoices WHERE gateway_id=? AND txn_id=?",
+                (gateway_id, txn_id),
+            ).fetchone()
+
+    def get_custom_gateway_invoice_by_gateway_ref(self, gateway_id: int, gateway_ref: str):
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM custom_gateway_invoices WHERE gateway_id=? AND gateway_ref=?",
+                (gateway_id, gateway_ref),
+            ).fetchone()
+
+    def set_custom_gateway_invoice_gateway_ref(self, invoice_id: int, gateway_ref: str):
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE custom_gateway_invoices SET gateway_ref=?, updated_at=? WHERE id=?",
+                (gateway_ref, datetime.utcnow().isoformat(), invoice_id),
+            )
+
+    def get_custom_gateway_invoice(self, invoice_id: int):
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM custom_gateway_invoices WHERE id=?", (invoice_id,)
+            ).fetchone()
+
+    def get_pending_custom_gateway_invoice_for_ref(self, gateway_id: int, kind: str, ref_id: int):
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM custom_gateway_invoices WHERE gateway_id=? AND kind=? AND ref_id=? "
+                "AND status IN ('new','pending') ORDER BY id DESC LIMIT 1",
+                (gateway_id, kind, ref_id),
+            ).fetchone()
+
+    def update_custom_gateway_invoice_status(self, invoice_id: int, status: str):
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE custom_gateway_invoices SET status=?, updated_at=? WHERE id=?",
+                (status, datetime.utcnow().isoformat(), invoice_id),
+            )
+
+    def list_custom_gateway_invoices(self, gateway_id: int = None, limit: int = 50):
+        limit = max(1, min(int(limit or 50), 200))
+        with self._get_conn() as conn:
+            if gateway_id:
+                return conn.execute(
+                    "SELECT * FROM custom_gateway_invoices WHERE gateway_id=? ORDER BY id DESC LIMIT ?",
+                    (gateway_id, limit),
+                ).fetchall()
+            return conn.execute(
+                "SELECT * FROM custom_gateway_invoices ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+
+    def purge_old_custom_gateway_invoices(self, days: int = 7):
+        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        with self._get_conn() as conn:
+            conn.execute(
+                "DELETE FROM custom_gateway_invoices WHERE status IN "
+                "('completed','expired','cancelled','failed') "
                 "AND COALESCE(updated_at, created_at) < ?",
                 (cutoff,),
             )

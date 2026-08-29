@@ -347,13 +347,18 @@ def reseller_panel_kb() -> InlineKeyboardMarkup:
     ])
 
 
-def payment_choice_kb(crypto_enabled: bool, abangateway_enabled: bool = False) -> InlineKeyboardMarkup:
-    """کیبورد مرحله‌ی پرداخت: اگر درگاه کریپتو/آبان گیت وی فعال باشد، دکمه‌ی مربوطه هم نمایش داده می‌شود."""
+def payment_choice_kb(crypto_enabled: bool, abangateway_enabled: bool = False,
+                       custom_gateways: list = None) -> InlineKeyboardMarkup:
+    """کیبورد مرحله‌ی پرداخت: اگر درگاه کریپتو/آبان گیت وی/درگاه‌های سفارشی فعال باشند،
+    دکمه‌ی مربوطه هم نمایش داده می‌شود. custom_gateways لیستی از دیکشنری‌های
+    {"id", "key", "name"} است (خروجی custom_gateway_payment.list_enabled_gateways)."""
     rows = []
     if abangateway_enabled:
         rows.append([InlineKeyboardButton(text="💳 پرداخت خودکار کارت‌به‌کارت (تایید آنی)", callback_data="pay_abangateway")])
     if crypto_enabled:
         rows.append([InlineKeyboardButton(text="🪙 پرداخت با ارز دیجیتال (تایید آنی)", callback_data="pay_crypto")])
+    for gw in (custom_gateways or []):
+        rows.append([InlineKeyboardButton(text=f"💠 {gw['name']} (تایید آنی)", callback_data=f"pay_customgw:{gw['id']}")])
     rows.append([InlineKeyboardButton(text="❌ انصراف", callback_data="cancel_flow")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -411,6 +416,7 @@ ADMIN_PANEL_ITEMS = [
     ("adm_card_autodelete", "⏱ حذف خودکار پیام شماره کارت", "adm_card_autodelete"),
     ("adm_set_plisio", "🪙 تنظیم درگاه کریپتو (Plisio)", "adm_set_plisio"),
     ("adm_set_abangateway", "💳 تنظیم درگاه آبان گیت وی", "adm_set_abangateway"),
+    ("adm_custom_gateways", "💠 درگاه‌های پرداخت سفارشی (فعال/غیرفعال)", "adm_custom_gateways"),
     ("adm_edit_welcome", "📝 ویرایش پیام خوش‌آمد", "adm_edit_welcome"),
     ("adm_admins_menu", "👤 مدیریت ادمین‌ها", "adm_admins_menu"),
     ("adm_broadcast", "📢 پیام همگانی", "adm_broadcast"),
@@ -464,6 +470,7 @@ ADMIN_PANEL_CATEGORIES = [
         "adm_card_autodelete",
         "adm_set_plisio",
         "adm_set_abangateway",
+        "adm_custom_gateways",
     ]),
     ("alerts", "🔔 یادآوری‌ها و هشدارها", [
         "adm_renewal_settings",
@@ -787,6 +794,25 @@ def admin_categories_kb(categories) -> InlineKeyboardMarkup:
         )
     rows.append([InlineKeyboardButton(text="➕ افزودن دسته‌بندی جدید", callback_data="adm_cat_add")])
     rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:products")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_custom_gateways_kb(gateways) -> InlineKeyboardMarkup:
+    """لیست درگاه‌های پرداخت سفارشی (تعریف‌شده از مینی‌اپ/پنل وب) با امکان فقط
+    فعال/غیرفعال کردن از داخل بات. ساخت/ویرایش/حذف همچنان مخصوص مینی‌اپ و پنل وب است."""
+    rows = []
+    for gw in gateways:
+        state_icon = "🟢" if gw["enabled"] else "🔴"
+        rows.append(
+            [
+                InlineKeyboardButton(text=f"{state_icon} {gw['name']}", callback_data="noop"),
+                InlineKeyboardButton(text="تغییر وضعیت", callback_data=f"adm_customgw_toggle:{gw['id']}"),
+            ]
+        )
+    if not gateways:
+        rows.append([InlineKeyboardButton(text="هیچ درگاه سفارشی‌ای تعریف نشده", callback_data="noop")])
+    rows.append([InlineKeyboardButton(text="ℹ️ ساخت/ویرایش درگاه فقط از مینی‌اپ ممکن است", callback_data="noop")])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:finance")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

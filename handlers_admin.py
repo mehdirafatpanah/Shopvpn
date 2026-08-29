@@ -422,6 +422,44 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await message.answer("⚠️ افزودن دسته‌بندی ناموفق بود. دوباره تلاش کنید.")
 
     # -------------------------------------------------------------------
+    # درگاه‌های پرداخت سفارشی — فقط فعال/غیرفعال کردن (ساخت/ویرایش فقط از مینی‌اپ)
+    # -------------------------------------------------------------------
+
+    @router.callback_query(F.data == "adm_custom_gateways")
+    async def cb_admin_custom_gateways(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        try:
+            gateways = (await asyncio.to_thread(db.list_custom_gateways))
+            await replace_admin_view(call, "💠 درگاه‌های پرداخت سفارشی:", kb.admin_custom_gateways_kb(gateways))
+            await call.answer()
+        except Exception:
+            await call.answer("⚠️ بارگذاری درگاه‌ها ناموفق بود. دوباره تلاش کنید.", show_alert=True)
+
+    @router.callback_query(F.data.startswith("adm_customgw_toggle:"))
+    async def cb_admin_customgw_toggle(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        gw_id = callback_id(call.data, "adm_customgw_toggle")
+        if gw_id is None:
+            return await call.answer("⚠️ درخواست نامعتبر است.", show_alert=True)
+        try:
+            row = (await asyncio.to_thread(db.get_custom_gateway, gw_id))
+            if row is None:
+                return await call.answer("⚠️ این درگاه دیگر وجود ندارد.", show_alert=True)
+            new_enabled = not bool(row["enabled"])
+            (await asyncio.to_thread(db.update_custom_gateway, gw_id, enabled=new_enabled))
+            (await asyncio.to_thread(
+                db.log_admin_action, call.from_user.id, "custom_gateway_toggle",
+                f"درگاه سفارشی «{row['name']}» {'فعال' if new_enabled else 'غیرفعال'} شد.",
+            ))
+            gateways = (await asyncio.to_thread(db.list_custom_gateways))
+            await safe_edit(call, "💠 درگاه‌های پرداخت سفارشی:", kb.admin_custom_gateways_kb(gateways))
+            await call.answer("وضعیت تغییر کرد.")
+        except Exception:
+            await call.answer("⚠️ تغییر وضعیت درگاه ناموفق بود. دوباره تلاش کنید.", show_alert=True)
+
+    # -------------------------------------------------------------------
     # مدیریت محصولات
     # -------------------------------------------------------------------
 
