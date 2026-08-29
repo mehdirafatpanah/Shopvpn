@@ -44,8 +44,23 @@ inbound (list / get) در هر دو نسخه هنوز کار می‌کنند، �
 (x-ui_single.php) برای پنل‌های 3X-UI دقیقاً از همین API جدید (clients/*)
 استفاده می‌کند؛ این provider هم برای هماهنگی با آن بازنویسی شد.
 لیست/جزئیات inbound همچنان از /panel/api/inbounds/* خوانده می‌شود (چون
-هنوز برای انتخاب inbound موقع افزودن سرور و برای فهمیدن پروتکل لازم است)،
-ولی ساخت/حذف/مصرف کاربر حالا از /panel/api/clients/* استفاده می‌کند.
+هنوز برای انتخاب inbound موقع افزودن سرور لازم است)، ولی ساخت/حذف/مصرف
+کاربر حالا از /panel/api/clients/* استفاده می‌کند.
+
+چند-inbound (multi-inbound):
+- روی هر سرور به‌جای یک inbound تکی، یک لیست از id ها ذخیره می‌شود (ستون
+  xui_inbound_ids، JSON array). آدمین موقع افزودن سرور (در بات/مینی‌اپ/پنل
+  وب) می‌تواند چند inbound را همزمان تیک بزند.
+- خودِ API جدید 3X-UI (/panel/api/clients/add) از اول هم "inboundIds" را
+  به‌صورت آرایه قبول می‌کند (یک کلاینت را همزمان به چند inbound اضافه
+  می‌کند)؛ قبلاً این پروژه همیشه یک آرایه‌ی تک‌عضوی می‌فرستاد، الان لیست
+  کامل انتخاب‌شده فرستاده می‌شود.
+- چون یک "client" واحد به چند inbound (که ممکن است پروتکل‌شان فرق کند)
+  اضافه می‌شود، دیگر برای ساخت کلاینت پروتکل یک inbound خاص را حدس
+  نمی‌زنیم؛ هم "id" (برای vless/vmess) و هم "password" (برای
+  trojan/shadowsocks) را همزمان می‌فرستیم - فیلد اضافه‌ی بی‌ربط به هر
+  پروتکل توسط پنل نادیده گرفته می‌شود، پس این کار برای هر ترکیبی از
+  inbound ها امن است.
 """
 import json
 import secrets
@@ -106,33 +121,38 @@ class ThreeXUIProvider(BasePanelProvider):
             for ib in inbounds
         ]
 
-    async def _get_inbound(self, session: aiohttp.ClientSession, inbound_id: int) -> dict:
-        async with session.get(f"{self._base_url()}/panel/api/inbounds/get/{inbound_id}") as resp:
-            if resp.status in (401, 403):
-                raise PanelError(f"خطا در احراز هویت (کد {resp.status}): API Token را بررسی کن.")
-            if resp.status >= 400:
-                text = await resp.text()
-                raise PanelError(f"خطا در دریافت inbound (کد {resp.status}): {text[:300]}")
-            data = await resp.json()
-        obj = data.get("obj")
-        if not obj:
-            raise PanelError("inbound تنظیم‌شده روی این سرور دیگر پیدا نشد.")
-        return obj
+    def _inbound_ids(self) -> list:
+        """لیست id های inbound انتخاب‌شده روی این سرور. ستون جدید
+        xui_inbound_ids (JSON array) اولویت دارد؛ برای سازگاری با نصب‌های
+        قدیمی‌تر که فقط یک inbound (ستون تک‌مقداری xui_inbound_id) داشتند،
+        اگر ستون جدید خالی بود از همان مقدار تکی استفاده می‌شود."""
+        raw = self.server["xui_inbound_ids"] if "xui_inbound_ids" in self.server.keys() else None
+        if raw:
+            try:
+                ids = json.loads(raw)
+                if isinstance(ids, list) and ids:
+                    return [int(i) for i in ids]
+            except (ValueError, TypeError):
+                pass
+        legacy = self.server["xui_inbound_id"] if "xui_inbound_id" in self.server.keys() else None
+        return [int(legacy)] if legacy else []
 
-    def _build_client(self, username: str, protocol: str, volume_gb: int, duration_days: int) -> tuple:
-        """کلاینت مناسب پروتکل را می‌سازد؛ خروجی: (client_dict, sub_id)
+    def _build_client(self, username: str, volume_gb: int, duration_days: int) -> tuple:
+        """کلاینت را می‌سازد؛ خروجی: (client_dict, sub_id)
 
-        نکته: API جدید /panel/api/clients/add خودش هم می‌تواند id/uuid را
-        اتومات بسازد (مثل mirzabot که اصلاً id نمی‌فرستد)، ولی ما همچنان
-        صریح می‌فرستیم تا برای پروتکل‌هایی که به «password» نیاز دارند
-        (trojan/shadowsocks) هم مطمئن باشیم مقدار درست ساخته می‌شود، و
-        چون این uuid را برای عملیات‌های دیگر (مثلاً ساخت لینک کانفیگ
-        دستی به‌جای subscription) هم می‌توان استفاده کرد."""
+        نکته: چون این کلاینت ممکن است همزمان به چند inbound با پروتکل‌های
+        متفاوت اضافه شود، هم "id" (لازم برای vless/vmess) و هم "password"
+        (لازم برای trojan/shadowsocks) را می‌فرستیم؛ پنل هنگام پردازش هر
+        inbound فقط فیلد مربوط به پروتکل خودش را می‌خواند و بقیه را نادیده
+        می‌گیرد. همان uuid برای هر دو استفاده می‌شود تا برای عملیات‌های دیگر
+        (مثلاً ساخت لینک کانفیگ دستی به‌جای subscription) هم قابل استفاده باشد."""
         sub_id = secrets.token_hex(8)
         client_uuid = str(uuid.uuid4())
         expiry_ms = int((time.time() + duration_days * 86400) * 1000)
         data_limit_bytes = int(volume_gb * (1024 ** 3))
         client = {
+            "id": client_uuid,
+            "password": client_uuid,
             "email": username,
             "enable": True,
             "expiryTime": expiry_ms,
@@ -141,28 +161,17 @@ class ThreeXUIProvider(BasePanelProvider):
             "subId": sub_id,
             "tgId": 0,
         }
-        if protocol in ("vless", "vmess"):
-            client["id"] = client_uuid
-        elif protocol == "trojan":
-            client["password"] = client_uuid
-        elif protocol in ("shadowsocks", "shadowsocks-2022"):
-            client["password"] = client_uuid
-        else:
-            client["id"] = client_uuid
         return client, sub_id
 
     async def create_user(self, username: str, volume_gb: int, duration_days: int) -> PanelUserResult:
-        inbound_id = self.server["xui_inbound_id"]
+        inbound_ids = self._inbound_ids()
         sub_base_url = self.server["xui_sub_base_url"]
-        if not inbound_id or not sub_base_url:
+        if not inbound_ids or not sub_base_url:
             raise PanelError("این سرور هنوز کامل تنظیم نشده (inbound یا آدرس Subscription خالی است).")
 
         async with self._session() as session:
-            # فقط برای فهمیدن پروتکل (vless/vmess/trojan/...) لازم است؛
-            # ساخت کاربر خودش دیگر به /panel/api/inbounds نیازی ندارد.
-            inbound = await self._get_inbound(session, inbound_id)
-            client, sub_id = self._build_client(username, inbound.get("protocol", "vless"), volume_gb, duration_days)
-            payload = {"inboundIds": [inbound_id], "client": client}
+            client, sub_id = self._build_client(username, volume_gb, duration_days)
+            payload = {"inboundIds": inbound_ids, "client": client}
             try:
                 async with session.post(f"{self._base_url()}/panel/api/clients/add", json=payload) as resp:
                     if resp.status in (401, 403):
