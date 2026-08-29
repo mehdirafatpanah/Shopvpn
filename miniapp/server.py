@@ -48,6 +48,7 @@ import crypto_payment
 import abangateway_client
 import abangateway_payment
 from database import Database, MENU_BUTTON_META, DEFAULT_MENU_ORDER
+from admin_panel.config_delivery_web import deliver_config_to_user_web
 from miniapp.auth import validate_init_data
 from sub_info import fetch_sub_info
 from backup import create_backup, restore_backup, is_valid_sqlite_db
@@ -1389,18 +1390,21 @@ async def api_abangateway_webhook(request: Request, tenant: Tenant = Depends(get
 
         db.approve_order_auto(order_id)
         db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or product["price"])
-        links_text = "\n".join(r["subscription_url"] for r in prov_results)
         try:
             async with aiohttp.ClientSession() as session:
                 await session.post(
                     f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
                     json={
                         "chat_id": order["user_id"],
-                        "text": f"✅ پرداخت تایید شد!\n📦 محصول: {product['name']}\n\n{links_text}",
+                        "text": f"✅ پرداخت تایید شد!\n📦 محصول: {product['name']}",
                     },
                 )
         except Exception:
             pass
+        asyncio.create_task(deliver_config_to_user_web(
+            order["user_id"], product["name"], [r["subscription_url"] for r in prov_results],
+            final_price=order["final_price"], order_id=order_id, db=db, bot_token=tenant.bot_token,
+        ))
         return {"status": "ok"}
 
     quantity = order["quantity"] or 1
@@ -1408,18 +1412,21 @@ async def api_abangateway_webhook(request: Request, tenant: Tenant = Depends(get
     if results:
         db.approve_order(order_id, [r["id"] for r in results])
         db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or (product["price"] if product else 0))
-        links = "\n".join(r["link"] for r in results)
         try:
             async with aiohttp.ClientSession() as session:
                 await session.post(
                     f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
                     json={
                         "chat_id": order["user_id"],
-                        "text": f"✅ پرداخت تایید شد!\n📦 محصول: {product['name'] if product else ''}\n\n{links}",
+                        "text": f"✅ پرداخت تایید شد!\n📦 محصول: {product['name'] if product else ''}",
                     },
                 )
         except Exception:
             pass
+        asyncio.create_task(deliver_config_to_user_web(
+            order["user_id"], product["name"] if product else "", [r["link"] for r in results],
+            final_price=order["final_price"], order_id=order_id, db=db, bot_token=tenant.bot_token,
+        ))
     else:
         admin_ids = db.list_admins()
         async with aiohttp.ClientSession() as session:
@@ -1518,18 +1525,21 @@ async def api_plisio_webhook(request: Request, tenant: Tenant = Depends(get_tena
 
                 db.approve_order_auto(order_id)
                 db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or product["price"])
-                links_text = "\n".join(r["subscription_url"] for r in prov_results)
                 try:
                     async with aiohttp.ClientSession() as session:
                         await session.post(
                             f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
                             json={
                                 "chat_id": order["user_id"],
-                                "text": f"✅ پرداخت کریپتو تایید شد!\n📦 محصول: {product['name']}\n\n{links_text}",
+                                "text": f"✅ پرداخت کریپتو تایید شد!\n📦 محصول: {product['name']}",
                             },
                         )
                 except Exception:
                     pass
+                asyncio.create_task(deliver_config_to_user_web(
+                    order["user_id"], product["name"], [r["subscription_url"] for r in prov_results],
+                    final_price=order["final_price"], order_id=order_id, db=db, bot_token=tenant.bot_token,
+                ))
                 return {"status": "ok"}
 
             quantity = order["quantity"] or 1
@@ -1537,18 +1547,21 @@ async def api_plisio_webhook(request: Request, tenant: Tenant = Depends(get_tena
             if results:
                 db.approve_order(order_id, [r["id"] for r in results])
                 db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or (product["price"] if product else 0))
-                links = "\n".join(r["link"] for r in results)
                 try:
                     async with aiohttp.ClientSession() as session:
                         await session.post(
                             f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
                             json={
                                 "chat_id": order["user_id"],
-                                "text": f"✅ پرداخت کریپتو تایید شد!\n📦 محصول: {product['name'] if product else ''}\n\n{links}",
+                                "text": f"✅ پرداخت کریپتو تایید شد!\n📦 محصول: {product['name'] if product else ''}",
                             },
                         )
                 except Exception:
                     pass
+                asyncio.create_task(deliver_config_to_user_web(
+                    order["user_id"], product["name"] if product else "", [r["link"] for r in results],
+                    final_price=order["final_price"], order_id=order_id, db=db, bot_token=tenant.bot_token,
+                ))
             else:
                 # موجودی هم‌زمان تمام شده - به ادمین اطلاع بده تا دستی رسیدگی کند
                 admin_ids = db.list_admins()
