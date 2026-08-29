@@ -229,16 +229,21 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return True
         except TelegramBadRequest as exc:
             error = str(exc).lower()
-            if any(phrase in error for phrase in (
-                "message is not modified",
-                "message can't be edited",
-                "message to edit not found",
-            )):
+            if "message is not modified" in error:
                 return False
             raise
 
     async def replace_admin_view(call: CallbackQuery, text: str, reply_markup=None, parse_mode=None) -> bool:
-        """تغییر منوی ادمین روی همان پیام؛ بدون حذف/ارسال مجدد پیام."""
+        """تغییر منوی ادمین روی همان پیام؛ ترجیحاً بدون حذف/ارسال مجدد پیام.
+
+        قبلاً فقط سه پیام خطای خاص («message is not modified»، «message can't
+        be edited»، «message to edit not found») مدیریت می‌شدند و بقیه‌ی
+        خطاهای TelegramBadRequest (مثل ویرایش یک پیام عکس/رسید که متن ندارد،
+        یا پیامی که خیلی قدیمی شده) کل هندلر را کرش می‌کرد؛ چون بعد از آن
+        call.answer() اجرا نمی‌شد، دکمه از دید ادمین هیچ واکنشی نشان نمی‌داد
+        («منو برنمی‌گرده»). حالا برای هر خطای غیرمنتظره‌ای، به‌جای کرش، پیام
+        قبلی حذف و منوی جدید به‌صورت پیام تازه ارسال می‌شود تا ناوبری همیشه کار
+        کند."""
         if call.message is None:
             return False
 
@@ -250,14 +255,23 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await call.message.edit_text(text, **kwargs)
             return True
         except TelegramBadRequest as exc:
-            error = str(exc).lower()
-            if any(phrase in error for phrase in (
-                "message is not modified",
-                "message can't be edited",
-                "message to edit not found",
-            )):
+            if "message is not modified" in str(exc).lower():
                 return False
-            raise
+        except Exception:
+            pass
+
+        # Fallback: ویرایش به هر دلیلی ممکن نشد؛ پیام قبلی را حذف (در صورت
+        # امکان) و همان منو را به‌عنوان پیام تازه بفرست تا ادمین همیشه منو
+        # را ببیند.
+        try:
+            await call.message.delete()
+        except Exception:
+            pass
+        try:
+            await call.message.answer(text, **kwargs)
+        except Exception:
+            return False
+        return True
 
     def callback_id(data: str, prefix: str):
         """استخراج امن ID از callback_data و بررسی پیشوند."""

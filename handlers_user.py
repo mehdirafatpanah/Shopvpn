@@ -97,6 +97,52 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         return None, None
     router = Router()
 
+    async def _safe_edit(message: Message, text: str, reply_markup=None, parse_mode=None) -> None:
+        """ویرایش امن یک پیام (برای منوهای «بازگشت»/«لغو» و مشابه).
+
+        قبلاً همه‌جا مستقیم message.edit_text صدا زده می‌شد؛ اگر تلگرام به هر
+        دلیلی (محتوای پیام دقیقاً همان قبلی بود، پیام قبلی عکس/رسید بود که
+        متن ندارد، پیام خیلی قدیمی شده و...) خطای TelegramBadRequest برمی‌گرداند،
+        کل هندلر کرش می‌کرد و چون بعد از آن call.answer() اجرا نمی‌شد، دکمه از
+        دید کاربر هیچ واکنشی نشان نمی‌داد (دقیقاً حس «منو برنمی‌گرده»). این تابع
+        چنین خطاهایی را می‌گیرد و در بدترین حالت، به‌جای ویرایش، پیام قدیمی را
+        حذف و یک پیام تازه می‌فرستد تا منو همیشه به کاربر برگردد.
+        """
+        kwargs = {"reply_markup": reply_markup}
+        try:
+            if parse_mode is not None:
+                await message.edit_text(text, parse_mode=parse_mode, **kwargs)
+            else:
+                await message.edit_text(text, **kwargs)
+            return
+        except TelegramBadRequest as exc:
+            error = str(exc).lower()
+            if "message is not modified" in error:
+                return
+            if parse_mode is not None:
+                # شاید خطا مربوط به فرمت Markdown بود؛ یک‌بار بدون آن امتحان کن
+                try:
+                    await message.edit_text(text, **kwargs)
+                    return
+                except TelegramBadRequest as exc2:
+                    if "message is not modified" in str(exc2).lower():
+                        return
+        except Exception:
+            pass
+        # Fallback نهایی: ویرایش به هیچ روشی ممکن نشد؛ پیام قدیمی را حذف
+        # (در صورت امکان) و یک پیام تازه با همان محتوا بفرست.
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        try:
+            if parse_mode is not None:
+                await message.answer(text, parse_mode=parse_mode, **kwargs)
+            else:
+                await message.answer(text, **kwargs)
+        except TelegramBadRequest:
+            await message.answer(text, **kwargs)
+
     async def _send_inline_main_menu(target, user_tg_id: int):
         """اگر منوی شیشه‌ای بالا از تنظیمات فعال باشد، آن را به‌عنوان یک پیام
         جدا (کنار/بعد از منوی پایین) ارسال می‌کند. target هر شیء‌ای است که
@@ -326,7 +372,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     @router.callback_query(F.data == "back_categories")
     async def cb_back_categories(call: CallbackQuery):
         categories = (await asyncio.to_thread(db.get_categories, active_only=True))
-        await call.message.edit_text("یک دسته‌بندی را انتخاب کنید:", reply_markup=kb.categories_kb(db, categories, is_main_bot))
+        await _safe_edit(call.message, "یک دسته‌بندی را انتخاب کنید:", reply_markup=kb.categories_kb(db, categories, is_main_bot))
         await call.answer()
 
     @router.callback_query(F.data.startswith("cat:"))
@@ -336,7 +382,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if not products:
             await call.answer("محصولی در این دسته‌بندی موجود نیست.", show_alert=True)
             return
-        await call.message.edit_text("یک محصول را انتخاب کنید:", reply_markup=kb.products_kb(db, products, cat_id))
+        await _safe_edit(call.message, "یک محصول را انتخاب کنید:", reply_markup=kb.products_kb(db, products, cat_id))
         await call.answer()
 
     def _product_confirm_text(product, quantity: int, stock: int, wallet_credit: int, discount_amount: int = 0, discount_label: str = "") -> str:
@@ -388,12 +434,12 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if stock <= 0:
             text = _product_confirm_text(product, 1, stock, wallet_credit)
             text += "\n⛔️ در حال حاضر موجودی این محصول تمام شده است."
-            await call.message.edit_text(text)
+            await _safe_edit(call.message, text)
             await call.answer()
             return
         discount_amount, discount_label = await _apply_pending_discount(state, product["price"])
         text = _product_confirm_text(product, 1, stock, wallet_credit, discount_amount, discount_label)
-        await call.message.edit_text(text, reply_markup=kb.product_confirm_kb(db, product_id, 1, stock))
+        await _safe_edit(call.message, text, reply_markup=kb.product_confirm_kb(db, product_id, 1, stock))
         await call.answer()
 
     async def _cb_qty_change(call: CallbackQuery, state: FSMContext, delta: int):
@@ -411,7 +457,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         wallet_credit = (await asyncio.to_thread(db.get_wallet_credit, call.from_user.id))
         discount_amount, discount_label = await _apply_pending_discount(state, product["price"] * quantity)
         text = _product_confirm_text(product, quantity, stock, wallet_credit, discount_amount, discount_label)
-        await call.message.edit_text(text, reply_markup=kb.product_confirm_kb(db, product_id, quantity, stock))
+        await _safe_edit(call.message, text, reply_markup=kb.product_confirm_kb(db, product_id, quantity, stock))
         await call.answer()
 
     @router.callback_query(F.data.startswith("qty_inc:"))
@@ -431,7 +477,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         _, product_id, quantity = call.data.split(":")
         await state.update_data(discount_product_id=int(product_id), discount_quantity=int(quantity))
         await state.set_state(DiscountEntry.waiting_code)
-        await call.message.edit_text("🎟 کد تخفیف را ارسال کنید:", reply_markup=kb.cancel_kb())
+        await _safe_edit(call.message, "🎟 کد تخفیف را ارسال کنید:", reply_markup=kb.cancel_kb())
         await call.answer()
 
     @router.message(DiscountEntry.waiting_code)
@@ -659,7 +705,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 except (ProvisionError, DirectProvisionError) as e:
                     (await asyncio.to_thread(db.reject_order, order_id))
                     await _notify_admins_of_order(bot, order_id)
-                    await call.message.edit_text(
+                    await _safe_edit(
+                        call.message,
                         f"⛔️ {e}\nمبلغ کسرشده از کیف پول شما به‌طور کامل بازگردانده شد."
                     )
                     await call.answer()
@@ -672,7 +719,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                     # موجودی تمام شده: مبلغ کسرشده از کیف پول/کد تخفیف را برگردان و به ادمین اطلاع بده
                     (await asyncio.to_thread(db.reject_order, order_id))
                     await _notify_admins_of_order(bot, order_id)
-                    await call.message.edit_text(
+                    await _safe_edit(
+                        call.message,
                         "⛔️ موجودی این محصول در حال حاضر تمام شده است.\n"
                         "مبلغ کسرشده از کیف پول شما به‌طور کامل بازگردانده شد. لطفاً بعداً دوباره تلاش کنید "
                         "یا با پشتیبانی در تماس باشید."
@@ -700,7 +748,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             except Exception:
                 pass
 
-            await call.message.edit_text(
+            await _safe_edit(
+                call.message,
                 "✅ مبلغ سفارش شما به‌طور کامل از کیف پول/تخفیف پوشش داده شد.\n"
                 "کانفیگ شما در پیام بعدی ارسال می‌شود 👇"
             )
@@ -734,7 +783,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         text += f"💰 مبلغ نهایی قابل پرداخت: {order['final_price']:,} تومان\n\n"
         text += "لطفاً عکس رسید پرداخت را همینجا ارسال کنید، یا از دکمه‌ی زیر با ارز دیجیتال پرداخت کنید."
 
-        await call.message.edit_text(
+        await _safe_edit(
+            call.message,
             text, parse_mode="Markdown",
             reply_markup=kb.payment_choice_kb(
                 crypto_payment.crypto_payment_available(db),
@@ -753,7 +803,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             if order and order["status"] == "pending":
                 (await asyncio.to_thread(db.reject_order, order_id))
         await state.clear()
-        await call.message.edit_text("عملیات لغو شد.")
+        await _safe_edit(call.message, "عملیات لغو شد.")
         await call.answer()
 
     @router.callback_query(F.data == "pay_crypto", BuyFlow.waiting_receipt)
@@ -1401,14 +1451,14 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if not items:
             text = "شما تاکنون سفارشی ثبت نکرده‌اید."
             if edit:
-                await target.edit_text(text)
+                await _safe_edit(target, text)
             else:
                 await target.answer(text)
             return
         text = "📦 سفارش‌ها و کانفیگ‌های شما\n\nیکی از موارد زیر را برای مشاهده‌ی جزئیات انتخاب کنید:"
         markup = kb.my_orders_menu_kb(items)
         if edit:
-            await target.edit_text(text, reply_markup=markup)
+            await _safe_edit(target, text, reply_markup=markup)
         else:
             await target.answer(text, reply_markup=markup)
 
@@ -1435,10 +1485,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         markup = kb.my_order_item_kb(cb_id, deletable)
         if len(text) > 4000:
             text = text[:3950] + "\n\n… (فهرست کوتاه شد؛ تعداد کانفیگ‌ها زیاد است)"
-        try:
-            await call.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
-        except TelegramBadRequest:
-            await call.message.edit_text(text, reply_markup=markup)
+        await _safe_edit(call.message, text, parse_mode="Markdown", reply_markup=markup)
 
     @router.callback_query(F.data.startswith("mo_del:"))
     async def cb_my_orders_delete_ask(call: CallbackQuery):
@@ -1449,7 +1496,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await _show_my_orders_list(call.message, call.from_user.id, edit=True)
             return
         await call.answer()
-        await call.message.edit_text(
+        await _safe_edit(
+            call.message,
             "⚠️ آیا مطمئن هستید؟\n\n"
             "با حذف این کانفیگ، اطلاعات و لینک آن برای همیشه از سیستم پاک می‌شود و "
             "این عملیات **غیرقابل بازگشت** است.",
@@ -1602,7 +1650,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     @router.callback_query(F.data == "start_topup")
     async def cb_start_topup(call: CallbackQuery, state: FSMContext):
         await state.set_state(WalletTopup.waiting_amount)
-        await call.message.edit_text(
+        await _safe_edit(
+            call.message,
             "💰 چه مبلغی (به تومان) می‌خواهید به کیف پول خود شارژ کنید؟ فقط عدد ارسال کنید (مثال: 100000):",
             reply_markup=kb.cancel_kb(),
         )
@@ -1859,7 +1908,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await call.answer("این درخواست دیگر قابل انصراف نیست.", show_alert=True)
             return
         (await asyncio.to_thread(db.set_reseller_request_status, request_id, "cancelled"))
-        await call.message.edit_text((call.message.text or "") + "\n\n❌ انصراف داده شد.")
+        await _safe_edit(call.message, (call.message.text or "") + "\n\n❌ انصراف داده شد.")
         await call.answer()
 
     @router.message(F.photo | F.document)
