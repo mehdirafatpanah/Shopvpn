@@ -407,6 +407,7 @@ ADMIN_PANEL_ITEMS = [
     ("adm_edit_buttons", "✏️ ویرایش متن دکمه‌ها", "adm_edit_buttons"),
     ("adm_main_menu_settings", "🧩 چیدمان/نمایش منوی اصلی", "adm_main_menu_settings"),
     ("adm_set_card", "💳 تنظیم شماره کارت", "adm_set_card"),
+    ("adm_card_autodelete", "⏱ حذف خودکار پیام شماره کارت", "adm_card_autodelete"),
     ("adm_set_plisio", "🪙 تنظیم درگاه کریپتو (Plisio)", "adm_set_plisio"),
     ("adm_set_abangateway", "💳 تنظیم درگاه آبان گیت وی", "adm_set_abangateway"),
     ("adm_edit_welcome", "📝 ویرایش پیام خوش‌آمد", "adm_edit_welcome"),
@@ -458,6 +459,7 @@ ADMIN_PANEL_CATEGORIES = [
     ]),
     ("finance", "💰 مالی و پرداخت", [
         "adm_set_card",
+        "adm_card_autodelete",
         "adm_set_plisio",
         "adm_set_abangateway",
     ]),
@@ -607,6 +609,27 @@ def admin_temp_message_duration_kb() -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton(text="✏️ مدت دلخواه (دقیقه)", callback_data="adm_tempmsg_dur:custom")],
         [InlineKeyboardButton(text="❌ انصراف", callback_data="adm_temp_message")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_card_autodelete_kb(current_seconds: int) -> InlineKeyboardMarkup:
+    """پیکر مدت حذف خودکار پیام‌های شماره کارت. تیک ✅ روی گزینه‌ی فعلی می‌آید."""
+    def mark(seconds: int, label: str) -> str:
+        return f"✅ {label}" if current_seconds == seconds else label
+
+    rows = [
+        [InlineKeyboardButton(text=mark(0, "🚫 خاموش (پیام برای همیشه می‌ماند)"), callback_data="adm_card_autodel:0")],
+        [
+            InlineKeyboardButton(text=mark(1800, "۳۰ دقیقه"), callback_data="adm_card_autodel:1800"),
+            InlineKeyboardButton(text=mark(3600, "۱ ساعت"), callback_data="adm_card_autodel:3600"),
+        ],
+        [
+            InlineKeyboardButton(text=mark(10800, "۳ ساعت"), callback_data="adm_card_autodel:10800"),
+            InlineKeyboardButton(text=mark(86400, "۱ روز"), callback_data="adm_card_autodel:86400"),
+        ],
+        [InlineKeyboardButton(text="✏️ مدت دلخواه (دقیقه)", callback_data="adm_card_autodel:custom")],
+        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:finance")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

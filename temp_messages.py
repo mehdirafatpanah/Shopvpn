@@ -21,6 +21,16 @@ async def send_temp_message(bot, db, chat_id: int, text: str, expire_seconds: in
     return msg
 
 
+async def schedule_message_autodelete(db, chat_id: int, message_id: int, expire_seconds: int):
+    """برخلاف send_temp_message، پیام را نمی‌فرستد؛ فقط حذف خودکار یک پیامِ از قبل
+    ارسال‌شده (یا ویرایش‌شده، مثل پیام‌های حاوی شماره کارت) را زمان‌بندی می‌کند.
+    اگر expire_seconds صفر/منفی باشد (یعنی حذف خودکار غیرفعال است) کاری نمی‌کند."""
+    if not expire_seconds or expire_seconds <= 0:
+        return
+    delete_at = (datetime.utcnow() + timedelta(seconds=expire_seconds)).isoformat()
+    await asyncio.to_thread(db.schedule_temp_message, chat_id, message_id, delete_at)
+
+
 async def temp_message_cleanup_loop(bot, db, interval: float = 30.0):
     while True:
         try:

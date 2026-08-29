@@ -63,6 +63,7 @@ class AdminEditButton(StatesGroup):
 class AdminSetCard(StatesGroup):
     waiting_number = State()
     waiting_holder = State()
+    waiting_autodelete_custom = State()
 
 
 class AdminSetPlisio(StatesGroup):

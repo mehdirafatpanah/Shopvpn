@@ -3802,6 +3802,70 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await message.answer("✅ اطلاعات کارت به‌روزرسانی شد.", reply_markup=kb.admin_category_kb(db, is_main_bot, "finance"))
 
     # -------------------------------------------------------------------
+    # حذف خودکار پیام‌های حاوی شماره کارت
+    # -------------------------------------------------------------------
+
+    @router.callback_query(F.data == "adm_card_autodelete")
+    async def cb_admin_card_autodelete(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await state.clear()
+        current = int((await asyncio.to_thread(db.get_setting, "card_msg_autodelete_seconds", "0")) or 0)
+        await safe_edit(
+            call,
+            "⏱ پیام‌هایی که شماره کارت داخلشونه (خرید، شارژ کیف پول، خرید نمایندگی و ...) "
+            "بعد از مدت انتخابی، خودشون از چت حذف می‌شوند.\n\n"
+            "مدت مورد نظر را انتخاب کن:",
+            reply_markup=kb.admin_card_autodelete_kb(current),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_card_autodel:"))
+    async def cb_card_autodelete_pick(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        value = call.data.split(":", 1)[1]
+        if value == "custom":
+            await state.set_state(AdminSetCard.waiting_autodelete_custom)
+            await safe_edit(
+                call, "مدت دلخواه را به دقیقه ارسال کن (مثلاً 45):",
+                reply_markup=kb.admin_back_kb("adm_card_autodelete"),
+            )
+            await call.answer()
+            return
+        seconds = int(value)
+        (await asyncio.to_thread(db.set_setting, "card_msg_autodelete_seconds", str(seconds)))
+        (await asyncio.to_thread(
+            db.log_admin_action, call.from_user.id, "card_autodelete_change",
+            f"حذف خودکار پیام شماره کارت روی {seconds} ثانیه تنظیم شد.",
+        ))
+        await safe_edit(
+            call,
+            ("✅ حذف خودکار غیرفعال شد؛ پیام‌های شماره کارت از این پس برای همیشه می‌مانند."
+             if seconds == 0 else
+             f"✅ پیام‌های شماره کارت از این پس {_duration_label_fa(seconds)} بعد از ارسال خودکار حذف می‌شوند."),
+            reply_markup=kb.admin_card_autodelete_kb(seconds),
+        )
+        await call.answer()
+
+    @router.message(AdminSetCard.waiting_autodelete_custom)
+    async def process_card_autodelete_custom(message: Message, state: FSMContext):
+        if not (message.text or "").strip().isdigit() or int(message.text.strip()) <= 0:
+            await message.answer("⚠️ فقط یک عدد صحیح مثبت (به دقیقه) ارسال کن.")
+            return
+        seconds = int(message.text.strip()) * 60
+        await state.clear()
+        (await asyncio.to_thread(db.set_setting, "card_msg_autodelete_seconds", str(seconds)))
+        (await asyncio.to_thread(
+            db.log_admin_action, message.from_user.id, "card_autodelete_change",
+            f"حذف خودکار پیام شماره کارت روی {seconds} ثانیه تنظیم شد.",
+        ))
+        await message.answer(
+            f"✅ پیام‌های شماره کارت از این پس {_duration_label_fa(seconds)} بعد از ارسال خودکار حذف می‌شوند.",
+            reply_markup=kb.admin_category_kb(db, is_main_bot, "finance"),
+        )
+
+    # -------------------------------------------------------------------
     # تنظیم درگاه پرداخت کریپتو (Plisio)
     # -------------------------------------------------------------------
 

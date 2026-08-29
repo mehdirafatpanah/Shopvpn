@@ -25,6 +25,7 @@ from states import BuyFlow, ContactFlow, DiscountEntry, WalletTopup, CustomConfi
 from config import MAX_TEST_PER_USER, RESELLER_DBS_DIR, resolve_db_path
 from database import Database
 from config_delivery import deliver_config_to_user
+from temp_messages import schedule_message_autodelete
 from force_join import is_channel_member, CHECK_CALLBACK
 from sub_info import fetch_sub_info, format_sub_info_fa, fetch_individual_links
 from stock_alerts import check_and_notify_low_stock
@@ -103,6 +104,13 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         inline_kb = (await asyncio.to_thread(kb.inline_menu_for_user, db, user_tg_id, is_main_bot))
         if inline_kb is not None:
             await target.answer("📋 منو:", reply_markup=inline_kb)
+
+    async def _schedule_card_msg_autodelete(chat_id: int, message_id: int):
+        """اگر ادمین از تنظیمات، حذف خودکار پیام‌های شماره کارت را فعال کرده باشد،
+        حذف همین پیام (که الان شماره کارت را داخلش داره) را زمان‌بندی می‌کند."""
+        seconds = int((await asyncio.to_thread(db.get_setting, "card_msg_autodelete_seconds", "0")) or 0)
+        if seconds > 0:
+            await schedule_message_autodelete(db, chat_id, message_id, seconds)
 
     # -----------------------------------------------------------------------
     # عضویت اجباری در کانال
@@ -732,6 +740,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 abangateway_payment.abangateway_payment_available(db),
             ),
         )
+        await _schedule_card_msg_autodelete(call.message.chat.id, call.message.message_id)
         await call.answer()
 
     @router.callback_query(F.data == "cancel_flow")
@@ -995,13 +1004,14 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             text += f"👛 استفاده از کیف پول: {wallet_used:,} تومان\n"
         text += f"💰 مبلغ نهایی قابل پرداخت: {order['final_price']:,} تومان\n\n"
         text += "لطفاً عکس رسید پرداخت را همینجا ارسال کنید، یا از دکمه‌ی زیر با ارز دیجیتال پرداخت کنید."
-        await message.answer(
+        sent = await message.answer(
             text, parse_mode="Markdown",
             reply_markup=kb.payment_choice_kb(
                 crypto_payment.crypto_payment_available(db),
                 abangateway_payment.abangateway_payment_available(db),
             ),
         )
+        await _schedule_card_msg_autodelete(sent.chat.id, sent.message_id)
 
     @router.callback_query(F.data == "pay_crypto", CustomConfigFlow.waiting_receipt)
     async def cb_pay_crypto_custom_config(call: CallbackQuery, state: FSMContext):
@@ -1600,13 +1610,14 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             f"💳 شماره کارت: `{card_number}`\n"
             f"👤 به نام: {card_holder}\n"
         )
-        await message.answer(
+        sent = await message.answer(
             text, parse_mode="Markdown",
             reply_markup=kb.payment_choice_kb(
                 crypto_payment.crypto_payment_available(db),
                 abangateway_payment.abangateway_payment_available(db),
             ),
         )
+        await _schedule_card_msg_autodelete(sent.chat.id, sent.message_id)
 
     @router.callback_query(F.data == "pay_crypto", WalletTopup.waiting_receipt)
     async def cb_pay_crypto_topup(call: CallbackQuery, state: FSMContext):
@@ -1816,7 +1827,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             f"💳 شماره کارت: `{card_number}`\n"
             f"👤 به نام: {card_holder}\n"
         )
-        await call.message.answer(text, parse_mode="Markdown")
+        sent = await call.message.answer(text, parse_mode="Markdown")
+        await _schedule_card_msg_autodelete(sent.chat.id, sent.message_id)
         await call.answer()
 
     @router.callback_query(F.data.startswith("resreq_cancel:"))
