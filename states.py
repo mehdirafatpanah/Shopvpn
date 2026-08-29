@@ -69,6 +69,10 @@ class AdminSetPlisio(StatesGroup):
     waiting_key = State()
 
 
+class AdminSetAbanGateway(StatesGroup):
+    waiting_key = State()
+
+
 class AdminBroadcast(StatesGroup):
     waiting_message = State()
 

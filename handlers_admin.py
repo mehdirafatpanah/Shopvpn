@@ -22,13 +22,14 @@ from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 
 import keyboards as kb
-from database import Database, MENU_BUTTON_META
+from database import Database
 from config import RESELLER_DBS_DIR, resolve_db_path, ADMIN_PANEL_URL
 from config_delivery import deliver_config_to_user
 from jalali import to_jalali_str
 from stock_alerts import check_and_notify_low_stock
 from backup import create_backup, restore_backup, is_valid_sqlite_db
 import crypto_payment
+import abangateway_payment
 from panel_providers import (
     get_provider, PanelError, PanelUsernameTakenError, PANEL_TYPE_LABELS,
     SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES,
@@ -45,6 +46,7 @@ from states import (
     AdminEditButton,
     AdminSetCard,
     AdminSetPlisio,
+    AdminSetAbanGateway,
     AdminBroadcast,
     AdminAddAdmin,
     AdminRemoveAdmin,
@@ -176,17 +178,6 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         دسته‌بندی‌ها/کانفیگ‌بانک) را ندارند."""
         return db.is_senior_admin(user_id)
 
-    async def _notify_user_inline_menu(bot: Bot, user_tg_id: int):
-        """بعد از این‌که مدیر یک اقدام را روی سفارش/شارژ/درخواست کاربر انجام می‌دهد
-        (تایید، رد و ...) و پیامی برای کاربر ارسال می‌شود، اگر منوی شیشه‌ای بالا از
-        تنظیمات فعال باشد، دوباره برایش ارسال می‌شود؛ وگرنه بعد از این پیام‌های جدید
-        از دسترس کاربر خارج می‌ماند (چون به پیام قبلی‌اش چسبیده بود، نه به چت)."""
-        try:
-            inline_kb = (await asyncio.to_thread(kb.inline_menu_for_user, db, user_tg_id, is_main_bot))
-            if inline_kb is not None:
-                await bot.send_message(user_tg_id, "📋 منو:", reply_markup=inline_kb)
-        except Exception:
-            pass
 
     async def _send_receipt(bot: Bot, chat_id: int, file_id: str, receipt_type: str, caption: str, reply_markup=None):
         """ارسال رسید ذخیره‌شده؛ رسیدهای قدیمی photo فرض می‌شوند."""
@@ -388,7 +379,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             (await asyncio.to_thread(db.add_category, name))
             (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "category_add", f"دسته‌بندی «{name}»"))
             await state.clear()
-            await message.answer("✅ دسته‌بندی اضافه شد.", reply_markup=kb.admin_category_kb(db, is_main_bot, "products"))
+            await message.answer("✅ دسته‌بندی اضافه شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
         except Exception:
             await message.answer("⚠️ افزودن دسته‌بندی ناموفق بود. دوباره تلاش کنید.")
 
@@ -586,14 +577,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 "✅ محصول با موفقیت اضافه شد.\n"
                 "هر بار خرید این محصول، خودکار روی پنل انتخابی یک کاربر واقعی ساخته می‌شود؛ "
                 "نیازی به اضافه کردن لینک به بانک کانفیگ نیست.",
-                reply_markup=kb.admin_category_kb(db, is_main_bot, "products"),
+                reply_markup=kb.admin_panel_kb(db, is_main_bot),
             )
         else:
             await message.answer(
                 "✅ محصول با موفقیت اضافه شد.\n"
                 "⚠️ برای این‌که این محصول واقعاً کار کند، باید توسط ادمین بات اصلی برایت «نماینده» فعال شده و "
                 "اعتبار حجمی و پنل نمایندگی برایت تنظیم شده باشد.",
-                reply_markup=kb.admin_category_kb(db, is_main_bot, "products"),
+                reply_markup=kb.admin_panel_kb(db, is_main_bot),
             )
 
     # -------------------------------------------------------------------
@@ -645,7 +636,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not added_count and not duplicate_count:
             text = "⚠️ هیچ لینک معتبری دریافت نشد."
         text += f"\n📊 موجودی فعلی این محصول: {stock} عدد"
-        await message.answer(text, reply_markup=kb.admin_category_kb(db, is_main_bot, "products"))
+        await message.answer(text, reply_markup=kb.admin_panel_kb(db, is_main_bot))
 
     # -------------------------------------------------------------------
     # دریافت یک کانفیگ رندوم آزاد (خارج از فرآیند سفارش، برای فروش دستی)
@@ -741,7 +732,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         links = [line for line in message.text.splitlines() if line.strip()]
         (await asyncio.to_thread(db.add_test_configs, links))
         await state.clear()
-        await message.answer(f"✅ {len(links)} لینک تست اضافه شد.", reply_markup=kb.admin_test_menu_kb(db, is_main_bot))
+        await message.answer(f"✅ {len(links)} لینک تست اضافه شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
 
     @router.callback_query(F.data == "adm_test_set_volume")
     async def cb_admin_test_set_volume(call: CallbackQuery, state: FSMContext):
@@ -778,7 +769,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.clear()
         await message.answer(
             f"✅ کانفیگ تست تنظیم شد: {data['volume_gb']} گیگ / {text} روز.",
-            reply_markup=kb.admin_test_menu_kb(db, is_main_bot),
+            reply_markup=kb.admin_panel_kb(db, is_main_bot),
         )
 
     # -------------------------------------------------------------------
@@ -951,7 +942,6 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                     bot, order["user_id"], "کانفیگ شخصی",
                     [result.subscription_url], final_price=order["final_price"], order_id=order_id,
                 )
-                await _notify_user_inline_menu(bot, order["user_id"])
             except Exception:
                 pass
             try:
@@ -988,7 +978,6 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                     bot, order["user_id"], product["name"],
                     [r["subscription_url"] for r in prov_results], final_price=order["final_price"], order_id=order_id,
                 )
-                await _notify_user_inline_menu(bot, order["user_id"])
             except Exception:
                 pass
             try:
@@ -1036,7 +1025,6 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 final_price=order["final_price"],
                 order_id=order_id,
             )
-            await _notify_user_inline_menu(bot, order["user_id"])
         except Exception:
             pass
 
@@ -1076,7 +1064,6 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 order["user_id"],
                 "❌ متاسفانه رسید ارسالی شما تایید نشد. در صورت اشتباه لطفاً با پشتیبانی در ارتباط باشید.",
             )
-            await _notify_user_inline_menu(bot, order["user_id"])
         except Exception:
             pass
 
@@ -1200,6 +1187,173 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             reply_markup=kb.crypto_invoices_kb(invoices),
         )
 
+    # -------------------------------------------------------------------
+    # پرداخت‌های آبان گیت وی (تایید خودکار کارت‌به‌کارت)
+    # -------------------------------------------------------------------
+
+    @router.callback_query(F.data == "adm_abangateway_payments")
+    async def cb_admin_abangateway_payments(call: CallbackQuery):
+        if not admin_only(call.from_user.id):
+            return await call.answer()
+        (await asyncio.to_thread(db.expire_stale_abangateway_invoices))
+        (await asyncio.to_thread(db.purge_old_abangateway_invoices, days=7))
+        invoices = (await asyncio.to_thread(db.get_abangateway_invoices, 50))
+        if not invoices:
+            await call.answer("هیچ پرداخت آبان گیت‌وی‌ای ثبت نشده است.", show_alert=True)
+            return
+        await replace_admin_view(
+            call,
+            "💳 پرداخت‌های آبان گیت وی\n\nاین پرداخت‌ها به‌صورت خودکار تایید می‌شوند و در بخش سفارش‌ها/شارژهای دستی نمایش داده نمی‌شوند.",
+            reply_markup=kb.abangateway_invoices_kb(invoices),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("view_abangateway_invoice:"))
+    async def cb_view_abangateway_invoice(call: CallbackQuery):
+        if not admin_only(call.from_user.id):
+            return await call.answer()
+        invoice_id = callback_id(call.data, "view_abangateway_invoice")
+        if invoice_id is None:
+            await call.answer("❌ درخواست نامعتبر است.", show_alert=True)
+            return
+        invoice = (await asyncio.to_thread(db.get_abangateway_invoice, invoice_id))
+        if not invoice:
+            await call.answer("فاکتور یافت نشد.", show_alert=True)
+            return
+
+        status_text = {
+            "new": "🟡 جدید",
+            "pending": "🟠 در انتظار پرداخت",
+            "completed": "🟢 تکمیل‌شده",
+            "expired": "🔴 منقضی‌شده",
+            "cancelled": "⚪️ لغوشده",
+            "error": "🔴 خطا",
+        }.get(invoice["status"], invoice["status"] or "---")
+        kind_text = {"order": "🧾 سفارش", "wallet_topup": "👛 شارژ کیف پول"}.get(invoice["kind"], invoice["kind"])
+
+        text = (
+            f"💳 فاکتور آبان گیت وی #{invoice['id']}\n"
+            f"{kind_text}: #{invoice['ref_id']}\n"
+            f"👤 کاربر: {invoice['user_id']}\n"
+            f"💰 مبلغ: {invoice['amount_toman']:,} تومان\n"
+            f"📌 وضعیت: {status_text}\n"
+            f"🕐 ایجاد: {invoice['created_at'] or '---'}\n"
+            f"⌛ انقضا: {invoice['expires_at'] or '---'}"
+        )
+        rows = []
+        if invoice["payment_url"] and invoice["status"] in ("new", "pending"):
+            rows.append([InlineKeyboardButton(text="🔗 باز کردن فاکتور", url=invoice["payment_url"])])
+        if invoice["status"] in ("new", "pending"):
+            rows.append([InlineKeyboardButton(text="🔄 بررسی وضعیت", callback_data=f"check_abangateway_invoice:{invoice['id']}")])
+            rows.append([InlineKeyboardButton(text="❌ لغو و حذف فاکتور", callback_data=f"cancel_abangateway_invoice:{invoice['id']}")])
+        rows.append([InlineKeyboardButton(text="⬅️ بازگشت به پرداخت‌های آبان گیت وی", callback_data="adm_abangateway_payments")])
+        await replace_admin_view(call, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("check_abangateway_invoice:"))
+    async def cb_check_abangateway_invoice(call: CallbackQuery, bot: Bot):
+        if not admin_only(call.from_user.id):
+            return await call.answer()
+        invoice_id = callback_id(call.data, "check_abangateway_invoice")
+        if invoice_id is None:
+            await call.answer("❌ درخواست نامعتبر است.", show_alert=True)
+            return
+        invoice = (await asyncio.to_thread(db.get_abangateway_invoice, invoice_id))
+        if not invoice:
+            await call.answer("فاکتور یافت نشد.", show_alert=True)
+            return
+        await call.answer("در حال بررسی...")
+        result = await abangateway_payment.try_verify_and_finalize(db, invoice)
+        if result == "verified_now":
+            if invoice["kind"] == "wallet_topup":
+                text = await abangateway_payment.finalize_paid_topup(db, invoice["ref_id"])
+            else:
+                text = await abangateway_payment.finalize_paid_order(db, bot, invoice["ref_id"])
+            await call.message.answer(text)
+        elif result == "not_paid_yet":
+            await call.message.answer("⏳ هنوز واریزی برای این فاکتور تایید نشده.")
+        elif result == "already_delivered":
+            await call.message.answer("✅ این پرداخت قبلاً تایید و تحویل داده شده است.")
+        elif result in ("expired", "cancelled"):
+            await call.message.answer("❌ اعتبار این فاکتور تمام شده یا لغو شده است.")
+        elif result.startswith("error:"):
+            await call.message.answer(f"⚠️ خطا در بررسی وضعیت: {result[6:]}")
+
+    @router.callback_query(F.data.startswith("cancel_abangateway_invoice:"))
+    async def cb_cancel_abangateway_invoice(call: CallbackQuery):
+        if not admin_only(call.from_user.id):
+            return await call.answer()
+        invoice_id = callback_id(call.data, "cancel_abangateway_invoice")
+        if invoice_id is None:
+            await call.answer("❌ درخواست نامعتبر است.", show_alert=True)
+            return
+        invoice = (await asyncio.to_thread(db.get_abangateway_invoice, invoice_id))
+        if not invoice:
+            await call.answer("فاکتور یافت نشد یا قبلاً حذف شده.", show_alert=True)
+        else:
+            (await asyncio.to_thread(db.cancel_and_delete_abangateway_invoice, invoice_id))
+            await call.answer("✅ فاکتور لغو و حذف شد.")
+
+        (await asyncio.to_thread(db.expire_stale_abangateway_invoices))
+        (await asyncio.to_thread(db.purge_old_abangateway_invoices, days=7))
+        invoices = (await asyncio.to_thread(db.get_abangateway_invoices, 50))
+        if not invoices:
+            await replace_admin_view(call, "💳 پرداخت‌های آبان گیت وی\n\nهیچ پرداخت آبان گیت‌وی‌ای ثبت نشده است.",
+                                      reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                          [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:daily")]
+                                      ]))
+            return
+        await replace_admin_view(
+            call,
+            "💳 پرداخت‌های آبان گیت وی\n\nاین پرداخت‌ها به‌صورت خودکار تایید می‌شوند و در بخش سفارش‌ها/شارژهای دستی نمایش داده نمی‌شوند.",
+            reply_markup=kb.abangateway_invoices_kb(invoices),
+        )
+
+    # -------------------------------------------------------------------
+    # تنظیم درگاه پرداخت آبان گیت وی
+    # -------------------------------------------------------------------
+
+    @router.callback_query(F.data == "adm_set_abangateway")
+    async def cb_admin_set_abangateway(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        current = (await asyncio.to_thread(db.get_setting, "abangateway_api_key", ""))
+        masked = f"...{current[-4:]}" if current else "❌ تنظیم نشده"
+        source = abangateway_payment.resolve_api_key_source(db)
+        source_note = {
+            "db": "✅ از همین پنل بات خوانده می‌شود (بات و مینی‌اپ هر دو همین را می‌بینند، بدون نیاز به ری‌استارت).",
+            "env": "⚠️ فقط از فایل .env این پروسه خوانده می‌شود. اگر بات و مینی‌اپ را جدا ری‌استارت نکرده باشی ممکن است این دو با هم ناهماهنگ باشند. پیشنهاد: همینجا دوباره ثبتش کن تا مطمئن بشی.",
+            "none": "❌ هیچ کلیدی (نه در دیتابیس، نه در .env) تنظیم نشده.",
+        }[source]
+        await state.set_state(AdminSetAbanGateway.waiting_key)
+        await safe_edit(
+            call,
+            f"💳 API Key حساب آبان گیت وی را ارسال کن (از abangateway.ir → تنظیمات API).\n"
+            f"وضعیت فعلی: {masked}\n"
+            f"منبع کلید: {source_note}\n\n"
+            f"برای غیرفعال‌کردن، عبارت «حذف» را بفرست.",
+            reply_markup=kb.admin_back_kb(),
+        )
+        await call.answer()
+
+    @router.message(AdminSetAbanGateway.waiting_key)
+    async def process_set_abangateway_key(message: Message, state: FSMContext):
+        text = message.text.strip()
+        await state.clear()
+        if text in ("حذف", "/حذف", "-"):
+            (await asyncio.to_thread(db.set_setting, "abangateway_api_key", ""))
+            (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "abangateway_key_change", "API Key آبان گیت وی حذف شد."))
+            await message.answer("✅ API Key آبان گیت وی حذف شد و درگاه غیرفعال شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
+            return
+        (await asyncio.to_thread(db.set_setting, "abangateway_api_key", text))
+        (await asyncio.to_thread(db.set_setting, "abangateway_payment_enabled", "1"))
+        (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "abangateway_key_change", "API Key آبان گیت وی تغییر کرد."))
+        await message.answer(
+            "✅ API Key آبان گیت وی ذخیره شد و درگاه فعال شد.\n"
+            "برای غیرفعال‌کردن، دوباره وارد همین بخش شو و «حذف» را بفرست.",
+            reply_markup=kb.admin_panel_kb(db, is_main_bot),
+        )
+
     @router.callback_query(F.data.startswith("view_topup:"))
     async def cb_view_topup(call: CallbackQuery, bot: Bot):
         if not full_admin_only(call.from_user.id):
@@ -1252,7 +1406,6 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 f"✅ شارژ کیف پول شما تایید شد!\n💰 مبلغ {topup['amount']:,} تومان اضافه شد.\n"
                 f"👛 موجودی فعلی کیف پول شما: {new_balance:,} تومان",
             )
-            await _notify_user_inline_menu(bot, topup["user_id"])
         except Exception:
             pass
 
@@ -1292,7 +1445,6 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 topup["user_id"],
                 "❌ متاسفانه درخواست شارژ کیف پول شما تایید نشد. در صورت اشتباه با پشتیبانی تماس بگیرید.",
             )
-            await _notify_user_inline_menu(bot, topup["user_id"])
         except Exception:
             pass
 
@@ -1398,8 +1550,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         ))
         (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "discount_add", f"کد «{data['disc_code']}»"))
         await state.clear()
-        codes = (await asyncio.to_thread(db.list_discount_codes))
-        await message.answer(f"✅ کد تخفیف «{data['disc_code']}» ساخته شد.", reply_markup=kb.discount_codes_kb(codes))
+        await message.answer(f"✅ کد تخفیف «{data['disc_code']}» ساخته شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
 
     # -------------------------------------------------------------------
     # تنظیمات زیرمجموعه‌گیری
@@ -1439,7 +1590,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         (await asyncio.to_thread(db.set_setting, "referral_percent", text))
         await state.clear()
-        await message.answer(f"✅ درصد پورسانت زیرمجموعه‌گیری روی {text}٪ تنظیم شد.", reply_markup=kb.referral_settings_kb(db))
+        await message.answer(f"✅ درصد پورسانت زیرمجموعه‌گیری روی {text}٪ تنظیم شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
 
     @router.callback_query(F.data == "adm_referral_commission_max_edit")
     async def cb_admin_referral_commission_max_edit(call: CallbackQuery, state: FSMContext):
@@ -1462,7 +1613,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         (await asyncio.to_thread(db.set_setting, "referral_commission_max_count", text))
         await state.clear()
         label = "نامحدود" if text == "0" else f"{text} نفر"
-        await message.answer(f"✅ سقف تعداد نفرات پورسانت‌دار روی «{label}» تنظیم شد.", reply_markup=kb.referral_settings_kb(db))
+        await message.answer(f"✅ سقف تعداد نفرات پورسانت‌دار روی «{label}» تنظیم شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
 
     # --- حالت ۲: کانفیگ رایگان با تعداد دعوت مشخص ---
 
@@ -1498,7 +1649,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         (await asyncio.to_thread(db.set_setting, "referral_free_config_threshold", text))
         await state.clear()
-        await message.answer(f"✅ با دعوت {text} نفر، کانفیگ رایگان تعلق می‌گیرد.", reply_markup=kb.referral_settings_kb(db))
+        await message.answer(f"✅ با دعوت {text} نفر، کانفیگ رایگان تعلق می‌گیرد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
 
     @router.callback_query(F.data == "adm_referral_freeconfig_product")
     async def cb_admin_referral_freeconfig_product(call: CallbackQuery):
@@ -1560,7 +1711,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         (await asyncio.to_thread(db.set_setting, "referral_invite_bonus_amount", text))
         await state.clear()
-        await message.answer(f"✅ مبلغ شارژ به‌ازای هر دعوت روی {int(text):,} تومان تنظیم شد.", reply_markup=kb.referral_settings_kb(db))
+        await message.answer(f"✅ مبلغ شارژ به‌ازای هر دعوت روی {int(text):,} تومان تنظیم شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
 
     @router.callback_query(F.data == "adm_referral_invitebonus_max_edit")
     async def cb_admin_referral_invitebonus_max_edit(call: CallbackQuery, state: FSMContext):
@@ -1583,7 +1734,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         (await asyncio.to_thread(db.set_setting, "referral_invite_bonus_max_count", text))
         await state.clear()
         label = "نامحدود" if text == "0" else f"{text} نفر"
-        await message.answer(f"✅ سقف تعداد نفرات شارژ به‌ازای دعوت روی «{label}» تنظیم شد.", reply_markup=kb.referral_settings_kb(db))
+        await message.answer(f"✅ سقف تعداد نفرات شارژ به‌ازای دعوت روی «{label}» تنظیم شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
 
     # -------------------------------------------------------------------
     # مدیریت گردونه شانس
@@ -1623,7 +1774,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         (await asyncio.to_thread(db.set_setting, "wheel_win_percent", text))
         await state.clear()
-        await message.answer(f"✅ احتمال برد گردونه روی {text}٪ تنظیم شد.", reply_markup=kb.wheel_settings_kb(db))
+        await message.answer(f"✅ احتمال برد گردونه روی {text}٪ تنظیم شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
 
     @router.callback_query(F.data == "adm_wheel_edit_prizes")
     async def cb_admin_wheel_edit_prizes(call: CallbackQuery, state: FSMContext):
@@ -1644,7 +1795,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         (await asyncio.to_thread(db.set_wheel_prizes, [int(p) for p in parts]))
         await state.clear()
-        await message.answer("✅ لیست جوایز گردونه به‌روزرسانی شد.", reply_markup=kb.wheel_settings_kb(db))
+        await message.answer("✅ لیست جوایز گردونه به‌روزرسانی شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
 
     @router.callback_query(F.data == "adm_wheel_edit_expiry")
     async def cb_admin_wheel_edit_expiry(call: CallbackQuery, state: FSMContext):
@@ -1664,7 +1815,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         (await asyncio.to_thread(db.set_setting, "wheel_code_expiry_hours", text))
         await state.clear()
-        await message.answer(f"✅ اعتبار کد جایزه روی {text} ساعت تنظیم شد.", reply_markup=kb.wheel_settings_kb(db))
+        await message.answer(f"✅ اعتبار کد جایزه روی {text} ساعت تنظیم شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
 
     @router.callback_query(F.data == "adm_wheel_edit_cooldown")
     async def cb_admin_wheel_edit_cooldown(call: CallbackQuery, state: FSMContext):
@@ -1684,7 +1835,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         (await asyncio.to_thread(db.set_setting, "wheel_cooldown_hours", text))
         await state.clear()
-        await message.answer(f"✅ فاصله بین دو چرخش روی {text} ساعت تنظیم شد.", reply_markup=kb.wheel_settings_kb(db))
+        await message.answer(f"✅ فاصله بین دو چرخش روی {text} ساعت تنظیم شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
 
     # -------------------------------------------------------------------
     # یادآوری اتمام سرویس + کد تخفیف تشویقی تمدید
@@ -1727,7 +1878,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         (await asyncio.to_thread(db.set_setting, "low_stock_threshold", text))
         await state.clear()
         await message.answer(
-            f"✅ آستانه‌ی هشدار موجودی روی {text} کانفیگ تنظیم شد.", reply_markup=kb.stock_alert_settings_kb(db)
+            f"✅ آستانه‌ی هشدار موجودی روی {text} کانفیگ تنظیم شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot)
         )
 
     # -------------------------------------------------------------------
@@ -1791,7 +1942,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.clear()
         await message.answer(
             f"✅ بازه‌ی حجم مجاز روی {data['min_gb']} تا {text} گیگابایت تنظیم شد.",
-            reply_markup=kb.custom_config_menu_kb(db, is_main_bot),
+            reply_markup=kb.admin_panel_kb(db, is_main_bot),
         )
 
     async def deny_reseller_panel_access(call: CallbackQuery):
@@ -1951,7 +2102,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "panel_server_add", f"سرور «{data['name']}» ({label}, #{data['server_id']})"))
         await message.answer(
             f"✅ سرور «{data['name']}» ({label}) با موفقیت اضافه شد.",
-            reply_markup=kb.panel_servers_list_kb(db),
+            reply_markup=kb.admin_panel_kb(db, is_main_bot),
         )
 
     @router.message(AdminAddPanelServer.waiting_template_user)
@@ -1984,7 +2135,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "panel_server_add", f"سرور «{data['name']}» ({label}, #{server_id})"))
         await message.answer(
             f"✅ سرور «{data['name']}» ({label}) با قالب گرفته‌شده از «{message.text.strip()}» اضافه شد.",
-            reply_markup=kb.panel_servers_list_kb(db),
+            reply_markup=kb.admin_panel_kb(db, is_main_bot),
         )
 
     @router.callback_query(F.data.startswith("adm_panel_server_view:"))
@@ -2054,8 +2205,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         ))
         await state.clear()
         (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "panel_server_template_update", f"سرور #{server['id']} ← «{message.text.strip()}»"))
-        server = (await asyncio.to_thread(db.get_panel_server, server["id"]))
-        await message.answer("✅ قالب جدید ذخیره شد.", reply_markup=kb.panel_server_view_kb(server))
+        await message.answer("✅ قالب جدید ذخیره شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
 
     @router.callback_query(F.data.startswith("adm_panel_server_suburl:"))
     async def cb_admin_panel_server_suburl(call: CallbackQuery, state: FSMContext):
@@ -2095,8 +2245,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         (await asyncio.to_thread(db.update_panel_server, server["id"], xui_sub_base_url=url))
         await state.clear()
         (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "panel_server_suburl_update", f"سرور #{server['id']} ← {url}"))
-        server = (await asyncio.to_thread(db.get_panel_server, server["id"]))
-        await message.answer("✅ آدرس Subscription جدید ذخیره شد.", reply_markup=kb.panel_server_view_kb(server))
+        await message.answer("✅ آدرس Subscription جدید ذخیره شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
 
     @router.callback_query(F.data.startswith("adm_panel_server_test:"))
     async def cb_admin_panel_server_test(call: CallbackQuery):
@@ -2285,7 +2434,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         ))
         await message.answer(
             f"✅ بازه‌ی قیمت اضافه شد: {data['from_gb']} تا {to_label} گیگ ← {int(text):,} تومان/گیگ",
-            reply_markup=kb.pricing_tiers_kb(db),
+            reply_markup=kb.admin_panel_kb(db, is_main_bot),
         )
 
     @router.callback_query(F.data.startswith("adm_pricing_tier_delete:"))
@@ -2338,7 +2487,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             pass
         await message.answer(
             f"✅ کانفیگ تست برای {len(user_ids)} کاربر بازنشانی شد و پیام به {sent} نفر ارسال شد.",
-            reply_markup=kb.admin_test_menu_kb(db, is_main_bot),
+            reply_markup=kb.admin_panel_kb(db, is_main_bot),
         )
 
     @router.callback_query(F.data == "adm_renewal_toggle")
@@ -2370,7 +2519,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         (await asyncio.to_thread(db.set_setting, "renewal_reminder_days_before", text))
         await state.clear()
         await message.answer(
-            f"✅ یادآوری روی {text} روز قبل از اتمام سرویس تنظیم شد.", reply_markup=kb.renewal_settings_kb(db)
+            f"✅ یادآوری روی {text} روز قبل از اتمام سرویس تنظیم شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot)
         )
 
     @router.callback_query(F.data == "adm_renewal_edit_percent")
@@ -2392,7 +2541,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         (await asyncio.to_thread(db.set_setting, "renewal_discount_percent", text))
         await state.clear()
-        await message.answer(f"✅ درصد تخفیف کد تشویقی روی {text}٪ تنظیم شد.", reply_markup=kb.renewal_settings_kb(db))
+        await message.answer(f"✅ درصد تخفیف کد تشویقی روی {text}٪ تنظیم شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
 
     @router.callback_query(F.data == "adm_renewal_edit_hours")
     async def cb_admin_renewal_edit_hours(call: CallbackQuery, state: FSMContext):
@@ -2414,7 +2563,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         (await asyncio.to_thread(db.set_setting, "renewal_discount_expiry_hours", text))
         await state.clear()
         await message.answer(
-            f"✅ اعتبار کد تخفیف تشویقی روی {text} ساعت تنظیم شد.", reply_markup=kb.renewal_settings_kb(db)
+            f"✅ اعتبار کد تخفیف تشویقی روی {text} ساعت تنظیم شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot)
         )
 
     # -------------------------------------------------------------------
@@ -2466,7 +2615,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         (await asyncio.to_thread(db.set_setting, "volume_reminder_percent", text))
         await state.clear()
         await message.answer(
-            f"✅ آستانه‌ی یادآوری حجم روی {text}٪ مصرف تنظیم شد.", reply_markup=kb.volume_reminder_settings_kb(db)
+            f"✅ آستانه‌ی یادآوری حجم روی {text}٪ مصرف تنظیم شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot)
         )
 
     @router.callback_query(F.data == "adm_volume_edit_gb")
@@ -2493,7 +2642,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         (await asyncio.to_thread(db.set_setting, "volume_reminder_gb_left", str(value)))
         await state.clear()
         await message.answer(
-            f"✅ آستانه‌ی یادآوری حجم روی {value} گیگ باقی‌مانده تنظیم شد.", reply_markup=kb.volume_reminder_settings_kb(db)
+            f"✅ آستانه‌ی یادآوری حجم روی {value} گیگ باقی‌مانده تنظیم شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot)
         )
 
     @router.callback_query(F.data == "adm_volume_edit_discount_percent")
@@ -2515,7 +2664,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         (await asyncio.to_thread(db.set_setting, "volume_discount_percent", text))
         await state.clear()
-        await message.answer(f"✅ درصد تخفیف کد تشویقی روی {text}٪ تنظیم شد.", reply_markup=kb.volume_reminder_settings_kb(db))
+        await message.answer(f"✅ درصد تخفیف کد تشویقی روی {text}٪ تنظیم شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
 
     @router.callback_query(F.data == "adm_volume_edit_discount_hours")
     async def cb_admin_volume_edit_discount_hours(call: CallbackQuery, state: FSMContext):
@@ -2537,7 +2686,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         (await asyncio.to_thread(db.set_setting, "volume_discount_expiry_hours", text))
         await state.clear()
         await message.answer(
-            f"✅ اعتبار کد تخفیف تشویقی روی {text} ساعت تنظیم شد.", reply_markup=kb.volume_reminder_settings_kb(db)
+            f"✅ اعتبار کد تخفیف تشویقی روی {text} ساعت تنظیم شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot)
         )
 
     # -------------------------------------------------------------------
@@ -3017,7 +3166,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 f"👤 نماینده: {owner_name} ({owner_id})\n\n"
                 f"این بات کاملاً مستقل است و تمام امکانات (کد تخفیف، زیرمجموعه‌گیری، کیف پول، کانفیگ تست) را "
                 f"از صفر و جدا از بات اصلی دارد. نماینده باید با /start به بات خودش (@{username}) وارد شود.",
-                reply_markup=kb.resellers_kb((await asyncio.to_thread(db.list_reseller_bots))),
+                reply_markup=kb.admin_panel_kb(db, is_main_bot),
             )
 
         # ---------------------------------------------------------------
@@ -3140,7 +3289,6 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                     req["user_id"],
                     f"❌ متاسفانه {label} شما (#{request_id}) رد شد.\n\nدلیل: {reason}",
                 )
-                await _notify_user_inline_menu(bot, req["user_id"])
             except Exception:
                 pass
 
@@ -3239,7 +3387,6 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                     req["user_id"],
                     f"⚪️ درخواست نمایندگی شما (#{request_id}) توسط مدیریت کنسل شد.",
                 )
-                await _notify_user_inline_menu(bot, req["user_id"])
             except Exception:
                 pass
 
@@ -3299,7 +3446,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 await state.clear()
                 await message.answer(
                     "این کاربر هنوز با بات /start نزده. اول باید کاربر یک‌بار بات را استارت کند.",
-                    reply_markup=kb.credit_resellers_menu_kb((await asyncio.to_thread(db.get_resellers))),
+                    reply_markup=kb.admin_panel_kb(db, is_main_bot),
                 )
                 return
             await state.clear()
@@ -3449,76 +3596,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         key = data["setting_key"]
         (await asyncio.to_thread(db.set_setting, key, message.text.strip()))
         await state.clear()
-        await message.answer("✅ متن دکمه به‌روزرسانی شد.", reply_markup=kb.admin_edit_buttons_kb(db))
-
-    @router.callback_query(F.data.startswith("adm_btn_toggle:"))
-    async def cb_admin_btn_toggle(call: CallbackQuery):
-        if not full_admin_only(call.from_user.id):
-            return await deny_support(call)
-        key = call.data.split(":")[1]
-        meta = MENU_BUTTON_META.get(key)
-        if not meta or not meta["toggle_key"]:
-            await call.answer("❌ این دکمه قابل فعال/غیرفعال کردن نیست.", show_alert=True)
-            return
-        toggle_key = meta["toggle_key"]
-        current = (await asyncio.to_thread(db.get_setting, toggle_key, "1"))
-        (await asyncio.to_thread(db.set_setting, toggle_key, "0" if current == "1" else "1"))
-        await safe_edit(call, "کدام دکمه ویرایش شود؟", reply_markup=kb.admin_edit_buttons_kb(db))
-        await call.answer("✅ وضعیت دکمه به‌روزرسانی شد.")
-
-    # -------------------------------------------------------------------
-    # چیدمان/نمایش منوی اصلی: منوی پایین (Reply) و منوی شیشه‌ای بالا (Inline)
-    # -------------------------------------------------------------------
-
-    @router.callback_query(F.data == "adm_main_menu_settings")
-    async def cb_admin_main_menu_settings(call: CallbackQuery):
-        if not full_admin_only(call.from_user.id):
-            return await deny_support(call)
-        await replace_admin_view(call, "🧩 تنظیمات منوی اصلی:", reply_markup=kb.main_menu_settings_kb(db))
-        await call.answer()
-
-    @router.callback_query(F.data == "adm_mm_toggle_reply")
-    async def cb_admin_mm_toggle_reply(call: CallbackQuery):
-        if not full_admin_only(call.from_user.id):
-            return await deny_support(call)
-        current = (await asyncio.to_thread(db.get_setting, "main_menu_reply_enabled", "1")) == "1"
-        if current and (await asyncio.to_thread(db.get_setting, "main_menu_inline_enabled", "0")) != "1":
-            await call.answer("⚠️ چون منوی شیشه‌ای بالا غیرفعال است، منوی پایین را نمی‌توان خاموش کرد.", show_alert=True)
-            return
-        (await asyncio.to_thread(db.set_setting, "main_menu_reply_enabled", "0" if current else "1"))
-        await safe_edit(call, "🧩 تنظیمات منوی اصلی:", reply_markup=kb.main_menu_settings_kb(db))
-        await call.answer("✅ اعمال شد.")
-
-    @router.callback_query(F.data == "adm_mm_toggle_inline")
-    async def cb_admin_mm_toggle_inline(call: CallbackQuery):
-        if not full_admin_only(call.from_user.id):
-            return await deny_support(call)
-        current = (await asyncio.to_thread(db.get_setting, "main_menu_inline_enabled", "0")) == "1"
-        if current and (await asyncio.to_thread(db.get_setting, "main_menu_reply_enabled", "1")) != "1":
-            await call.answer("⚠️ چون منوی پایین غیرفعال است، منوی شیشه‌ای بالا را نمی‌توان خاموش کرد.", show_alert=True)
-            return
-        (await asyncio.to_thread(db.set_setting, "main_menu_inline_enabled", "0" if current else "1"))
-        await safe_edit(call, "🧩 تنظیمات منوی اصلی:", reply_markup=kb.main_menu_settings_kb(db))
-        await call.answer("✅ اعمال شد.")
-
-    @router.callback_query(F.data == "adm_mm_toggle_columns")
-    async def cb_admin_mm_toggle_columns(call: CallbackQuery):
-        if not full_admin_only(call.from_user.id):
-            return await deny_support(call)
-        current = (await asyncio.to_thread(db.get_setting, "main_menu_columns", "1"))
-        new_val = "2" if current != "2" else "1"
-        (await asyncio.to_thread(db.set_setting, "main_menu_columns", new_val))
-        await safe_edit(call, "🧩 تنظیمات منوی اصلی:", reply_markup=kb.main_menu_settings_kb(db))
-        await call.answer("✅ اعمال شد.")
-
-    # کلیک روی دکمه‌ی «پنل مدیریت» وقتی از منوی شیشه‌ای بالا (نه منوی پایین) زده شود
-    @router.callback_query(F.data == "mm:btn_admin_panel")
-    async def cb_mm_admin_panel(call: CallbackQuery, state: FSMContext):
-        await call.answer()
-        if not admin_only(call.from_user.id):
-            return
-        await state.clear()
-        await call.message.answer("🔧 پنل مدیریت:", reply_markup=kb.admin_panel_kb(db, is_main_bot))
+        await message.answer("✅ متن دکمه به‌روزرسانی شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
 
     def _lookup_button_label(key: str) -> str:
         if key in kb.BUTTON_LABELS:
@@ -3611,7 +3689,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             message.from_user.id, "card_change",
             f"شماره کارت جدید: {data['card_number']} | به نام: {message.text.strip()}",
         ))
-        await message.answer("✅ اطلاعات کارت به‌روزرسانی شد.", reply_markup=kb.admin_category_kb(db, is_main_bot, "finance"))
+        await message.answer("✅ اطلاعات کارت به‌روزرسانی شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
 
     # -------------------------------------------------------------------
     # تنظیم درگاه پرداخت کریپتو (Plisio)
@@ -3647,14 +3725,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if text in ("حذف", "/حذف", "-"):
             (await asyncio.to_thread(db.set_setting, "plisio_api_key", ""))
             (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "plisio_key_change", "API Key کریپتو حذف شد."))
-            await message.answer("✅ API Key کریپتو حذف شد و درگاه غیرفعال شد.", reply_markup=kb.admin_category_kb(db, is_main_bot, "finance"))
+            await message.answer("✅ API Key کریپتو حذف شد و درگاه غیرفعال شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
             return
         (await asyncio.to_thread(db.set_setting, "plisio_api_key", text))
         (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "plisio_key_change", "API Key کریپتو تغییر کرد."))
         await message.answer(
             "✅ API Key کریپتو ذخیره شد.\n"
             "الان از مینی‌اپ → مدیریت → فروش → «پرداخت کریپتو» فعالش کن.",
-            reply_markup=kb.admin_category_kb(db, is_main_bot, "finance"),
+            reply_markup=kb.admin_panel_kb(db, is_main_bot),
         )
 
     # -------------------------------------------------------------------
@@ -3674,7 +3752,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def process_edit_welcome(message: Message, state: FSMContext):
         (await asyncio.to_thread(db.set_setting, "welcome_text", message.text))
         await state.clear()
-        await message.answer("✅ پیام خوش‌آمد به‌روزرسانی شد.", reply_markup=kb.admin_category_kb(db, is_main_bot, "appearance"))
+        await message.answer("✅ پیام خوش‌آمد به‌روزرسانی شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
 
     # -------------------------------------------------------------------
     # مدیریت ادمین‌ها
@@ -3728,7 +3806,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await state.clear()
             await message.answer(
                 "این کاربر از قبل ادمین است. برای تغییر نقشش از «🔄 تغییر نقش ادمین» استفاده کن.",
-                reply_markup=kb.admin_admins_menu_kb(),
+                reply_markup=kb.admin_panel_kb(db, is_main_bot),
             )
             return
         await state.clear()
@@ -3781,10 +3859,10 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.clear()
         role = (await asyncio.to_thread(db.get_admin_role, target_id))
         if role is None:
-            await message.answer("این کاربر ادمین نیست.", reply_markup=kb.admin_admins_menu_kb())
+            await message.answer("این کاربر ادمین نیست.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
             return
         if role == "owner":
-            await message.answer("نقش مالک اصلی قابل تغییر نیست.", reply_markup=kb.admin_admins_menu_kb())
+            await message.answer("نقش مالک اصلی قابل تغییر نیست.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
             return
         await message.answer(
             f"نقش جدید کاربر {target_id} (نقش فعلی: {kb.ADMIN_ROLE_LABELS.get(role, role)}) چه باشد؟",
@@ -3836,19 +3914,19 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         try:
             if not (await asyncio.to_thread(db.is_admin, target_id)):
                 await state.clear()
-                await message.answer("⛔️ این کاربر ادمین نیست.", reply_markup=kb.admin_admins_menu_kb())
+                await message.answer("⛔️ این کاربر ادمین نیست.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
                 return
             if (await asyncio.to_thread(db.get_admin_role, target_id)) == "owner":
                 await state.clear()
-                await message.answer("⛔️ مالک اصلی قابل حذف نیست.", reply_markup=kb.admin_admins_menu_kb())
+                await message.answer("⛔️ مالک اصلی قابل حذف نیست.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
                 return
             ok = (await asyncio.to_thread(db.remove_admin, target_id))
             await state.clear()
             if ok:
                 (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "admin_remove", f"کاربر {target_id}"))
-                await message.answer("✅ ادمین حذف شد.", reply_markup=kb.admin_admins_menu_kb())
+                await message.answer("✅ ادمین حذف شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
             else:
-                await message.answer("⛔️ حذف ادمین ناموفق بود.", reply_markup=kb.admin_admins_menu_kb())
+                await message.answer("⛔️ حذف ادمین ناموفق بود.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
         except Exception:
             await state.clear()
             await message.answer("⚠️ حذف ادمین ناموفق بود. دوباره تلاش کنید.")
@@ -3878,7 +3956,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.clear()
         (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "broadcast", f"ارسال به {len(user_ids)} کاربر | موفق: {success} | ناموفق: {failed}"))
         await message.answer(
-            f"📢 پیام همگانی ارسال شد.\n✅ موفق: {success}\n❌ ناموفق: {failed}", reply_markup=kb.admin_category_kb(db, is_main_bot, "marketing")
+            f"📢 پیام همگانی ارسال شد.\n✅ موفق: {success}\n❌ ناموفق: {failed}", reply_markup=kb.admin_panel_kb(db, is_main_bot)
         )
 
     # -------------------------------------------------------------------
@@ -3925,7 +4003,6 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 if not owner_only(message.from_user.id):
                     (await asyncio.to_thread(db.set_support_conversation_admin, user_id, message.from_user.id))
                 (await asyncio.to_thread(db.add_support_message, user_id, "admin", message.text))
-            await _notify_user_inline_menu(bot, user_id)
             await message.answer("✅ پاسخ ارسال شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
         except Exception:
             await message.answer("⛔️ ارسال پیام به کاربر با خطا مواجه شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))

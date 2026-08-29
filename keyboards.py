@@ -9,7 +9,6 @@
 
 from aiogram.types import (
     ReplyKeyboardMarkup,
-    ReplyKeyboardRemove,
     KeyboardButton,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -18,7 +17,6 @@ from aiogram.types import (
 
 from config import MINIAPP_URL
 from panel_providers import PANEL_TYPE_LABELS
-from database import MENU_BUTTON_META
 
 
 # ---------------------------------------------------------------------------
@@ -58,36 +56,31 @@ def miniapp_inline_kb(miniapp_url: str) -> InlineKeyboardMarkup:
     ])
 
 
-def _menu_items(db, is_admin: bool, is_reseller: bool, is_main_bot: bool, show_reseller_request: bool):
-    """لیست مشترک آیتم‌های منوی اصلی را برمی‌گرداند: (key, text, style).
-    این تابع پایه‌ی هر دو نوع منو (معمولی/پایین و شیشه‌ای/بالا) است تا منطق
-    نمایش/عدم‌نمایش هر دکمه دقیقاً یک‌بار نوشته شده و همیشه هماهنگ بماند."""
+def main_menu_kb(db, is_admin: bool, is_reseller: bool = False, is_main_bot: bool = True,
+                  show_reseller_request: bool = False) -> ReplyKeyboardMarkup:
     settings = db.get_all_settings()
     order = db.get_menu_order()
     miniapp_url = _miniapp_url(db)
 
-    def item_miniapp():
-        if settings.get("miniapp_enabled", "1") != "1":
-            return None
-        return (MINIAPP_BTN_TEXT, "") if miniapp_url else None
+    # هر آیتم منو: تابعی که در صورت لازم‌بودن نمایش، یک ردیف (لیست دکمه) برمی‌گرداند، وگرنه None
+    def row_miniapp():
+        return [KeyboardButton(text=MINIAPP_BTN_TEXT)] if miniapp_url else None
 
-    def item_buy():
-        return (settings.get("btn_buy", "🛒 خرید کانفیگ"), settings.get("btn_buy_style", ""))
+    def row_buy():
+        return [_styled_button(settings.get("btn_buy", "🛒 خرید کانفیگ"), settings.get("btn_buy_style", ""))]
 
-    def item_test():
+    def row_test():
         if settings.get("test_enabled", "1") != "1":
             return None
-        return (settings.get("btn_test", "🧪 کانفیگ تست رایگان"), settings.get("btn_test_style", ""))
+        return [_styled_button(settings.get("btn_test", "🧪 کانفیگ تست رایگان"), settings.get("btn_test_style", ""))]
 
-    def item_my_orders():
-        return (settings.get("btn_my_orders", "📦 سفارش‌های من"), settings.get("btn_my_orders_style", ""))
+    def row_my_orders():
+        return [_styled_button(settings.get("btn_my_orders", "📦 سفارش‌های من"), settings.get("btn_my_orders_style", ""))]
 
-    def item_wallet():
-        return (settings.get("btn_wallet", "👛 کیف پول من"), settings.get("btn_wallet_style", ""))
+    def row_wallet():
+        return [_styled_button(settings.get("btn_wallet", "👛 کیف پول من"), settings.get("btn_wallet_style", ""))]
 
-    def item_referral():
-        if settings.get("referral_button_enabled", "1") != "1":
-            return None
+    def row_referral():
         any_mode_enabled = (
             settings.get("referral_enabled", "1") == "1"
             or settings.get("referral_free_config_enabled", "0") == "1"
@@ -95,153 +88,68 @@ def _menu_items(db, is_admin: bool, is_reseller: bool, is_main_bot: bool, show_r
         )
         if not any_mode_enabled:
             return None
-        return (settings.get("btn_referral", "🤝 زیرمجموعه‌گیری من"), settings.get("btn_referral_style", ""))
+        return [
+            _styled_button(settings.get("btn_referral", "🤝 زیرمجموعه‌گیری من"), settings.get("btn_referral_style", ""))
+        ]
 
-    def item_wheel():
+    def row_wheel():
         if settings.get("wheel_enabled", "1") != "1":
             return None
-        return (settings.get("btn_wheel", "🎡 گردونه شانس"), settings.get("btn_wheel_style", ""))
+        return [_styled_button(settings.get("btn_wheel", "🎡 گردونه شانس"), settings.get("btn_wheel_style", ""))]
 
-    def item_contact():
-        return (settings.get("btn_contact", "📞 ارتباط با پشتیبانی"), settings.get("btn_contact_style", ""))
+    def row_contact():
+        return [_styled_button(settings.get("btn_contact", "📞 ارتباط با پشتیبانی"), settings.get("btn_contact_style", ""))]
 
-    def item_admin_panel():
+    def row_admin_panel():
         if not is_admin:
             return None
-        return (settings.get("btn_admin_panel", "⚙️ پنل مدیریت"), settings.get("btn_admin_panel_style", ""))
+        return [
+            _styled_button(settings.get("btn_admin_panel", "⚙️ پنل مدیریت"), settings.get("btn_admin_panel_style", ""))
+        ]
 
-    def item_reseller_panel():
+    def row_reseller_panel():
         if not is_reseller:
             return None
-        return (settings.get("btn_reseller_panel", "🧑‍💼 پنل نمایندگی"), settings.get("btn_reseller_panel_style", "primary"))
+        return [_styled_button(settings.get("btn_reseller_panel", "🧑‍💼 پنل نمایندگی"), settings.get("btn_reseller_panel_style", "primary"))]
 
-    def item_reseller_request():
+    def row_reseller_request():
         if not show_reseller_request:
             return None
-        if settings.get("reseller_request_enabled", "1") != "1":
-            return None
-        return (settings.get("btn_reseller_request", "🏪 درخواست نمایندگی سطح ۲"), settings.get("btn_reseller_request_style", "primary"))
+        return [_styled_button(settings.get("btn_reseller_request", "🏪 درخواست نمایندگی سطح ۲"), settings.get("btn_reseller_request_style", "primary"))]
 
     builders = {
-        "miniapp": item_miniapp,
-        "btn_buy": item_buy,
-        "btn_test": item_test,
-        "btn_my_orders": item_my_orders,
-        "btn_wallet": item_wallet,
-        "btn_referral": item_referral,
-        "btn_wheel": item_wheel,
-        "btn_contact": item_contact,
-        "btn_admin_panel": item_admin_panel,
-        "btn_reseller_panel": item_reseller_panel,
-        "btn_reseller_request": item_reseller_request,
+        "miniapp": row_miniapp,
+        "btn_buy": row_buy,
+        "btn_test": row_test,
+        "btn_my_orders": row_my_orders,
+        "btn_wallet": row_wallet,
+        "btn_referral": row_referral,
+        "btn_wheel": row_wheel,
+        "btn_contact": row_contact,
+        "btn_admin_panel": row_admin_panel,
+        "btn_reseller_panel": row_reseller_panel,
+        "btn_reseller_request": row_reseller_request,
     }
 
-    items = []
+    rows = []
     for key in order:
         builder = builders.get(key)
         if not builder:
             continue
-        result = builder()
-        if result:
-            text, style = result
-            items.append((key, text, style))
-    return items
+        row = builder()
+        if row:
+            rows.append(row)
 
-
-def _menu_columns(db) -> int:
-    """تعداد دکمه در هر ردیف منوی اصلی (۱ یا ۲) بر اساس تنظیمات."""
-    try:
-        cols = int(db.get_setting("main_menu_columns", "1") or "1")
-    except (TypeError, ValueError):
-        cols = 1
-    return 2 if cols == 2 else 1
-
-
-def _chunk_row(buttons: list, columns: int) -> list:
-    """لیست دکمه‌ها را به ردیف‌هایی با تعداد ستون مشخص تقسیم می‌کند - همان
-    الگویی که در پنل مدیریت (admin_panel_kb) استفاده شده، فقط عمومی‌شده."""
-    return [buttons[i:i + columns] for i in range(0, len(buttons), columns)]
-
-
-def _menu_item_rows(db, items: list) -> list:
-    """آیتم‌های منو (لیست تخت (key, text, style)) را بر اساس چیدمان دلخواه
-    کاربر (main_menu_row_breaks) به ردیف‌ها تقسیم می‌کند: هر دکمه‌ای که کلیدش
-    در لیست breaks باشد، یک ردیف تازه شروع می‌کند؛ بقیه به ردیف دکمه‌ی قبلی
-    خودشان می‌چسبند. یعنی چیدمان دیگر به تعداد ستون ثابت محدود نیست - مثلاً
-    می‌شود یک دکمه تمام‌عرض بالا، بعد چند دکمه کنار هم پایینش داشت.
-    اگر کاربر هنوز چیدمان سفارشی نساخته باشد (breaks is None)، برای سازگاری
-    با نصب‌های قدیمی از تنظیم main_menu_columns (۱ یا ۲ ستون ثابت) استفاده
-    می‌شود."""
-    breaks = db.get_menu_row_breaks()
-    if breaks is None:
-        columns = _menu_columns(db)
-        return _chunk_row(items, columns)
-
-    break_set = set(breaks)
-    rows, current = [], []
-    for item in items:
-        key = item[0]
-        if current and key in break_set:
-            rows.append(current)
-            current = []
-        current.append(item)
-    if current:
-        rows.append(current)
-    return rows
-
-
-def main_menu_kb(db, is_admin: bool, is_reseller: bool = False, is_main_bot: bool = True,
-                  show_reseller_request: bool = False):
-    """منوی پایین (Reply Keyboard). اگر از تنظیمات غیرفعال شده باشد،
-    ReplyKeyboardRemove برمی‌گردد تا کیبورد قبلی از پایین صفحه‌ی کاربر جمع شود."""
-    if db.get_setting("main_menu_reply_enabled", "1") != "1":
-        return ReplyKeyboardRemove()
-
-    items = _menu_items(db, is_admin, is_reseller, is_main_bot, show_reseller_request)
-    item_rows = _menu_item_rows(db, items)
-    rows = [[_styled_button(text, style) for _key, text, style in row] for row in item_rows]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
-def main_menu_inline_kb(db, is_admin: bool, is_reseller: bool = False, is_main_bot: bool = True,
-                         show_reseller_request: bool = False) -> InlineKeyboardMarkup:
-    """منوی شیشه‌ای بالا (Inline Keyboard) - همان آیتم‌های منوی پایین، به شکل inline.
-    روی کلیک هر دکمه، callback_data به‌صورت 'mm:<key>' ارسال می‌شود که در
-    handlers_user.py / handlers_admin.py به همان هندلر متنی متناظرش وصل شده."""
-    items = _menu_items(db, is_admin, is_reseller, is_main_bot, show_reseller_request)
-    item_rows = _menu_item_rows(db, items)
-    miniapp_url = _miniapp_url(db)
-
-    def _build_button(key, text, style):
-        if key == "miniapp" and miniapp_url:
-            return InlineKeyboardButton(text=text, web_app=WebAppInfo(url=miniapp_url))
-        s = style if style in ("primary", "success", "danger") else None
-        return InlineKeyboardButton(text=text, callback_data=f"mm:{key}", style=s)
-
-    rows = [[_build_button(key, text, style) for key, text, style in row] for row in item_rows]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def menu_for_user(db, user_tg_id: int, is_main_bot: bool = True):
+def menu_for_user(db, user_tg_id: int, is_main_bot: bool = True) -> ReplyKeyboardMarkup:
     show_reseller_request = (
         is_main_bot
         and not db.is_reseller(user_tg_id)
         and not db.get_open_reseller_request(user_tg_id)
     )
     return main_menu_kb(db, db.is_admin(user_tg_id), db.is_reseller(user_tg_id), is_main_bot, show_reseller_request)
-
-
-def inline_menu_for_user(db, user_tg_id: int, is_main_bot: bool = True) -> InlineKeyboardMarkup:
-    """معادل menu_for_user ولی نسخه‌ی شیشه‌ای (inline). اگر منوی شیشه‌ای از
-    تنظیمات غیرفعال باشد None برمی‌گرداند تا فراخوان اصلاً پیامی نفرستد."""
-    if db.get_setting("main_menu_inline_enabled", "0") != "1":
-        return None
-    show_reseller_request = (
-        is_main_bot
-        and not db.is_reseller(user_tg_id)
-        and not db.get_open_reseller_request(user_tg_id)
-    )
-    return main_menu_inline_kb(db, db.is_admin(user_tg_id), db.is_reseller(user_tg_id), is_main_bot, show_reseller_request)
 
 
 # ---------------------------------------------------------------------------
@@ -347,9 +255,11 @@ def reseller_panel_kb() -> InlineKeyboardMarkup:
     ])
 
 
-def payment_choice_kb(crypto_enabled: bool) -> InlineKeyboardMarkup:
-    """کیبورد مرحله‌ی پرداخت: اگر درگاه کریپتو فعال باشد، دکمه‌ی پرداخت کریپتو هم نمایش داده می‌شود."""
+def payment_choice_kb(crypto_enabled: bool, abangateway_enabled: bool = False) -> InlineKeyboardMarkup:
+    """کیبورد مرحله‌ی پرداخت: اگر درگاه کریپتو/آبان گیت وی فعال باشد، دکمه‌ی مربوطه هم نمایش داده می‌شود."""
     rows = []
+    if abangateway_enabled:
+        rows.append([InlineKeyboardButton(text="💳 پرداخت خودکار کارت‌به‌کارت (تایید آنی)", callback_data="pay_abangateway")])
     if crypto_enabled:
         rows.append([InlineKeyboardButton(text="🪙 پرداخت با ارز دیجیتال (تایید آنی)", callback_data="pay_crypto")])
     rows.append([InlineKeyboardButton(text="❌ انصراف", callback_data="cancel_flow")])
@@ -391,6 +301,7 @@ ADMIN_PANEL_ITEMS = [
     ("adm_pending_orders", "🧾 سفارش‌های در انتظار", "adm_pending_orders"),
     ("adm_pending_topups", "👛 درخواست‌های شارژ کیف پول", "adm_pending_topups"),
     ("adm_crypto_payments", "🪙 پرداخت‌های کریپتو", "adm_crypto_payments"),
+    ("adm_abangateway_payments", "💳 پرداخت‌های آبان گیت وی", "adm_abangateway_payments"),
     ("adm_discounts_menu", "🎟 مدیریت کدهای تخفیف", "adm_discounts_menu"),
     ("adm_wheel_settings", "🎡 مدیریت گردونه شانس", "adm_wheel_settings"),
     ("adm_renewal_settings", "🔔 یادآوری تمدید سرویس", "adm_renewal_settings"),
@@ -402,9 +313,9 @@ ADMIN_PANEL_ITEMS = [
     ("adm_credit_resellers_menu", "💳 نمایندگی حجمی (اعتبار)", "adm_credit_resellers_menu"),
     ("adm_reseller_requests_menu", "📋 درخواست‌های نمایندگی", "adm_reseller_requests_menu"),
     ("adm_edit_buttons", "✏️ ویرایش متن دکمه‌ها", "adm_edit_buttons"),
-    ("adm_main_menu_settings", "🧩 چیدمان/نمایش منوی اصلی", "adm_main_menu_settings"),
     ("adm_set_card", "💳 تنظیم شماره کارت", "adm_set_card"),
     ("adm_set_plisio", "🪙 تنظیم درگاه کریپتو (Plisio)", "adm_set_plisio"),
+    ("adm_set_abangateway", "💳 تنظیم درگاه آبان گیت وی", "adm_set_abangateway"),
     ("adm_edit_welcome", "📝 ویرایش پیام خوش‌آمد", "adm_edit_welcome"),
     ("adm_admins_menu", "👤 مدیریت ادمین‌ها", "adm_admins_menu"),
     ("adm_broadcast", "📢 پیام همگانی", "adm_broadcast"),
@@ -428,6 +339,7 @@ ADMIN_PANEL_CATEGORIES = [
         "adm_pending_orders",
         "adm_pending_topups",
         "adm_crypto_payments",
+        "adm_abangateway_payments",
         "adm_reseller_requests_menu",
     ]),
     ("products", "📦 محصولات و کانفیگ", [
@@ -451,6 +363,7 @@ ADMIN_PANEL_CATEGORIES = [
     ("finance", "💰 مالی و پرداخت", [
         "adm_set_card",
         "adm_set_plisio",
+        "adm_set_abangateway",
     ]),
     ("alerts", "🔔 یادآوری‌ها و هشدارها", [
         "adm_renewal_settings",
@@ -463,7 +376,6 @@ ADMIN_PANEL_CATEGORIES = [
     ]),
     ("appearance", "🎨 ظاهر و رنگ‌بندی", [
         "adm_edit_buttons",
-        "adm_main_menu_settings",
         "adm_edit_welcome",
         "adm_panel_colors_menu",
         "adm_buyflow_colors_menu",
@@ -800,53 +712,13 @@ def admin_edit_buttons_kb(db) -> InlineKeyboardMarkup:
     for key, label in BUTTON_LABELS.items():
         current_style = db.get_setting(f"{key}_style", "")
         style_icon = {"primary": "🔵", "success": "🟢", "danger": "🔴", "": "⚪️"}.get(current_style, "⚪️")
-        row = [
-            InlineKeyboardButton(text=f"✏️ {style_icon} {label}", callback_data=f"adm_btn_edit:{key}"),
-            InlineKeyboardButton(text="🎨 تغییر رنگ", callback_data=f"adm_btn_color_menu:{key}"),
-        ]
-        toggle_key = MENU_BUTTON_META.get(key, {}).get("toggle_key")
-        if toggle_key:
-            enabled = db.get_setting(toggle_key, "1") == "1"
-            row.append(
-                InlineKeyboardButton(
-                    text="🟢 فعال" if enabled else "🔴 غیرفعال",
-                    callback_data=f"adm_btn_toggle:{key}",
-                )
-            )
-        rows.append(row)
-    miniapp_enabled = db.get_setting("miniapp_enabled", "1") == "1"
-    rows.append(
-        [
-            InlineKeyboardButton(
-                text=f"دکمه مینی‌اپ فروشگاه: {'🟢 فعال' if miniapp_enabled else '🔴 غیرفعال'}",
-                callback_data="adm_btn_toggle:miniapp",
-            )
-        ]
-    )
+        rows.append(
+            [
+                InlineKeyboardButton(text=f"✏️ {style_icon} {label}", callback_data=f"adm_btn_edit:{key}"),
+                InlineKeyboardButton(text="🎨 تغییر رنگ", callback_data=f"adm_btn_color_menu:{key}"),
+            ]
+        )
     rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:appearance")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def main_menu_settings_kb(db) -> InlineKeyboardMarkup:
-    """تنظیمات نمایش منوی اصلی: فعال/غیرفعال کردن جداگانه‌ی منوی پایین (Reply)
-    و منوی شیشه‌ای بالا (Inline)، و تعداد ستون هر دو منو (۱ یا ۲ دکمه در هر ردیف)."""
-    reply_on = db.get_setting("main_menu_reply_enabled", "1") == "1"
-    inline_on = db.get_setting("main_menu_inline_enabled", "0") == "1"
-    columns = _menu_columns(db)
-
-    reply_toggle = "🔴 غیرفعال کردن منوی پایین" if reply_on else "🟢 فعال کردن منوی پایین"
-    inline_toggle = "🔴 غیرفعال کردن منوی شیشه‌ای بالا" if inline_on else "🟢 فعال کردن منوی شیشه‌ای بالا"
-    col_toggle = "↔️ چیدمان: ۲ دکمه در هر ردیف" if columns == 1 else "↕️ چیدمان: ۱ دکمه در هر ردیف"
-
-    rows = [
-        [InlineKeyboardButton(text=f"منوی پایین (Reply): {'🟢 فعال' if reply_on else '🔴 غیرفعال'}", callback_data="noop")],
-        [InlineKeyboardButton(text=reply_toggle, callback_data="adm_mm_toggle_reply")],
-        [InlineKeyboardButton(text=f"منوی شیشه‌ای بالا (Inline): {'🟢 فعال' if inline_on else '🔴 غیرفعال'}", callback_data="noop")],
-        [InlineKeyboardButton(text=inline_toggle, callback_data="adm_mm_toggle_inline")],
-        [InlineKeyboardButton(text=f"چیدمان فعلی: {columns} دکمه در هر ردیف", callback_data="noop")],
-        [InlineKeyboardButton(text=col_toggle, callback_data="adm_mm_toggle_columns")],
-        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:appearance")],
-    ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -924,6 +796,35 @@ def crypto_invoices_kb(invoices) -> InlineKeyboardMarkup:
             row.append(InlineKeyboardButton(text="❌ لغو", callback_data=f"cancel_crypto_invoice:{inv['id']}"))
         rows.append(row)
     rows.append([InlineKeyboardButton(text="🔄 بروزرسانی", callback_data="adm_crypto_payments")])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:daily")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def abangateway_invoices_kb(invoices) -> InlineKeyboardMarkup:
+    rows = []
+    status_text = {
+        "new": "🟡 جدید",
+        "pending": "🟠 در انتظار پرداخت",
+        "completed": "🟢 تکمیل‌شده",
+        "expired": "🔴 منقضی‌شده",
+        "cancelled": "⚪️ لغوشده",
+        "error": "🔴 خطا",
+    }
+    kind_text = {"order": "سفارش", "wallet_topup": "شارژ کیف پول"}
+    for inv in invoices:
+        st = status_text.get(inv["status"], inv["status"] or "---")
+        kind = kind_text.get(inv["kind"], inv["kind"])
+        row = [
+            InlineKeyboardButton(
+                text=f"{st} | {kind} #{inv['ref_id']} | {inv['amount_toman']:,} تومان",
+                callback_data=f"view_abangateway_invoice:{inv['id']}",
+            )
+        ]
+        if inv["status"] in ("new", "pending"):
+            row.append(InlineKeyboardButton(text="🔄 بررسی", callback_data=f"check_abangateway_invoice:{inv['id']}"))
+            row.append(InlineKeyboardButton(text="❌ لغو", callback_data=f"cancel_abangateway_invoice:{inv['id']}"))
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="🔄 بروزرسانی", callback_data="adm_abangateway_payments")])
     rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:daily")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

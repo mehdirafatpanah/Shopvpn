@@ -29,6 +29,7 @@ from force_join import is_channel_member, CHECK_CALLBACK
 from sub_info import fetch_sub_info, format_sub_info_fa
 from stock_alerts import check_and_notify_low_stock
 import crypto_payment
+import abangateway_payment
 from panel_providers import get_provider, PanelError, PanelUsernameTakenError
 from reseller_auto_provision import provision_auto_config, provision_test_config, ProvisionError
 from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
@@ -95,14 +96,6 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         return None, None
     router = Router()
 
-    async def _send_inline_main_menu(target, user_tg_id: int):
-        """اگر منوی شیشه‌ای بالا از تنظیمات فعال باشد، آن را به‌عنوان یک پیام
-        جدا (کنار/بعد از منوی پایین) ارسال می‌کند. target هر شیء‌ای است که
-        متد answer async دارد (Message یا call.message)."""
-        inline_kb = (await asyncio.to_thread(kb.inline_menu_for_user, db, user_tg_id, is_main_bot))
-        if inline_kb is not None:
-            await target.answer("📋 منو:", reply_markup=inline_kb)
-
     # -----------------------------------------------------------------------
     # عضویت اجباری در کانال
     # -----------------------------------------------------------------------
@@ -126,7 +119,6 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 pass
             welcome = (await asyncio.to_thread(db.get_setting, "welcome_text"))
             await call.message.answer(welcome, reply_markup=kb.menu_for_user(db, call.from_user.id, is_main_bot))
-            await _send_inline_main_menu(call.message, call.from_user.id)
         else:
             await call.answer("❌ هنوز عضو کانال نشده‌اید.", show_alert=True)
 
@@ -161,7 +153,6 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
         welcome = (await asyncio.to_thread(db.get_setting, "welcome_text"))
         await message.answer(welcome, reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot))
-        await _send_inline_main_menu(message, message.from_user.id)
 
     async def _handle_referral_invite_rewards(bot: Bot, referrer_id: int, reward_info: dict):
         """پیام و تحویل جوایز حالت‌های ۲ و ۳ زیرمجموعه‌گیری (که با صرفِ دعوت، بدون
@@ -485,6 +476,43 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             if sent:
                 (await asyncio.to_thread(db.set_order_admin_message, order_id, admin_id, sent.message_id))
 
+    @router.callback_query(F.data.startswith("check_aban:"))
+    async def cb_check_abangateway(call: CallbackQuery, bot: Bot):
+        try:
+            invoice_db_id = int(call.data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await call.answer("داده نامعتبر.", show_alert=True)
+            return
+        invoice_row = (await asyncio.to_thread(db.get_abangateway_invoice, invoice_db_id))
+        if not invoice_row or invoice_row["user_id"] != call.from_user.id:
+            await call.answer("فاکتور یافت نشد.", show_alert=True)
+            return
+
+        await call.answer("در حال بررسی وضعیت پرداخت...")
+        result = await abangateway_payment.try_verify_and_finalize(db, invoice_row)
+
+        if result == "not_paid_yet":
+            await call.message.answer("⏳ هنوز واریزی برای این فاکتور تایید نشده. کمی صبر کن و دوباره بررسی کن.")
+            return
+        if result in ("expired", "cancelled"):
+            await call.message.answer("❌ اعتبار این فاکتور تمام شده یا لغو شده. لطفاً دوباره از منو اقدام کن.")
+            return
+        if result == "already_delivered":
+            await call.message.answer("✅ این پرداخت قبلاً تایید و تحویل داده شده است.")
+            return
+        if result.startswith("error:"):
+            await call.message.answer(f"⚠️ خطا در بررسی وضعیت: {result[6:]}")
+            return
+
+        # result == "verified_now"
+        if invoice_row["kind"] == "wallet_topup":
+            text = await abangateway_payment.finalize_paid_topup(db, invoice_row["ref_id"])
+        else:
+            text = await abangateway_payment.finalize_paid_order(
+                db, bot, invoice_row["ref_id"], notify_admins_fn=_notify_admins_of_order
+            )
+        await call.message.answer(text)
+
     @router.callback_query(F.data.startswith("buy_start:"))
     async def cb_buy_start(call: CallbackQuery, state: FSMContext, bot: Bot):
         _, product_id, quantity = call.data.split(":")
@@ -615,7 +643,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
         await call.message.edit_text(
             text, parse_mode="Markdown",
-            reply_markup=kb.payment_choice_kb(crypto_payment.crypto_payment_available(db)),
+            reply_markup=kb.payment_choice_kb(
+                crypto_payment.crypto_payment_available(db),
+                abangateway_payment.abangateway_payment_available(db),
+            ),
         )
         await call.answer()
 
@@ -659,6 +690,37 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             ]]),
         )
 
+    @router.callback_query(F.data == "pay_abangateway", BuyFlow.waiting_receipt)
+    async def cb_pay_abangateway_order(call: CallbackQuery, state: FSMContext):
+        data = await state.get_data()
+        order_id = data.get("order_id")
+        order = (await asyncio.to_thread(db.get_order, order_id)) if order_id else None
+        if not order or order["status"] != "pending":
+            await call.answer("سفارش معتبر یافت نشد.", show_alert=True)
+            return
+        await call.answer("در حال ساخت فاکتور...")
+        product = (await asyncio.to_thread(db.get_product, order["product_id"]))
+        tenant_id = (await asyncio.to_thread(db.get_setting, "miniapp_tenant_id", ""))
+        try:
+            result = await abangateway_payment.create_invoice_for(
+                db, tenant_id, call.from_user.id, "order", order_id, order["final_price"],
+                order_name=f"سفارش #{order_id} - {product['name'] if product else ''}",
+            )
+        except abangateway_payment.AbanGatewayPaymentError as e:
+            await call.message.answer(f"⚠️ {e}")
+            return
+        invoice_row = (await asyncio.to_thread(db.get_abangateway_invoice_by_invoice_id, result["invoice_id"]))
+        await call.message.answer(
+            "💳 فاکتور پرداخت ساخته شد. روی دکمه‌ی زیر بزن و پرداخت رو تکمیل کن.\n"
+            "⏳ اعتبار این فاکتور محدود است.\n"
+            "معمولاً به‌محض واریز، سفارش خودکار تحویل داده می‌شود؛ اگر چند دقیقه طول کشید، "
+            "دکمه‌ی «بررسی وضعیت پرداخت» را بزن.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["payment_url"])],
+                [InlineKeyboardButton(text="🔄 بررسی وضعیت پرداخت", callback_data=f"check_aban:{invoice_row['id']}")],
+            ]),
+        )
+
     @router.message(BuyFlow.waiting_receipt, F.photo | F.document)
     async def receive_receipt(message: Message, state: FSMContext, bot: Bot):
         data = await state.get_data()
@@ -683,7 +745,6 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             "✅ رسید شما برای بررسی ارسال شد. پس از تایید ادمین، کانفیگ برای شما ارسال خواهد شد.",
             reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
         )
-        await _send_inline_main_menu(message, message.from_user.id)
         await state.clear()
 
     @router.message(BuyFlow.waiting_receipt)
@@ -824,7 +885,6 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 "کانفیگ شما در پیام بعدی ارسال می‌شود 👇",
                 reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
             )
-            await _send_inline_main_menu(message, message.from_user.id)
             await deliver_config_to_user(
                 message.bot, message.from_user.id, "کانفیگ شخصی",
                 [result.subscription_url], final_price=0, order_id=order_id,
@@ -851,7 +911,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         text += "لطفاً عکس رسید پرداخت را همینجا ارسال کنید، یا از دکمه‌ی زیر با ارز دیجیتال پرداخت کنید."
         await message.answer(
             text, parse_mode="Markdown",
-            reply_markup=kb.payment_choice_kb(crypto_payment.crypto_payment_available(db)),
+            reply_markup=kb.payment_choice_kb(
+                crypto_payment.crypto_payment_available(db),
+                abangateway_payment.abangateway_payment_available(db),
+            ),
         )
 
     @router.callback_query(F.data == "pay_crypto", CustomConfigFlow.waiting_receipt)
@@ -881,6 +944,35 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             ]]),
         )
 
+    @router.callback_query(F.data == "pay_abangateway", CustomConfigFlow.waiting_receipt)
+    async def cb_pay_abangateway_custom_config(call: CallbackQuery, state: FSMContext):
+        data = await state.get_data()
+        order_id = data.get("order_id")
+        order = (await asyncio.to_thread(db.get_order, order_id)) if order_id else None
+        if not order or order["status"] != "pending":
+            await call.answer("سفارش معتبر یافت نشد.", show_alert=True)
+            return
+        await call.answer("در حال ساخت فاکتور...")
+        tenant_id = (await asyncio.to_thread(db.get_setting, "miniapp_tenant_id", ""))
+        try:
+            result = await abangateway_payment.create_invoice_for(
+                db, tenant_id, call.from_user.id, "order", order_id, order["final_price"],
+                order_name=f"کانفیگ شخصی #{order_id} - {order['custom_username']}",
+            )
+        except abangateway_payment.AbanGatewayPaymentError as e:
+            await call.message.answer(f"⚠️ {e}")
+            return
+        invoice_row = (await asyncio.to_thread(db.get_abangateway_invoice_by_invoice_id, result["invoice_id"]))
+        await call.message.answer(
+            "💳 فاکتور پرداخت ساخته شد. روی دکمه‌ی زیر بزن و پرداخت رو تکمیل کن.\n"
+            "معمولاً به‌محض واریز، کانفیگ خودکار ساخته می‌شود؛ اگر چند دقیقه طول کشید، "
+            "دکمه‌ی «بررسی وضعیت پرداخت» را بزن.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["payment_url"])],
+                [InlineKeyboardButton(text="🔄 بررسی وضعیت پرداخت", callback_data=f"check_aban:{invoice_row['id']}")],
+            ]),
+        )
+
     @router.message(CustomConfigFlow.waiting_receipt, F.photo | F.document)
     async def receive_custom_config_receipt(message: Message, state: FSMContext, bot: Bot):
         data = await state.get_data()
@@ -903,7 +995,6 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             "✅ رسید شما برای بررسی ارسال شد. پس از تایید ادمین، کانفیگ شخصی شما ساخته و ارسال خواهد شد.",
             reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
         )
-        await _send_inline_main_menu(message, message.from_user.id)
         await state.clear()
 
     @router.message(CustomConfigFlow.waiting_receipt)
@@ -1089,7 +1180,6 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             parse_mode="Markdown",
             reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
         )
-        await _send_inline_main_menu(message, message.from_user.id)
 
     # -----------------------------------------------------------------------
     # سفارش‌های من (منوی کانفیگ‌ها + امکان حذف کامل هر کانفیگ)
@@ -1281,9 +1371,6 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     @router.message(F.text.func(lambda t: t == db.get_setting("btn_referral")))
     async def referral_menu(message: Message, bot: Bot):
         settings = (await asyncio.to_thread(db.get_all_settings))
-        if settings.get("referral_button_enabled", "1") != "1":
-            await message.answer("در حال حاضر سیستم زیرمجموعه‌گیری غیرفعال است.")
-            return
         commission_on = settings.get("referral_enabled", "1") == "1"
         freeconfig_on = settings.get("referral_free_config_enabled", "0") == "1"
         invitebonus_on = settings.get("referral_invite_bonus_enabled", "0") == "1"
@@ -1405,7 +1492,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         )
         await message.answer(
             text, parse_mode="Markdown",
-            reply_markup=kb.payment_choice_kb(crypto_payment.crypto_payment_available(db)),
+            reply_markup=kb.payment_choice_kb(
+                crypto_payment.crypto_payment_available(db),
+                abangateway_payment.abangateway_payment_available(db),
+            ),
         )
 
     @router.callback_query(F.data == "pay_crypto", WalletTopup.waiting_receipt)
@@ -1433,6 +1523,35 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["invoice_url"]),
             ]]),
+        )
+
+    @router.callback_query(F.data == "pay_abangateway", WalletTopup.waiting_receipt)
+    async def cb_pay_abangateway_topup(call: CallbackQuery, state: FSMContext):
+        data = await state.get_data()
+        amount = data.get("topup_amount")
+        if not amount:
+            await call.answer("درخواست معتبر یافت نشد.", show_alert=True)
+            return
+        await call.answer("در حال ساخت فاکتور...")
+        topup_id = (await asyncio.to_thread(db.create_topup, call.from_user.id, amount))
+        tenant_id = (await asyncio.to_thread(db.get_setting, "miniapp_tenant_id", ""))
+        try:
+            result = await abangateway_payment.create_invoice_for(
+                db, tenant_id, call.from_user.id, "wallet_topup", topup_id, amount,
+                order_name=f"شارژ کیف پول #{topup_id}",
+            )
+        except abangateway_payment.AbanGatewayPaymentError as e:
+            await call.message.answer(f"⚠️ {e}")
+            return
+        invoice_row = (await asyncio.to_thread(db.get_abangateway_invoice_by_invoice_id, result["invoice_id"]))
+        await call.message.answer(
+            "💳 فاکتور پرداخت ساخته شد. روی دکمه‌ی زیر بزن و پرداخت رو تکمیل کن.\n"
+            "معمولاً به‌محض واریز، کیف پول خودکار شارژ می‌شود؛ اگر چند دقیقه طول کشید، "
+            "دکمه‌ی «بررسی وضعیت پرداخت» را بزن.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["payment_url"])],
+                [InlineKeyboardButton(text="🔄 بررسی وضعیت پرداخت", callback_data=f"check_aban:{invoice_row['id']}")],
+            ]),
         )
 
     @router.message(WalletTopup.waiting_receipt, F.photo | F.document)
@@ -1470,7 +1589,6 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             "✅ درخواست شارژ کیف پول شما برای بررسی ارسال شد. پس از تایید ادمین، مبلغ به کیف پول شما اضافه می‌شود.",
             reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
         )
-        await _send_inline_main_menu(message, message.from_user.id)
         await state.clear()
 
     @router.message(WalletTopup.waiting_receipt)
@@ -1487,9 +1605,6 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     @router.message(F.text.func(lambda t: t == db.get_setting("btn_reseller_request", "🏪 درخواست نمایندگی سطح ۲")))
     async def reseller_request_start(message: Message, state: FSMContext):
         if not is_main_bot:
-            return
-        if (await asyncio.to_thread(db.get_setting, "reseller_request_enabled", "1")) != "1":
-            await message.answer("در حال حاضر امکان درخواست نمایندگی سطح ۲ غیرفعال است.")
             return
         if (await asyncio.to_thread(db.is_reseller, message.from_user.id)):
             await message.answer("شما همین الان هم نماینده هستید.")
@@ -1539,7 +1654,6 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 "لطفاً دوباره روی «درخواست نمایندگی سطح ۲» بزنید.",
                 reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
             )
-            await _send_inline_main_menu(message, message.from_user.id)
             return
 
         try:
@@ -1564,14 +1678,12 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 "✅ درخواست نمایندگی شما ثبت شد. بعد از بررسی ادمین، هزینه‌ی نمایندگی برایتان اعلام می‌شود.",
                 reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
             )
-            await _send_inline_main_menu(message, message.from_user.id)
         except Exception:
             logging.getLogger(__name__).exception("خطا در ثبت درخواست نمایندگی سطح ۲ کاربر %s", message.from_user.id)
             await message.answer(
                 "⚠️ در ثبت درخواست خطایی رخ داد. لطفاً دوباره تلاش کنید یا با پشتیبانی تماس بگیرید.",
                 reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
             )
-            await _send_inline_main_menu(message, message.from_user.id)
 
     @router.callback_query(F.data.startswith("resreq_pay:"))
     async def reseller_request_pay(call: CallbackQuery):
@@ -1679,7 +1791,6 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 "✅ رسید شما برای بررسی ارسال شد. پس از تایید ادمین، کانفیگ برای شما ارسال خواهد شد.",
                 reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
             )
-            await _send_inline_main_menu(message, message.from_user.id)
             return
 
         # هیچ سفارش/درخواست pending‌ای برای این کاربر پیدا نشد. برای شارژ کیف‌پول
@@ -1725,7 +1836,6 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 "✅ درخواست شارژ کیف پول شما برای بررسی ارسال شد. پس از تایید ادمین، مبلغ به کیف پول شما اضافه می‌شود.",
                 reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
             )
-            await _send_inline_main_menu(message, message.from_user.id)
             return
 
         log.warning(
@@ -1739,7 +1849,6 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             "لطفاً دوباره از منوی اصلی همان مسیر خرید یا شارژ کیف پول را طی کنید و رسید را مجدداً ارسال کنید.",
             reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
         )
-        await _send_inline_main_menu(message, message.from_user.id)
 
     @router.message(ResellerRequestFlow.waiting_bot_token)
     async def reseller_request_bot_token(message: Message, state: FSMContext):
@@ -1812,7 +1921,6 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             f"برای شروع، با /start به بات خودتان (@{username}) وارد شوید.",
             reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
         )
-        await _send_inline_main_menu(message, message.from_user.id)
         try:
             for admin_id in _senior_admin_ids():
                 await bot.send_message(
@@ -1857,43 +1965,6 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             "پیام شما برای پشتیبانی ارسال شد. به زودی پاسخ داده می‌شود.",
             reply_markup=kb.menu_for_user(db, user.id, is_main_bot),
         )
-        await _send_inline_main_menu(message, user.id)
         await state.clear()
-
-    # -----------------------------------------------------------------------
-    # پل بین منوی شیشه‌ای بالا (Inline) و همان هندلرهای منوی پایین (Reply)
-    # چون هر دکمه‌ی پایین از قبل یک هندلر مستقل دارد، به‌جای تکرار منطق هرکدام،
-    # کلیک روی دکمه‌ی شیشه‌ای معادل، مستقیماً همان تابع را با کاربرِ واقعیِ
-    # کلیک‌کننده (call.from_user) صدا می‌زند تا رفتار دقیقاً یکسان بماند.
-    # -----------------------------------------------------------------------
-
-    @router.callback_query(F.data.startswith("mm:"))
-    async def cb_main_menu_inline(call: CallbackQuery, state: FSMContext, bot: Bot):
-        await call.answer()
-        key = call.data.split(":", 1)[1]
-        # پیام جعلی: همان پیام بات ولی از_user واقعیِ کلیک‌کننده، تا هندلرهای
-        # زیر که message.from_user.id می‌خوانند درست کار کنند
-        fake_message = call.message.model_copy(update={"from_user": call.from_user})
-
-        if key == "btn_buy":
-            await show_categories(fake_message, state)
-        elif key == "btn_test":
-            await get_test_config(fake_message)
-        elif key == "btn_my_orders":
-            await my_orders(fake_message)
-        elif key == "btn_wallet":
-            await wallet_menu(fake_message)
-        elif key == "btn_referral":
-            await referral_menu(fake_message, bot)
-        elif key == "btn_wheel":
-            await wheel_of_fortune(fake_message, bot)
-        elif key == "btn_contact":
-            await contact_start(fake_message, state)
-        elif key == "btn_reseller_panel":
-            await reseller_panel_open(fake_message, state)
-        elif key == "btn_reseller_request":
-            await reseller_request_start(fake_message, state)
-        # کلید "btn_admin_panel" در handlers_admin.py مدیریت می‌شود چون هندلر
-        # اصلی آن (open_admin_panel) در همان روتر تعریف شده است.
 
     return router

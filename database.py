@@ -10,8 +10,6 @@
 روی بات‌های دیگر اثر بگذارد.
 """
 
-import asyncio
-import logging
 import sqlite3
 import secrets
 import threading
@@ -19,8 +17,6 @@ import time
 import json
 from datetime import datetime, timedelta
 from contextlib import contextmanager
-
-logger = logging.getLogger(__name__)
 
 # مجوزهای granular پنل وب مدیریت. هر ادمین (به‌جز owner که همیشه دسترسی کامل
 # دارد) یک زیرمجموعه دلخواه از این کلیدها را می‌تواند داشته باشد.
@@ -104,17 +100,9 @@ DEFAULT_SETTINGS = {
     "btn_referral_style": "",
     "btn_wallet_style": "success",
     "btn_admin_panel_style": "danger",
-    # نمایش منوی اصلی: منوی پایین (Reply) و منوی شیشه‌ای بالا (Inline) هرکدام
-    # جداگانه قابل فعال/غیرفعال هستند، و چیدمان (۱ یا ۲ دکمه در هر ردیف) مشترک است
-    "main_menu_reply_enabled": "1",
-    "main_menu_inline_enabled": "0",
-    "main_menu_columns": "1",
     "store_name": "⚡ SHOP VPN",
     "miniapp_banner_text": "اتصال امن و پایدار برقرار است",
     # سیستم زیرمجموعه‌گیری
-    # کلید مستر: مستقل از سه مدل زیر - غیرفعال کردنش کل سیستم رفرال (دکمه/تب و
-    # هر سه مدل پاداش) را کاملاً خاموش می‌کند، صرف‌نظر از اینکه کدام مدل روشن باشد.
-    "referral_button_enabled": "1",
     # حالت ۱: پورسانت درصدی از اولین خرید هر زیرمجموعه
     "referral_enabled": "1",
     "referral_percent": "10",  # درصدی که به دعوت‌کننده به‌عنوان اعتبار کیف پول تعلق می‌گیرد
@@ -161,6 +149,9 @@ DEFAULT_SETTINGS = {
     "crypto_payment_enabled": "0",
     "plisio_api_key": "",  # کلید API درگاه Plisio؛ از داخل بات (دکمه‌ی «تنظیم درگاه کریپتو») قابل تنظیم است
     "usd_to_toman_rate": "0",  # نرخ تبدیل هر ۱ دلار به تومان؛ توسط ادمین دستی تنظیم می‌شود
+    # پرداخت کارت‌به‌کارت خودکار (آبان گیت وی)
+    "abangateway_payment_enabled": "0",
+    "abangateway_api_key": "",  # کلید API آبان گیت وی؛ از داخل بات (دکمه‌ی «تنظیم درگاه آبان گیت وی») قابل تنظیم است
     "btn_wheel_style": "success",
     # یادآوری اتمام سرویس + کد تخفیف تشویقی تمدید
     "renewal_reminder_enabled": "1",
@@ -191,8 +182,6 @@ DEFAULT_SETTINGS = {
     "adm_custom_config_settings_style": "",
     # چیدمان دکمه‌های منوی اصلی (ترتیب و نمایش) - آرایه JSON از کلیدها
     "menu_order": '["miniapp","btn_buy","btn_test","btn_my_orders","btn_wallet","btn_referral","btn_wheel","btn_contact","btn_admin_panel"]',
-    "miniapp_enabled": "1",
-    "reseller_request_enabled": "1",
 }
 
 
@@ -200,20 +189,20 @@ DEFAULT_SETTINGS = {
 # toggle_key: نام تنظیمی که فعال/غیرفعال بودن دکمه را کنترل می‌کند (None یعنی همیشه نمایش داده می‌شود)
 # admin_only: اگر True فقط برای ادمین‌ها نمایش داده می‌شود
 MENU_BUTTON_META = {
-    "miniapp": {"label": "دکمه مینی‌اپ فروشگاه", "toggle_key": "miniapp_enabled", "admin_only": False, "has_text": False, "has_style": False},
+    "miniapp": {"label": "دکمه مینی‌اپ فروشگاه", "toggle_key": None, "admin_only": False, "has_text": False, "has_style": False},
     "btn_buy": {"label": "دکمه خرید کانفیگ", "toggle_key": None, "admin_only": False, "has_text": True, "has_style": True},
     "btn_test": {"label": "دکمه کانفیگ تست", "toggle_key": "test_enabled", "admin_only": False, "has_text": True, "has_style": True},
     "btn_my_orders": {"label": "دکمه سفارش‌های من", "toggle_key": None, "admin_only": False, "has_text": True, "has_style": True},
     "btn_wallet": {"label": "دکمه کیف پول", "toggle_key": None, "admin_only": False, "has_text": True, "has_style": True},
-    "btn_referral": {"label": "دکمه زیرمجموعه‌گیری", "toggle_key": "referral_button_enabled", "admin_only": False, "has_text": True, "has_style": True},
+    "btn_referral": {"label": "دکمه زیرمجموعه‌گیری", "toggle_key": "referral_enabled", "admin_only": False, "has_text": True, "has_style": True},
     "btn_wheel": {"label": "دکمه گردونه شانس", "toggle_key": "wheel_enabled", "admin_only": False, "has_text": True, "has_style": True},
     "btn_contact": {"label": "دکمه ارتباط با پشتیبانی", "toggle_key": None, "admin_only": False, "has_text": True, "has_style": True},
     "btn_admin_panel": {"label": "دکمه پنل مدیریت", "toggle_key": None, "admin_only": True, "has_text": True, "has_style": True},
-    # btn_reseller_panel بر اساس وضعیت کاربر (نماینده بودن/نبودن) به‌صورت پویا نمایش
-    # داده می‌شود، نه با یک toggle سراسری؛ به همین دلیل toggle_key ندارد ولی مثل
-    # بقیه‌ی دکمه‌ها متن/رنگ قابل تنظیم و در چیدمان منو قابل جابجایی است.
+    # این دو دکمه بر اساس وضعیت کاربر (نماینده بودن/نبودن) به‌صورت پویا نمایش داده می‌شوند،
+    # نه با یک toggle سراسری؛ به همین دلیل toggle_key ندارند ولی مثل بقیه‌ی دکمه‌ها
+    # متن/رنگ قابل تنظیم و در چیدمان منو قابل جابجایی هستند.
     "btn_reseller_panel": {"label": "دکمه پنل نمایندگی", "toggle_key": None, "admin_only": False, "has_text": True, "has_style": True},
-    "btn_reseller_request": {"label": "دکمه درخواست نمایندگی سطح ۲", "toggle_key": "reseller_request_enabled", "admin_only": False, "has_text": True, "has_style": True},
+    "btn_reseller_request": {"label": "دکمه درخواست نمایندگی سطح ۲", "toggle_key": None, "admin_only": False, "has_text": True, "has_style": True},
 }
 DEFAULT_MENU_ORDER = [
     "miniapp", "btn_reseller_panel", "btn_reseller_request", "btn_buy", "btn_test",
@@ -246,33 +235,6 @@ class Database:
         # event loop تک‌رشته‌ای هستند، پس این لاک برای آن‌ها overhead
         # واقعی ندارد ولی برای مینی‌اپ لازم است.
         self._lock = threading.Lock()
-
-    async def cache_autorefresh_loop(self, interval: float = 2.0):
-        """فقط برای پردازش بات (aiogram) استفاده می‌شود، نه مینی‌اپ/پنل وب.
-
-        is_admin()/get_setting() وقتی TTL کش تمام شده باشد، یک بار خودشان
-        مستقیم (synchronous) کش را دوباره می‌خوانند - این خواندن چون روی
-        همان event loop مشترک تمام بات‌ها اجرا می‌شود، اگر درست همان لحظه
-        فایل دیتابیس توسط پردازش دیگری (مینی‌اپ/پنل وب) قفل باشد، کل بات را
-        تا چند ثانیه (busy_timeout) برای همه‌ی کاربران فریز می‌کند - از دید
-        ادمین دقیقاً شبیه «کرش‌کردن دکمه‌ها»ست، بدون این‌که هیچ Exception ای
-        لاگ شود چون در نهایت با موفقیت (بعد از انتظار) تمام می‌شود.
-
-        این تابع در پس‌زمینه، با فاصله‌ی کوتاه‌تر از TTL کش، خودش را با
-        asyncio.to_thread (یعنی روی یک ترد جدا، نه event loop اصلی) تازه
-        نگه می‌دارد؛ در نتیجه وقتی is_admin()/get_setting() صدا زده می‌شوند،
-        کش تقریباً همیشه هنوز تازه است و آن‌ها هرگز مجبور به خواندن مستقیم و
-        بلوکه‌کننده از sqlite روی event loop اصلی نمی‌شوند."""
-        while True:
-            try:
-                await asyncio.to_thread(self._load_settings_cache)
-            except Exception:
-                logger.exception("تازه‌سازی پس‌زمینه‌ی کش تنظیمات ناموفق بود (db_path=%s).", self.db_path)
-            try:
-                await asyncio.to_thread(self._load_admin_cache)
-            except Exception:
-                logger.exception("تازه‌سازی پس‌زمینه‌ی کش ادمین‌ها ناموفق بود (db_path=%s).", self.db_path)
-            await asyncio.sleep(interval)
 
     # -----------------------------------------------------------------------
     # اتصال
@@ -549,6 +511,25 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_reseller_bots_active ON reseller_bots(is_active);
                 CREATE INDEX IF NOT EXISTS idx_crypto_invoices_txn ON crypto_invoices(txn_id);
                 CREATE INDEX IF NOT EXISTS idx_crypto_invoices_ref ON crypto_invoices(kind, ref_id);
+
+                CREATE TABLE IF NOT EXISTS abangateway_invoices (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    invoice_id TEXT UNIQUE NOT NULL,  -- شناسه‌ی فاکتور در سمت آبان گیت وی (مثل inv_xxx)
+                    kind TEXT NOT NULL,                -- 'order' یا 'wallet_topup'
+                    ref_id INTEGER NOT NULL,           -- order_id یا topup_id
+                    user_id INTEGER NOT NULL,
+                    amount_toman INTEGER NOT NULL,
+                    amount_rial INTEGER NOT NULL,
+                    payable_rial INTEGER,              -- مبلغ دقیقی که باید واریز شود (کمی بیشتر از amount_rial)
+                    payment_url TEXT,
+                    status TEXT DEFAULT 'new',          -- new/pending/paid/completed/expired/cancelled/error
+                    expires_at TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_abangateway_invoices_invoice_id ON abangateway_invoices(invoice_id);
+                CREATE INDEX IF NOT EXISTS idx_abangateway_invoices_ref ON abangateway_invoices(kind, ref_id);
 
                 -- ===================== ساخت کانفیگ شخصی (پنل‌های VPN) =====================
                 CREATE TABLE IF NOT EXISTS panel_servers (
@@ -859,31 +840,6 @@ class Database:
             if k not in clean:
                 clean.append(k)
         self.set_setting("menu_order", json.dumps(clean, ensure_ascii=False))
-
-    def get_menu_row_breaks(self):
-        """کلیدهایی که باید *قبل* از آن‌ها یک ردیف جدید در منو شروع شود.
-        این یعنی چیدمان منو دیگر محدود به «همه‌ی دکمه‌ها زیر هم» یا «۲تا-۲تا»
-        نیست: هر دکمه‌ای که اینجا نباشد به ردیف دکمه‌ی قبلی‌اش می‌چسبد، پس با
-        همین یک لیست می‌شود مثلاً «یک دکمه تمام‌عرض، بعد دو دکمه کنار هم»
-        ساخت. مقدار None یعنی کاربر هنوز چیدمان سفارشی نساخته - در این حالت
-        فراخوان باید برای سازگاری با نصب‌های قدیمی از main_menu_columns
-        استفاده کند (رفتار قبلی)."""
-        import json
-        raw = self.get_setting("main_menu_row_breaks", "")
-        if not raw:
-            return None
-        try:
-            data = json.loads(raw)
-        except (ValueError, TypeError):
-            return None
-        if not isinstance(data, list):
-            return None
-        return [k for k in data if isinstance(k, str) and k in DEFAULT_MENU_ORDER]
-
-    def set_menu_row_breaks(self, keys: list):
-        import json
-        clean = [k for k in keys if k in DEFAULT_MENU_ORDER]
-        self.set_setting("main_menu_row_breaks", json.dumps(clean, ensure_ascii=False))
 
     # -----------------------------------------------------------------------
     # بنرهای کاروسل بالای صفحه‌ی خانه‌ی مینی‌اپ
@@ -2220,8 +2176,6 @@ class Database:
                 return None
             referrer_id = row["referred_by"]
 
-            if self.get_setting("referral_button_enabled", "1") != "1":
-                return None
             if self.get_setting("referral_enabled", "1") != "1":
                 return None
 
@@ -2259,8 +2213,6 @@ class Database:
         خروجی: {"invite_bonus": مبلغ یا None, "free_config_product_id": آیدی محصول یا None}
         """
         result = {"invite_bonus": None, "free_config_product_id": None}
-        if self.get_setting("referral_button_enabled", "1") != "1":
-            return result
         with self._get_conn() as conn:
             referrer = conn.execute(
                 "SELECT referral_free_config_given FROM users WHERE telegram_id=?", (referrer_tg_id,)
@@ -2713,6 +2665,82 @@ class Database:
             conn.execute(
                 "DELETE FROM crypto_invoices WHERE status IN "
                 "('completed','expired','cancelled','error','mismatch') "
+                "AND COALESCE(updated_at, created_at) < ?",
+                (cutoff,),
+            )
+
+    # -----------------------------------------------------------------------
+    # فاکتورهای پرداخت کارت‌به‌کارت خودکار (آبان گیت وی)
+    # -----------------------------------------------------------------------
+
+    def create_abangateway_invoice(self, invoice_id: str, kind: str, ref_id: int, user_id: int,
+                                    amount_toman: int, amount_rial: int, payable_rial: int = None,
+                                    payment_url: str = None, expiry_minutes: int = 60) -> int:
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO abangateway_invoices (invoice_id, kind, ref_id, user_id, amount_toman, "
+                "amount_rial, payable_rial, payment_url, status, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)",
+                (invoice_id, kind, ref_id, user_id, amount_toman, amount_rial, payable_rial, payment_url,
+                 (datetime.utcnow() + timedelta(minutes=expiry_minutes)).isoformat()),
+            )
+            return cur.lastrowid
+
+    def get_abangateway_invoice_by_invoice_id(self, invoice_id: str):
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM abangateway_invoices WHERE invoice_id=?", (invoice_id,)
+            ).fetchone()
+
+    def get_abangateway_invoice(self, id_: int):
+        with self._get_conn() as conn:
+            return conn.execute("SELECT * FROM abangateway_invoices WHERE id=?", (id_,)).fetchone()
+
+    def update_abangateway_invoice_status(self, invoice_id: str, status: str):
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE abangateway_invoices SET status=?, updated_at=? WHERE invoice_id=?",
+                (status, datetime.utcnow().isoformat(), invoice_id),
+            )
+
+    def get_pending_abangateway_invoice_for_ref(self, kind: str, ref_id: int):
+        """آخرین فاکتور فعال (new/pending) ثبت‌شده برای یک سفارش یا شارژ کیف پول خاص را برمی‌گرداند."""
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM abangateway_invoices WHERE kind=? AND ref_id=? AND status IN ('new','pending') "
+                "ORDER BY id DESC LIMIT 1",
+                (kind, ref_id),
+            ).fetchone()
+
+    def get_abangateway_invoices(self, limit: int = 50):
+        """فهرست پرداخت‌های آبان گیت وی برای پنل مدیریت؛ شامل پرداخت‌های فعال و تاریخچه."""
+        limit = max(1, min(int(limit or 50), 200))
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM abangateway_invoices ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+
+    def expire_stale_abangateway_invoices(self):
+        """فاکتورهایی که هنوز 'new'/'pending' مانده‌اند ولی زمان اعتبارشان گذشته را 'expired' علامت می‌زند."""
+        now = datetime.utcnow().isoformat()
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE abangateway_invoices SET status='expired', updated_at=? "
+                "WHERE status IN ('new','pending') AND expires_at IS NOT NULL AND expires_at < ?",
+                (now, now),
+            )
+
+    def cancel_and_delete_abangateway_invoice(self, id_: int):
+        """لغو دستی توسط ادمین: فاکتور بلافاصله از دیتابیس حذف می‌شود."""
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM abangateway_invoices WHERE id=?", (id_,))
+
+    def purge_old_abangateway_invoices(self, days: int = 7):
+        """فاکتورهای نهایی‌شده‌ی آبان گیت وی که بیش از N روز از آخرین به‌روزرسانی‌شان گذشته را حذف می‌کند."""
+        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        with self._get_conn() as conn:
+            conn.execute(
+                "DELETE FROM abangateway_invoices WHERE status IN "
+                "('completed','expired','cancelled','error') "
                 "AND COALESCE(updated_at, created_at) < ?",
                 (cutoff,),
             )
