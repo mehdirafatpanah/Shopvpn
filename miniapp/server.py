@@ -25,7 +25,7 @@ import asyncio
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, List
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -57,7 +57,7 @@ from jalali import to_jalali_str
 from stock_alerts import check_and_notify_low_stock
 from panel_providers import (
     get_provider, PanelError, PanelUsernameTakenError, PROVIDERS,
-    SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES,
+    SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES, parse_xui_inbound_ids,
 )
 from reseller_auto_provision import provision_auto_config, provision_test_config, ProvisionError
 from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
@@ -2435,7 +2435,7 @@ class PanelServerSetTemplate(BaseModel):
 
 
 class PanelServerXuiConfig(BaseModel):
-    inbound_id: Optional[int] = None
+    inbound_ids: Optional[List[int]] = None
     sub_base_url: str
 
 
@@ -2455,16 +2455,17 @@ class CustomConfigSettingsUpdate(BaseModel):
 
 def _panel_server_public(s) -> dict:
     is_sub_base_type = s["panel_type"] in SUB_BASE_URL_PANEL_TYPES
+    xui_inbound_ids = parse_xui_inbound_ids(s) if s["panel_type"] in INBOUND_SELECT_PANEL_TYPES else []
     if is_sub_base_type:
         needs_inbound = s["panel_type"] in INBOUND_SELECT_PANEL_TYPES
-        configured = bool(s["xui_sub_base_url"]) and (bool(s["xui_inbound_id"]) if needs_inbound else True)
+        configured = bool(s["xui_sub_base_url"]) and (bool(xui_inbound_ids) if needs_inbound else True)
     else:
         configured = bool(s["group_ids"] and s["proxy_settings"])
     return {
         "id": s["id"], "name": s["name"], "panel_type": s["panel_type"],
         "api_url": s["api_url"], "template_username": s["template_username"],
         "has_template": bool(s["group_ids"] and s["proxy_settings"]),
-        "xui_inbound_id": s["xui_inbound_id"], "xui_sub_base_url": s["xui_sub_base_url"],
+        "xui_inbound_ids": xui_inbound_ids, "xui_sub_base_url": s["xui_sub_base_url"],
         "is_configured": configured,
         "used_for_custom_config": bool(s["used_for_custom_config"]),
         "used_for_test_config": bool(s["used_for_test_config"]),
@@ -2562,12 +2563,15 @@ async def api_admin_set_xui_config(server_id: int, body: PanelServerXuiConfig, a
         raise HTTPException(status_code=404, detail="سرور یافت نشد.")
     if server["panel_type"] not in SUB_BASE_URL_PANEL_TYPES:
         raise HTTPException(status_code=400, detail="این سرور به این تنظیمات نیاز ندارد.")
-    if server["panel_type"] in INBOUND_SELECT_PANEL_TYPES and not body.inbound_id:
-        raise HTTPException(status_code=400, detail="انتخاب inbound برای این نوع پنل الزامی است.")
+    if server["panel_type"] in INBOUND_SELECT_PANEL_TYPES and not body.inbound_ids:
+        raise HTTPException(status_code=400, detail="انتخاب حداقل یک inbound برای این نوع پنل الزامی است.")
     url = body.sub_base_url.strip()
     if not url.startswith("http://") and not url.startswith("https://"):
         raise HTTPException(status_code=400, detail="آدرس Subscription باید با http:// یا https:// شروع شود.")
-    db.update_panel_server(server_id, xui_inbound_id=body.inbound_id, xui_sub_base_url=url)
+    update_kwargs = {"xui_sub_base_url": url}
+    if body.inbound_ids:
+        update_kwargs["xui_inbound_ids"] = json.dumps(body.inbound_ids)
+    db.update_panel_server(server_id, **update_kwargs)
     return {"status": "ok"}
 
 
