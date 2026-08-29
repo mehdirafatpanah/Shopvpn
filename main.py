@@ -31,8 +31,15 @@ async def main():
     manager = BotManager()
 
     # ۱. بات اصلی
-    await manager.start_bot(BOT_TOKEN, DB_PATH, OWNER_ID, is_main_bot=True)
-    logger.info("بات اصلی راه‌اندازی شد.")
+    # قبلاً بدون try/except بود: اگر start_bot به هر دلیلی (مثلاً خطای موقت
+    # تلگرام) exception می‌داد، کل main() می‌ترکید و چون سرویس با
+    # Restart=always/RestartSec=5 اجرا می‌شود، این باعث یک چرخه‌ی کرش سریع
+    # می‌شد که می‌توانست چند دقیقه طول بکشد تا خودش تمام شود.
+    try:
+        await manager.start_bot(BOT_TOKEN, DB_PATH, OWNER_ID, is_main_bot=True)
+        logger.info("بات اصلی راه‌اندازی شد.")
+    except Exception:
+        logger.exception("راه‌اندازی بات اصلی ناموفق بود.")
 
     # ۲. تمام بات‌های نمایندگیِ فعال (ثبت‌شده از پنل مدیریت بات اصلی)
     main_db = Database(DB_PATH)
@@ -48,11 +55,16 @@ async def main():
         except Exception:
             logger.exception("همگام‌سازی miniapp_tenant_id برای @%s ناموفق بود.", rb["bot_username"])
 
-        started = await manager.start_bot(
-            rb["bot_token"], resolved_path, rb["owner_telegram_id"], is_main_bot=False
-        )
-        if started:
-            logger.info("بات نمایندگی @%s راه‌اندازی شد.", rb["bot_username"])
+        try:
+            started = await manager.start_bot(
+                rb["bot_token"], resolved_path, rb["owner_telegram_id"], is_main_bot=False
+            )
+            if started:
+                logger.info("بات نمایندگی @%s راه‌اندازی شد.", rb["bot_username"])
+        except Exception:
+            # قبلاً بدون try/except: خطای یک بات نماینده کل main() (و در نتیجه
+            # بات اصلی و همه‌ی نماینده‌های دیگر) را هم با خودش می‌ترکاند.
+            logger.exception("راه‌اندازی بات نمایندگی @%s ناموفق بود؛ رد شد.", rb["bot_username"])
 
     reconcile_task = asyncio.create_task(
         manager.reconcile_resellers_loop(main_db, BOT_TOKEN, interval=10)

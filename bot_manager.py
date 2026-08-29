@@ -161,7 +161,19 @@ class BotManager:
         dp.include_router(create_admin_router(db, is_main_bot=is_main_bot, bot_manager=self))
         dp.include_router(create_user_router(db, is_main_bot=is_main_bot, bot_manager=self))
 
-        await bot.delete_webhook(drop_pending_updates=True)
+        # قبلاً بدون try/except بود: اگر همین یک تماس (مثلاً به‌خاطر FloodWait یا
+        # قطعی موقت شبکه‌ی تلگرام) خطا می‌داد، کل main() با exception می‌ترکید و
+        # چون پروسه با systemd (Restart=always, RestartSec=5) اجرا می‌شود، هر ۵
+        # ثانیه دوباره تلاش می‌کرد - و چون این تلاش خودش دوباره به همین API
+        # می‌خورد، محدودیت تلگرام هر بار بزرگ‌تر می‌شد؛ از دید کاربر این حالت
+        # دقیقاً شبیه «۱۵-۲۰ دقیقه کرش‌کردن پشت سر هم بعد از هر ری‌استارت» است.
+        try:
+            await bot.delete_webhook(drop_pending_updates=True)
+        except Exception:
+            logger.warning(
+                "delete_webhook برای db_path=%s ناموفق بود؛ راه‌اندازی بات ادامه می‌یابد.",
+                db_path, exc_info=True,
+            )
         await self._sync_menu_button(bot, db)
         task = asyncio.create_task(dp.start_polling(bot))
         reminder_task = asyncio.create_task(renewal_reminder_loop(bot, db))
