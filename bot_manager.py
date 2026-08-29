@@ -166,6 +166,8 @@ class BotManager:
         task = asyncio.create_task(dp.start_polling(bot))
         reminder_task = asyncio.create_task(renewal_reminder_loop(bot, db))
         backup_task = asyncio.create_task(backup_loop(bot, db, db_path))
+        # جلوگیری از فریز کل بات هنگام انقضای کش تنظیمات/ادمین‌ها (رجوع کنید
+        # به توضیح داخل Database.cache_autorefresh_loop)
         cache_refresh_task = asyncio.create_task(db.cache_autorefresh_loop())
 
         self.instances[token] = {

@@ -96,6 +96,14 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         return None, None
     router = Router()
 
+    async def _send_inline_main_menu(target, user_tg_id: int):
+        """اگر منوی شیشه‌ای بالا از تنظیمات فعال باشد، آن را به‌عنوان یک پیام
+        جدا (کنار/بعد از منوی پایین) ارسال می‌کند. target هر شیء‌ای است که
+        متد answer async دارد (Message یا call.message)."""
+        inline_kb = (await asyncio.to_thread(kb.inline_menu_for_user, db, user_tg_id, is_main_bot))
+        if inline_kb is not None:
+            await target.answer("📋 منو:", reply_markup=inline_kb)
+
     # -----------------------------------------------------------------------
     # عضویت اجباری در کانال
     # -----------------------------------------------------------------------
@@ -119,6 +127,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 pass
             welcome = (await asyncio.to_thread(db.get_setting, "welcome_text"))
             await call.message.answer(welcome, reply_markup=kb.menu_for_user(db, call.from_user.id, is_main_bot))
+            await _send_inline_main_menu(call.message, call.from_user.id)
         else:
             await call.answer("❌ هنوز عضو کانال نشده‌اید.", show_alert=True)
 
@@ -153,6 +162,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
         welcome = (await asyncio.to_thread(db.get_setting, "welcome_text"))
         await message.answer(welcome, reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot))
+        await _send_inline_main_menu(message, message.from_user.id)
 
     async def _handle_referral_invite_rewards(bot: Bot, referrer_id: int, reward_info: dict):
         """پیام و تحویل جوایز حالت‌های ۲ و ۳ زیرمجموعه‌گیری (که با صرفِ دعوت، بدون
@@ -745,6 +755,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             "✅ رسید شما برای بررسی ارسال شد. پس از تایید ادمین، کانفیگ برای شما ارسال خواهد شد.",
             reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
         )
+        await _send_inline_main_menu(message, message.from_user.id)
         await state.clear()
 
     @router.message(BuyFlow.waiting_receipt)
@@ -885,6 +896,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 "کانفیگ شما در پیام بعدی ارسال می‌شود 👇",
                 reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
             )
+            await _send_inline_main_menu(message, message.from_user.id)
             await deliver_config_to_user(
                 message.bot, message.from_user.id, "کانفیگ شخصی",
                 [result.subscription_url], final_price=0, order_id=order_id,
@@ -995,6 +1007,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             "✅ رسید شما برای بررسی ارسال شد. پس از تایید ادمین، کانفیگ شخصی شما ساخته و ارسال خواهد شد.",
             reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
         )
+        await _send_inline_main_menu(message, message.from_user.id)
         await state.clear()
 
     @router.message(CustomConfigFlow.waiting_receipt)
@@ -1180,6 +1193,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             parse_mode="Markdown",
             reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
         )
+        await _send_inline_main_menu(message, message.from_user.id)
 
     # -----------------------------------------------------------------------
     # سفارش‌های من (منوی کانفیگ‌ها + امکان حذف کامل هر کانفیگ)
@@ -1371,6 +1385,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     @router.message(F.text.func(lambda t: t == db.get_setting("btn_referral")))
     async def referral_menu(message: Message, bot: Bot):
         settings = (await asyncio.to_thread(db.get_all_settings))
+        if settings.get("referral_button_enabled", "1") != "1":
+            await message.answer("در حال حاضر سیستم زیرمجموعه‌گیری غیرفعال است.")
+            return
         commission_on = settings.get("referral_enabled", "1") == "1"
         freeconfig_on = settings.get("referral_free_config_enabled", "0") == "1"
         invitebonus_on = settings.get("referral_invite_bonus_enabled", "0") == "1"
@@ -1589,6 +1606,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             "✅ درخواست شارژ کیف پول شما برای بررسی ارسال شد. پس از تایید ادمین، مبلغ به کیف پول شما اضافه می‌شود.",
             reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
         )
+        await _send_inline_main_menu(message, message.from_user.id)
         await state.clear()
 
     @router.message(WalletTopup.waiting_receipt)
@@ -1605,6 +1623,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     @router.message(F.text.func(lambda t: t == db.get_setting("btn_reseller_request", "🏪 درخواست نمایندگی سطح ۲")))
     async def reseller_request_start(message: Message, state: FSMContext):
         if not is_main_bot:
+            return
+        if (await asyncio.to_thread(db.get_setting, "reseller_request_enabled", "1")) != "1":
+            await message.answer("در حال حاضر امکان درخواست نمایندگی سطح ۲ غیرفعال است.")
             return
         if (await asyncio.to_thread(db.is_reseller, message.from_user.id)):
             await message.answer("شما همین الان هم نماینده هستید.")
@@ -1654,6 +1675,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 "لطفاً دوباره روی «درخواست نمایندگی سطح ۲» بزنید.",
                 reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
             )
+            await _send_inline_main_menu(message, message.from_user.id)
             return
 
         try:
@@ -1678,12 +1700,14 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 "✅ درخواست نمایندگی شما ثبت شد. بعد از بررسی ادمین، هزینه‌ی نمایندگی برایتان اعلام می‌شود.",
                 reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
             )
+            await _send_inline_main_menu(message, message.from_user.id)
         except Exception:
             logging.getLogger(__name__).exception("خطا در ثبت درخواست نمایندگی سطح ۲ کاربر %s", message.from_user.id)
             await message.answer(
                 "⚠️ در ثبت درخواست خطایی رخ داد. لطفاً دوباره تلاش کنید یا با پشتیبانی تماس بگیرید.",
                 reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
             )
+            await _send_inline_main_menu(message, message.from_user.id)
 
     @router.callback_query(F.data.startswith("resreq_pay:"))
     async def reseller_request_pay(call: CallbackQuery):
@@ -1791,6 +1815,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 "✅ رسید شما برای بررسی ارسال شد. پس از تایید ادمین، کانفیگ برای شما ارسال خواهد شد.",
                 reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
             )
+            await _send_inline_main_menu(message, message.from_user.id)
             return
 
         # هیچ سفارش/درخواست pending‌ای برای این کاربر پیدا نشد. برای شارژ کیف‌پول
@@ -1836,6 +1861,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 "✅ درخواست شارژ کیف پول شما برای بررسی ارسال شد. پس از تایید ادمین، مبلغ به کیف پول شما اضافه می‌شود.",
                 reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
             )
+            await _send_inline_main_menu(message, message.from_user.id)
             return
 
         log.warning(
@@ -1849,6 +1875,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             "لطفاً دوباره از منوی اصلی همان مسیر خرید یا شارژ کیف پول را طی کنید و رسید را مجدداً ارسال کنید.",
             reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
         )
+        await _send_inline_main_menu(message, message.from_user.id)
 
     @router.message(ResellerRequestFlow.waiting_bot_token)
     async def reseller_request_bot_token(message: Message, state: FSMContext):
@@ -1921,6 +1948,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             f"برای شروع، با /start به بات خودتان (@{username}) وارد شوید.",
             reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
         )
+        await _send_inline_main_menu(message, message.from_user.id)
         try:
             for admin_id in _senior_admin_ids():
                 await bot.send_message(
@@ -1965,6 +1993,43 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             "پیام شما برای پشتیبانی ارسال شد. به زودی پاسخ داده می‌شود.",
             reply_markup=kb.menu_for_user(db, user.id, is_main_bot),
         )
+        await _send_inline_main_menu(message, user.id)
         await state.clear()
+
+    # -----------------------------------------------------------------------
+    # پل بین منوی شیشه‌ای بالا (Inline) و همان هندلرهای منوی پایین (Reply)
+    # چون هر دکمه‌ی پایین از قبل یک هندلر مستقل دارد، به‌جای تکرار منطق هرکدام،
+    # کلیک روی دکمه‌ی شیشه‌ای معادل، مستقیماً همان تابع را با کاربرِ واقعیِ
+    # کلیک‌کننده (call.from_user) صدا می‌زند تا رفتار دقیقاً یکسان بماند.
+    # -----------------------------------------------------------------------
+
+    @router.callback_query(F.data.startswith("mm:"))
+    async def cb_main_menu_inline(call: CallbackQuery, state: FSMContext, bot: Bot):
+        await call.answer()
+        key = call.data.split(":", 1)[1]
+        # پیام جعلی: همان پیام بات ولی از_user واقعیِ کلیک‌کننده، تا هندلرهای
+        # زیر که message.from_user.id می‌خوانند درست کار کنند
+        fake_message = call.message.model_copy(update={"from_user": call.from_user})
+
+        if key == "btn_buy":
+            await show_categories(fake_message, state)
+        elif key == "btn_test":
+            await get_test_config(fake_message)
+        elif key == "btn_my_orders":
+            await my_orders(fake_message)
+        elif key == "btn_wallet":
+            await wallet_menu(fake_message)
+        elif key == "btn_referral":
+            await referral_menu(fake_message, bot)
+        elif key == "btn_wheel":
+            await wheel_of_fortune(fake_message, bot)
+        elif key == "btn_contact":
+            await contact_start(fake_message, state)
+        elif key == "btn_reseller_panel":
+            await reseller_panel_open(fake_message, state)
+        elif key == "btn_reseller_request":
+            await reseller_request_start(fake_message, state)
+        # کلید "btn_admin_panel" در handlers_admin.py مدیریت می‌شود چون هندلر
+        # اصلی آن (open_admin_panel) در همان روتر تعریف شده است.
 
     return router
