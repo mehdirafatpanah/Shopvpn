@@ -26,7 +26,7 @@ from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from config import DB_PATH, BOT_TOKEN, OWNER_ID, ADMIN_PANEL_SECRET, VAPID_PUBLIC_KEY, resolve_db_path
+from config import DB_PATH, BOT_TOKEN, OWNER_ID, ADMIN_PANEL_SECRET, VAPID_PUBLIC_KEY, resolve_db_path, API_BASE_URL
 from database import Database, WEB_ADMIN_PERMISSIONS, MENU_BUTTON_META
 from admin_panel.security import hash_password, verify_password, create_session_token, verify_session_token
 from admin_panel.telegram_notify import send_message as tg_send, send_document as tg_send_document, fetch_telegram_file
@@ -44,6 +44,7 @@ from backup import create_backup, restore_backup, is_valid_sqlite_db
 import exchange_rate
 import geo_scan
 import world_map
+import payment_engine
 
 logger = logging.getLogger("admin_panel.server")
 
@@ -2130,7 +2131,135 @@ def api_set_setting(body: SettingBody, admin=Depends(require_permission("setting
     return {"ok": True}
 
 
-# --------------------------------------------------- تنظیمات کامل فروش -----
+# --------------------------------------------------- درگاه‌های پرداخت سفارشی/پویا -----
+# هر API پرداختی که ادمین بخواهد (بدون نوشتن کد) از همین‌جا وصل می‌شود؛ خودِ
+# فاکتور/چک‌اوت مشتری از داخل مینی‌اپ تلگرام انجام می‌شود (این پنل فقط تنظیمات
+# را می‌سازد که هر دو سرویس، روی همان دیتابیس تننت، به‌اشتراک می‌گذارند).
+
+def _gw_load(gateway_id: int = None, gateway_key: str = None):
+    row = db.get_custom_gateway(gateway_id) if gateway_id else db.get_custom_gateway_by_key(gateway_key)
+    if not row:
+        raise HTTPException(status_code=404, detail="این درگاه پیدا نشد.")
+    try:
+        config = json.loads(row["config_json"])
+    except Exception:
+        config = {}
+    return row, config
+
+
+def _gw_mask(row, config: dict) -> dict:
+    creds = dict(config.get("credentials") or {})
+    masked_creds = {}
+    field_meta = {f.get("name"): f for f in (config.get("credential_fields") or [])}
+    for k, v in creds.items():
+        is_secret = field_meta.get(k, {}).get("secret", True)
+        if is_secret and v:
+            v = f"...{str(v)[-4:]}" if len(str(v)) > 4 else "•••"
+        masked_creds[k] = v
+    out_config = dict(config)
+    out_config["credentials"] = masked_creds
+    return {
+        "id": row["id"], "key": row["gateway_key"], "name": row["name"],
+        "enabled": bool(row["enabled"]), "config": out_config,
+        "created_at": row["created_at"], "updated_at": row["updated_at"],
+    }
+
+
+class CustomGatewayIn(BaseModel):
+    key: str
+    name: str
+    enabled: bool = False
+    config: dict
+
+
+@app.get("/api/gateways")
+def api_list_gateways(admin=Depends(require_permission("settings"))):
+    rows = db.list_custom_gateways()
+    out = []
+    for row in rows:
+        try:
+            config = json.loads(row["config_json"])
+        except Exception:
+            config = {}
+        out.append(_gw_mask(row, config))
+    return out
+
+
+@app.get("/api/gateways/{gateway_id}")
+def api_get_gateway(gateway_id: int, admin=Depends(require_permission("settings"))):
+    row, config = _gw_load(gateway_id=gateway_id)
+    return _gw_mask(row, config)
+
+
+@app.post("/api/gateways")
+def api_create_gateway(body: CustomGatewayIn, admin=Depends(require_permission("settings"))):
+    key = "".join(ch for ch in body.key.strip().lower() if ch.isalnum() or ch in ("-", "_"))
+    if not key:
+        raise HTTPException(status_code=400, detail="کلید درگاه نامعتبر است (فقط حروف/عدد انگلیسی، - و _).")
+    if db.get_custom_gateway_by_key(key):
+        raise HTTPException(status_code=400, detail="درگاهی با همین کلید قبلاً ثبت شده.")
+    gateway_id = db.create_custom_gateway(key, body.name.strip() or key, body.config, body.enabled)
+    db.log_admin_action(admin["id"], "custom_gateway_create", f"درگاه سفارشی «{body.name}» ({key}) اضافه شد (پنل وب - {admin['username']}).")
+    row, config = _gw_load(gateway_id=gateway_id)
+    return _gw_mask(row, config)
+
+
+@app.put("/api/gateways/{gateway_id}")
+def api_update_gateway(gateway_id: int, body: CustomGatewayIn, admin=Depends(require_permission("settings"))):
+    row, existing_config = _gw_load(gateway_id=gateway_id)
+
+    # مقادیر محرمانه‌ای که ادمین در فرم دست‌نخورده گذاشته (ماسک‌شده نمایش داده شده بودند)
+    # با «...abcd» شروع می‌شوند؛ با مقدار واقعی قبلی جایگزین می‌شوند تا رمز از بین نرود.
+    new_creds = dict((body.config or {}).get("credentials") or {})
+    old_creds = dict(existing_config.get("credentials") or {})
+    for k, v in list(new_creds.items()):
+        if isinstance(v, str) and (v.startswith("...") or v == "•••") and k in old_creds:
+            new_creds[k] = old_creds[k]
+    body.config["credentials"] = new_creds
+
+    db.update_custom_gateway(gateway_id, name=body.name.strip() or row["name"], config=body.config, enabled=body.enabled)
+    db.log_admin_action(admin["id"], "custom_gateway_update", f"درگاه سفارشی «{row['name']}» ویرایش شد (پنل وب - {admin['username']}).")
+    row, config = _gw_load(gateway_id=gateway_id)
+    return _gw_mask(row, config)
+
+
+@app.delete("/api/gateways/{gateway_id}")
+def api_delete_gateway(gateway_id: int, admin=Depends(require_permission("settings"))):
+    row, _ = _gw_load(gateway_id=gateway_id)
+    db.delete_custom_gateway(gateway_id)
+    db.log_admin_action(admin["id"], "custom_gateway_delete", f"درگاه سفارشی «{row['name']}» حذف شد (پنل وب - {admin['username']}).")
+    return {"ok": True}
+
+
+class CustomGatewayTestRequest(BaseModel):
+    amount_toman: int = 1000
+
+
+@app.post("/api/gateways/{gateway_id}/test")
+async def api_test_gateway(gateway_id: int, body: CustomGatewayTestRequest, admin=Depends(require_permission("settings"))):
+    """یک فاکتور واقعی آزمایشی می‌سازد تا قبل از فعال‌کردن درگاه برای مشتری‌ها، مطمئن
+    شوی URL/هدر/بدنه و مسیرهای پاسخ درست تنظیم شده‌اند. توجه: چون این یک درخواست واقعی
+    به API درگاه است، ممکن است یک فاکتور واقعی نزد آن درگاه بسازد."""
+    row, config = _gw_load(gateway_id=gateway_id)
+    if not API_BASE_URL:
+        return {"success": False, "error": "آدرس مینی‌اپ (MINIAPP_URL) روی سرور تنظیم نشده است."}
+    gw = payment_engine.GenericGateway(config)
+    tenant = _current_tenant.get()
+    our_ref = f"test-{gateway_id}-{int(time.time())}"
+    try:
+        result = await gw.create_invoice(
+            amount=body.amount_toman, amount_toman=body.amount_toman,
+            order_id=our_ref, currency="IRT", description="تست اتصال درگاه",
+            tenant_id=tenant.slug or "main",
+            callback_url=f"{API_BASE_URL}/api/pay/custom/{row['gateway_key']}/return?b={tenant.slug}&txn={our_ref}",
+            webhook_url=f"{API_BASE_URL}/api/webhooks/custom/{row['gateway_key']}?b={tenant.slug}",
+        )
+    except payment_engine.PaymentEngineError as e:
+        return {"success": False, "error": str(e)}
+    return {"success": True, "invoice_url": result.get("invoice_url"), "txn_id": result.get("txn_id")}
+
+
+# ------------------------------------------------------------- تنظیمات کامل فروش -----
 # این بخش‌ها قبلاً فقط از داخل ربات یا مینی‌اپ قابل تنظیم بودند و در پنل وب
 # مستقل اصلاً وجود نداشتند (رفرال، گردونه‌شانس، کریپتو، یادآوری تمدید/حجم،
 # کانفیگ تست، عضویت اجباری کانال، هشدار موجودی، بنرها). این‌جا برای هماهنگی
