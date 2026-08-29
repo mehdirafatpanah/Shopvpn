@@ -1886,6 +1886,7 @@ let adminLiveChatPollTimer = null;
 const ADMIN_TABS = [
   { key: "stats", label: "📊 آمار", fullOnly: true, seniorOnly: true },
   { key: "sales", label: "💰 فروش", fullOnly: true, seniorOnly: true },
+  { key: "finance", label: "💳 مالی و پرداخت", fullOnly: true, seniorOnly: true },
   { key: "catalog", label: "📦 محصولات", fullOnly: true, seniorOnly: true },
   { key: "panels", label: "🖥 پنل‌های VPN", fullOnly: true, seniorOnly: true },
   { key: "users", label: "👤 کاربران", fullOnly: true },
@@ -1904,6 +1905,7 @@ const ADMIN_TABS = [
 // همان گروه (در صورت وجود بیش از یک مورد) نمایش داده می‌شود.
 const ADMIN_TAB_GROUPS = [
   { key: "overview", label: "📊 آمار و فروش", tabs: ["stats", "sales"] },
+  { key: "finance_group", label: "💳 مالی و پرداخت", tabs: ["finance"] },
   { key: "catalog_panels", label: "📦 محصولات و پنل‌ها", tabs: ["catalog", "panels"] },
   { key: "people", label: "👥 کاربران و نمایندگی", tabs: ["users", "resellers"] },
   { key: "support", label: "💬 پشتیبانی", tabs: ["livechat", "tickets"] },
@@ -2012,6 +2014,7 @@ async function renderAdmin() {
   else if (adminSection === "panels") await renderAdminPanelsSection();
   else if (adminSection === "users") await renderAdminUsersSection();
   else if (adminSection === "sales") await renderAdminSalesSection();
+  else if (adminSection === "finance") await renderAdminFinanceSection();
   else if (adminSection === "livechat") await renderAdminLiveChatSection();
   else if (adminSection === "tickets") await renderAdminTicketsSection();
   else if (adminSection === "adminlog") await renderAdminLogSection();
@@ -3962,6 +3965,8 @@ const ADMIN_ACTION_LABELS = {
   admin_remove: "➖ حذف ادمین",
   admin_role_change: "🔄 تغییر نقش ادمین",
   card_change: "💳 تغییر شماره کارت",
+  plisio_key_change: "🪙 تغییر کلید کریپتو (Plisio)",
+  abangateway_key_change: "💳 تغییر کلید آبان گیت‌وی",
   backup_create: "🗄 دریافت بکاپ",
   backup_restore: "♻️ بازیابی بکاپ",
   category_add: "📂 افزودن دسته‌بندی",
@@ -4166,12 +4171,11 @@ async function renderAdminSalesSection() {
   const body = document.getElementById("admin-section-body");
   body.innerHTML = skeleton(4);
   try {
-    const [referral, wheel, renewal, volumeRem, crypto, discounts, allProducts] = await Promise.all([
+    const [referral, wheel, renewal, volumeRem, discounts, allProducts] = await Promise.all([
       api("/api/admin/settings/referral"),
       api("/api/admin/settings/wheel"),
       api("/api/admin/settings/renewal"),
       api("/api/admin/settings/volume-reminder"),
-      api("/api/admin/settings/crypto"),
       api("/api/admin/discounts"),
       api("/api/admin/products/all").catch(() => []),
     ]);
@@ -4284,24 +4288,6 @@ async function renderAdminSalesSection() {
         <input class="input" id="vol-discount-expiry" type="number" placeholder="مثال: 24" value="${volumeRem.discount_expiry_hours}" style="margin-bottom:4px" />
         <div class="field-error" id="vol-error"></div>
         <button class="btn" id="vol-save" style="margin-top:8px">💾 ذخیره</button>
-      </div>
-
-      <div class="card">
-        <div class="eyebrow" style="margin-top:0">🪙 پرداخت کریپتو (Plisio)</div>
-        ${crypto.gateway_configured ? "" : (
-          !crypto.has_own_key
-            ? `<p class="hint-text" style="color:var(--danger,#ff5a7a)">⚠️ هنوز API Key درگاه تنظیم نشده. از داخل بات، پنل مدیریت → «تنظیم درگاه کریپتو (Plisio)» رو بزن و کلیدت رو بفرست.</p>`
-            : `<p class="hint-text" style="color:var(--danger,#ff5a7a)">⚠️ API Key ثبت شده (منبع: ${crypto.key_source === "db" ? "پنل بات" : crypto.key_source === "env" ? ".env" : "نامشخص"})، ولی آدرس MINIAPP_URL روی سرور تنظیم نشده. این رو دولوپر باید تو .env بذاره و هر دو سرویس (بات و مینی‌اپ) رو ری‌استارت کنه.</p>`
-        )}
-        <p class="hint-text">با فعال شدن، کاربر هم موقع خرید مستقیم و هم موقع شارژ کیف پول می‌تونه با ارز دیجیتال (BTC/ETH/USDT/...) پرداخت کنه و بلافاصله بعد از تایید تراکنش، سفارش/کیف‌پول به‌صورت خودکار تسویه می‌شه.</p>
-        <div class="field-switch-row">
-          <span>پرداخت کریپتو فعال باشد</span>
-          <label class="switch"><input type="checkbox" id="crypto-enabled" ${crypto.enabled ? "checked" : ""} /><span class="switch-slider"></span></label>
-        </div>
-        <label class="field-label">نرخ تبدیل هر ۱ دلار به تومان (خالی یا ۰ = خودکار از tgju/نوبیتکس/والکس/ارزدیجیتال)</label>
-        <input class="input" id="crypto-rate" type="number" placeholder="خودکار (tgju/نوبیتکس/والکس/ارزدیجیتال)" value="${crypto.usd_to_toman_rate || ""}" style="margin-bottom:4px" />
-        <div class="field-error" id="crypto-error"></div>
-        <button class="btn" id="crypto-save" style="margin-top:8px">💾 ذخیره</button>
       </div>
 
       <div class="card">
@@ -4465,22 +4451,6 @@ async function renderAdminSalesSection() {
       } catch (e) { errBox.textContent = e.message; }
     };
 
-    document.getElementById("crypto-save").onclick = async () => {
-      const errBox = document.getElementById("crypto-error");
-      errBox.textContent = "";
-      const rateRaw = document.getElementById("crypto-rate").value.trim();
-      const rate = rateRaw ? Number(rateRaw) : 0;
-      if (isNaN(rate) || rate < 0) { errBox.textContent = "نرخ تبدیل باید عددی معتبر باشد (یا خالی بذار برای حالت خودکار)."; return; }
-      try {
-        await api("/api/admin/settings/crypto", {
-          method: "POST",
-          body: JSON.stringify({ enabled: document.getElementById("crypto-enabled").checked, usd_to_toman_rate: rate }),
-        });
-        tg.HapticFeedback.notificationOccurred("success");
-        notify("تنظیمات پرداخت کریپتو ذخیره شد.");
-      } catch (e) { errBox.textContent = e.message; }
-    };
-
     body.querySelectorAll("[data-toggle-disc]").forEach((el) => {
       el.onclick = async () => {
         try {
@@ -4520,6 +4490,157 @@ async function renderAdminSalesSection() {
         renderAdminSalesSection();
       } catch (e) { errBox.textContent = e.message; }
     };
+  } catch (e) {
+    body.innerHTML = errorState(e.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// تب مدیریت > مالی و پرداخت (شماره کارت / کریپتو / آبان گیت‌وی)
+// ---------------------------------------------------------------------------
+
+async function renderAdminFinanceSection() {
+  const body = document.getElementById("admin-section-body");
+  body.innerHTML = skeleton(3);
+  try {
+    const [card, crypto, aban] = await Promise.all([
+      api("/api/admin/settings/card"),
+      api("/api/admin/settings/crypto"),
+      api("/api/admin/settings/abangateway"),
+    ]);
+
+    body.innerHTML = `
+      <div class="card">
+        <div class="eyebrow" style="margin-top:0">🏦 شماره کارت (پرداخت دستی با رسید)</div>
+        <p class="hint-text">این شماره کارت به کاربر برای واریز دستی و ارسال رسید نمایش داده می‌شه.</p>
+        <label class="field-label">شماره کارت</label>
+        <input class="input" id="fin-card-number" type="text" placeholder="6037-XXXX-XXXX-XXXX" value="${(card.card_number || "").replace(/"/g, "&quot;")}" style="direction:ltr;text-align:left;margin-bottom:10px" />
+        <label class="field-label">نام صاحب کارت</label>
+        <input class="input" id="fin-card-holder" type="text" placeholder="نام و نام خانوادگی" value="${(card.card_holder || "").replace(/"/g, "&quot;")}" style="margin-bottom:4px" />
+        <div class="field-error" id="fin-card-error"></div>
+        <button class="btn" id="fin-card-save" style="margin-top:8px">💾 ذخیره شماره کارت</button>
+      </div>
+
+      <div class="card">
+        <div class="eyebrow" style="margin-top:0">🪙 پرداخت کریپتو (Plisio)</div>
+        <p class="hint-text">با فعال شدن، کاربر هم موقع خرید مستقیم و هم موقع شارژ کیف پول می‌تونه با ارز دیجیتال (BTC/ETH/USDT/...) پرداخت کنه و بلافاصله بعد از تایید تراکنش، سفارش/کیف‌پول به‌صورت خودکار تسویه می‌شه.</p>
+        <label class="field-label">API Key (از plisio.net → API Settings)</label>
+        <input class="input" id="fin-crypto-key" type="password" placeholder="${crypto.has_own_key ? crypto.masked_key || "•••• تنظیم شده" : "کلید را وارد کن"}" style="direction:ltr;text-align:left;margin-bottom:4px" />
+        <p class="hint-text" style="margin-bottom:10px">برای تغییر کلید، کلید جدید را وارد و ذخیره کن. کادر را خالی بگذاری، کلید فعلی دست‌نخورده می‌ماند.</p>
+        <div class="field-switch-row">
+          <span>پرداخت کریپتو فعال باشد</span>
+          <label class="switch"><input type="checkbox" id="fin-crypto-enabled" ${crypto.enabled ? "checked" : ""} /><span class="switch-slider"></span></label>
+        </div>
+        <label class="field-label">نرخ تبدیل هر ۱ دلار به تومان (خالی یا ۰ = خودکار از tgju/نوبیتکس/والکس/ارزدیجیتال)</label>
+        <input class="input" id="fin-crypto-rate" type="number" placeholder="خودکار" value="${crypto.usd_to_toman_rate || ""}" style="margin-bottom:4px" />
+        <div class="field-error" id="fin-crypto-error"></div>
+        <button class="btn" id="fin-crypto-save" style="margin-top:8px">💾 ذخیره</button>
+        ${crypto.has_own_key ? `<button class="btn outline danger" id="fin-crypto-clear" style="margin-top:8px">🗑 حذف کلید و غیرفعال‌سازی</button>` : ""}
+      </div>
+
+      <div class="card">
+        <div class="eyebrow" style="margin-top:0">💳 آبان گیت‌وی (کارت به کارت خودکار)</div>
+        <p class="hint-text">با فعال شدن، پرداخت کارت به کارت به‌صورت خودکار از طریق آبان گیت‌وی تایید می‌شه، بدون نیاز به بررسی دستی رسید.</p>
+        <label class="field-label">API Key (از abangateway.ir → تنظیمات API)</label>
+        <input class="input" id="fin-aban-key" type="password" placeholder="${aban.has_own_key ? aban.masked_key || "•••• تنظیم شده" : "کلید را وارد کن"}" style="direction:ltr;text-align:left;margin-bottom:4px" />
+        <p class="hint-text" style="margin-bottom:10px">برای تغییر کلید، کلید جدید را وارد و ذخیره کن. کادر را خالی بگذاری، کلید فعلی دست‌نخورده می‌ماند.</p>
+        <div class="field-switch-row">
+          <span>آبان گیت‌وی فعال باشد</span>
+          <label class="switch"><input type="checkbox" id="fin-aban-enabled" ${aban.enabled ? "checked" : ""} /><span class="switch-slider"></span></label>
+        </div>
+        <div class="field-error" id="fin-aban-error"></div>
+        <button class="btn" id="fin-aban-save" style="margin-top:8px">💾 ذخیره</button>
+        ${aban.has_own_key ? `<button class="btn outline danger" id="fin-aban-clear" style="margin-top:8px">🗑 حذف کلید و غیرفعال‌سازی</button>` : ""}
+      </div>
+    `;
+
+    document.getElementById("fin-card-save").onclick = async () => {
+      const errBox = document.getElementById("fin-card-error");
+      errBox.textContent = "";
+      const cardNumber = document.getElementById("fin-card-number").value.trim();
+      const cardHolder = document.getElementById("fin-card-holder").value.trim();
+      if (!cardNumber || !cardHolder) { errBox.textContent = "هر دو کادر باید پر باشند."; return; }
+      try {
+        await api("/api/admin/settings/card", {
+          method: "POST",
+          body: JSON.stringify({ card_number: cardNumber, card_holder: cardHolder }),
+        });
+        tg.HapticFeedback.notificationOccurred("success");
+        notify("شماره کارت ذخیره شد.");
+      } catch (e) { errBox.textContent = e.message; }
+    };
+
+    document.getElementById("fin-crypto-save").onclick = async () => {
+      const errBox = document.getElementById("fin-crypto-error");
+      errBox.textContent = "";
+      const rateRaw = document.getElementById("fin-crypto-rate").value.trim();
+      const rate = rateRaw ? Number(rateRaw) : 0;
+      if (isNaN(rate) || rate < 0) { errBox.textContent = "نرخ تبدیل باید عددی معتبر باشد (یا خالی بذار برای حالت خودکار)."; return; }
+      const keyInput = document.getElementById("fin-crypto-key").value;
+      try {
+        await api("/api/admin/settings/crypto", {
+          method: "POST",
+          body: JSON.stringify({
+            enabled: document.getElementById("fin-crypto-enabled").checked,
+            usd_to_toman_rate: rate,
+            api_key: keyInput === "" ? null : keyInput,
+          }),
+        });
+        tg.HapticFeedback.notificationOccurred("success");
+        notify("تنظیمات پرداخت کریپتو ذخیره شد.");
+        renderAdminFinanceSection();
+      } catch (e) { errBox.textContent = e.message; }
+    };
+
+    const cryptoClearBtn = document.getElementById("fin-crypto-clear");
+    if (cryptoClearBtn) {
+      cryptoClearBtn.onclick = async () => {
+        if (!confirm("کلید API کریپتو حذف و درگاه غیرفعال شود؟")) return;
+        try {
+          await api("/api/admin/settings/crypto", {
+            method: "POST",
+            body: JSON.stringify({ enabled: false, usd_to_toman_rate: Number(document.getElementById("fin-crypto-rate").value.trim() || 0), api_key: "" }),
+          });
+          tg.HapticFeedback.notificationOccurred("success");
+          notify("کلید کریپتو حذف شد.");
+          renderAdminFinanceSection();
+        } catch (e) { notify(e.message); }
+      };
+    }
+
+    document.getElementById("fin-aban-save").onclick = async () => {
+      const errBox = document.getElementById("fin-aban-error");
+      errBox.textContent = "";
+      const keyInput = document.getElementById("fin-aban-key").value;
+      try {
+        await api("/api/admin/settings/abangateway", {
+          method: "POST",
+          body: JSON.stringify({
+            enabled: document.getElementById("fin-aban-enabled").checked,
+            api_key: keyInput === "" ? null : keyInput,
+          }),
+        });
+        tg.HapticFeedback.notificationOccurred("success");
+        notify("تنظیمات آبان گیت‌وی ذخیره شد.");
+        renderAdminFinanceSection();
+      } catch (e) { errBox.textContent = e.message; }
+    };
+
+    const abanClearBtn = document.getElementById("fin-aban-clear");
+    if (abanClearBtn) {
+      abanClearBtn.onclick = async () => {
+        if (!confirm("کلید API آبان گیت‌وی حذف و درگاه غیرفعال شود؟")) return;
+        try {
+          await api("/api/admin/settings/abangateway", {
+            method: "POST",
+            body: JSON.stringify({ enabled: false, api_key: "" }),
+          });
+          tg.HapticFeedback.notificationOccurred("success");
+          notify("کلید آبان گیت‌وی حذف شد.");
+          renderAdminFinanceSection();
+        } catch (e) { notify(e.message); }
+      };
+    }
   } catch (e) {
     body.innerHTML = errorState(e.message);
   }
