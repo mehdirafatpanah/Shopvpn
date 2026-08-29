@@ -4701,6 +4701,10 @@ const SETTINGS_GROUPS = [
     { key: 'crypto_payment_enabled', label: 'فعال بودن پرداخت کریپتو', type: 'bool' },
     { key: 'plisio_api_key', label: 'کلید API درگاه Plisio', type: 'password' },
   ]},
+  { tab: 'payment', title: '💳 آبان گیت‌وی (کارت به کارت خودکار)', fields: [
+    { key: 'abangateway_payment_enabled', label: 'فعال بودن درگاه آبان گیت‌وی', type: 'bool' },
+    { key: 'abangateway_api_key', label: 'کلید API آبان گیت‌وی', type: 'password' },
+  ]},
 
   // ------------------------------------------------------ سرویس‌های ویژه
   { tab: 'services', title: 'کانفیگ شخصی/سفارشی', fields: [
@@ -5147,6 +5151,7 @@ const ACTION_LABEL = {
   panel_add: 'افزودن پنل VPN', panel_delete: 'حذف پنل VPN', panel_server_add: 'افزودن سرور پنل',
   panel_server_delete: 'حذف سرور پنل', panel_server_template_update: 'ویرایش قالب سرور پنل',
   panel_server_usage_toggle: 'فعال/غیرفعال کردن مصرف سرور', plisio_key_change: 'تغییر کلید Plisio',
+  abangateway_key_change: 'تغییر کلید آبان گیت‌وی',
   pricing_tier_add: 'افزودن رده قیمتی', pricing_tier_delete: 'حذف رده قیمتی', product_add: 'افزودن محصول',
   product_delete: 'حذف محصول', product_edit: 'ویرایش محصول', product_price_edit: 'ویرایش قیمت محصول',
   product_toggle: 'فعال/غیرفعال کردن محصول', reseller_credit_adjust: 'تغییر اعتبار نماینده',
