@@ -4382,18 +4382,31 @@ async function finishXuiInboundSetup(serverId, closeParent) {
     return;
   }
   closeParent();
+  openXuiInboundModal(serverId, inbounds, [], '');
+}
+
+function openXuiInboundModal(serverId, inbounds, selectedIds, subBaseUrl) {
+  const selected = new Set(selectedIds || []);
   openModal('انتخاب Inbound', `
     <div class="form-grid">
-      <p style="margin:0">کدام inbound برای ساخت کاربرهای جدید استفاده شود؟</p>
-      <select class="input" id="p-inbound">${inbounds.map(ib => `<option value="${ib.id}">#${ib.id} ${esc(ib.remark || '')} (${esc(ib.protocol)}:${ib.port})</option>`).join('')}</select>
-      <input class="input" id="p-suburl" placeholder="لینک پایه‌ی Subscription (https://...)">
+      <p style="margin:0">کدام inbound(ها) برای ساخت کاربرهای جدید استفاده شود؟ (می‌توانی چند مورد را تیک بزنی)</p>
+      <div id="p-inbound-list" style="display:flex;flex-direction:column;gap:6px;max-height:220px;overflow:auto">
+        ${inbounds.map(ib => `
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" class="p-inbound-cb" value="${ib.id}" ${selected.has(ib.id) ? 'checked' : ''}>
+            <span>#${ib.id} ${esc(ib.remark || '')} (${esc(ib.protocol)}:${ib.port})</span>
+          </label>`).join('')}
+      </div>
+      <input class="input" id="p-suburl" placeholder="لینک پایه‌ی Subscription (https://...)" value="${esc(subBaseUrl || '')}">
       <button class="btn btn-primary" id="p-inbound-save">ثبت</button>
     </div>`, (body2, close2) => {
     $('#p-inbound-save', body2).addEventListener('click', async () => {
       const suburl = $('#p-suburl', body2).value.trim();
+      const inbound_ids = $$('.p-inbound-cb', body2).filter(cb => cb.checked).map(cb => parseInt(cb.value, 10));
       if (!suburl) return toast('لینک Subscription الزامی است.', true);
+      if (!inbound_ids.length) return toast('حداقل یک inbound را تیک بزن.', true);
       try {
-        await apiPut(`/panel-servers/${serverId}`, { xui_inbound_id: parseInt($('#p-inbound', body2).value, 10), xui_sub_base_url: suburl });
+        await apiPut(`/panel-servers/${serverId}`, { xui_inbound_ids: inbound_ids, xui_sub_base_url: suburl });
         toast('پنل تنظیم شد.'); close2(); renderPanels();
       } catch (e) { handleErr(e); }
     });
@@ -4455,6 +4468,7 @@ async function renderPanels() {
         <td style="white-space:nowrap">
           <button class="btn btn-sm" data-test="${s.id}">تست اتصال</button>
           <button class="btn btn-sm" data-edit="${s.id}">ویرایش</button>
+          ${PANEL_INBOUND_SELECT_TYPES.includes(s.panel_type) ? `<button class="btn btn-sm" data-edit-inbounds="${s.id}">Inbound ها</button>` : ''}
           ${PANEL_TEMPLATE_BASED_TYPES.includes(s.panel_type) ? `<button class="btn btn-sm" data-retemplate="${s.id}">قالب جدید</button>` : ''}
           <button class="btn btn-danger btn-sm" data-del="${s.id}">حذف</button>
         </td>
@@ -4462,6 +4476,15 @@ async function renderPanels() {
     </table></div></div>
   `);
   $('#add-panel').addEventListener('click', () => openModal('پنل جدید', panelAddFormHtml(), wirePanelAddForm));
+  $$('[data-edit-inbounds]', content()).forEach(b => b.addEventListener('click', async () => {
+    const server = servers.find(s => s.id === Number(b.dataset.editInbounds));
+    b.textContent = '⏳...'; b.disabled = true;
+    try {
+      const inbounds = await apiGet(`/panel-servers/${server.id}/inbounds`);
+      openXuiInboundModal(server.id, inbounds, server.xui_inbound_ids || [], server.xui_sub_base_url || '');
+    } catch (e) { handleErr(e); }
+    finally { b.textContent = 'Inbound ها'; b.disabled = false; }
+  }));
   $$('[data-test]', content()).forEach(b => b.addEventListener('click', async () => {
     b.textContent = 'در حال تست...'; b.disabled = true;
     try {
