@@ -350,6 +350,7 @@ const NAV = [
 
   // تنظیمات و سیستم — نگهداری، دسترسی و پیکربندی
   { key: 'settings', label: 'تنظیمات و برندینگ', icon: 'settings', role: 'settings', section: 'تنظیمات و سیستم' },
+  { key: 'gateways', label: 'درگاه‌های پرداخت سفارشی', icon: 'settings', role: 'settings', section: 'تنظیمات و سیستم' },
   { key: 'salessettings', label: 'تنظیمات فروش', icon: 'settings', role: 'settings', section: 'تنظیمات و سیستم' },
   { key: 'webadmins', label: 'کاربران پنل', icon: 'webadmins', role: 'owner', section: 'تنظیمات و سیستم' },
   { key: 'system', label: 'سیستم و نگهداری', icon: 'system', role: 'system', section: 'تنظیمات و سیستم' },
@@ -789,6 +790,7 @@ async function renderPage(tab) {
       case 'panels': return renderPanels();
       case 'system': return renderSystem();
       case 'settings': return renderSettings();
+      case 'gateways': return renderGateways();
       case 'salessettings': return renderSalesSettings();
       case 'banners': return renderBanners();
       case 'logs': return renderLogs();
@@ -4991,6 +4993,212 @@ async function saveMenuOrder() {
   } finally {
     btn.disabled = false; btn.textContent = prevTxt;
   }
+}
+
+/* ============================================================ gateways === */
+function _gwHeadersToText(h) { return Object.entries(h || {}).map(([k, v]) => `${k}: ${v}`).join('\n'); }
+function _gwTextToHeaders(t) {
+  const out = {};
+  (t || '').split('\n').forEach(line => {
+    const idx = line.indexOf(':');
+    if (idx > 0) out[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+  });
+  return out;
+}
+
+function _gwFormHtml(gw) {
+  const c = (gw && gw.config) || {};
+  const credFields = c.credential_fields || [];
+  const creds = c.credentials || {};
+  const cr = c.create_request || {};
+  const crResp = c.create_response || {};
+  const vr = c.verify_request || {};
+  const vResp = c.verify_response || {};
+  const wa = c.webhook_auth || {};
+  const wm = c.webhook_mapping || {};
+  return `
+    <input type="hidden" id="gw-id" value="${gw ? gw.id : ''}">
+    <div class="form-grid">
+      <input class="input" id="gw-name" placeholder="نام نمایشی (مثلاً زرین‌پال)" value="${gw ? esc(gw.name) : ''}">
+      <input class="input" id="gw-key" placeholder="کلید یکتا انگلیسی (مثلاً zarinpal)" value="${gw ? esc(gw.key) : ''}" ${gw ? 'disabled' : ''} style="direction:ltr;text-align:left">
+      <label class="field field-row"><span>فعال</span>${_swSpan('gw-enabled', gw ? gw.enabled : false)}</label>
+    </div>
+
+    <div class="card-sub" style="margin:16px 0 6px"><b>🔑 اعتبارنامه (API Key و مشابه)</b></div>
+    <div id="gw-cred-rows"></div>
+    <button type="button" class="btn btn-sm" id="gw-add-cred">+ فیلد جدید</button>
+
+    <div class="card-sub" style="margin:16px 0 6px"><b>📨 ساخت فاکتور (Create Invoice)</b></div>
+    <div class="form-grid">
+      <select class="input" id="gw-cr-method"><option ${cr.method !== 'GET' ? 'selected' : ''}>POST</option><option ${cr.method === 'GET' ? 'selected' : ''}>GET</option></select>
+      <select class="input" id="gw-cr-bodytype"><option value="json" ${(cr.body_type || 'json') === 'json' ? 'selected' : ''}>JSON</option><option value="form" ${cr.body_type === 'form' ? 'selected' : ''}>Form</option></select>
+    </div>
+    <input class="input" id="gw-cr-url" placeholder="URL — https://gateway.example.com/api/invoice" style="direction:ltr;text-align:left;margin-top:8px" value="${esc(cr.url || '')}">
+    <label class="field"><span>Headers (هر خط: Key: Value)</span><textarea class="input" id="gw-cr-headers" rows="2" style="direction:ltr;text-align:left" placeholder="Authorization: Bearer {api_key}">${esc(_gwHeadersToText(cr.headers))}</textarea></label>
+    <label class="field"><span>Body (JSON)</span><textarea class="input" id="gw-cr-body" rows="3" style="direction:ltr;text-align:left" placeholder='{"amount":"{amount}","callback":"{callback_url}","order_id":"{order_id}"}'>${esc(JSON.stringify(cr.body || {}, null, 2))}</textarea></label>
+    <div class="form-grid">
+      <input class="input" id="gw-cr-resp-url" placeholder="مسیر لینک پرداخت در پاسخ (data.link)" style="direction:ltr;text-align:left" value="${esc(crResp.invoice_url_path || '')}">
+      <input class="input" id="gw-cr-resp-txn" placeholder="مسیر شناسه‌ی تراکنش در پاسخ (data.id)" style="direction:ltr;text-align:left" value="${esc(crResp.txn_id_path || '')}">
+    </div>
+
+    <div class="card-sub" style="margin:16px 0 6px"><b>✅ استعلام پرداخت (Verify) — برای درگاه‌هایی که کاربر را برمی‌گردانند</b></div>
+    <label class="field field-row"><span>فعال باشد</span>${_swSpan('gw-v-enabled', !!c.verify_enabled)}</label>
+    <div class="form-grid">
+      <select class="input" id="gw-v-method"><option ${vr.method !== 'GET' ? 'selected' : ''}>POST</option><option ${vr.method === 'GET' ? 'selected' : ''}>GET</option></select>
+      <select class="input" id="gw-v-bodytype"><option value="json" ${(vr.body_type || 'json') === 'json' ? 'selected' : ''}>JSON</option><option value="form" ${vr.body_type === 'form' ? 'selected' : ''}>Form</option></select>
+    </div>
+    <input class="input" id="gw-v-url" placeholder="URL استعلام" style="direction:ltr;text-align:left;margin-top:8px" value="${esc(vr.url || '')}">
+    <label class="field"><span>Headers</span><textarea class="input" id="gw-v-headers" rows="2" style="direction:ltr;text-align:left">${esc(_gwHeadersToText(vr.headers))}</textarea></label>
+    <label class="field"><span>Body (JSON) — از {query.X} برای پارامترهای بازگشتی درگاه استفاده کن</span><textarea class="input" id="gw-v-body" rows="3" style="direction:ltr;text-align:left" placeholder='{"authority":"{query.Authority}","amount":"{amount}"}'>${esc(JSON.stringify(vr.body || {}, null, 2))}</textarea></label>
+    <div class="form-grid">
+      <input class="input" id="gw-v-resp-status" placeholder="مسیر وضعیت در پاسخ (data.code)" style="direction:ltr;text-align:left" value="${esc(vResp.status_path || '')}">
+      <input class="input" id="gw-v-resp-success" placeholder="مقادیر موفق (با کاما، مثل 100,101)" style="direction:ltr;text-align:left" value="${esc((vResp.success_values || []).join(','))}">
+    </div>
+
+    <div class="card-sub" style="margin:16px 0 6px"><b>📡 وب‌هوک (Webhook) — برای درگاه‌هایی که سرور به سرور خبر می‌دهند</b></div>
+    <label class="field field-row"><span>فعال باشد</span>${_swSpan('gw-w-enabled', !!c.webhook_enabled)}</label>
+    <select class="input" id="gw-w-mode">
+      <option value="none" ${(wa.mode || 'none') === 'none' ? 'selected' : ''}>بدون احراز (فقط اتکا به شناسه‌ی تراکنش)</option>
+      <option value="header_secret" ${wa.mode === 'header_secret' ? 'selected' : ''}>رمز ثابت در هدر</option>
+      <option value="query_secret" ${wa.mode === 'query_secret' ? 'selected' : ''}>رمز ثابت در query string</option>
+      <option value="hmac_sha256" ${wa.mode === 'hmac_sha256' ? 'selected' : ''}>امضای HMAC-SHA256</option>
+    </select>
+    <div class="form-grid" style="margin-top:8px">
+      <input class="input" id="gw-w-header" placeholder="نام هدر (رمز/امضا)" style="direction:ltr;text-align:left" value="${esc(wa.header_name || '')}">
+      <input class="input" id="gw-w-query" placeholder="نام پارامتر query (رمز)" style="direction:ltr;text-align:left" value="${esc(wa.query_param || '')}">
+      <input class="input" id="gw-w-secretfield" placeholder="کدام فیلد اعتبارنامه = رمز" style="direction:ltr;text-align:left" value="${esc(wa.secret_field || '')}">
+    </div>
+    <div class="form-grid" style="margin-top:8px">
+      <input class="input" id="gw-w-map-txn" placeholder="مسیر شناسه‌ی تراکنش در بدنه" style="direction:ltr;text-align:left" value="${esc(wm.txn_id_path || '')}">
+      <input class="input" id="gw-w-map-status" placeholder="مسیر وضعیت در بدنه" style="direction:ltr;text-align:left" value="${esc(wm.status_path || '')}">
+      <input class="input" id="gw-w-map-success" placeholder="مقادیر موفق (با کاما)" style="direction:ltr;text-align:left" value="${esc((wm.success_values || []).join(','))}">
+    </div>
+
+    <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
+      <button class="btn btn-primary" id="gw-save">💾 ذخیره</button>
+      ${gw ? '<button class="btn" id="gw-test">🧪 تست اتصال (فاکتور واقعی ۱۰۰۰ تومانی)</button>' : ''}
+      ${gw ? '<button class="btn btn-danger" id="gw-del">🗑 حذف</button>' : ''}
+    </div>
+    <div class="card-sub" id="gw-form-err" style="color:var(--danger,#ef4444)"></div>
+  `;
+}
+
+function _gwAddCredRow(container, name, label, secret, value) {
+  const row = document.createElement('div');
+  row.className = 'form-grid';
+  row.style.marginBottom = '6px';
+  row.innerHTML = `
+    <input class="input" placeholder="نام فیلد (مثل api_key)" value="${esc(name || '')}" data-cred-name style="direction:ltr;text-align:left">
+    <input class="input" placeholder="برچسب نمایشی" value="${esc(label || '')}" data-cred-label>
+    <input class="input" placeholder="مقدار" value="${esc(value || '')}" data-cred-value style="direction:ltr;text-align:left">
+    <label class="field field-row" style="flex:0 0 auto"><span>محرمانه</span><input type="checkbox" data-cred-secret ${secret !== false ? 'checked' : ''}></label>
+    <button type="button" class="btn btn-danger btn-sm" data-cred-del>×</button>
+  `;
+  row.querySelector('[data-cred-del]').addEventListener('click', () => row.remove());
+  container.appendChild(row);
+}
+
+function _gwCollectConfig(body) {
+  const creds = {}, credFields = [];
+  $$('#gw-cred-rows > div', body).forEach(row => {
+    const name = row.querySelector('[data-cred-name]').value.trim();
+    if (!name) return;
+    creds[name] = row.querySelector('[data-cred-value]').value;
+    credFields.push({ name, label: row.querySelector('[data-cred-label]').value.trim() || name, secret: row.querySelector('[data-cred-secret]').checked });
+  });
+  let crBody = {}, vBody = {};
+  try { crBody = JSON.parse($('#gw-cr-body', body).value || '{}'); } catch (e) { throw new Error('بدنه‌ی درخواست «ساخت فاکتور» JSON معتبر نیست.'); }
+  try { vBody = JSON.parse($('#gw-v-body', body).value || '{}'); } catch (e) { throw new Error('بدنه‌ی درخواست «استعلام» JSON معتبر نیست.'); }
+  return {
+    credential_fields: credFields,
+    credentials: creds,
+    create_request: {
+      method: $('#gw-cr-method', body).value, url: $('#gw-cr-url', body).value.trim(),
+      headers: _gwTextToHeaders($('#gw-cr-headers', body).value), body_type: $('#gw-cr-bodytype', body).value, body: crBody,
+    },
+    create_response: { invoice_url_path: $('#gw-cr-resp-url', body).value.trim(), txn_id_path: $('#gw-cr-resp-txn', body).value.trim() },
+    verify_enabled: _swOn(body, 'gw-v-enabled'),
+    verify_request: {
+      method: $('#gw-v-method', body).value, url: $('#gw-v-url', body).value.trim(),
+      headers: _gwTextToHeaders($('#gw-v-headers', body).value), body_type: $('#gw-v-bodytype', body).value, body: vBody,
+    },
+    verify_response: {
+      status_path: $('#gw-v-resp-status', body).value.trim(),
+      success_values: $('#gw-v-resp-success', body).value.split(',').map(s => s.trim()).filter(Boolean),
+    },
+    webhook_enabled: _swOn(body, 'gw-w-enabled'),
+    webhook_auth: {
+      mode: $('#gw-w-mode', body).value, header_name: $('#gw-w-header', body).value.trim(),
+      query_param: $('#gw-w-query', body).value.trim(), secret_field: $('#gw-w-secretfield', body).value.trim(), hmac_algo: 'sha256',
+    },
+    webhook_mapping: {
+      txn_id_path: $('#gw-w-map-txn', body).value.trim(), status_path: $('#gw-w-map-status', body).value.trim(),
+      success_values: $('#gw-w-map-success', body).value.split(',').map(s => s.trim()).filter(Boolean),
+    },
+  };
+}
+
+function _gwOpenForm(gw) {
+  openModal(gw ? `✏️ ویرایش: ${esc(gw.name)}` : '➕ افزودن درگاه جدید', _gwFormHtml(gw), (body, close) => {
+    _bindSwitches(body);
+    const credWrap = $('#gw-cred-rows', body);
+    (((gw && gw.config) || {}).credential_fields || []).forEach(f => _gwAddCredRow(credWrap, f.name, f.label, f.secret, ((gw.config.credentials) || {})[f.name] || ''));
+    if (!gw) _gwAddCredRow(credWrap);
+    $('#gw-add-cred', body).addEventListener('click', () => _gwAddCredRow(credWrap));
+
+    $('#gw-save', body).addEventListener('click', async () => {
+      const errBox = $('#gw-form-err', body);
+      errBox.textContent = '';
+      try {
+        const config = _gwCollectConfig(body);
+        const payload = { key: $('#gw-key', body).value.trim(), name: $('#gw-name', body).value.trim(), enabled: _swOn(body, 'gw-enabled'), config };
+        if (!payload.name || !payload.key) { errBox.textContent = 'نام و کلید درگاه الزامی است.'; return; }
+        if (gw) await apiPut(`/gateways/${gw.id}`, payload);
+        else await apiPost('/gateways', payload);
+        toast('ذخیره شد.'); close(); renderGateways();
+      } catch (e) { errBox.textContent = e.message; }
+    });
+
+    if (gw) {
+      $('#gw-test', body).addEventListener('click', async () => {
+        const errBox = $('#gw-form-err', body);
+        errBox.textContent = 'در حال ساخت فاکتور آزمایشی...';
+        try {
+          const r = await apiPost(`/gateways/${gw.id}/test`, { amount_toman: 1000 });
+          errBox.style.color = r.success ? 'var(--ok,#22c55e)' : 'var(--danger,#ef4444)';
+          errBox.textContent = r.success ? `✅ فاکتور ساخته شد — لینک: ${r.invoice_url || '(بدون لینک)'} — txn: ${r.txn_id}` : `❌ ${r.error}`;
+        } catch (e) { errBox.textContent = e.message; }
+      });
+      $('#gw-del', body).addEventListener('click', async () => {
+        if (!confirm('این درگاه حذف شود؟')) return;
+        try { await apiDelete(`/gateways/${gw.id}`); toast('حذف شد.'); close(); renderGateways(); } catch (e) { handleErr(e); }
+      });
+    }
+  }, { wide: true });
+}
+
+async function renderGateways() {
+  const rows = await apiGet('/gateways');
+  setContent(`
+    <div class="toolbar"><button class="btn btn-primary btn-sm" id="gw-add">+ درگاه جدید</button></div>
+    <div class="card">
+      <div class="card-sub" style="margin-bottom:10px">هر درگاهی که یک HTTP API داشته باشد رو بدون نوشتن کد وصل کن. از پلیس‌هولدرهایی مثل
+        <code>{amount}</code>, <code>{order_id}</code>, <code>{callback_url}</code>, <code>{webhook_url}</code> و هر فیلد اعتبارنامه (مثلاً <code>{api_key}</code>) استفاده کن.</div>
+      ${rows.length ? `<div class="table-wrap"><table>
+        <thead><tr><th>نام</th><th>کلید</th><th>وضعیت</th><th>عملیات</th></tr></thead>
+        <tbody>${rows.map(gw => `<tr>
+          <td>${esc(gw.name)}</td>
+          <td class="mono">${esc(gw.key)}</td>
+          <td>${gw.enabled ? '<span class="badge badge-approved">فعال</span>' : '<span class="badge badge-rejected">غیرفعال</span>'}</td>
+          <td><button class="btn btn-sm" data-edit="${gw.id}">ویرایش</button></td>
+        </tr>`).join('')}</tbody>
+      </table></div>` : '<div class="card-sub">هنوز درگاهی اضافه نشده.</div>'}
+    </div>
+  `);
+  $('#gw-add').addEventListener('click', () => _gwOpenForm(null));
+  $$('[data-edit]', content()).forEach(b => b.addEventListener('click', async () => {
+    try { _gwOpenForm(await apiGet(`/gateways/${b.dataset.edit}`)); } catch (e) { handleErr(e); }
+  }));
 }
 
 async function renderSettings() {
