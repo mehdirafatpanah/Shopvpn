@@ -88,6 +88,11 @@ def build_summary_text(final_price: int, total: int) -> str:
     return summary
 
 
+async def send_individual_configs(bot: Bot, user_tg_id: int, links: list) -> None:
+    """نسخه‌ی عمومی، برای استفاده از خارج این ماژول (مثلاً فلوی کانفیگ تست در handlers_user.py)."""
+    await _send_individual_configs(bot, user_tg_id, links)
+
+
 async def _send_individual_configs(bot: Bot, user_tg_id: int, links: list) -> None:
     """کانفیگ‌های تکی داخل یک اشتراک را در قالب یک یا چند پیام (با رعایت سقف
     ۴۰۹۶ کاراکتری تلگرام) ارسال می‌کند. خطای احتمالی (مثلاً پارس مارک‌داون)

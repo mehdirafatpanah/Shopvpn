@@ -613,6 +613,23 @@ def admin_temp_message_duration_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def admin_broadcast_duration_kb() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="🚫 بدون حذف خودکار", callback_data="adm_broadcast_dur:0")],
+        [
+            InlineKeyboardButton(text="۱ ساعت", callback_data="adm_broadcast_dur:3600"),
+            InlineKeyboardButton(text="۶ ساعت", callback_data="adm_broadcast_dur:21600"),
+        ],
+        [
+            InlineKeyboardButton(text="۱ روز", callback_data="adm_broadcast_dur:86400"),
+            InlineKeyboardButton(text="۳ روز", callback_data="adm_broadcast_dur:259200"),
+        ],
+        [InlineKeyboardButton(text="✏️ مدت دلخواه (دقیقه)", callback_data="adm_broadcast_dur:custom")],
+        [InlineKeyboardButton(text="❌ انصراف", callback_data="adm_broadcast")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def admin_card_autodelete_kb(current_seconds: int) -> InlineKeyboardMarkup:
     """پیکر مدت حذف خودکار پیام‌های شماره کارت. تیک ✅ روی گزینه‌ی فعلی می‌آید."""
     def mark(seconds: int, label: str) -> str:

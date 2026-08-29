@@ -24,7 +24,7 @@ import keyboards as kb
 from states import BuyFlow, ContactFlow, DiscountEntry, WalletTopup, CustomConfigFlow, ResellerFlow, ResellerRequestFlow
 from config import MAX_TEST_PER_USER, RESELLER_DBS_DIR, resolve_db_path
 from database import Database
-from config_delivery import deliver_config_to_user
+from config_delivery import deliver_config_to_user, send_individual_configs
 from temp_messages import schedule_message_autodelete
 from force_join import is_channel_member, CHECK_CALLBACK
 from sub_info import fetch_sub_info, format_sub_info_fa, fetch_individual_links
@@ -1102,6 +1102,17 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     # کانفیگ تست
     # -----------------------------------------------------------------------
 
+    async def _send_test_config_individual_links(bot, user_tg_id: int, link: str) -> None:
+        """اگه لینک تست یک لینک اشتراک واقعی باشه، کانفیگ‌های تکی داخلش رو هم می‌فرسته."""
+        if not link.startswith(("http://", "https://")):
+            return
+        try:
+            individual_links = await fetch_individual_links(link)
+        except Exception:
+            individual_links = []
+        if individual_links:
+            await send_individual_configs(bot, user_tg_id, individual_links)
+
     @router.message(F.text.func(lambda t: t == db.get_setting("btn_test")))
     async def get_test_config(message: Message):
         if (await asyncio.to_thread(db.get_setting, "test_enabled", "1")) != "1":
@@ -1125,6 +1136,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 f"🧪 کانفیگ تست شما ({result['volume_gb']} گیگ، {result['duration_days']} روز):\n\n`{result['subscription_url']}`",
                 parse_mode="Markdown",
             )
+            await _send_test_config_individual_links(message.bot, message.from_user.id, result['subscription_url'])
             return
 
         panel_server = (await asyncio.to_thread(db.get_panel_server_for_usage, "test_config"))
@@ -1150,6 +1162,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 f"🧪 کانفیگ تست شما ({volume_gb} گیگ، {duration_days} روز):\n\n`{result.subscription_url}`",
                 parse_mode="Markdown",
             )
+            await _send_test_config_individual_links(message.bot, message.from_user.id, result.subscription_url)
             return
 
         result = (await asyncio.to_thread(db.take_unused_test_config, message.from_user.id))
@@ -1159,6 +1172,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
         (await asyncio.to_thread(db.mark_test_used, message.from_user.id))
         await message.answer(f"🧪 کانفیگ تست شما:\n\n`{result['link']}`", parse_mode="Markdown")
+        await _send_test_config_individual_links(message.bot, message.from_user.id, result['link'])
 
     # -----------------------------------------------------------------------
     # پنل نمایندگی (ساخت کانفیگ از استخر حجم بدون پرداخت جداگانه)

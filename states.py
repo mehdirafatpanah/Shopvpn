@@ -76,6 +76,8 @@ class AdminSetAbanGateway(StatesGroup):
 
 class AdminBroadcast(StatesGroup):
     waiting_message = State()
+    waiting_duration = State()
+    waiting_custom_minutes = State()
 
 
 class AdminDeepLinkTools(StatesGroup):

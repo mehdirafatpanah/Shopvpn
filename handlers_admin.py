@@ -80,7 +80,7 @@ from states import (
     AdminResellerRequestFlow,
     AdminTempMessage,
 )
-from temp_messages import send_temp_message
+from temp_messages import send_temp_message, schedule_message_autodelete
 
 logger = logging.getLogger(__name__)
 
@@ -4118,20 +4118,62 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await call.answer()
 
     @router.message(AdminBroadcast.waiting_message)
-    async def process_broadcast(message: Message, state: FSMContext, bot: Bot):
+    async def process_broadcast(message: Message, state: FSMContext):
+        await state.update_data(broadcast_chat_id=message.chat.id, broadcast_message_id=message.message_id)
+        await state.set_state(AdminBroadcast.waiting_duration)
+        await message.answer(
+            "⏱ این پیام همگانی بعد از چه مدت خودش حذف شود؟ (برای ماندن همیشگی، گزینه‌ی «بدون حذف خودکار» را بزن)",
+            reply_markup=kb.admin_broadcast_duration_kb(),
+        )
+
+    async def _finalize_broadcast(state: FSMContext, bot: Bot, admin_id: int, seconds: int, answer_fn):
+        data = await state.get_data()
+        chat_id = data.get("broadcast_chat_id")
+        message_id = data.get("broadcast_message_id")
+        await state.clear()
+        if not chat_id or not message_id:
+            await answer_fn("⚠️ اطلاعات پیام همگانی ناقص بود؛ دوباره از اول شروع کن.")
+            return
         user_ids = (await asyncio.to_thread(db.get_all_user_ids))
         success, failed = 0, 0
+        sent_targets = []
         for uid in user_ids:
             try:
-                await message.copy_to(uid)
+                sent = await bot.copy_message(uid, from_chat_id=chat_id, message_id=message_id)
                 success += 1
+                if seconds > 0:
+                    sent_targets.append((uid, sent.message_id))
             except Exception:
                 failed += 1
-        await state.clear()
-        (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "broadcast", f"ارسال به {len(user_ids)} کاربر | موفق: {success} | ناموفق: {failed}"))
-        await message.answer(
-            f"📢 پیام همگانی ارسال شد.\n✅ موفق: {success}\n❌ ناموفق: {failed}", reply_markup=kb.admin_category_kb(db, is_main_bot, "marketing")
+        for uid, mid in sent_targets:
+            await schedule_message_autodelete(db, uid, mid, seconds)
+        label = _duration_label_fa(seconds) if seconds > 0 else "بدون حذف خودکار"
+        (await asyncio.to_thread(db.log_admin_action, admin_id, "broadcast", f"ارسال به {len(user_ids)} کاربر | موفق: {success} | ناموفق: {failed} | حذف خودکار: {label}"))
+        await answer_fn(
+            f"📢 پیام همگانی ارسال شد.\n✅ موفق: {success}\n❌ ناموفق: {failed}\n⏱ حذف خودکار: {label}",
+            reply_markup=kb.admin_category_kb(db, is_main_bot, "marketing"),
         )
+
+    @router.callback_query(F.data.startswith("adm_broadcast_dur:"))
+    async def cb_broadcast_duration(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        value = call.data.split(":", 1)[1]
+        if value == "custom":
+            await state.set_state(AdminBroadcast.waiting_custom_minutes)
+            await replace_admin_view(call, "مدت دلخواه را به دقیقه ارسال کن (مثلاً 45):", reply_markup=kb.admin_back_kb())
+            await call.answer()
+            return
+        await call.answer("در حال ارسال...")
+        await _finalize_broadcast(state, call.bot, call.from_user.id, int(value), call.message.answer)
+
+    @router.message(AdminBroadcast.waiting_custom_minutes)
+    async def process_broadcast_custom_minutes(message: Message, state: FSMContext, bot: Bot):
+        if not (message.text or "").strip().isdigit() or int(message.text.strip()) <= 0:
+            await message.answer("⚠️ فقط یک عدد صحیح مثبت (به دقیقه) ارسال کن.")
+            return
+        minutes = int(message.text.strip())
+        await _finalize_broadcast(state, bot, message.from_user.id, minutes * 60, message.answer)
 
     # -------------------------------------------------------------------
     # پیام موقت (خودحذف‌شونده بعد از مدت مشخص)
