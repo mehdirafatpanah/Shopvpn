@@ -26,7 +26,7 @@ from config import MAX_TEST_PER_USER, RESELLER_DBS_DIR, resolve_db_path
 from database import Database
 from config_delivery import deliver_config_to_user
 from force_join import is_channel_member, CHECK_CALLBACK
-from sub_info import fetch_sub_info, format_sub_info_fa
+from sub_info import fetch_sub_info, format_sub_info_fa, fetch_individual_links
 from stock_alerts import check_and_notify_low_stock
 import crypto_payment
 import abangateway_payment
@@ -1263,6 +1263,13 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 text += f"⏳ انقضا: {cfg['expires_at']}\n"
             info = await fetch_sub_info(cfg["link"])
             text += f"\n{format_sub_info_fa(info)}"
+            if str(cfg["link"]).startswith(("http://", "https://")):
+                try:
+                    individual_links = await fetch_individual_links(cfg["link"])
+                except Exception:
+                    individual_links = []
+                if individual_links:
+                    text += "\n\n📋 کانفیگ‌های تکی:\n" + "\n".join(f"`{c}`" for c in individual_links)
             return text
         if kind == "custom":
             cc = item["custom"]
@@ -1276,6 +1283,12 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 text += f"🔗 `{cc['subscription_url']}`\n"
                 info = await fetch_sub_info(cc["subscription_url"])
                 text += f"\n{format_sub_info_fa(info)}"
+                try:
+                    individual_links = await fetch_individual_links(cc["subscription_url"])
+                except Exception:
+                    individual_links = []
+                if individual_links:
+                    text += "\n\n📋 کانفیگ‌های تکی:\n" + "\n".join(f"`{c}`" for c in individual_links)
             return text
         # kind == "order": سفارشی بدون کانفیگ فعلی (در انتظار بررسی/رد‌شده)
         o = item["order"]
@@ -1318,7 +1331,13 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await call.answer()
         text = await _my_orders_item_text(item)
         deletable = item["kind"] in ("config", "custom")
-        await call.message.edit_text(text, parse_mode="Markdown", reply_markup=kb.my_order_item_kb(cb_id, deletable))
+        markup = kb.my_order_item_kb(cb_id, deletable)
+        if len(text) > 4000:
+            text = text[:3950] + "\n\n… (فهرست کوتاه شد؛ تعداد کانفیگ‌ها زیاد است)"
+        try:
+            await call.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
+        except TelegramBadRequest:
+            await call.message.edit_text(text, reply_markup=markup)
 
     @router.callback_query(F.data.startswith("mo_del:"))
     async def cb_my_orders_delete_ask(call: CallbackQuery):

@@ -22,6 +22,8 @@ from jalali import to_jalali_str
 
 _TIMEOUT = aiohttp.ClientTimeout(total=10)
 
+_CONFIG_SCHEMES = ("vless://", "vmess://", "trojan://", "ss://", "ssr://", "hysteria://", "hysteria2://", "hy2://", "tuic://")
+
 
 def _b64_decode(value: str) -> str:
     try:
@@ -29,6 +31,29 @@ def _b64_decode(value: str) -> str:
         return base64.b64decode(padded).decode("utf-8")
     except (binascii.Error, UnicodeDecodeError, ValueError):
         return value
+
+
+async def fetch_individual_links(sub_url: str) -> list:
+    """
+    محتوای خودِ لینک اشتراک (subscription_url) را می‌گیرد و لیست کانفیگ‌های
+    تکی داخلش (vless/vmess/trojan/ss/...) را برمی‌گرداند. مستقل از نوع پنل
+    (Marzban/X-UI/Marzneshin/PasarGuard/Hiddify) کار می‌کند چون همه از یک
+    فرمت مشترک (متن base64 شامل خطوط کانفیگ) پیروی می‌کنند.
+    خروجی خالی یعنی یا چیزی پیدا نشد یا خطایی رخ داد؛ فراخوان باید silent
+    fallback کند و فقط لینک اشتراک را نشان دهد.
+    """
+    try:
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
+            async with session.get(sub_url, headers={"User-Agent": "v2rayNG/1.8.29"}) as resp:
+                if resp.status != 200:
+                    return []
+                raw = await resp.text()
+    except Exception:
+        return []
+
+    decoded = _b64_decode(raw.strip())
+    lines = [ln.strip() for ln in decoded.splitlines() if ln.strip()]
+    return [ln for ln in lines if ln.startswith(_CONFIG_SCHEMES)]
 
 
 async def fetch_sub_info(link: str) -> dict:

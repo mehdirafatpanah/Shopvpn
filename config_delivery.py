@@ -23,6 +23,7 @@ from aiogram import Bot
 from aiogram.types import BufferedInputFile
 
 from jalali import to_jalali_str
+from sub_info import fetch_individual_links
 
 
 def build_qr_bytes(link: str) -> bytes:
@@ -87,6 +88,33 @@ def build_summary_text(final_price: int, total: int) -> str:
     return summary
 
 
+async def _send_individual_configs(bot: Bot, user_tg_id: int, links: list) -> None:
+    """کانفیگ‌های تکی داخل یک اشتراک را در قالب یک یا چند پیام (با رعایت سقف
+    ۴۰۹۶ کاراکتری تلگرام) ارسال می‌کند. خطای احتمالی (مثلاً پارس مارک‌داون)
+    نباید مانع تحویل اصلی سفارش شود، پس کاملاً silent-fail است.
+    """
+    header = "📋 کانفیگ‌های تکی این اشتراک (اگه لینک اشتراک رو نتونستی مستقیم اضافه کنی، هرکدوم از این‌ها رو تکی وارد کن):\n\n"
+    chunk = header
+    chunks = []
+    for c in links:
+        piece = f"`{c}`\n\n"
+        if len(chunk) + len(piece) > 3800:
+            chunks.append(chunk)
+            chunk = ""
+        chunk += piece
+    if chunk.strip():
+        chunks.append(chunk)
+
+    for part in chunks:
+        try:
+            await bot.send_message(user_tg_id, part, parse_mode="Markdown")
+        except Exception:
+            try:
+                await bot.send_message(user_tg_id, part)
+            except Exception:
+                pass
+
+
 async def deliver_config_to_user(
     bot: Bot,
     user_tg_id: int,
@@ -123,6 +151,14 @@ async def deliver_config_to_user(
             f"🔗 لینک اشتراک شما (برای کپی):\n`{link}`",
             parse_mode="Markdown",
         )
+
+        if link.startswith(("http://", "https://")):
+            try:
+                individual_links = await fetch_individual_links(link)
+            except Exception:
+                individual_links = []
+            if individual_links:
+                await _send_individual_configs(bot, user_tg_id, individual_links)
 
     if final_price is not None:
         await bot.send_message(user_tg_id, build_summary_text(final_price, total))
