@@ -348,21 +348,37 @@ def reseller_panel_kb() -> InlineKeyboardMarkup:
 
 
 def payment_choice_kb(crypto_enabled: bool, abangateway_enabled: bool = False,
-                       custom_gateways: list = None, card_to_card_enabled: bool = True) -> InlineKeyboardMarkup:
+                       custom_gateways: list = None, card_to_card_enabled: bool = True,
+                       amount: int = None, db=None, allowed_methods=None) -> InlineKeyboardMarkup:
     """کیبورد مرحله‌ی انتخاب روش پرداخت: کاربر ابتدا این لیست را می‌بیند و روش پرداخت را
     انتخاب می‌کند (به‌جای اینکه مستقیم شماره کارت نمایش داده شود). اگر درگاه کریپتو/آبان
     گیت وی/درگاه‌های سفارشی فعال باشند، دکمه‌ی مربوطه هم نمایش داده می‌شود. کارت‌به‌کارت
     دستی هم با تنظیم card_to_card_enabled قابل غیرفعال‌سازی است. custom_gateways لیستی
-    از دیکشنری‌های {"id", "key", "name"} است (خروجی custom_gateway_payment.list_enabled_gateways)."""
+    از دیکشنری‌های {"id", "key", "name"} است (خروجی custom_gateway_payment.list_enabled_gateways).
+
+    amount + db: در صورت ارسال، دکمه‌ی هر روشی که «حداقل مبلغ» تنظیم‌شده‌اش از amount
+    بیشتر باشد حذف می‌شود. allowed_methods: در صورت ارسال (لیست کلیدها یا None برای
+    «همه مجاز»)، فقط دکمه‌ی روش‌های مجاز برای محصول/آیتم جاری نمایش داده می‌شود."""
+
+    def _ok(method_key: str) -> bool:
+        if allowed_methods is not None and method_key not in allowed_methods:
+            return False
+        if db is not None and amount is not None:
+            min_amt = db.get_payment_method_min_amount(method_key)
+            if min_amt and amount < min_amt:
+                return False
+        return True
+
     rows = []
-    if card_to_card_enabled:
+    if card_to_card_enabled and _ok("card"):
         rows.append([InlineKeyboardButton(text="💳 کارت‌به‌کارت (ارسال رسید)", callback_data="pay_card2card")])
-    if abangateway_enabled:
+    if abangateway_enabled and _ok("abangateway"):
         rows.append([InlineKeyboardButton(text="💳 پرداخت خودکار کارت‌به‌کارت (تایید آنی)", callback_data="pay_abangateway")])
-    if crypto_enabled:
+    if crypto_enabled and _ok("crypto"):
         rows.append([InlineKeyboardButton(text="🪙 پرداخت با ارز دیجیتال (تایید آنی)", callback_data="pay_crypto")])
     for gw in (custom_gateways or []):
-        rows.append([InlineKeyboardButton(text=f"💠 {gw['name']} (تایید آنی)", callback_data=f"pay_customgw:{gw['id']}")])
+        if _ok(f"custom:{gw['key']}"):
+            rows.append([InlineKeyboardButton(text=f"💠 {gw['name']} (تایید آنی)", callback_data=f"pay_customgw:{gw['id']}")])
     rows.append([InlineKeyboardButton(text="❌ انصراف", callback_data="cancel_flow")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -439,6 +455,7 @@ ADMIN_PANEL_ITEMS = [
     ("adm_set_plisio", "🪙 تنظیم درگاه کریپتو (Plisio)", "adm_set_plisio"),
     ("adm_set_abangateway", "💳 تنظیم درگاه آبان گیت وی", "adm_set_abangateway"),
     ("adm_custom_gateways", "💠 درگاه‌های پرداخت سفارشی (فعال/غیرفعال)", "adm_custom_gateways"),
+    ("adm_min_amount_settings", "🧮 حداقل مبلغ پرداخت‌ها", "adm_min_amount_settings"),
     ("adm_edit_welcome", "📝 ویرایش پیام خوش‌آمد", "adm_edit_welcome"),
     ("adm_admins_menu", "👤 مدیریت ادمین‌ها", "adm_admins_menu"),
     ("adm_broadcast", "📢 پیام همگانی", "adm_broadcast"),
@@ -493,6 +510,7 @@ ADMIN_PANEL_CATEGORIES = [
         "adm_set_plisio",
         "adm_set_abangateway",
         "adm_custom_gateways",
+        "adm_min_amount_settings",
     ]),
     ("alerts", "🔔 یادآوری‌ها و هشدارها", [
         "adm_renewal_settings",
@@ -821,19 +839,24 @@ def admin_categories_kb(categories) -> InlineKeyboardMarkup:
 
 def admin_custom_gateways_kb(gateways) -> InlineKeyboardMarkup:
     """لیست درگاه‌های پرداخت سفارشی (تعریف‌شده از مینی‌اپ/پنل وب) با امکان فقط
-    فعال/غیرفعال کردن از داخل بات. ساخت/ویرایش/حذف همچنان مخصوص مینی‌اپ و پنل وب است."""
+    فعال/غیرفعال کردن و تنظیم حداقل مبلغ از داخل بات. ساخت/ویرایش/حذف همچنان
+    مخصوص مینی‌اپ و پنل وب است."""
     rows = []
     for gw in gateways:
         state_icon = "🟢" if gw["enabled"] else "🔴"
+        min_amt = int(gw["min_amount"] or 0) if "min_amount" in gw.keys() else 0
+        rows.append(
+            [InlineKeyboardButton(text=f"{state_icon} {gw['name']} (حداقل: {min_amt:,} ت)", callback_data="noop")]
+        )
         rows.append(
             [
-                InlineKeyboardButton(text=f"{state_icon} {gw['name']}", callback_data="noop"),
                 InlineKeyboardButton(text="تغییر وضعیت", callback_data=f"adm_customgw_toggle:{gw['id']}"),
+                InlineKeyboardButton(text="🧮 حداقل مبلغ", callback_data=f"adm_customgw_minamt:{gw['id']}"),
             ]
         )
     if not gateways:
         rows.append([InlineKeyboardButton(text="هیچ درگاه سفارشی‌ای تعریف نشده", callback_data="noop")])
-    rows.append([InlineKeyboardButton(text="ℹ️ ساخت/ویرایش درگاه فقط از مینی‌اپ ممکن است", callback_data="noop")])
+    rows.append([InlineKeyboardButton(text="ℹ️ ساخت/ویرایش کامل درگاه فقط از مینی‌اپ ممکن است", callback_data="noop")])
     rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:finance")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -866,7 +889,37 @@ def admin_products_list_kb(db, products) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🗑حذف", callback_data=f"adm_prod_del:{p['id']}"),
             ]
         )
+        rows.append(
+            [InlineKeyboardButton(text="💳 روش‌های پرداخت مجاز", callback_data=f"adm_prod_paymethods:{p['id']}")]
+        )
     rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_products")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_product_payment_methods_kb(db, product_id: int) -> InlineKeyboardMarkup:
+    """صفحه‌ی چندانتخابی روش‌های پرداخت مجاز برای یک محصول. لیست کامل روش‌ها
+    (داخلی + هر درگاه سفارشی) پویا از db.get_payment_methods_catalog خوانده
+    می‌شود، پس با اضافه‌شدن یک درگاه سفارشی جدید، خودش اینجا هم اضافه می‌شود.
+    None/[] یعنی «همه مجاز» (پیش‌فرض)."""
+    allowed = db.get_product_payment_methods(product_id)
+    all_allowed = allowed is None
+    catalog = db.get_payment_methods_catalog()
+    product = db.get_product(product_id)
+    back_cb = f"adm_prod_cat:{product['category_id']}" if product else "adm_products"
+
+    rows = [[InlineKeyboardButton(
+        text=f"{'✅' if all_allowed else '⬜️'} همه‌ی روش‌ها فعال باشند",
+        callback_data=f"adm_prodpm_all:{product_id}",
+    )]]
+    for item in catalog:
+        checked = all_allowed or (item["key"] in (allowed or []))
+        icon = "✅" if checked else "⬜️"
+        suffix = "" if item["enabled"] else " (غیرفعال)"
+        rows.append([InlineKeyboardButton(
+            text=f"{icon} {item['label']}{suffix}",
+            callback_data=f"adm_prodpm_tgl:{product_id}:{item['key']}",
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data=back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1313,6 +1366,32 @@ def stock_alert_settings_kb(db) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="✏️ تغییر آستانه", callback_data="adm_stock_alert_edit")],
         [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:alerts")],
     ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# روش‌های داخلی که حداقل‌مبلغ‌شان از صفحه‌ی «حداقل مبلغ پرداخت‌ها» قابل تنظیم
+# است. کیف پول جدا از بقیه است چون در واقع «حداقل مبلغ شارژ کیف پول» است، نه
+# حداقل مبلغ یک درگاه.
+MIN_AMOUNT_SETTINGS_ITEMS = [
+    ("min_amount_wallet_topup", "👛 حداقل مبلغ شارژ کیف پول"),
+    ("min_amount_card", "💳 حداقل مبلغ کارت‌به‌کارت (دستی)"),
+    ("min_amount_abangateway", "💳 حداقل مبلغ آبان گیت وی"),
+    ("min_amount_crypto", "🪙 حداقل مبلغ پرداخت کریپتو"),
+]
+
+
+def min_amount_settings_kb(db) -> InlineKeyboardMarkup:
+    """صفحه‌ی تنظیم حداقل مبلغ برای شارژ کیف پول و هر روش پرداخت داخلی.
+    حداقل مبلغ هر درگاه سفارشی از داخل همان درگاه (adm_custom_gateways) تنظیم
+    می‌شود، نه از این صفحه."""
+    rows = []
+    for key, label in MIN_AMOUNT_SETTINGS_ITEMS:
+        value = db.get_setting(key, "0")
+        rows.append([InlineKeyboardButton(
+            text=f"{label}: {int(value or 0):,} تومان",
+            callback_data=f"adm_minamt_edit:{key}",
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:finance")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

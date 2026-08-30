@@ -96,6 +96,20 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if message.document:
             return message.document.file_id, "document"
         return None, None
+
+    async def _order_payment_method_error(order, method_key: str) -> str:
+        """اگر برای این سفارش (به‌خاطر محدودیت روش پرداخت محصول یا حداقل مبلغ
+        این درگاه) روش پرداخت انتخاب‌شده مجاز نباشد، متن خطا را برمی‌گرداند؛
+        در غیر این صورت None (یعنی مجاز است). این یک لایه‌ی دفاعی اضافه روی
+        فیلترشدن دکمه‌ها در payment_choice_kb است."""
+        product_id = order["product_id"] if "product_id" in order.keys() else None
+        if product_id and not (await asyncio.to_thread(db.product_allows_payment_method, product_id, method_key)):
+            return "⛔️ این روش پرداخت برای این محصول مجاز نیست."
+        min_amt = await asyncio.to_thread(db.get_payment_method_min_amount, method_key)
+        if min_amt and order["final_price"] < min_amt:
+            return f"⛔️ حداقل مبلغ قابل پرداخت با این روش {min_amt:,} تومان است."
+        return None
+
     router = Router()
 
     async def _safe_edit(message: Message, text: str, reply_markup=None, parse_mode=None) -> None:
@@ -682,8 +696,11 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         discount_code_id = data.get("discount_code_id")
         discount_amount = data.get("discount_amount", 0) or 0
 
+        allowed_methods = (await asyncio.to_thread(db.get_product_payment_methods, product_id))
+        wallet_allowed = allowed_methods is None or "wallet" in allowed_methods
+
         total_price = product["price"] * quantity
-        wallet_credit = (await asyncio.to_thread(db.get_wallet_credit, call.from_user.id))
+        wallet_credit = (await asyncio.to_thread(db.get_wallet_credit, call.from_user.id)) if wallet_allowed else 0
         price_after_code = max(total_price - discount_amount, 0)
         wallet_used = min(wallet_credit, price_after_code)
 
@@ -780,6 +797,24 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await call.answer()
             return
 
+        remaining_amount = order["final_price"]
+
+        if remaining_amount > 0 and not (await asyncio.to_thread(
+            db.has_any_payable_method, remaining_amount, allowed_methods
+        )):
+            if wallet_used > 0:
+                (await asyncio.to_thread(db.add_wallet_credit, call.from_user.id, wallet_used))
+            (await asyncio.to_thread(db.reject_order, order_id))
+            await state.clear()
+            msg = "⛔️ در حال حاضر هیچ روش پرداخت فعالی برای این مبلغ در دسترس نیست."
+            if allowed_methods == ["wallet"]:
+                msg = "⛔️ این محصول فقط با کیف پول قابل خرید است و موجودی کیف پول شما کافی نیست."
+            if wallet_used > 0:
+                msg += "\nمبلغ کسرشده از کیف پول شما بازگردانده شد."
+            await _safe_edit(call.message, msg)
+            await call.answer()
+            return
+
         await state.set_state(BuyFlow.waiting_receipt)
 
         after_buy_text = (await asyncio.to_thread(db.get_setting, "after_buy_text"))
@@ -802,6 +837,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 abangateway_payment.abangateway_payment_available(db),
                 custom_gateway_payment.list_enabled_gateways(db),
                 (await asyncio.to_thread(db.get_setting, "card_to_card_enabled", "1")) == "1",
+                amount=remaining_amount,
+                db=db,
+                allowed_methods=allowed_methods,
             ),
         )
         await call.answer()
@@ -816,6 +854,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         order = (await asyncio.to_thread(db.get_order, order_id)) if order_id else None
         if not order or order["status"] != "pending":
             await call.answer("سفارش معتبر یافت نشد.", show_alert=True)
+            return
+        err = await _order_payment_method_error(order, "card")
+        if err:
+            await call.answer(err, show_alert=True)
             return
         await call.answer()
         intro_lines = []
@@ -847,6 +889,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if not order or order["status"] != "pending":
             await call.answer("سفارش معتبر یافت نشد.", show_alert=True)
             return
+        err = await _order_payment_method_error(order, "crypto")
+        if err:
+            await call.answer(err, show_alert=True)
+            return
         await call.answer("در حال ساخت فاکتور...")
         product = (await asyncio.to_thread(db.get_product, order["product_id"]))
         tenant_id = (await asyncio.to_thread(db.get_setting, "miniapp_tenant_id", ""))
@@ -874,6 +920,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         order = (await asyncio.to_thread(db.get_order, order_id)) if order_id else None
         if not order or order["status"] != "pending":
             await call.answer("سفارش معتبر یافت نشد.", show_alert=True)
+            return
+        err = await _order_payment_method_error(order, "abangateway")
+        if err:
+            await call.answer(err, show_alert=True)
             return
         await call.answer("در حال ساخت فاکتور...")
         product = (await asyncio.to_thread(db.get_product, order["product_id"]))
@@ -909,6 +959,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         gw_row = (await asyncio.to_thread(db.get_custom_gateway, int(call.data.split(":", 1)[1])))
         if not gw_row or not gw_row["enabled"]:
             await call.answer("این درگاه در دسترس نیست.", show_alert=True)
+            return
+        err = await _order_payment_method_error(order, f"custom:{gw_row['gateway_key']}")
+        if err:
+            await call.answer(err, show_alert=True)
             return
         await call.answer("در حال ساخت فاکتور...")
         product = (await asyncio.to_thread(db.get_product, order["product_id"]))
@@ -1111,6 +1165,18 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 pass
             return
 
+        remaining_amount = order["final_price"]
+        if not (await asyncio.to_thread(db.has_any_payable_method, remaining_amount, None)):
+            if wallet_used > 0:
+                (await asyncio.to_thread(db.add_wallet_credit, message.from_user.id, wallet_used))
+            (await asyncio.to_thread(db.reject_order, order_id))
+            await state.clear()
+            await message.answer(
+                "⛔️ در حال حاضر هیچ روش پرداخت فعالی برای این مبلغ در دسترس نیست."
+                + ("\nمبلغ کسرشده از کیف پول شما بازگردانده شد." if wallet_used > 0 else "")
+            )
+            return
+
         await state.set_state(CustomConfigFlow.waiting_receipt)
         text = (
             f"🛠 نام کاربری: {username}\n"
@@ -1128,6 +1194,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 abangateway_payment.abangateway_payment_available(db),
                 custom_gateway_payment.list_enabled_gateways(db),
                 (await asyncio.to_thread(db.get_setting, "card_to_card_enabled", "1")) == "1",
+                amount=remaining_amount,
+                db=db,
             ),
         )
 
@@ -1790,22 +1858,33 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
     @router.callback_query(F.data == "start_topup")
     async def cb_start_topup(call: CallbackQuery, state: FSMContext):
+        min_topup = int((await asyncio.to_thread(db.get_setting, "min_amount_wallet_topup", "1000")) or "1000")
         await state.set_state(WalletTopup.waiting_amount)
         await _safe_edit(
             call.message,
-            "💰 چه مبلغی (به تومان) می‌خواهید به کیف پول خود شارژ کنید؟ فقط عدد ارسال کنید (مثال: 100000):",
+            f"💰 چه مبلغی (به تومان) می‌خواهید به کیف پول خود شارژ کنید؟ فقط عدد ارسال کنید (مثال: 100000):\n"
+            f"حداقل مبلغ شارژ: {min_topup:,} تومان",
             reply_markup=kb.cancel_kb(),
         )
         await call.answer()
 
     @router.message(WalletTopup.waiting_amount)
     async def process_topup_amount(message: Message, state: FSMContext):
+        min_topup = int((await asyncio.to_thread(db.get_setting, "min_amount_wallet_topup", "1000")) or "1000")
         text = message.text.strip().replace(",", "")
-        if not text.isdigit() or int(text) < 1000:
-            await message.answer("لطفاً یک عدد معتبر و حداقل 1000 تومان ارسال کنید.")
+        if not text.isdigit() or int(text) < min_topup:
+            await message.answer(f"لطفاً یک عدد معتبر و حداقل {min_topup:,} تومان ارسال کنید.")
             return
 
         amount = int(text)
+
+        if not (await asyncio.to_thread(db.has_any_payable_method, amount, None)):
+            await message.answer(
+                "⛔️ در حال حاضر هیچ روش پرداخت فعالی برای این مبلغ در دسترس نیست. "
+                "لطفاً مبلغ دیگری وارد کنید یا بعداً تلاش کنید."
+            )
+            return
+
         await state.update_data(topup_amount=amount)
         await state.set_state(WalletTopup.waiting_receipt)
 
@@ -1817,6 +1896,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 abangateway_payment.abangateway_payment_available(db),
                 custom_gateway_payment.list_enabled_gateways(db),
                 (await asyncio.to_thread(db.get_setting, "card_to_card_enabled", "1")) == "1",
+                amount=amount,
+                db=db,
             ),
         )
 

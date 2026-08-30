@@ -69,6 +69,8 @@ from states import (
     AdminRenewalSettings,
     AdminVolumeReminderSettings,
     AdminStockAlertSettings,
+    AdminMinAmountSettings,
+    AdminCustomGatewayMinAmount,
     AdminRestoreBackup,
     AdminAddPanelServer,
     AdminSetPanelTemplate,
@@ -485,6 +487,104 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         except Exception:
             await call.answer("⚠️ تغییر وضعیت درگاه ناموفق بود. دوباره تلاش کنید.", show_alert=True)
 
+    @router.callback_query(F.data.startswith("adm_customgw_minamt:"))
+    async def cb_admin_customgw_minamt(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        gw_id = callback_id(call.data, "adm_customgw_minamt")
+        if gw_id is None:
+            return await call.answer("⚠️ درخواست نامعتبر است.", show_alert=True)
+        row = (await asyncio.to_thread(db.get_custom_gateway, gw_id))
+        if row is None:
+            return await call.answer("⚠️ این درگاه دیگر وجود ندارد.", show_alert=True)
+        await state.update_data(customgw_minamt_id=gw_id)
+        await state.set_state(AdminCustomGatewayMinAmount.waiting_value)
+        current = int(row["min_amount"] or 0) if "min_amount" in row.keys() else 0
+        await safe_edit(call, 
+            f"🧮 حداقل مبلغ واریزی برای درگاه «{row['name']}» چند تومان باشد؟\n"
+            f"مقدار فعلی: {current:,} تومان\n"
+            "برای بدون‌محدودیت، عدد 0 بفرست. فقط عدد ارسال کن:",
+            reply_markup=kb.admin_back_kb(),
+        )
+        await call.answer()
+
+    @router.message(AdminCustomGatewayMinAmount.waiting_value)
+    async def process_customgw_minamt(message: Message, state: FSMContext):
+        text = message.text.strip().replace(",", "")
+        if not text.isdigit():
+            await message.answer("لطفاً فقط عدد ارسال کنید.")
+            return
+        data = await state.get_data()
+        gw_id = data.get("customgw_minamt_id")
+        row = (await asyncio.to_thread(db.get_custom_gateway, gw_id)) if gw_id else None
+        if not row:
+            await state.clear()
+            await message.answer("⚠️ این درگاه دیگر وجود ندارد.")
+            return
+        (await asyncio.to_thread(db.update_custom_gateway, gw_id, min_amount=int(text)))
+        (await asyncio.to_thread(
+            db.log_admin_action, message.from_user.id, "custom_gateway_min_amount",
+            f"حداقل مبلغ درگاه «{row['name']}» روی {int(text):,} تومان تنظیم شد.",
+        ))
+        await state.clear()
+        gateways = (await asyncio.to_thread(db.list_custom_gateways))
+        await message.answer(
+            f"✅ حداقل مبلغ درگاه «{row['name']}» روی {int(text):,} تومان تنظیم شد.",
+            reply_markup=kb.admin_custom_gateways_kb(gateways),
+        )
+
+    # -------------------------------------------------------------------
+    # حداقل مبلغ پرداخت‌ها (شارژ کیف پول + روش‌های داخلی)
+    # -------------------------------------------------------------------
+
+    @router.callback_query(F.data == "adm_min_amount_settings")
+    async def cb_admin_min_amount_settings(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        await replace_admin_view(call, 
+            "🧮 حداقل مبلغ پرداخت‌ها:\n\n"
+            "برای هر روش، پایین‌تر از این مبلغ اجازه‌ی پرداخت داده نمی‌شود (0 یعنی بدون محدودیت).\n"
+            "حداقل مبلغ هر درگاه سفارشی از داخل «درگاه‌های پرداخت سفارشی» قابل تنظیم است.",
+            reply_markup=kb.min_amount_settings_kb(db),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_minamt_edit:"))
+    async def cb_admin_minamt_edit(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        key = call.data.split(":", 1)[1]
+        valid_keys = {k for k, _ in kb.MIN_AMOUNT_SETTINGS_ITEMS}
+        if key not in valid_keys:
+            return await call.answer("⚠️ درخواست نامعتبر است.", show_alert=True)
+        await state.update_data(min_amount_key=key)
+        await state.set_state(AdminMinAmountSettings.waiting_value)
+        current = db.get_setting(key, "0")
+        await safe_edit(call, 
+            f"مقدار فعلی: {int(current or 0):,} تومان\nمبلغ جدید را فقط به‌صورت عدد ارسال کن (0 یعنی بدون محدودیت):",
+            reply_markup=kb.admin_back_kb(),
+        )
+        await call.answer()
+
+    @router.message(AdminMinAmountSettings.waiting_value)
+    async def process_minamt_value(message: Message, state: FSMContext):
+        text = message.text.strip().replace(",", "")
+        if not text.isdigit():
+            await message.answer("لطفاً فقط عدد ارسال کنید.")
+            return
+        data = await state.get_data()
+        key = data.get("min_amount_key")
+        if not key:
+            await state.clear()
+            await message.answer("⚠️ خطایی رخ داد، دوباره تلاش کنید.")
+            return
+        (await asyncio.to_thread(db.set_setting, key, text))
+        (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "min_amount_setting", f"{key} = {text}"))
+        await state.clear()
+        await message.answer(
+            f"✅ مقدار روی {int(text):,} تومان تنظیم شد.", reply_markup=kb.min_amount_settings_kb(db)
+        )
+
     # -------------------------------------------------------------------
     # مدیریت محصولات
     # -------------------------------------------------------------------
@@ -546,6 +646,71 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             products = (await asyncio.to_thread(db.get_products, cat_id, active_only=False))
             await safe_edit(call, "لیست محصولات این دسته‌بندی:", reply_markup=kb.admin_products_list_kb(db, products))
         await call.answer("محصول حذف شد.")
+
+    @router.callback_query(F.data.startswith("adm_prod_paymethods:"))
+    async def cb_admin_prod_paymethods(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_prod_paymethods")
+        if product_id is None:
+            return await call.answer("❌ درخواست نامعتبر است.", show_alert=True)
+        product = (await asyncio.to_thread(db.get_product, product_id))
+        if not product:
+            return await call.answer("⚠️ این محصول دیگر وجود ندارد.", show_alert=True)
+        await safe_edit(call, 
+            f"💳 روش‌های پرداخت مجاز برای «{product['name']}»:\n\n"
+            "با لمس هر گزینه، فعال/غیرفعال می‌شود. اگر «همه‌ی روش‌ها» تیک بخورد، این محصول از هر روش پرداخت فعالی قابل خرید است "
+            "(با اضافه‌شدن هر درگاه جدید در آینده هم خودکار برایش فعال می‌شود).",
+            reply_markup=kb.admin_product_payment_methods_kb(db, product_id),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_prodpm_all:"))
+    async def cb_admin_prodpm_all(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_prodpm_all")
+        if product_id is None:
+            return await call.answer("❌ درخواست نامعتبر است.", show_alert=True)
+        (await asyncio.to_thread(db.set_product_payment_methods, product_id, None))
+        await safe_edit(call, 
+            "💳 روش‌های پرداخت مجاز:",
+            reply_markup=kb.admin_product_payment_methods_kb(db, product_id),
+        )
+        await call.answer("همه‌ی روش‌ها فعال شدند.")
+
+    @router.callback_query(F.data.startswith("adm_prodpm_tgl:"))
+    async def cb_admin_prodpm_toggle(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        try:
+            _, product_id_s, method_key = call.data.split(":", 2)
+            product_id = int(product_id_s)
+        except (ValueError, IndexError):
+            return await call.answer("❌ درخواست نامعتبر است.", show_alert=True)
+
+        catalog_keys = [item["key"] for item in (await asyncio.to_thread(db.get_payment_methods_catalog))]
+        allowed = (await asyncio.to_thread(db.get_product_payment_methods, product_id))
+        current = set(catalog_keys) if allowed is None else set(allowed)
+
+        if method_key in current:
+            current.discard(method_key)
+        else:
+            current.add(method_key)
+
+        if not current:
+            return await call.answer("⚠️ حداقل یک روش پرداخت باید برای این محصول فعال بماند.", show_alert=True)
+
+        if current == set(catalog_keys):
+            (await asyncio.to_thread(db.set_product_payment_methods, product_id, None))
+        else:
+            (await asyncio.to_thread(db.set_product_payment_methods, product_id, sorted(current)))
+
+        await safe_edit(call, 
+            "💳 روش‌های پرداخت مجاز:",
+            reply_markup=kb.admin_product_payment_methods_kb(db, product_id),
+        )
+        await call.answer()
 
     @router.callback_query(F.data == "adm_prod_add")
     async def cb_admin_prod_add(call: CallbackQuery, state: FSMContext):

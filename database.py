@@ -202,7 +202,22 @@ DEFAULT_SETTINGS = {
     "menu_order": '["miniapp","btn_buy","btn_test","btn_my_orders","btn_wallet","btn_referral","btn_wheel","btn_contact","btn_admin_panel"]',
     "miniapp_enabled": "1",
     "reseller_request_enabled": "1",
+    # حداقل مبلغ مجاز برای هر روش پرداخت (تومان). 0 یعنی بدون محدودیت.
+    "min_amount_wallet_topup": "1000",  # حداقل مبلغ شارژ کیف پول
+    "min_amount_card": "0",             # حداقل مبلغ برای پرداخت کارت‌به‌کارت دستی
+    "min_amount_abangateway": "0",      # حداقل مبلغ برای آبان گیت وی
+    "min_amount_crypto": "0",           # حداقل مبلغ برای پرداخت کریپتو
 }
+
+# روش‌های پرداخت «داخلی» (غیر از درگاه‌های سفارشی) که در همه‌جای پروژه
+# (بات، پنل ادمین وب، مینی‌اپ) به همین شکل شناخته می‌شوند. کلید تنظیم حداقل
+# مبلغ هر کدام هم از همین‌جا ساخته می‌شود (min_amount_<key>) تا یک‌جا مدیریت شود.
+BUILTIN_PAYMENT_METHODS = [
+    {"key": "wallet", "label": "👛 کیف پول", "enable_setting": None},
+    {"key": "card", "label": "💳 کارت‌به‌کارت (ارسال رسید)", "enable_setting": "card_to_card_enabled"},
+    {"key": "abangateway", "label": "💳 آبان گیت وی (تایید آنی)", "enable_setting": "abangateway_payment_enabled"},
+    {"key": "crypto", "label": "🪙 ارز دیجیتال (تایید آنی)", "enable_setting": "crypto_payment_enabled"},
+]
 
 
 # تعریف کامل دکمه‌های قابل‌مدیریت در منوی اصلی: کلید -> متادیتا
@@ -385,6 +400,7 @@ class Database:
                     price INTEGER NOT NULL,
                     description TEXT DEFAULT '',
                     is_active INTEGER DEFAULT 1,
+                    payment_methods TEXT,
                     FOREIGN KEY(category_id) REFERENCES categories(id) ON DELETE CASCADE
                 );
 
@@ -823,6 +839,12 @@ class Database:
             ("orders", "user_deleted", "INTEGER DEFAULT 0"),
             ("users", "force_join_exempt", "INTEGER DEFAULT 0"),
             ("users", "acquisition_source", "TEXT"),
+            # محدودسازی روش پرداخت مجاز به ازای هر محصول: JSON آرایه‌ای از
+            # کلیدهای روش (مثلاً ["wallet","card"])؛ NULL/خالی یعنی همه‌ی
+            # روش‌های پرداخت فعال، برای این محصول هم مجازند (رفتار پیش‌فرض/قدیم).
+            ("products", "payment_methods", "TEXT"),
+            # حداقل مبلغ واریزی مجاز برای هر درگاه سفارشی/پویا (به تومان).
+            ("custom_gateways", "min_amount", "INTEGER DEFAULT 0"),
         ]
         for table, col, coltype in migrations:
             if not self._column_exists(conn, table, col):
@@ -1556,7 +1578,7 @@ class Database:
     def edit_product(self, product_id: int, name: str = None, price: int = None,
                       description: str = None, duration_days: int = None,
                       is_auto_provision: bool = None, auto_provision_volume_gb: int = None,
-                      provision_server_id: int = None):
+                      provision_server_id: int = None, payment_methods=...):
         fields, values = [], []
         if name is not None:
             fields.append("name=?"); values.append(name)
@@ -1572,6 +1594,9 @@ class Database:
             fields.append("auto_provision_volume_gb=?"); values.append(auto_provision_volume_gb)
         if provision_server_id is not None:
             fields.append("provision_server_id=?"); values.append(provision_server_id)
+        if payment_methods is not ...:
+            fields.append("payment_methods=?")
+            values.append(json.dumps(payment_methods, ensure_ascii=False) if payment_methods else None)
         if not fields:
             return
         values.append(product_id)
@@ -2869,16 +2894,18 @@ class Database:
     # درگاه‌های پرداخت سفارشی/پویا (بدون کد، تعریف‌شده توسط ادمین)
     # -----------------------------------------------------------------------
 
-    def create_custom_gateway(self, key: str, name: str, config: dict, enabled: bool = False) -> int:
+    def create_custom_gateway(self, key: str, name: str, config: dict, enabled: bool = False,
+                               min_amount: int = 0) -> int:
         with self._get_conn() as conn:
             cur = conn.execute(
-                "INSERT INTO custom_gateways (gateway_key, name, config_json, enabled) VALUES (?, ?, ?, ?)",
-                (key, name, json.dumps(config, ensure_ascii=False), 1 if enabled else 0),
+                "INSERT INTO custom_gateways (gateway_key, name, config_json, enabled, min_amount) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (key, name, json.dumps(config, ensure_ascii=False), 1 if enabled else 0, min_amount or 0),
             )
             return cur.lastrowid
 
     def update_custom_gateway(self, gateway_id: int, name: str = None, config: dict = None,
-                               enabled: bool = None):
+                               enabled: bool = None, min_amount: int = None):
         fields, values = [], []
         if name is not None:
             fields.append("name=?")
@@ -2889,6 +2916,9 @@ class Database:
         if enabled is not None:
             fields.append("enabled=?")
             values.append(1 if enabled else 0)
+        if min_amount is not None:
+            fields.append("min_amount=?")
+            values.append(min_amount)
         if not fields:
             return
         fields.append("updated_at=?")
@@ -2917,6 +2947,98 @@ class Database:
                     "SELECT * FROM custom_gateways WHERE enabled=1 ORDER BY id"
                 ).fetchall()
             return conn.execute("SELECT * FROM custom_gateways ORDER BY id").fetchall()
+
+    # -----------------------------------------------------------------------
+    # کاتالوگ روش‌های پرداخت (داخلی + درگاه‌های سفارشی) + حداقل مبلغ هرکدام
+    # -----------------------------------------------------------------------
+    # این تابع تنها منبع حقیقت برای «لیست همه‌ی روش‌های پرداخت موجود» است؛
+    # همه‌جا (بات، پنل ادمین وب، مینی‌اپ) از همین‌جا خوانده می‌شود تا با
+    # اضافه‌شدن یک درگاه سفارشی جدید، بدون هیچ تغییر دستی، خودش را در همه‌ی
+    # لیست‌های انتخابِ محصول هم نشان دهد.
+
+    def get_payment_methods_catalog(self, only_enabled: bool = False) -> list:
+        """لیست کامل روش‌های پرداخت: آیتم‌های داخلی (کیف پول/کارت/آبان‌گیت‌وی/
+        کریپتو) + همه‌ی درگاه‌های سفارشی تعریف‌شده. هر آیتم:
+        {key, label, enabled, min_amount, is_custom}"""
+        items = []
+        for m in BUILTIN_PAYMENT_METHODS:
+            enabled = True if not m["enable_setting"] else (self.get_setting(m["enable_setting"], "0") == "1")
+            if only_enabled and not enabled:
+                continue
+            items.append({
+                "key": m["key"],
+                "label": m["label"],
+                "enabled": enabled,
+                "min_amount": int(self.get_setting(f"min_amount_{m['key']}", "0") or 0),
+                "is_custom": False,
+            })
+        for gw in self.list_custom_gateways(only_enabled=only_enabled):
+            items.append({
+                "key": f"custom:{gw['gateway_key']}",
+                "label": f"💠 {gw['name']}",
+                "enabled": bool(gw["enabled"]),
+                "min_amount": int(gw["min_amount"] or 0) if "min_amount" in gw.keys() else 0,
+                "is_custom": True,
+                "gateway_id": gw["id"],
+            })
+        return items
+
+    def get_payment_method_min_amount(self, method_key: str) -> int:
+        """حداقل مبلغ مجاز برای یک روش پرداخت (کلید داخلی یا 'custom:<key>')."""
+        if method_key and method_key.startswith("custom:"):
+            gw = self.get_custom_gateway_by_key(method_key.split(":", 1)[1])
+            if gw and "min_amount" in gw.keys():
+                return int(gw["min_amount"] or 0)
+            return 0
+        return int(self.get_setting(f"min_amount_{method_key}", "0") or 0)
+
+    # -----------------------------------------------------------------------
+    # محدودسازی روش پرداخت مجاز به ازای هر محصول
+    # -----------------------------------------------------------------------
+
+    def get_product_payment_methods(self, product_id: int):
+        """None = همه‌ی روش‌ها برای این محصول مجازند (پیش‌فرض/بدون محدودیت).
+        در غیر این صورت لیستی از کلیدهای مجاز (مثلاً ["wallet","card"])."""
+        row = self.get_product(product_id)
+        if not row:
+            return None
+        raw = row["payment_methods"] if "payment_methods" in row.keys() else None
+        if not raw:
+            return None
+        try:
+            methods = json.loads(raw)
+        except Exception:
+            return None
+        if not methods:
+            return None
+        return methods
+
+    def set_product_payment_methods(self, product_id: int, methods):
+        """methods=None یا [] یعنی «همه‌ی روش‌ها مجاز» (حذف محدودیت)."""
+        value = json.dumps(methods, ensure_ascii=False) if methods else None
+        with self._get_conn() as conn:
+            conn.execute("UPDATE products SET payment_methods=? WHERE id=?", (value, product_id))
+
+    def product_allows_payment_method(self, product_id: int, method_key: str) -> bool:
+        allowed = self.get_product_payment_methods(product_id)
+        if allowed is None:
+            return True
+        return method_key in allowed
+
+    def has_any_payable_method(self, amount: int, allowed_methods=None, exclude_wallet: bool = True) -> bool:
+        """آیا برای «مبلغ» داده‌شده حداقل یک روش پرداخت فعال هست که هم توسط
+        allowed_methods مجاز باشد (None = همه مجاز) و هم amount از حداقل‌مبلغش
+        کمتر نباشد؟ کیف پول به‌طور پیش‌فرض از این بررسی کنار گذاشته می‌شود چون
+        از قبل و جدا از این کیبورد به‌صورت خودکار در ابتدای خرید اعمال شده است."""
+        for item in self.get_payment_methods_catalog(only_enabled=True):
+            if exclude_wallet and item["key"] == "wallet":
+                continue
+            if allowed_methods is not None and item["key"] not in allowed_methods:
+                continue
+            if item["min_amount"] and amount < item["min_amount"]:
+                continue
+            return True
+        return False
 
     def create_custom_gateway_invoice(self, gateway_id: int, txn_id: str, kind: str, ref_id: int,
                                        user_id: int, amount_toman: int, invoice_url: str = None) -> int:
