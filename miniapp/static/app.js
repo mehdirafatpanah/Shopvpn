@@ -1290,16 +1290,22 @@ async function loadSubInfo(orderId, link) {
 // ---------------------------------------------------------------------------
 // کارت بانکی + آپلود رسید (مشترک بین «شارژ کیف پول» و «پرداخت سفارش»)
 // ---------------------------------------------------------------------------
-// کش ساده برای لیست درگاه‌های سفارشی فعال (در طول یک نشست کافی است یک‌بار بگیریم)
-let _customGatewaysCache = null;
-async function fetchCustomGateways() {
-  if (_customGatewaysCache) return _customGatewaysCache;
+// کش ساده برای لیست درگاه‌های سفارشی فعال، به‌ازای هر ترکیب amount/product_id
+// (چون این‌ها لیست را فیلتر می‌کنند، نباید بین سفارش‌های مختلف به اشتراک بگذارد)
+const _customGatewaysCache = {};
+async function fetchCustomGateways(amount, productId) {
+  const cacheKey = `${amount ?? ""}:${productId ?? ""}`;
+  if (_customGatewaysCache[cacheKey]) return _customGatewaysCache[cacheKey];
+  const params = new URLSearchParams();
+  if (amount != null) params.set("amount", amount);
+  if (productId != null) params.set("product_id", productId);
+  const qs = params.toString() ? `?${params.toString()}` : "";
   try {
-    _customGatewaysCache = await api("/api/gateways");
+    _customGatewaysCache[cacheKey] = await api(`/api/gateways${qs}`);
   } catch (e) {
-    _customGatewaysCache = [];
+    _customGatewaysCache[cacheKey] = [];
   }
-  return _customGatewaysCache;
+  return _customGatewaysCache[cacheKey];
 }
 
 function renderReceiptCard(box, { amount, cardNumber, cardHolder, sendReceipt, successText, cryptoEnabled, createCryptoInvoice, customGateways, createCustomGatewayInvoice, cardToCardEnabled }) {
@@ -1624,7 +1630,7 @@ async function buyProduct(productId, quantity, code) {
         <div class="card" id="order-payment-card"></div>
       `;
       document.getElementById("back-to-store-btn").onclick = renderStore;
-      const customGateways = await fetchCustomGateways();
+      const customGateways = await fetchCustomGateways(result.final_price, productId);
       renderReceiptCard(document.getElementById("order-payment-card"), {
         amount: result.final_price,
         cardNumber: result.card_number,
@@ -1759,7 +1765,7 @@ async function submitCustomConfig(username, volumeGb, useCredit, info) {
         <div class="card" id="cc-payment-card"></div>
       `;
       document.getElementById("back-to-store-btn").onclick = renderStore;
-      const customGateways2 = await fetchCustomGateways();
+      const customGateways2 = await fetchCustomGateways(result.final_price, null);
       renderReceiptCard(document.getElementById("cc-payment-card"), {
         amount: result.final_price,
         cardNumber: result.card_number,
@@ -1928,7 +1934,7 @@ async function renderWallet() {
 
 async function renderTopupPaymentStep(topupId, amount, cardNumber, cardHolder, cryptoEnabled, cardToCardEnabled) {
   const box = document.getElementById("topup-card");
-  const customGateways = await fetchCustomGateways();
+  const customGateways = await fetchCustomGateways(amount, null);
   renderReceiptCard(box, {
     amount, cardNumber, cardHolder, cardToCardEnabled,
     successText: "رسید ارسال شد. پس از تایید ادمین، کیف پول شما شارژ می‌شود.",
