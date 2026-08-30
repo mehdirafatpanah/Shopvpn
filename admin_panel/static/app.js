@@ -2385,12 +2385,36 @@ function readProductProvisionFields(b) {
   return { ok: true, provision_server_id, auto_provision_volume_gb };
 }
 
+// روش‌های پرداخت مجاز حین «ساخت» محصول جدید (پیش‌فرض: همه تیک‌خورده = بدون
+// محدودیت). خروجی همان قرارداد payment_methods در بدنه‌ی POST /products است.
+function productPaymentMethodsFieldsHtml(paymentMethods) {
+  if (!paymentMethods || !paymentMethods.length) return '';
+  return `
+    <div class="field" style="margin-top:4px">
+      <span class="card-sub">💳 روش‌های پرداخت مجاز (اگر همه یا هیچ‌کدام تیک نخورَد، یعنی بدون محدودیت)</span>
+      <div class="form-grid" style="margin-top:6px">
+        ${paymentMethods.map(m => `
+          <label class="field field-row">
+            <span>${esc(m.label)}${!m.enabled ? ' (غیرفعال)' : ''}</span>
+            <input type="checkbox" data-newprod-pm="${esc(m.key)}" checked>
+          </label>`).join('')}
+      </div>
+    </div>`;
+}
+
+function readProductPaymentMethodsFields(b) {
+  const boxes = $$('[data-newprod-pm]', b);
+  if (!boxes.length) return null;
+  const checked = boxes.filter(i => i.checked).map(i => i.dataset.newprodPm);
+  return (checked.length === 0 || checked.length === boxes.length) ? null : checked;
+}
+
 async function renderCatalog() {
-  const [categories, products, panelServers] = await Promise.all([
-    apiGet('/categories'), apiGet('/products'), apiGet('/panel-servers-lite'),
+  const [categories, products, panelServers, paymentMethods] = await Promise.all([
+    apiGet('/categories'), apiGet('/products'), apiGet('/panel-servers-lite'), apiGet('/payment-methods'),
   ]);
-  if (loadTheme().theme === 'brutalist') return renderCatalogBrutalist(categories, products, panelServers);
-  if (loadTheme().theme === 'bento') return renderCatalogBento(categories, products, panelServers);
+  if (loadTheme().theme === 'brutalist') return renderCatalogBrutalist(categories, products, panelServers, paymentMethods);
+  if (loadTheme().theme === 'bento') return renderCatalogBento(categories, products, panelServers, paymentMethods);
   setContent(`
     <div class="tabs">
       <button class="tab-btn ${catalogTab === 'products' ? 'active' : ''}" data-t="products">محصولات</button>
@@ -2452,6 +2476,7 @@ async function renderCatalog() {
       <input class="input" id="prod-duration" type="number" placeholder="مدت (روز)" value="30"></div>
       <textarea class="input" id="prod-desc" placeholder="توضیحات (اختیاری)" rows="2"></textarea>
       ${productProvisionFieldsHtml(panelServers)}
+      ${productPaymentMethodsFieldsHtml(paymentMethods)}
       <button class="btn btn-primary" id="prod-save">ثبت</button>
     </div>`, (b, close) => {
     wireProductProvisionToggle(b);
@@ -2461,11 +2486,13 @@ async function renderCatalog() {
       if (!name || !price) return toast('نام و قیمت الزامی است.', true);
       const prov = readProductProvisionFields(b);
       if (!prov.ok) return;
+      const payment_methods = readProductPaymentMethodsFields(b);
       try {
         await apiPost('/products', {
           category_id: Number($('#prod-cat', b).value), name, price,
           description: $('#prod-desc', b).value, duration_days: Number($('#prod-duration', b).value) || 30,
           provision_server_id: prov.provision_server_id, auto_provision_volume_gb: prov.auto_provision_volume_gb,
+          payment_methods,
         });
         toast('محصول اضافه شد.'); close(); renderCatalog();
       } catch (e) { handleErr(e); }
@@ -2486,7 +2513,7 @@ async function renderCatalog() {
 }
 
 /* ---------------------------------------------------------- catalog: bento */
-function renderCatalogBento(categories, products, panelServers) {
+function renderCatalogBento(categories, products, panelServers, paymentMethods) {
   setContent(`
     <div class="bn-hero">
       <div><h2>ویترین محصولات</h2><p>${fmt(products.length)} محصول در ${fmt(categories.length)} دسته‌بندی</p></div>
@@ -2563,6 +2590,7 @@ function renderCatalogBento(categories, products, panelServers) {
       <input class="input" id="prod-duration" type="number" placeholder="مدت (روز)" value="30"></div>
       <textarea class="input" id="prod-desc" placeholder="توضیحات (اختیاری)" rows="2"></textarea>
       ${productProvisionFieldsHtml(panelServers)}
+      ${productPaymentMethodsFieldsHtml(paymentMethods)}
       <button class="btn btn-primary" id="prod-save">ثبت</button>
     </div>`, (b, close) => {
     wireProductProvisionToggle(b);
@@ -2572,11 +2600,13 @@ function renderCatalogBento(categories, products, panelServers) {
       if (!name || !price) return toast('نام و قیمت الزامی است.', true);
       const prov = readProductProvisionFields(b);
       if (!prov.ok) return;
+      const payment_methods = readProductPaymentMethodsFields(b);
       try {
         await apiPost('/products', {
           category_id: Number($('#prod-cat', b).value), name, price,
           description: $('#prod-desc', b).value, duration_days: Number($('#prod-duration', b).value) || 30,
           provision_server_id: prov.provision_server_id, auto_provision_volume_gb: prov.auto_provision_volume_gb,
+          payment_methods,
         });
         toast('محصول اضافه شد.'); close(); renderCatalog();
       } catch (e) { handleErr(e); }
@@ -2599,7 +2629,7 @@ function renderCatalogBento(categories, products, panelServers) {
 /* -------------------------------------------------- catalog: brutalist -- */
 // محصولات به‌شکل «برچسب قیمت آویزون» (تگ مشکی با سوراخ) و دسته‌بندی‌ها به
 // شکل ردیف‌های فهرست ضخیم‌قاب.
-function renderCatalogBrutalist(categories, products, panelServers) {
+function renderCatalogBrutalist(categories, products, panelServers, paymentMethods) {
   setContent(`
     <div class="bru-hero" style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap">
       <div>
@@ -2686,6 +2716,7 @@ function renderCatalogBrutalist(categories, products, panelServers) {
       <input class="input" id="prod-duration" type="number" placeholder="مدت (روز)" value="30"></div>
       <textarea class="input" id="prod-desc" placeholder="توضیحات (اختیاری)" rows="2"></textarea>
       ${productProvisionFieldsHtml(panelServers)}
+      ${productPaymentMethodsFieldsHtml(paymentMethods)}
       <button class="btn btn-primary" id="prod-save">ثبت</button>
     </div>`, (b, close) => {
     wireProductProvisionToggle(b);
@@ -2695,11 +2726,13 @@ function renderCatalogBrutalist(categories, products, panelServers) {
       if (!name || !price) return toast('نام و قیمت الزامی است.', true);
       const prov = readProductProvisionFields(b);
       if (!prov.ok) return;
+      const payment_methods = readProductPaymentMethodsFields(b);
       try {
         await apiPost('/products', {
           category_id: Number($('#prod-cat', b).value), name, price,
           description: $('#prod-desc', b).value, duration_days: Number($('#prod-duration', b).value) || 30,
           provision_server_id: prov.provision_server_id, auto_provision_volume_gb: prov.auto_provision_volume_gb,
+          payment_methods,
         });
         toast('محصول اضافه شد.'); close(); renderCatalog();
       } catch (e) { handleErr(e); }
