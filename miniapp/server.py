@@ -2413,6 +2413,7 @@ class ProductCreate(BaseModel):
     is_auto_provision: bool = False
     auto_provision_volume_gb: Optional[int] = None
     provision_server_id: Optional[int] = None
+    payment_methods: Optional[List[str]] = None
 
 
 class ProductUpdate(BaseModel):
@@ -2844,9 +2845,16 @@ def api_admin_create_product(body: ProductCreate, auth=Depends(require_senior_ad
     product_id = db.add_product(
         body.category_id, body.name.strip(), body.price, body.description, body.duration_days,
         is_auto_provision=is_auto_provision, auto_provision_volume_gb=body.auto_provision_volume_gb,
-        provision_server_id=provision_server_id,
+        provision_server_id=provision_server_id, payment_methods=body.payment_methods,
     )
     return {"id": product_id}
+
+
+@app.get("/api/admin/payment-methods")
+def api_admin_payment_methods(auth=Depends(require_senior_admin)):
+    """لیست کامل روش‌های پرداخت (داخلی + درگاه‌های سفارشی) برای انتخاب حین ساخت محصول."""
+    _, db, _ = auth
+    return db.get_payment_methods_catalog()
 
 
 @app.patch("/api/admin/products/{product_id}")
