@@ -623,12 +623,8 @@ async def api_create_custom_config(body: CustomConfigPurchase, auth=Depends(requ
 
     return {
         "status": "pending_payment", "order_id": order_id, "final_price": order["final_price"],
-        "card_to_card_enabled": db.get_setting("card_to_card_enabled", "1") == "1",
         "card_number": db.get_setting("card_number"), "card_holder": db.get_setting("card_holder"),
-        "crypto_enabled": db.get_setting("crypto_payment_enabled", "0") == "1"
-        and bool(_resolve_plisio_key(db)) and bool(API_BASE_URL),
-        "abangateway_enabled": db.get_setting("abangateway_payment_enabled", "0") == "1"
-        and bool(_resolve_abangateway_key(db)) and bool(API_BASE_URL),
+        **_payment_flags(db, order["final_price"], None),
     }
 
 
@@ -1045,6 +1041,48 @@ async def send_photo_to_admins(db: Database, bot_token: str, caption: str, reply
 
 
 # ---------------------------------------------------------------------------
+# اِعمال محدودیت‌های روش پرداخت (حداقل مبلغ هر روش + محدودیت مجاز هر محصول)
+# ---------------------------------------------------------------------------
+# منبع حقیقت همان database.py است (product_allows_payment_method /
+# get_payment_method_min_amount) که از داخل ربات هم استفاده می‌شود؛ این توابع
+# فقط همان چک را این‌جا (مینی‌اپ) هم اعمال می‌کنند تا هرجا خرید انجام شود
+# (بات یا مینی‌اپ)، یک قانون یکسان حاکم باشد.
+
+def _payment_method_error(db: Database, amount: int, method_key: str, product_id: int = None) -> Optional[str]:
+    """اگر روش پرداخت method_key برای این مبلغ/محصول مجاز نباشد، پیام خطا را
+    برمی‌گرداند؛ در غیر این صورت None (یعنی مجاز است). معادل _order_payment_method_error
+    در handlers_user.py ربات - به‌عنوان یک لایه‌ی دفاعی سمت سرور (علاوه بر فیلترشدن
+    گزینه‌ها در پاسخ API)."""
+    if product_id and not db.product_allows_payment_method(product_id, method_key):
+        return "این روش پرداخت برای این محصول مجاز نیست."
+    min_amt = db.get_payment_method_min_amount(method_key)
+    if min_amt and amount < min_amt:
+        return f"حداقل مبلغ قابل پرداخت با این روش {min_amt:,} تومان است."
+    return None
+
+
+def _require_payment_method_allowed(db: Database, amount: int, method_key: str, product_id: int = None) -> None:
+    err = _payment_method_error(db, amount, method_key, product_id)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+
+
+def _payment_flags(db: Database, amount: int, product_id: int = None) -> dict:
+    """فلگ‌های فعال/مجازبودن روش‌های پرداخت داخلی برای مبلغ/محصولِ سفارش جاری؛
+    هم تنظیم فعال/غیرفعال کلی و هم محدودیت محصول/حداقل‌مبلغ را لحاظ می‌کند تا
+    فرانت‌اند مینی‌اپ فقط دکمه‌های واقعاً قابل‌استفاده را نشان دهد."""
+    def _ok(method_key: str) -> bool:
+        return _payment_method_error(db, amount, method_key, product_id) is None
+    return {
+        "card_to_card_enabled": db.get_setting("card_to_card_enabled", "1") == "1" and _ok("card"),
+        "crypto_enabled": db.get_setting("crypto_payment_enabled", "0") == "1"
+        and bool(_resolve_plisio_key(db)) and bool(API_BASE_URL) and _ok("crypto"),
+        "abangateway_enabled": db.get_setting("abangateway_payment_enabled", "0") == "1"
+        and bool(_resolve_abangateway_key(db)) and bool(API_BASE_URL) and _ok("abangateway"),
+    }
+
+
+# ---------------------------------------------------------------------------
 # سفارش‌ها
 # ---------------------------------------------------------------------------
 
@@ -1148,13 +1186,12 @@ async def api_create_order(body: OrderCreate, auth=Depends(require_joined)):
         }
 
     # مبلغی باقی مانده - کاربر باید مثل قبل از طریق بات رسید کارت‌به‌کارت بفرستد
+    flags = _payment_flags(db, order["final_price"], body.product_id)
     return {
         "status": "pending_payment", "order_id": order_id, "final_price": order["final_price"],
         "quantity": quantity,
-        "card_to_card_enabled": db.get_setting("card_to_card_enabled", "1") == "1",
         "card_number": db.get_setting("card_number"), "card_holder": db.get_setting("card_holder"),
-        "crypto_enabled": db.get_setting("crypto_payment_enabled", "0") == "1" and bool(_resolve_plisio_key(db)) and bool(API_BASE_URL),
-        "abangateway_enabled": db.get_setting("abangateway_payment_enabled", "0") == "1" and bool(_resolve_abangateway_key(db)) and bool(API_BASE_URL),
+        **flags,
     }
 
 
@@ -1200,6 +1237,7 @@ async def api_order_crypto_invoice(order_id: int, auth=Depends(require_joined)):
         raise HTTPException(status_code=404, detail="سفارش یافت نشد.")
     if order["status"] != "pending":
         raise HTTPException(status_code=400, detail="این سفارش قبلاً بررسی شده است.")
+    _require_payment_method_allowed(db, order["final_price"], "crypto", order["product_id"])
     if order["is_custom_config"]:
         order_label = f"کانفیگ شخصی #{order_id} - {order['custom_username']}"
     else:
@@ -1224,6 +1262,7 @@ async def api_wallet_crypto_invoice(body: CryptoWalletInvoiceRequest, auth=Depen
         raise HTTPException(status_code=404, detail="درخواست شارژ یافت نشد.")
     if topup["status"] != "pending":
         raise HTTPException(status_code=400, detail="این درخواست شارژ قبلاً بررسی شده است.")
+    _require_payment_method_allowed(db, topup["amount"], "crypto")
     result = await _create_crypto_invoice_for(
         db, tenant, tg_id, "wallet_topup", body.topup_id, topup["amount"],
         order_name=f"شارژ کیف پول #{body.topup_id}",
@@ -1260,6 +1299,7 @@ async def api_order_abangateway_invoice(order_id: int, auth=Depends(require_join
         raise HTTPException(status_code=404, detail="سفارش یافت نشد.")
     if order["status"] != "pending":
         raise HTTPException(status_code=400, detail="این سفارش قبلاً بررسی شده است.")
+    _require_payment_method_allowed(db, order["final_price"], "abangateway", order["product_id"])
     if order["is_custom_config"]:
         order_label = f"کانفیگ شخصی #{order_id} - {order['custom_username']}"
     else:
@@ -1284,6 +1324,7 @@ async def api_wallet_abangateway_invoice(body: AbanGatewayWalletInvoiceRequest, 
         raise HTTPException(status_code=404, detail="درخواست شارژ یافت نشد.")
     if topup["status"] != "pending":
         raise HTTPException(status_code=400, detail="این درخواست شارژ قبلاً بررسی شده است.")
+    _require_payment_method_allowed(db, topup["amount"], "abangateway")
     result = await _create_abangateway_invoice_for(
         db, tenant, tg_id, "wallet_topup", body.topup_id, topup["amount"],
         order_name=f"شارژ کیف پول #{body.topup_id}",
@@ -1586,11 +1627,21 @@ async def api_admin_test_gateway(gateway_id: int, body: CustomGatewayTestRequest
 
 
 @app.get("/api/gateways")
-def api_list_public_gateways(auth=Depends(require_joined)):
-    """لیست درگاه‌های فعال، برای نمایش به‌عنوان یک روش پرداخت در مینی‌اپ."""
+def api_list_public_gateways(auth=Depends(require_joined), amount: int = None, product_id: int = None):
+    """لیست درگاه‌های فعال، برای نمایش به‌عنوان یک روش پرداخت در مینی‌اپ.
+    اگر amount/product_id داده شود، همان محدودیت «حداقل مبلغ درگاه» و
+    «روش‌های مجاز این محصول» که در چک‌اوت اعمال می‌شود، این‌جا هم برای فیلترکردن
+    لیست (پیش از نمایش به کاربر) اعمال می‌شود - دقیقاً مثل payment_choice_kb ربات."""
     _, db, _ = auth
     rows = db.list_custom_gateways(only_enabled=True)
-    return [{"key": r["gateway_key"], "name": r["name"]} for r in rows]
+    out = []
+    for r in rows:
+        key = f"custom:{r['gateway_key']}"
+        if amount is not None or product_id is not None:
+            if _payment_method_error(db, amount if amount is not None else 0, key, product_id) is not None:
+                continue
+        out.append({"key": r["gateway_key"], "name": r["name"]})
+    return out
 
 
 async def _complete_custom_gateway_payment(db: Database, tenant: "Tenant", invoice) -> None:
@@ -1721,6 +1772,7 @@ async def api_order_custom_gateway_invoice(order_id: int, gateway_key: str, auth
         raise HTTPException(status_code=404, detail="سفارش یافت نشد.")
     if order["status"] != "pending":
         raise HTTPException(status_code=400, detail="این سفارش قبلاً بررسی شده است.")
+    _require_payment_method_allowed(db, order["final_price"], f"custom:{gateway_key}", order["product_id"])
     if order["is_custom_config"]:
         order_label = f"کانفیگ شخصی #{order_id} - {order['custom_username']}"
     else:
@@ -1744,6 +1796,7 @@ async def api_wallet_custom_gateway_invoice(gateway_key: str, body: CustomGatewa
         raise HTTPException(status_code=404, detail="درخواست شارژ یافت نشد.")
     if topup["status"] != "pending":
         raise HTTPException(status_code=400, detail="این درخواست شارژ قبلاً بررسی شده است.")
+    _require_payment_method_allowed(db, topup["amount"], f"custom:{gateway_key}")
     result = await _create_custom_gateway_invoice_for(
         db, tenant, tg_id, gateway_key, "wallet_topup", body.topup_id, topup["amount"],
         order_name=f"شارژ کیف پول #{body.topup_id}",
@@ -2026,17 +2079,16 @@ def api_topup_request(body: TopupCreate, auth=Depends(require_joined)):
     user_row = db.get_user(tg_id)
     if user_row and user_row["is_blocked"]:
         raise HTTPException(status_code=403, detail="حساب شما مسدود شده است.")
-    if body.amount < 1000:
-        raise HTTPException(status_code=400, detail="حداقل مبلغ ۱۰۰۰ تومان است.")
+    min_topup = int(db.get_setting("min_amount_wallet_topup", "1000") or "1000")
+    if body.amount < min_topup:
+        raise HTTPException(status_code=400, detail=f"حداقل مبلغ {min_topup:,} تومان است.")
     topup_id = db.create_topup(tg_id, body.amount)
     return {
         "topup_id": topup_id,
-        "card_to_card_enabled": db.get_setting("card_to_card_enabled", "1") == "1",
         "card_number": db.get_setting("card_number"),
         "card_holder": db.get_setting("card_holder"),
         "note": "مبلغ را واریز کرده و عکس رسید را همینجا ارسال کنید.",
-        "crypto_enabled": db.get_setting("crypto_payment_enabled", "0") == "1" and bool(_resolve_plisio_key(db)) and bool(API_BASE_URL),
-        "abangateway_enabled": db.get_setting("abangateway_payment_enabled", "0") == "1" and bool(_resolve_abangateway_key(db)) and bool(API_BASE_URL),
+        **_payment_flags(db, body.amount, None),
     }
 
 
@@ -2053,6 +2105,7 @@ async def api_topup_receipt(
         raise HTTPException(status_code=404, detail="درخواست شارژ یافت نشد.")
     if topup["status"] != "pending":
         raise HTTPException(status_code=400, detail="این درخواست قبلاً بررسی شده است.")
+    _require_payment_method_allowed(db, topup["amount"], "card")
     if not photo.content_type or not photo.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="فقط عکس رسید پذیرفته می‌شود.")
 
@@ -2105,6 +2158,7 @@ async def api_order_receipt(
         raise HTTPException(status_code=404, detail="سفارش یافت نشد.")
     if order["status"] != "pending":
         raise HTTPException(status_code=400, detail="این سفارش قبلاً بررسی شده است.")
+    _require_payment_method_allowed(db, order["final_price"], "card", order["product_id"])
     if not photo.content_type or not photo.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="فقط عکس رسید پذیرفته می‌شود.")
 
