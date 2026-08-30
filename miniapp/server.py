@@ -522,6 +522,7 @@ def api_custom_config_info(auth=Depends(get_verified_user)):
         and bool(_resolve_plisio_key(db)) and bool(API_BASE_URL),
         "abangateway_enabled": db.get_setting("abangateway_payment_enabled", "0") == "1"
         and bool(_resolve_abangateway_key(db)) and bool(API_BASE_URL),
+        "card_to_card_enabled": db.get_setting("card_to_card_enabled", "1") == "1",
         "card_number": db.get_setting("card_number"), "card_holder": db.get_setting("card_holder"),
     }
 
@@ -622,6 +623,7 @@ async def api_create_custom_config(body: CustomConfigPurchase, auth=Depends(requ
 
     return {
         "status": "pending_payment", "order_id": order_id, "final_price": order["final_price"],
+        "card_to_card_enabled": db.get_setting("card_to_card_enabled", "1") == "1",
         "card_number": db.get_setting("card_number"), "card_holder": db.get_setting("card_holder"),
         "crypto_enabled": db.get_setting("crypto_payment_enabled", "0") == "1"
         and bool(_resolve_plisio_key(db)) and bool(API_BASE_URL),
@@ -1149,6 +1151,7 @@ async def api_create_order(body: OrderCreate, auth=Depends(require_joined)):
     return {
         "status": "pending_payment", "order_id": order_id, "final_price": order["final_price"],
         "quantity": quantity,
+        "card_to_card_enabled": db.get_setting("card_to_card_enabled", "1") == "1",
         "card_number": db.get_setting("card_number"), "card_holder": db.get_setting("card_holder"),
         "crypto_enabled": db.get_setting("crypto_payment_enabled", "0") == "1" and bool(_resolve_plisio_key(db)) and bool(API_BASE_URL),
         "abangateway_enabled": db.get_setting("abangateway_payment_enabled", "0") == "1" and bool(_resolve_abangateway_key(db)) and bool(API_BASE_URL),
@@ -1686,10 +1689,15 @@ async def _create_custom_gateway_invoice_for(db: Database, tenant: "Tenant", tg_
 
     tenant_slug = tenant.tenant_id or "main"
     our_ref = f"{kind}-{tenant_slug}-{ref_id}-{int(datetime.now(timezone.utc).timestamp())}"
+    # برخی درگاه‌ها (مثل TonPays) سقف طول کاراکتر برای order_id دارند (مثلاً حداکثر
+    # ۲۰ کاراکتر). ردیابی واقعی از طریق gateway_ref/our_ref داخلی انجام می‌شود، پس
+    # اینجا هم - مثل custom_gateway_payment.create_invoice_for در بات اصلی - یک
+    # نسخه‌ی کوتاه‌شده فقط برای ارسال به درگاه می‌سازیم.
+    short_order_id = f"{ref_id}-{int(datetime.now(timezone.utc).timestamp())}"[:20]
     gw = payment_engine.GenericGateway(config)
     try:
         result = await gw.create_invoice(
-            amount=amount_toman, amount_toman=amount_toman, order_id=our_ref,
+            amount=amount_toman, amount_toman=amount_toman, order_id=short_order_id,
             currency="IRT", description=order_name, tenant_id=tenant_slug,
             callback_url=f"{API_BASE_URL}/api/pay/custom/{gateway_key}/return?b={tenant.tenant_id}&txn={our_ref}",
             webhook_url=f"{API_BASE_URL}/api/webhooks/custom/{gateway_key}?b={tenant.tenant_id}",
@@ -2022,7 +2030,9 @@ def api_topup_request(body: TopupCreate, auth=Depends(require_joined)):
         raise HTTPException(status_code=400, detail="حداقل مبلغ ۱۰۰۰ تومان است.")
     topup_id = db.create_topup(tg_id, body.amount)
     return {
-        "topup_id": topup_id, "card_number": db.get_setting("card_number"),
+        "topup_id": topup_id,
+        "card_to_card_enabled": db.get_setting("card_to_card_enabled", "1") == "1",
+        "card_number": db.get_setting("card_number"),
         "card_holder": db.get_setting("card_holder"),
         "note": "مبلغ را واریز کرده و عکس رسید را همینجا ارسال کنید.",
         "crypto_enabled": db.get_setting("crypto_payment_enabled", "0") == "1" and bool(_resolve_plisio_key(db)) and bool(API_BASE_URL),
