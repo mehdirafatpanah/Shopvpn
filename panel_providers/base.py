@@ -48,6 +48,15 @@ class BasePanelProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def get_user(self, username: str) -> PanelUserResult:
+        """اطلاعات فعلیِ کاربر را مستقیماً از پنل می‌خواند (نه از دیتابیس خودمان)
+        و شامل لینک اشتراک (subscription_url) به‌روز است. برای رفرش‌کردن لینکی
+        که قبلاً ذخیره شده استفاده می‌شود - مثلاً وقتی ادمین تنظیمات پنل (دامنه‌ی
+        Subscription، inbound و ...) را بعد از فروش عوض کرده و لینک قدیمی دیگر
+        معتبر نیست. اگر کاربر روی پنل پیدا نشود PanelError پرتاب می‌شود."""
+        raise NotImplementedError
+
+    @abstractmethod
     async def test_connection(self) -> bool:
         """برای دکمه‌ی «تست اتصال» در پنل ادمین؛ فقط احراز هویت را چک می‌کند."""
         raise NotImplementedError
