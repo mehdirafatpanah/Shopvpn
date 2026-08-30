@@ -411,6 +411,18 @@ def require_permission(permission: str):
     return _dep
 
 
+def require_any_permission(*permissions: str):
+    """مانند require_permission ولی کافی است ادمین یکی از این دسترسی‌ها را داشته باشد
+    (مثلاً /api/payment-methods هم برای مدیریت کاتالوگ لازم است هم برای تنظیمات مالی)."""
+    def _dep(admin=Depends(get_current_admin)):
+        if admin["role"] == "owner":
+            return admin
+        if not any(p in admin["permissions"] for p in permissions):
+            raise HTTPException(403, "دسترسی کافی نیست.")
+        return admin
+    return _dep
+
+
 def require_owner(admin=Depends(get_current_admin)):
     if admin["role"] != "owner":
         raise HTTPException(403, "این بخش فقط برای مالک است.")
@@ -1122,6 +1134,7 @@ class ProductBody(BaseModel):
     is_auto_provision: bool = False
     auto_provision_volume_gb: Optional[int] = None
     provision_server_id: Optional[int] = None
+    payment_methods: Optional[List[str]] = None
 
 
 @app.get("/api/products")
@@ -1145,9 +1158,10 @@ def api_add_product(body: ProductBody, admin=Depends(require_permission("catalog
     pid = db.add_product(
         body.category_id, body.name, body.price, body.description, body.duration_days,
         body.is_auto_provision or bool(body.provision_server_id), body.auto_provision_volume_gb,
-        body.provision_server_id,
+        body.provision_server_id, payment_methods=body.payment_methods,
     )
-    db.log_admin_action(admin["id"], "product_add", f"{body.name} (پنل وب - {admin['username']})", "product", pid)
+    pm_log = "همه" if not body.payment_methods else "، ".join(body.payment_methods)
+    db.log_admin_action(admin["id"], "product_add", f"{body.name} | پرداخت: {pm_log} (پنل وب - {admin['username']})", "product", pid)
     return {"id": pid}
 
 
@@ -2267,7 +2281,7 @@ def api_delete_gateway(gateway_id: int, admin=Depends(require_permission("settin
 
 
 @app.get("/api/payment-methods")
-def api_payment_methods(admin=Depends(require_permission("settings"))):
+def api_payment_methods(admin=Depends(require_any_permission("settings", "catalog"))):
     """کاتالوگ کامل روش‌های پرداخت (داخلی + درگاه‌های سفارشی) به‌همراه حداقل
     مبلغ هرکدام؛ منبع همان db.get_payment_methods_catalog است که بات و
     مینی‌اپ هم موقع چک‌اوت از آن می‌خوانند - برای نمایش/ویرایش یک‌جا در پنل."""
