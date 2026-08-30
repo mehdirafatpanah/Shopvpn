@@ -496,6 +496,21 @@ update_bot() {
     echo -e "${CYAN}$(t restarting_bot_service)${RESET}"
     sudo systemctl restart "$SERVICE_NAME"
     sleep 2
+
+    MINIAPP_SERVICE="${SERVICE_NAME}-miniapp"
+    if systemctl list-units --full -all | grep -q "${MINIAPP_SERVICE}.service"; then
+        echo -e "${CYAN}$(t restarting_miniapp_service)${RESET}"
+        sudo systemctl restart "$MINIAPP_SERVICE"
+        sleep 2
+    fi
+
+    PANEL_SERVICE="${SERVICE_NAME}-adminpanel"
+    if systemctl list-units --full -all | grep -q "${PANEL_SERVICE}.service"; then
+        echo -e "${CYAN}$(t restarting_panel_service)${RESET}"
+        sudo systemctl restart "$PANEL_SERVICE"
+        sleep 2
+    fi
+
     echo -e "${GREEN}$(t update_done)${RESET}"
 }
 
