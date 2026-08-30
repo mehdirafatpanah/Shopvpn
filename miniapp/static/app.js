@@ -3559,10 +3559,32 @@ function productProvisionFieldsHtml(panelServers) {
   `;
 }
 
+function productPaymentMethodsFieldsHtml(paymentMethods) {
+  if (!paymentMethods || !paymentMethods.length) return "";
+  return `
+    <label class="field-label">💳 روش‌های پرداخت مجاز (اگر همه یا هیچ‌کدام تیک نخورَد، یعنی بدون محدودیت)</label>
+    <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
+      ${paymentMethods.map((m) => `
+        <label style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" data-new-prod-pm="${m.key}" checked />
+          <span>${m.label}${m.enabled ? "" : " (غیرفعال)"}</span>
+        </label>`).join("")}
+    </div>
+  `;
+}
+
+function readProductPaymentMethodsFields(body) {
+  const boxes = Array.from(body.querySelectorAll("[data-new-prod-pm]"));
+  if (!boxes.length) return null;
+  const checked = boxes.filter((i) => i.checked).map((i) => i.dataset.newProdPm);
+  return (checked.length === 0 || checked.length === boxes.length) ? null : checked;
+}
+
 async function renderAdminProducts(body) {
   const { categoryId, categoryName } = adminCatalogView;
   const products = await api(`/api/admin/categories/${categoryId}/products`);
   const panelServers = await api("/api/admin/panel-servers-lite").catch(() => []);
+  const paymentMethods = await api("/api/admin/payment-methods").catch(() => []);
   body.innerHTML = `
     <button class="btn outline small" id="back-to-cats" style="width:auto;margin-bottom:12px">→ بازگشت به دسته‌بندی‌ها</button>
     <div class="eyebrow" style="margin-top:0">محصولات «${categoryName}»</div>
@@ -3588,6 +3610,7 @@ async function renderAdminProducts(body) {
       <input class="input" id="new-prod-duration" type="number" placeholder="مدت اعتبار (روز)" value="30" style="margin-bottom:8px" />
       <input class="input" id="new-prod-desc" type="text" placeholder="توضیحات (اختیاری)" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:8px" />
       ${productProvisionFieldsHtml(panelServers)}
+      ${productPaymentMethodsFieldsHtml(paymentMethods)}
       <div class="field-error" id="new-prod-error"></div>
       <button class="btn" id="new-prod-save">➕ افزودن محصول</button>
     </div>
@@ -3654,6 +3677,7 @@ async function renderAdminProducts(body) {
       payload.provision_server_id = provision_server_id;
       payload.auto_provision_volume_gb = auto_provision_volume_gb;
     }
+    payload.payment_methods = readProductPaymentMethodsFields(body);
     try {
       await api("/api/admin/products", { method: "POST", body: JSON.stringify(payload) });
       renderAdmin();
