@@ -1534,13 +1534,17 @@ class Database:
 
     def add_product(self, category_id: int, name: str, price: int, description: str = "", duration_days: int = 30,
                      is_auto_provision: bool = False, auto_provision_volume_gb: int = None,
-                     provision_server_id: int = None) -> int:
+                     provision_server_id: int = None, payment_methods=None) -> int:
+        """payment_methods: None/[] یعنی «همه‌ی روش‌های پرداخت مجازند» (پیش‌فرض)،
+        در غیر این صورت لیستی از کلیدهای مجاز - همان قراردادِ set_product_payment_methods."""
+        pm_value = json.dumps(payment_methods, ensure_ascii=False) if payment_methods else None
         with self._get_conn() as conn:
             cur = conn.execute(
                 "INSERT INTO products (category_id, name, price, description, duration_days, "
-                "is_auto_provision, auto_provision_volume_gb, provision_server_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "is_auto_provision, auto_provision_volume_gb, provision_server_id, payment_methods) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (category_id, name, price, description, duration_days,
-                 1 if is_auto_provision else 0, auto_provision_volume_gb, provision_server_id),
+                 1 if is_auto_provision else 0, auto_provision_volume_gb, provision_server_id, pm_value),
             )
             return cur.lastrowid
 

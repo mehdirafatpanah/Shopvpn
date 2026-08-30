@@ -791,11 +791,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def cb_pick_product_source(call: CallbackQuery, state: FSMContext):
         source = call.data.split(":", 1)[1]
         if source == "bank":
-            data = await state.get_data()
-            (await asyncio.to_thread(db.add_product, data["category_id"], data["name"], data["price"], data["description"], data["duration_days"]))
-            (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "product_add", f"محصول «{data['name']}» | قیمت: {data['price']:,}"))
-            await state.clear()
-            await safe_edit(call, "✅ محصول با موفقیت اضافه شد.\nحالا از «بانک کانفیگ» می‌تونی لینک‌ها رو براش اضافه کنی.")
+            await state.update_data(payment_methods=None)
+            await state.set_state(AdminAddProduct.waiting_payment_methods)
+            await safe_edit(call, 
+                "💳 این محصول با کدام روش(های) پرداخت قابل خرید باشد؟\n\n"
+                "با لمس هر گزینه، فعال/غیرفعال می‌شود. اگر «همه‌ی روش‌ها» تیک بخورد، این محصول از هر روش پرداخت فعالی قابل خرید است "
+                "(با اضافه‌شدن هر درگاه جدید در آینده هم خودکار برایش فعال می‌شود).",
+                reply_markup=kb.admin_new_product_payment_methods_kb(db, None),
+            )
             await call.answer()
             return
 
@@ -825,34 +828,93 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not text.isdigit() or int(text) <= 0:
             await message.answer("لطفاً فقط عدد صحیح و بزرگ‌تر از صفر وارد کنید. مثال: 30")
             return
+        await state.update_data(auto_provision_volume_gb=int(text), payment_methods=None)
+        await state.set_state(AdminAddProduct.waiting_payment_methods)
+        await message.answer(
+            "💳 این محصول با کدام روش(های) پرداخت قابل خرید باشد؟\n\n"
+            "با لمس هر گزینه، فعال/غیرفعال می‌شود. اگر «همه‌ی روش‌ها» تیک بخورد، این محصول از هر روش پرداخت فعالی قابل خرید است "
+            "(با اضافه‌شدن هر درگاه جدید در آینده هم خودکار برایش فعال می‌شود).",
+            reply_markup=kb.admin_new_product_payment_methods_kb(db, None),
+        )
+
+    # -------------------------------------------------------------------
+    # انتخاب روش‌های پرداخت مجاز حین ساخت محصول (بعد از تکمیل فیلدهای پایه)
+    # -------------------------------------------------------------------
+
+    @router.callback_query(AdminAddProduct.waiting_payment_methods, F.data == "newprodpm_all")
+    async def cb_newprod_pm_all(call: CallbackQuery, state: FSMContext):
+        await state.update_data(payment_methods=None)
+        await safe_edit(call, 
+            "💳 این محصول با کدام روش(های) پرداخت قابل خرید باشد؟",
+            reply_markup=kb.admin_new_product_payment_methods_kb(db, None),
+        )
+        await call.answer("همه‌ی روش‌ها فعال شدند.")
+
+    @router.callback_query(AdminAddProduct.waiting_payment_methods, F.data.startswith("newprodpm_tgl:"))
+    async def cb_newprod_pm_toggle(call: CallbackQuery, state: FSMContext):
+        method_key = call.data.split(":", 1)[1]
+        catalog_keys = [item["key"] for item in (await asyncio.to_thread(db.get_payment_methods_catalog))]
+        data = await state.get_data()
+        selected = data.get("payment_methods")
+        current = set(catalog_keys) if selected is None else set(selected)
+
+        if method_key in current:
+            current.discard(method_key)
+        else:
+            current.add(method_key)
+
+        if not current:
+            return await call.answer("⚠️ حداقل یک روش پرداخت باید فعال بماند.", show_alert=True)
+
+        new_selected = None if current == set(catalog_keys) else sorted(current)
+        await state.update_data(payment_methods=new_selected)
+        await safe_edit(call, 
+            "💳 این محصول با کدام روش(های) پرداخت قابل خرید باشد؟",
+            reply_markup=kb.admin_new_product_payment_methods_kb(db, new_selected),
+        )
+        await call.answer()
+
+    @router.callback_query(AdminAddProduct.waiting_payment_methods, F.data == "newprodpm_done")
+    async def cb_newprod_pm_done(call: CallbackQuery, state: FSMContext):
         data = await state.get_data()
         provision_server_id = data.get("provision_server_id")
+        auto_provision_volume_gb = data.get("auto_provision_volume_gb")
+        payment_methods = data.get("payment_methods")
+
         (await asyncio.to_thread(db.add_product, 
             data["category_id"], data["name"], data["price"], data["description"], data["duration_days"],
-            is_auto_provision=True, auto_provision_volume_gb=int(text),
-            provision_server_id=provision_server_id,
+            is_auto_provision=bool(auto_provision_volume_gb), auto_provision_volume_gb=auto_provision_volume_gb,
+            provision_server_id=provision_server_id, payment_methods=payment_methods,
         ))
-        (await asyncio.to_thread(db.log_admin_action, 
-            message.from_user.id, "product_add",
-            f"محصول «{data['name']}» (خودکار"
-            + (" - اتصال مستقیم به پنل" if provision_server_id else "")
-            + f"، {text} گیگ) | قیمت: {data['price']:,}",
-        ))
+        pm_log = "همه" if payment_methods is None else "، ".join(payment_methods)
+        if auto_provision_volume_gb:
+            log_text = (
+                f"محصول «{data['name']}» (خودکار"
+                + (" - اتصال مستقیم به پنل" if provision_server_id else "")
+                + f"، {auto_provision_volume_gb} گیگ) | قیمت: {data['price']:,} | پرداخت: {pm_log}"
+            )
+        else:
+            log_text = f"محصول «{data['name']}» | قیمت: {data['price']:,} | پرداخت: {pm_log}"
+        (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "product_add", log_text))
         await state.clear()
-        if provision_server_id:
-            await message.answer(
+
+        if not auto_provision_volume_gb:
+            await safe_edit(call, "✅ محصول با موفقیت اضافه شد.\nحالا از «بانک کانفیگ» می‌تونی لینک‌ها رو براش اضافه کنی.")
+        elif provision_server_id:
+            await safe_edit(call, 
                 "✅ محصول با موفقیت اضافه شد.\n"
                 "هر بار خرید این محصول، خودکار روی پنل انتخابی یک کاربر واقعی ساخته می‌شود؛ "
                 "نیازی به اضافه کردن لینک به بانک کانفیگ نیست.",
                 reply_markup=kb.admin_category_kb(db, is_main_bot, "products"),
             )
         else:
-            await message.answer(
+            await safe_edit(call, 
                 "✅ محصول با موفقیت اضافه شد.\n"
                 "⚠️ برای این‌که این محصول واقعاً کار کند، باید توسط ادمین بات اصلی برایت «نماینده» فعال شده و "
                 "اعتبار حجمی و پنل نمایندگی برایت تنظیم شده باشد.",
                 reply_markup=kb.admin_category_kb(db, is_main_bot, "products"),
             )
+        await call.answer()
 
     # -------------------------------------------------------------------
     # افزودن کانفیگ (بانک لینک) به محصول

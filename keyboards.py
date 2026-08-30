@@ -896,6 +896,29 @@ def admin_products_list_kb(db, products) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def admin_new_product_payment_methods_kb(db, selected) -> InlineKeyboardMarkup:
+    """صفحه‌ی چندانتخابی روش‌های پرداخت مجاز حین «ساخت» محصول جدید (قبل از این‌که
+    محصول در دیتابیس ساخته شود). selected=None یعنی «همه مجاز» (پیش‌فرض)."""
+    catalog = db.get_payment_methods_catalog()
+    all_keys = {item["key"] for item in catalog}
+    all_selected = selected is None or not selected or set(selected) >= all_keys
+
+    rows = [[InlineKeyboardButton(
+        text=f"{'✅' if all_selected else '⬜️'} همه‌ی روش‌ها فعال باشند",
+        callback_data="newprodpm_all",
+    )]]
+    for item in catalog:
+        checked = all_selected or (item["key"] in (selected or []))
+        icon = "✅" if checked else "⬜️"
+        suffix = "" if item["enabled"] else " (غیرفعال)"
+        rows.append([InlineKeyboardButton(
+            text=f"{icon} {item['label']}{suffix}",
+            callback_data=f"newprodpm_tgl:{item['key']}",
+        )])
+    rows.append([InlineKeyboardButton(text="✅ تایید و ساخت محصول", callback_data="newprodpm_done")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def admin_product_payment_methods_kb(db, product_id: int) -> InlineKeyboardMarkup:
     """صفحه‌ی چندانتخابی روش‌های پرداخت مجاز برای یک محصول. لیست کامل روش‌ها
     (داخلی + هر درگاه سفارشی) پویا از db.get_payment_methods_catalog خوانده
