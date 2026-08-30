@@ -1179,6 +1179,29 @@ def api_delete_product(product_id: int, admin=Depends(require_permission("catalo
     return {"ok": True}
 
 
+@app.get("/api/products/{product_id}/payment-methods")
+def api_get_product_payment_methods(product_id: int, admin=Depends(require_permission("catalog"))):
+    """None/[] یعنی «همه‌ی روش‌ها مجازند» (بدون محدودیت)."""
+    return {"allowed": db.get_product_payment_methods(product_id)}
+
+
+class ProductPaymentMethodsBody(BaseModel):
+    methods: Optional[List[str]] = None
+
+
+@app.post("/api/products/{product_id}/payment-methods")
+def api_set_product_payment_methods(product_id: int, body: ProductPaymentMethodsBody,
+                                     admin=Depends(require_permission("catalog"))):
+    """محدودسازی این‌که این محصول با کدام روش‌های پرداخت (کیف پول/کارت/آبان‌گیت‌وی/
+    کریپتو/درگاه سفارشی) قابل خرید باشد. methods=null یا [] یعنی حذف محدودیت
+    (همه‌ی روش‌های فعال مجازند) - دقیقاً همان چیزی که بات از منوی خودش می‌سازد."""
+    db.set_product_payment_methods(product_id, body.methods or None)
+    db.log_admin_action(admin["id"], "product_payment_methods",
+                         f"#{product_id} -> {body.methods or 'همه'} (پنل وب - {admin['username']})",
+                         "product", product_id)
+    return {"ok": True}
+
+
 # ------------------------------------------------------------- config bank --
 
 
@@ -2168,6 +2191,9 @@ def _gw_mask(row, config: dict) -> dict:
     return {
         "id": row["id"], "key": row["gateway_key"], "name": row["name"],
         "enabled": bool(row["enabled"]), "config": out_config,
+        # حداقل مبلغ مجاز واریز با این درگاه (تومان). 0 یعنی بدون محدودیت؛
+        # همان چیزی که بات و مینی‌اپ هر دو موقع چک‌اوت اعمالش می‌کنند.
+        "min_amount": int(row["min_amount"] or 0) if "min_amount" in row.keys() else 0,
         "created_at": row["created_at"], "updated_at": row["updated_at"],
     }
 
@@ -2177,6 +2203,7 @@ class CustomGatewayIn(BaseModel):
     name: str
     enabled: bool = False
     config: dict
+    min_amount: int = 0
 
 
 @app.get("/api/gateways")
@@ -2205,7 +2232,7 @@ def api_create_gateway(body: CustomGatewayIn, admin=Depends(require_permission("
         raise HTTPException(status_code=400, detail="کلید درگاه نامعتبر است (فقط حروف/عدد انگلیسی، - و _).")
     if db.get_custom_gateway_by_key(key):
         raise HTTPException(status_code=400, detail="درگاهی با همین کلید قبلاً ثبت شده.")
-    gateway_id = db.create_custom_gateway(key, body.name.strip() or key, body.config, body.enabled)
+    gateway_id = db.create_custom_gateway(key, body.name.strip() or key, body.config, body.enabled, max(0, body.min_amount or 0))
     db.log_admin_action(admin["id"], "custom_gateway_create", f"درگاه سفارشی «{body.name}» ({key}) اضافه شد (پنل وب - {admin['username']}).")
     row, config = _gw_load(gateway_id=gateway_id)
     return _gw_mask(row, config)
@@ -2224,7 +2251,8 @@ def api_update_gateway(gateway_id: int, body: CustomGatewayIn, admin=Depends(req
             new_creds[k] = old_creds[k]
     body.config["credentials"] = new_creds
 
-    db.update_custom_gateway(gateway_id, name=body.name.strip() or row["name"], config=body.config, enabled=body.enabled)
+    db.update_custom_gateway(gateway_id, name=body.name.strip() or row["name"], config=body.config,
+                              enabled=body.enabled, min_amount=max(0, body.min_amount or 0))
     db.log_admin_action(admin["id"], "custom_gateway_update", f"درگاه سفارشی «{row['name']}» ویرایش شد (پنل وب - {admin['username']}).")
     row, config = _gw_load(gateway_id=gateway_id)
     return _gw_mask(row, config)
@@ -2235,6 +2263,37 @@ def api_delete_gateway(gateway_id: int, admin=Depends(require_permission("settin
     row, _ = _gw_load(gateway_id=gateway_id)
     db.delete_custom_gateway(gateway_id)
     db.log_admin_action(admin["id"], "custom_gateway_delete", f"درگاه سفارشی «{row['name']}» حذف شد (پنل وب - {admin['username']}).")
+    return {"ok": True}
+
+
+@app.get("/api/payment-methods")
+def api_payment_methods(admin=Depends(require_permission("settings"))):
+    """کاتالوگ کامل روش‌های پرداخت (داخلی + درگاه‌های سفارشی) به‌همراه حداقل
+    مبلغ هرکدام؛ منبع همان db.get_payment_methods_catalog است که بات و
+    مینی‌اپ هم موقع چک‌اوت از آن می‌خوانند - برای نمایش/ویرایش یک‌جا در پنل."""
+    return db.get_payment_methods_catalog()
+
+
+class PaymentMethodMinAmountBody(BaseModel):
+    min_amount: int = 0
+
+
+@app.post("/api/payment-methods/{method_key}/min-amount")
+def api_set_payment_method_min_amount(method_key: str, body: PaymentMethodMinAmountBody,
+                                       admin=Depends(require_permission("settings"))):
+    """تعیین حداقل مبلغ مجاز برای یک روش پرداخت داخلی (card/abangateway/crypto)
+    یا یک درگاه سفارشی (کلید 'custom:<key>'). همان تنظیمی که بات از داخل
+    منوی خودش می‌سازد؛ اینجا معادل وب آن است."""
+    value = max(0, body.min_amount or 0)
+    if method_key.startswith("custom:"):
+        gw = db.get_custom_gateway_by_key(method_key.split(":", 1)[1])
+        if not gw:
+            raise HTTPException(status_code=404, detail="این درگاه پیدا نشد.")
+        db.update_custom_gateway(gw["id"], min_amount=value)
+    else:
+        db.set_setting(f"min_amount_{method_key}", str(value))
+    db.log_admin_action(admin["id"], "payment_method_min_amount",
+                         f"{method_key}={value} (پنل وب - {admin['username']})", "setting", method_key)
     return {"ok": True}
 
 
