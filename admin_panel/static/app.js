@@ -5200,10 +5200,41 @@ function _gwOpenForm(gw) {
   }, { wide: true });
 }
 
+function _gwGuideHtml() {
+  return `
+    <p class="card-sub">این متن رو همراه با عکس/متن مستندات API درگاه پرداخت موردنظر به یه چت‌بات
+    (مثل Claude یا ChatGPT) بده و بگو: «طبق این راهنما فرم رو برام پر کن». پلیس‌هولدرهای
+    قابل استفاده تو URL / هدر / بدنه‌ی درخواست:</p>
+    <ul style="margin:6px 0;padding-inline-start:18px;line-height:2">
+      <li><code>{amount}</code> / <code>{amount_toman}</code> — مبلغ (تومان)</li>
+      <li><code>{order_id}</code> — شناسه‌ی داخلی سفارش</li>
+      <li><code>{description}</code> — توضیح سفارش</li>
+      <li><code>{callback_url}</code> — آدرس بازگشت مرورگر کاربر بعد از پرداخت</li>
+      <li><code>{webhook_url}</code> — آدرسی که خودِ سرور درگاه باید بهش وب‌هوک بزنه</li>
+      <li><code>{تنظیم اعتبارنامه}</code> مثل <code>{api_key}</code> — هر فیلدی که تو بخش اعتبارنامه تعریف کردی</li>
+      <li><code>{query.X}</code> — فقط تو Verify: پارامتر X از query صفحه‌ی بازگشت</li>
+      <li><code>{gateway_ref}</code> — فقط تو Verify: شناسه‌ای که خودِ درگاه موقع ساخت فاکتور برگردونده</li>
+    </ul>
+    <p class="card-sub"><b>ساخت فاکتور</b> (اجباری): URL و بدنه‌ی درخواستی که فاکتور می‌سازه، به‌علاوه
+    این‌که تو پاسخ JSON درگاه، «لینک پرداخت» و «شناسه‌ی تراکنش» تو کدوم مسیر هستن (مثلاً
+    <code>data.link</code> یا <code>data.id</code>).</p>
+    <p class="card-sub"><b>استعلام (Verify)</b> (اختیاری): برای درگاه‌هایی که فقط کاربر رو برمی‌گردونن
+    و باید جدا وضعیت پرداخت رو بپرسیم. از <code>{gateway_ref}</code> یا <code>{query.X}</code> استفاده کن.</p>
+    <p class="card-sub"><b>وب‌هوک</b>: مهم‌ترین بخش برای تکمیل خودکار سفارش — آدرسش رو (که خودمون به‌صورت
+    <code>{webhook_url}</code> به درگاه می‌دیم) توی بدنه‌ی درخواست ساخت فاکتور به درگاه پاس بده،
+    و بگو تو JSON که درگاه بهش می‌فرسته، «شناسه‌ی تراکنش» و «وضعیت» کجاست.</p>
+    <p class="card-sub">بعد از پر کردن فرم: «ذخیره» بزن، بعد از دکمه‌ی «تست اتصال» استفاده کن. اگه
+    خطا داد، متن خطا (که معمولاً پیام خودِ درگاهه) رو کپی کن و به همون چت‌بات بده.</p>
+  `;
+}
+
 async function renderGateways() {
   const rows = await apiGet('/gateways');
   setContent(`
-    <div class="toolbar"><button class="btn btn-primary btn-sm" id="gw-add">+ درگاه جدید</button></div>
+    <div class="toolbar">
+      <button class="btn btn-primary btn-sm" id="gw-add">+ درگاه جدید</button>
+      <button class="btn btn-sm" id="gw-guide">📖 راهنمای افزودن API</button>
+    </div>
     <div class="card">
       <div class="card-sub" style="margin-bottom:10px">هر درگاهی که یک HTTP API داشته باشد رو بدون نوشتن کد وصل کن. از پلیس‌هولدرهایی مثل
         <code>{amount}</code>, <code>{order_id}</code>, <code>{callback_url}</code>, <code>{webhook_url}</code> و هر فیلد اعتبارنامه (مثلاً <code>{api_key}</code>) استفاده کن.</div>
@@ -5219,6 +5250,7 @@ async function renderGateways() {
     </div>
   `);
   $('#gw-add').addEventListener('click', () => _gwOpenForm(null));
+  $('#gw-guide').addEventListener('click', () => openModal('📖 راهنمای افزودن درگاه جدید', _gwGuideHtml(), null, { wide: true }));
   $$('[data-edit]', content()).forEach(b => b.addEventListener('click', async () => {
     try { _gwOpenForm(await apiGet(`/gateways/${b.dataset.edit}`)); } catch (e) { handleErr(e); }
   }));
