@@ -2314,6 +2314,44 @@ async function showUserDetail(tgId) {
 let catalogTab = 'products';
 /* منبع کانفیگ محصول: بانک کانفیگ (پیش‌فرض) یا اتصال مستقیم به یک پنل مشخص.
    این سه تابع بین هر سه تم کاتالوگ (پیش‌فرض/بنتو/برتالیست) مشترک است. */
+// روش‌های پرداخت مجاز برای یک محصول (کیف پول/کارت/آبان‌گیت‌وی/کریپتو/درگاه‌های
+// سفارشی) - دقیقاً معادل چیزی که بات از داخل منوی محصول می‌سازد؛ چون هر دو
+// روی database.py (product_allows_payment_method) اعمال می‌شوند، همین‌جا هم
+// چک‌اوت مینی‌اپ و هم بات با تنظیم یکسان رفتار می‌کنند.
+async function openProductPaymentMethodsModal(product) {
+  let methods, current;
+  try {
+    [methods, current] = await Promise.all([
+      apiGet('/payment-methods'),
+      apiGet(`/products/${product.id}/payment-methods`),
+    ]);
+  } catch (e) { return handleErr(e); }
+  const allowed = current.allowed; // null/[] یعنی «همه مجازند»
+  const isAllowed = (key) => !allowed || !allowed.length || allowed.includes(key);
+  openModal(`💳 روش‌های پرداخت مجاز: ${esc(product.name)}`, `
+    <p class="card-sub">اگر هیچ‌کدام تیک نخورَد یا همه تیک بخورند، یعنی این محصول با همه‌ی
+      روش‌های پرداخت فعال قابل خرید است (بدون محدودیت).</p>
+    <div class="form-grid">
+      ${methods.map(m => `
+        <label class="field field-row">
+          <span>${esc(m.label)}${!m.enabled ? ' (غیرفعال)' : ''}${m.min_amount ? ` — حداقل ${fmt(m.min_amount)} تومان` : ''}</span>
+          <input type="checkbox" data-pm="${esc(m.key)}" ${isAllowed(m.key) ? 'checked' : ''}>
+        </label>`).join('') || '<div class="card-sub">هیچ روش پرداختی تعریف نشده.</div>'}
+    </div>
+    <button class="btn btn-primary" id="pm-save" style="margin-top:12px">ذخیره</button>
+  `, (b, close) => {
+    $('#pm-save', b).addEventListener('click', async () => {
+      const boxes = $$('[data-pm]', b);
+      const checked = boxes.filter(i => i.checked).map(i => i.dataset.pm);
+      const methodsPayload = (checked.length === 0 || checked.length === boxes.length) ? null : checked;
+      try {
+        await apiPost(`/products/${product.id}/payment-methods`, { methods: methodsPayload });
+        toast('ذخیره شد.'); close();
+      } catch (e) { handleErr(e); }
+    });
+  });
+}
+
 function productProvisionFieldsHtml(panelServers) {
   if (!panelServers || !panelServers.length) return '';
   return `
@@ -2400,6 +2438,7 @@ async function renderCatalog() {
       <td>${p.is_active ? '<span class="badge badge-approved">فعال</span>' : '<span class="badge badge-rejected">غیرفعال</span>'}</td>
       <td>
         ${!p.is_auto_provision ? `<button class="btn btn-sm" data-configs="${p.id}">بانک کانفیگ</button>` : ''}
+        <button class="btn btn-sm" data-pay-methods="${p.id}">💳 پرداخت</button>
         <button class="btn btn-sm" data-toggle-prod="${p.id}">${p.is_active ? 'غیرفعال' : 'فعال'}</button>
         <button class="btn btn-danger btn-sm" data-del-prod="${p.id}">حذف</button>
       </td>
@@ -2440,6 +2479,10 @@ async function renderCatalog() {
     try { await apiDelete(`/products/${b.dataset.delProd}`); toast('حذف شد.'); renderCatalog(); } catch (e) { handleErr(e); }
   }));
   $$('[data-configs]', body).forEach(b => b.addEventListener('click', () => showConfigBank(Number(b.dataset.configs))));
+  $$('[data-pay-methods]', body).forEach(b => b.addEventListener('click', () => {
+    const p = products.find(x => x.id === Number(b.dataset.payMethods));
+    if (p) openProductPaymentMethodsModal(p);
+  }));
 }
 
 /* ---------------------------------------------------------- catalog: bento */
@@ -2504,6 +2547,7 @@ function renderCatalogBento(categories, products, panelServers) {
           ${bnPill(p.is_active ? 'فعال' : 'غیرفعال', p.is_active ? 'ok' : 'no')}
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
             ${!p.is_auto_provision ? `<button class="bn-btn bn-btn-ghost" data-configs="${p.id}">بانک کانفیگ</button>` : ''}
+            <button class="bn-btn bn-btn-ghost" data-pay-methods="${p.id}">💳 پرداخت</button>
             <button class="bn-btn bn-btn-ghost" data-toggle-prod="${p.id}">${p.is_active ? 'غیرفعال' : 'فعال'}</button>
             <button class="bn-btn bn-btn-no" data-del-prod="${p.id}">حذف</button>
           </div>
@@ -2546,6 +2590,10 @@ function renderCatalogBento(categories, products, panelServers) {
     try { await apiDelete(`/products/${b.dataset.delProd}`); toast('حذف شد.'); renderCatalog(); } catch (e) { handleErr(e); }
   }));
   $$('[data-configs]', body).forEach(b => b.addEventListener('click', () => showConfigBank(Number(b.dataset.configs))));
+  $$('[data-pay-methods]', body).forEach(b => b.addEventListener('click', () => {
+    const p = products.find(x => x.id === Number(b.dataset.payMethods));
+    if (p) openProductPaymentMethodsModal(p);
+  }));
 }
 
 /* -------------------------------------------------- catalog: brutalist -- */
@@ -2622,6 +2670,7 @@ function renderCatalogBrutalist(categories, products, panelServers) {
           </div>
           <div class="bru-coupon-actions" style="flex-wrap:wrap">
             ${!p.is_auto_provision ? `<button class="btn btn-sm" data-configs="${p.id}">بانک کانفیگ</button>` : ''}
+            <button class="btn btn-sm" data-pay-methods="${p.id}">💳 پرداخت</button>
             <button class="btn btn-sm" data-toggle-prod="${p.id}">${p.is_active ? 'غیرفعال' : 'فعال'}</button>
             <button class="btn btn-danger btn-sm" data-del-prod="${p.id}">حذف</button>
           </div>
@@ -2664,6 +2713,10 @@ function renderCatalogBrutalist(categories, products, panelServers) {
     try { await apiDelete(`/products/${b.dataset.delProd}`); toast('حذف شد.'); renderCatalog(); } catch (e) { handleErr(e); }
   }));
   $$('[data-configs]', body).forEach(b => b.addEventListener('click', () => showConfigBank(Number(b.dataset.configs))));
+  $$('[data-pay-methods]', body).forEach(b => b.addEventListener('click', () => {
+    const p = products.find(x => x.id === Number(b.dataset.payMethods));
+    if (p) openProductPaymentMethodsModal(p);
+  }));
 }
 
 /* ------------------------------------------------------- catalog: glass -- */
@@ -5045,6 +5098,8 @@ function _gwFormHtml(gw) {
       <input class="input" id="gw-name" placeholder="نام نمایشی (مثلاً زرین‌پال)" value="${gw ? esc(gw.name) : ''}">
       <input class="input" id="gw-key" placeholder="کلید یکتا انگلیسی (مثلاً zarinpal)" value="${gw ? esc(gw.key) : ''}" ${gw ? 'disabled' : ''} style="direction:ltr;text-align:left">
       <label class="field field-row"><span>فعال</span>${_swSpan('gw-enabled', gw ? gw.enabled : false)}</label>
+      <label class="field"><span>حداقل مبلغ مجاز با این درگاه (تومان - ۰ یعنی بدون محدودیت)</span>
+        <input class="input" id="gw-min-amount" type="number" min="0" value="${gw ? (gw.min_amount || 0) : 0}"></label>
     </div>
 
     <div class="card-sub" style="margin:16px 0 6px"><b>🔑 اعتبارنامه (API Key و مشابه)</b></div>
@@ -5174,7 +5229,11 @@ function _gwOpenForm(gw) {
       errBox.textContent = '';
       try {
         const config = _gwCollectConfig(body);
-        const payload = { key: $('#gw-key', body).value.trim(), name: $('#gw-name', body).value.trim(), enabled: _swOn(body, 'gw-enabled'), config };
+        const payload = {
+          key: $('#gw-key', body).value.trim(), name: $('#gw-name', body).value.trim(),
+          enabled: _swOn(body, 'gw-enabled'), config,
+          min_amount: Math.max(0, Number($('#gw-min-amount', body).value) || 0),
+        };
         if (!payload.name || !payload.key) { errBox.textContent = 'نام و کلید درگاه الزامی است.'; return; }
         if (gw) await apiPut(`/gateways/${gw.id}`, payload);
         else await apiPost('/gateways', payload);
@@ -5229,8 +5288,23 @@ function _gwGuideHtml() {
 }
 
 async function renderGateways() {
-  const rows = await apiGet('/gateways');
+  const [rows, methods] = await Promise.all([apiGet('/gateways'), apiGet('/payment-methods')]);
+  const builtin = methods.filter(m => !m.is_custom && m.key !== 'wallet');
   setContent(`
+    <div class="card">
+      <div class="card-sub" style="margin-bottom:10px"><b>💵 حداقل مبلغ مجاز هر روش پرداخت</b> — اگر مبلغ سفارش
+        از این عدد کمتر باشد، آن روش برای کاربر نمایش داده نمی‌شود (۰ یعنی بدون محدودیت).
+        این دقیقاً همان تنظیمی است که بات از داخل منوی خودش می‌سازد؛ این‌جا معادل وب آن است و
+        در بات و مینی‌اپ هر دو یکسان اعمال می‌شود.</div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>روش پرداخت</th><th>حداقل مبلغ (تومان)</th><th></th></tr></thead>
+        <tbody>${builtin.map(m => `<tr>
+          <td>${esc(m.label)}</td>
+          <td><input class="input" data-min-amount="${esc(m.key)}" type="number" min="0" value="${m.min_amount || 0}" style="max-width:160px"></td>
+          <td><button class="btn btn-sm" data-save-min="${esc(m.key)}">ذخیره</button></td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </div>
     <div class="toolbar">
       <button class="btn btn-primary btn-sm" id="gw-add">+ درگاه جدید</button>
       <button class="btn btn-sm" id="gw-guide">📖 راهنمای افزودن API</button>
@@ -5239,16 +5313,25 @@ async function renderGateways() {
       <div class="card-sub" style="margin-bottom:10px">هر درگاهی که یک HTTP API داشته باشد رو بدون نوشتن کد وصل کن. از پلیس‌هولدرهایی مثل
         <code>{amount}</code>, <code>{order_id}</code>, <code>{callback_url}</code>, <code>{webhook_url}</code> و هر فیلد اعتبارنامه (مثلاً <code>{api_key}</code>) استفاده کن.</div>
       ${rows.length ? `<div class="table-wrap"><table>
-        <thead><tr><th>نام</th><th>کلید</th><th>وضعیت</th><th>عملیات</th></tr></thead>
+        <thead><tr><th>نام</th><th>کلید</th><th>حداقل مبلغ</th><th>وضعیت</th><th>عملیات</th></tr></thead>
         <tbody>${rows.map(gw => `<tr>
           <td>${esc(gw.name)}</td>
           <td class="mono">${esc(gw.key)}</td>
+          <td>${gw.min_amount ? fmt(gw.min_amount) + ' ت' : '—'}</td>
           <td>${gw.enabled ? '<span class="badge badge-approved">فعال</span>' : '<span class="badge badge-rejected">غیرفعال</span>'}</td>
           <td><button class="btn btn-sm" data-edit="${gw.id}">ویرایش</button></td>
         </tr>`).join('')}</tbody>
       </table></div>` : '<div class="card-sub">هنوز درگاهی اضافه نشده.</div>'}
     </div>
   `);
+  $$('[data-save-min]', content()).forEach(b => b.addEventListener('click', async () => {
+    const key = b.dataset.saveMin;
+    const value = Math.max(0, Number($(`[data-min-amount="${key}"]`, content()).value) || 0);
+    try {
+      await apiPost(`/payment-methods/${encodeURIComponent(key)}/min-amount`, { min_amount: value });
+      toast('ذخیره شد.');
+    } catch (e) { handleErr(e); }
+  }));
   $('#gw-add').addEventListener('click', () => _gwOpenForm(null));
   $('#gw-guide').addEventListener('click', () => openModal('📖 راهنمای افزودن درگاه جدید', _gwGuideHtml(), null, { wide: true }));
   $$('[data-edit]', content()).forEach(b => b.addEventListener('click', async () => {
