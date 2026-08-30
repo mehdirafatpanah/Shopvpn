@@ -167,6 +167,24 @@ class AdminStockAlertSettings(StatesGroup):
     waiting_threshold = State()
 
 
+class AdminMinAmountSettings(StatesGroup):
+    """حداقل مبلغ مجاز برای هر روش پرداختِ داخلی (کارت/کریپتو/آبان‌گیت‌وی) +
+    حداقل مبلغ شارژ کیف پول. کلید تنظیمی که در حال ویرایش است (مثلاً
+    'min_amount_card') در state ذخیره می‌شود تا یک هندلر برای همه کافی باشد."""
+    waiting_value = State()
+
+
+class AdminCustomGatewayMinAmount(StatesGroup):
+    waiting_value = State()
+
+
+class AdminProductPaymentMethods(StatesGroup):
+    """صفحه‌ی چندانتخابی «روش‌های پرداخت مجاز» برای یک محصول؛ خودِ صفحه از
+    طریق callback toggle می‌شود و نیازی به state پیام‌محور ندارد، ولی برای
+    یکدستی با بقیه‌ی صفحات ادمین یک state نگه‌دارنده‌ی product_id تعریف شده."""
+    viewing = State()
+
+
 class AdminVolumeReminderSettings(StatesGroup):
     waiting_percent = State()
     waiting_gb_left = State()
