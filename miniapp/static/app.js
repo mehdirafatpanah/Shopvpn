@@ -1302,8 +1302,12 @@ async function fetchCustomGateways() {
   return _customGatewaysCache;
 }
 
-function renderReceiptCard(box, { amount, cardNumber, cardHolder, sendReceipt, successText, cryptoEnabled, createCryptoInvoice, customGateways, createCustomGatewayInvoice }) {
+function renderReceiptCard(box, { amount, cardNumber, cardHolder, sendReceipt, successText, cryptoEnabled, createCryptoInvoice, customGateways, createCustomGatewayInvoice, cardToCardEnabled }) {
   customGateways = customGateways || [];
+  // اگر ادمین کارت‌به‌کارت دستی را غیرفعال کرده باشد (card_to_card_enabled=0)، این بخش
+  // باید مثل بات اصلی مخفی شود؛ پیش‌فرض (undefined، برای سازگاری با پاسخ‌های قدیمی) فعال است.
+  const cardEnabled = cardToCardEnabled !== false && !!cardNumber;
+  const noPaymentMethod = !cardEnabled && !cryptoEnabled && !customGateways.length;
   const customGatewaysHtml = customGateways.length ? `
     <div style="display:flex;align-items:center;gap:8px;margin:16px 0">
       <div style="flex:1;height:1px;background:var(--border,rgba(255,255,255,.1))"></div>
@@ -1316,7 +1320,13 @@ function renderReceiptCard(box, { amount, cardNumber, cardHolder, sendReceipt, s
     <div id="custom-gw-error" class="field-error"></div>
   ` : "";
 
+  if (noPaymentMethod) {
+    box.innerHTML = `<div class="state-msg"><span class="ic">⚠️</span>در حال حاضر روش پرداخت فعالی موجود نیست. لطفاً با پشتیبانی تماس بگیرید.</div>`;
+    return;
+  }
+
   box.innerHTML = `
+    ${cardEnabled ? `
     <h3><span class="ic">💳</span>واریز و ارسال رسید</h3>
     <div class="bank-card">
       <div class="bank-card-top">
@@ -1341,6 +1351,7 @@ function renderReceiptCard(box, { amount, cardNumber, cardHolder, sendReceipt, s
     </label>
     <img id="receipt-preview" class="receipt-preview" style="display:none" />
     <button class="btn" id="send-receipt-btn" disabled>ارسال رسید برای تایید</button>
+    ` : ""}
 
     ${cryptoEnabled ? `
       <div style="display:flex;align-items:center;gap:8px;margin:16px 0">
@@ -1355,41 +1366,43 @@ function renderReceiptCard(box, { amount, cardNumber, cardHolder, sendReceipt, s
     ${customGatewaysHtml}
   `;
 
-  box.querySelector("#copy-card-btn").onclick = () => {
-    navigator.clipboard.writeText(String(cardNumber).replace(/\s/g, ""));
-    tg.HapticFeedback.notificationOccurred("success");
-  };
-
-  const fileInput = box.querySelector("#receipt-file");
-  const preview = box.querySelector("#receipt-preview");
-  const drop = box.querySelector("#receipt-drop");
-  const sendBtn = box.querySelector("#send-receipt-btn");
-
-  fileInput.onchange = () => {
-    const file = fileInput.files[0];
-    if (!file) return;
-    drop.classList.add("has-file");
-    box.querySelector("#receipt-label").textContent = "✅ عکس رسید انتخاب شد";
-    preview.src = URL.createObjectURL(file);
-    preview.style.display = "block";
-    sendBtn.disabled = false;
-  };
-
-  sendBtn.onclick = async () => {
-    const file = fileInput.files[0];
-    if (!file) return;
-    sendBtn.disabled = true;
-    sendBtn.textContent = "در حال ارسال...";
-    try {
-      await sendReceipt(file);
+  if (cardEnabled) {
+    box.querySelector("#copy-card-btn").onclick = () => {
+      navigator.clipboard.writeText(String(cardNumber).replace(/\s/g, ""));
       tg.HapticFeedback.notificationOccurred("success");
-      box.innerHTML = `<div class="state-msg"><span class="ic">✅</span>${successText}</div>`;
-    } catch (e) {
-      notify("خطا: " + e.message);
+    };
+
+    const fileInput = box.querySelector("#receipt-file");
+    const preview = box.querySelector("#receipt-preview");
+    const drop = box.querySelector("#receipt-drop");
+    const sendBtn = box.querySelector("#send-receipt-btn");
+
+    fileInput.onchange = () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      drop.classList.add("has-file");
+      box.querySelector("#receipt-label").textContent = "✅ عکس رسید انتخاب شد";
+      preview.src = URL.createObjectURL(file);
+      preview.style.display = "block";
       sendBtn.disabled = false;
-      sendBtn.textContent = "ارسال رسید برای تایید";
-    }
-  };
+    };
+
+    sendBtn.onclick = async () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      sendBtn.disabled = true;
+      sendBtn.textContent = "در حال ارسال...";
+      try {
+        await sendReceipt(file);
+        tg.HapticFeedback.notificationOccurred("success");
+        box.innerHTML = `<div class="state-msg"><span class="ic">✅</span>${successText}</div>`;
+      } catch (e) {
+        notify("خطا: " + e.message);
+        sendBtn.disabled = false;
+        sendBtn.textContent = "ارسال رسید برای تایید";
+      }
+    };
+  }
 
   if (cryptoEnabled) {
     const cryptoBtn = box.querySelector("#pay-crypto-btn");
@@ -1616,6 +1629,7 @@ async function buyProduct(productId, quantity, code) {
         amount: result.final_price,
         cardNumber: result.card_number,
         cardHolder: result.card_holder,
+        cardToCardEnabled: result.card_to_card_enabled,
         successText: "رسید ارسال شد. پس از تایید ادمین، کانفیگ از تب خانه در دسترس شما خواهد بود.",
         sendReceipt: async (file) => {
           const fd = new FormData();
@@ -1750,6 +1764,7 @@ async function submitCustomConfig(username, volumeGb, useCredit, info) {
         amount: result.final_price,
         cardNumber: result.card_number,
         cardHolder: result.card_holder,
+        cardToCardEnabled: result.card_to_card_enabled,
         successText: "رسید ارسال شد. پس از تایید ادمین، کانفیگ از تب خانه در دسترس شما خواهد بود.",
         sendReceipt: async (file) => {
           const fd = new FormData();
@@ -1900,7 +1915,7 @@ async function renderWallet() {
       btn.disabled = true;
       try {
         const r = await api("/api/wallet/topup-request", { method: "POST", body: JSON.stringify({ amount }) });
-        renderTopupPaymentStep(r.topup_id, amount, r.card_number, r.card_holder, r.crypto_enabled);
+        renderTopupPaymentStep(r.topup_id, amount, r.card_number, r.card_holder, r.crypto_enabled, r.card_to_card_enabled);
       } catch (e) {
         notify("خطا: " + e.message);
         btn.disabled = false;
@@ -1911,11 +1926,11 @@ async function renderWallet() {
   }
 }
 
-async function renderTopupPaymentStep(topupId, amount, cardNumber, cardHolder, cryptoEnabled) {
+async function renderTopupPaymentStep(topupId, amount, cardNumber, cardHolder, cryptoEnabled, cardToCardEnabled) {
   const box = document.getElementById("topup-card");
   const customGateways = await fetchCustomGateways();
   renderReceiptCard(box, {
-    amount, cardNumber, cardHolder,
+    amount, cardNumber, cardHolder, cardToCardEnabled,
     successText: "رسید ارسال شد. پس از تایید ادمین، کیف پول شما شارژ می‌شود.",
     sendReceipt: async (file) => {
       const fd = new FormData();
