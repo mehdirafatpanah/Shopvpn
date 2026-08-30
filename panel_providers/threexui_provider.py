@@ -224,6 +224,41 @@ class ThreeXUIProvider(BasePanelProvider):
             "status": "active" if obj.get("enable") else "disabled",
         }
 
+    async def get_user(self, username: str) -> PanelUserResult:
+        """API جدید clients/* یک GET تکی برای یک کلاینت ندارد؛ کلاینت داخل
+        settings همان inbound که بهش اضافه شده نگه‌داری می‌شود، پس لیست
+        inbound ها را می‌خوانیم و دنبال کلاینتی با email==username می‌گردیم
+        تا subId فعلی‌اش (که ممکن است ادمین دستی روی پنل عوض کرده باشد) را
+        پیدا کنیم و لینک اشتراک تازه را بسازیم."""
+        sub_base_url = self.server["xui_sub_base_url"]
+        async with self._session() as session:
+            try:
+                async with session.get(f"{self._base_url()}/panel/api/inbounds/list") as resp:
+                    if resp.status in (401, 403):
+                        raise PanelError(f"خطا در احراز هویت (کد {resp.status}): API Token را بررسی کن.")
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise PanelError(f"خطا در دریافت لیست inbound (کد {resp.status}): {text[:300]}")
+                    data = await resp.json()
+            except aiohttp.ClientError as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+        if data.get("success") is False:
+            raise PanelError(data.get("msg") or "دریافت اطلاعات کاربر ناموفق بود.")
+        for ib in (data.get("obj") or []):
+            settings_raw = ib.get("settings")
+            try:
+                settings = json.loads(settings_raw) if isinstance(settings_raw, str) else (settings_raw or {})
+            except (ValueError, TypeError):
+                continue
+            for client in (settings.get("clients") or []):
+                if client.get("email") == username:
+                    sub_id = client.get("subId")
+                    if not sub_id or not sub_base_url:
+                        raise PanelError("لینک اشتراک این کاربر روی پنل یافت نشد.")
+                    sub_url = f"{sub_base_url.rstrip('/')}/{sub_id}"
+                    return PanelUserResult(username=username, subscription_url=sub_url, raw=client)
+        raise PanelError(f"کاربری با نام «{username}» روی پنل پیدا نشد.")
+
     async def test_connection(self) -> bool:
         try:
             async with self._session() as session:

@@ -130,6 +130,12 @@ class HiddifyProvider(BasePanelProvider):
             "status": "active",  # هیدیفای فیلد status جدا مثل Marzban ندارد
         }
 
+    async def get_user(self, username: str) -> PanelUserResult:
+        async with aiohttp.ClientSession() as session:
+            user = await self._find_by_name(session, username)
+        sub_url = f"{self._sub_base_url()}/{user.get('uuid')}/"
+        return PanelUserResult(username=username, subscription_url=sub_url, raw=user)
+
     async def test_connection(self) -> bool:
         try:
             async with aiohttp.ClientSession() as session:

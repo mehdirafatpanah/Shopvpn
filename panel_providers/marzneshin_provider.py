@@ -153,6 +153,28 @@ class MarzneshinProvider(BasePanelProvider):
             "status": data.get("status", ""),
         }
 
+    async def get_user(self, username: str) -> PanelUserResult:
+        async with aiohttp.ClientSession() as session:
+            token = await self._get_token(session)
+            try:
+                async with session.get(
+                    f"{self._base_url()}/api/users/{username}",
+                    headers={"Authorization": f"Bearer {token}", "accept": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status == 404:
+                        raise PanelError(f"کاربری با نام «{username}» روی پنل پیدا نشد.")
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise PanelError(f"خطا در دریافت اطلاعات کاربر (کد {resp.status}): {text[:300]}")
+                    data = await resp.json()
+            except aiohttp.ClientError as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+        sub_url = data.get("subscription_url") or ""
+        if sub_url.startswith("/"):
+            sub_url = self._base_url() + sub_url
+        return PanelUserResult(username=data.get("username", username), subscription_url=sub_url, raw=data)
+
     async def test_connection(self) -> bool:
         try:
             async with aiohttp.ClientSession() as session:
