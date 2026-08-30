@@ -96,6 +96,9 @@ DEFAULT_SETTINGS = {
     # حذف خودکار پیام‌های حاوی شماره کارت بعد از این تعداد ثانیه از ارسال؛
     # صفر یعنی غیرفعال (پیام برای همیشه در چت باقی می‌ماند).
     "card_msg_autodelete_seconds": "0",
+    # پرداخت دستی کارت‌به‌کارت (ارسال رسید) به‌عنوان یکی از روش‌های پرداخت؛
+    # اگر ادمین این روش را غیرفعال کند، در لیست روش‌های پرداخت نمایش داده نمی‌شود.
+    "card_to_card_enabled": "1",
     "contact_text": "پیام خود را بنویسید تا مستقیم برای پشتیبانی ارسال شود:",
     "after_buy_text": "برای تکمیل خرید، مبلغ را به شماره کارت زیر واریز کرده و سپس عکس رسید را ارسال کنید:",
     # رنگ دکمه‌ها (ویژگی جدید Bot API 9.4 / فوریه 2026)
@@ -3668,6 +3671,16 @@ class Database:
             return conn.execute(
                 "SELECT * FROM custom_configs WHERE user_id=? ORDER BY id DESC", (user_id,)
             ).fetchall()
+
+    def update_custom_config_subscription_url(self, custom_config_id: int, subscription_url: str):
+        """وقتی لینک اشتراک به‌صورت زنده از پنل دوباره خوانده می‌شود (مثلاً چون
+        ادمین تنظیمات پنل را عوض کرده و لینک قدیمی دیگر معتبر نبود)، مقدار
+        تازه اینجا در دیتابیس هم به‌روز می‌شود تا دفعه‌ی بعد از همان استفاده شود."""
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE custom_configs SET subscription_url=? WHERE id=?",
+                (subscription_url, custom_config_id),
+            )
 
     def get_test_custom_config_for_user(self, user_id: int):
         with self._get_conn() as conn:

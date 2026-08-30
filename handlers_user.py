@@ -159,6 +159,20 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if seconds > 0:
             await schedule_message_autodelete(db, chat_id, message_id, seconds)
 
+    async def _send_card2card_details(target, intro_lines: list, final_price: int):
+        """بعد از اینکه کاربر از لیست روش‌های پرداخت گزینه‌ی «کارت‌به‌کارت» را انتخاب کرد،
+        شماره کارت را نشان می‌دهد و از او می‌خواهد رسید را ارسال کند. target هر شیء‌ای
+        است که متد answer async دارد (معمولاً call.message)."""
+        card_number = (await asyncio.to_thread(db.get_setting, "card_number"))
+        card_holder = (await asyncio.to_thread(db.get_setting, "card_holder"))
+        text = "\n".join(intro_lines) + "\n" if intro_lines else ""
+        text += f"💳 شماره کارت: `{card_number}`\n"
+        text += f"👤 به نام: {card_holder}\n"
+        text += f"💰 مبلغ نهایی قابل پرداخت: {final_price:,} تومان\n\n"
+        text += "لطفاً عکس رسید پرداخت را همینجا ارسال کنید."
+        sent = await target.answer(text, parse_mode="Markdown")
+        await _schedule_card_msg_autodelete(sent.chat.id, sent.message_id)
+
     # -----------------------------------------------------------------------
     # عضویت اجباری در کانال
     # -----------------------------------------------------------------------
@@ -768,21 +782,17 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
         await state.set_state(BuyFlow.waiting_receipt)
 
-        card_number = (await asyncio.to_thread(db.get_setting, "card_number"))
-        card_holder = (await asyncio.to_thread(db.get_setting, "card_holder"))
         after_buy_text = (await asyncio.to_thread(db.get_setting, "after_buy_text"))
 
         text = f"{after_buy_text}\n\n"
         if quantity > 1:
             text += f"🔢 تعداد: {quantity} عدد\n"
-        text += f"💳 شماره کارت: `{card_number}`\n"
-        text += f"👤 به نام: {card_holder}\n"
         if discount_amount:
             text += f"🎟 تخفیف کد: {discount_amount:,} تومان\n"
         if wallet_used:
             text += f"👛 استفاده از کیف پول: {wallet_used:,} تومان\n"
         text += f"💰 مبلغ نهایی قابل پرداخت: {order['final_price']:,} تومان\n\n"
-        text += "لطفاً عکس رسید پرداخت را همینجا ارسال کنید، یا از دکمه‌ی زیر با ارز دیجیتال پرداخت کنید."
+        text += "لطفاً روش پرداخت را انتخاب کنید:"
 
         await _safe_edit(
             call.message,
@@ -791,10 +801,31 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 crypto_payment.crypto_payment_available(db),
                 abangateway_payment.abangateway_payment_available(db),
                 custom_gateway_payment.list_enabled_gateways(db),
+                (await asyncio.to_thread(db.get_setting, "card_to_card_enabled", "1")) == "1",
             ),
         )
-        await _schedule_card_msg_autodelete(call.message.chat.id, call.message.message_id)
         await call.answer()
+
+    @router.callback_query(F.data == "pay_card2card", BuyFlow.waiting_receipt)
+    async def cb_pay_card2card_order(call: CallbackQuery, state: FSMContext):
+        if (await asyncio.to_thread(db.get_setting, "card_to_card_enabled", "1")) != "1":
+            await call.answer("این روش پرداخت در حال حاضر غیرفعال است.", show_alert=True)
+            return
+        data = await state.get_data()
+        order_id = data.get("order_id")
+        order = (await asyncio.to_thread(db.get_order, order_id)) if order_id else None
+        if not order or order["status"] != "pending":
+            await call.answer("سفارش معتبر یافت نشد.", show_alert=True)
+            return
+        await call.answer()
+        intro_lines = []
+        if order["quantity"] and order["quantity"] > 1:
+            intro_lines.append(f"🔢 تعداد: {order['quantity']} عدد")
+        if order["discount_amount"]:
+            intro_lines.append(f"🎟 تخفیف کد: {order['discount_amount']:,} تومان")
+        if order["wallet_used"]:
+            intro_lines.append(f"👛 استفاده از کیف پول: {order['wallet_used']:,} تومان")
+        await _send_card2card_details(call.message, intro_lines, order["final_price"])
 
     @router.callback_query(F.data == "cancel_flow")
     async def cb_cancel_flow(call: CallbackQuery, state: FSMContext):
@@ -1081,28 +1112,46 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
 
         await state.set_state(CustomConfigFlow.waiting_receipt)
-        card_number = (await asyncio.to_thread(db.get_setting, "card_number"))
-        card_holder = (await asyncio.to_thread(db.get_setting, "card_holder"))
         text = (
             f"🛠 نام کاربری: {username}\n"
             f"📶 حجم: {volume_gb} گیگابایت\n"
             f"⏳ مدت: {settings['duration_days']} روز\n\n"
-            f"💳 شماره کارت: `{card_number}`\n"
-            f"👤 به نام: {card_holder}\n"
         )
         if wallet_used:
             text += f"👛 استفاده از کیف پول: {wallet_used:,} تومان\n"
         text += f"💰 مبلغ نهایی قابل پرداخت: {order['final_price']:,} تومان\n\n"
-        text += "لطفاً عکس رسید پرداخت را همینجا ارسال کنید، یا از دکمه‌ی زیر با ارز دیجیتال پرداخت کنید."
-        sent = await message.answer(
+        text += "لطفاً روش پرداخت را انتخاب کنید:"
+        await message.answer(
             text, parse_mode="Markdown",
             reply_markup=kb.payment_choice_kb(
                 crypto_payment.crypto_payment_available(db),
                 abangateway_payment.abangateway_payment_available(db),
                 custom_gateway_payment.list_enabled_gateways(db),
+                (await asyncio.to_thread(db.get_setting, "card_to_card_enabled", "1")) == "1",
             ),
         )
-        await _schedule_card_msg_autodelete(sent.chat.id, sent.message_id)
+
+    @router.callback_query(F.data == "pay_card2card", CustomConfigFlow.waiting_receipt)
+    async def cb_pay_card2card_custom_config(call: CallbackQuery, state: FSMContext):
+        if (await asyncio.to_thread(db.get_setting, "card_to_card_enabled", "1")) != "1":
+            await call.answer("این روش پرداخت در حال حاضر غیرفعال است.", show_alert=True)
+            return
+        data = await state.get_data()
+        order_id = data.get("order_id")
+        order = (await asyncio.to_thread(db.get_order, order_id)) if order_id else None
+        if not order or order["status"] != "pending":
+            await call.answer("سفارش معتبر یافت نشد.", show_alert=True)
+            return
+        await call.answer()
+        settings = (await asyncio.to_thread(db.get_custom_config_settings))
+        intro_lines = [
+            f"🛠 نام کاربری: {order['custom_username']}",
+            f"📶 حجم: {order['custom_volume_gb']} گیگابایت",
+            f"⏳ مدت: {settings['duration_days']} روز",
+        ]
+        if order["wallet_used"]:
+            intro_lines.append(f"👛 استفاده از کیف پول: {order['wallet_used']:,} تومان")
+        await _send_card2card_details(call.message, intro_lines, order["final_price"])
 
     @router.callback_query(F.data == "pay_crypto", CustomConfigFlow.waiting_receipt)
     async def cb_pay_crypto_custom_config(call: CallbackQuery, state: FSMContext):
@@ -1500,18 +1549,34 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return text
         if kind == "custom":
             cc = item["custom"]
+            sub_url = cc["subscription_url"]
+            server = (await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])) if cc["panel_server_id"] else None
+            if server and server["is_active"]:
+                try:
+                    provider = get_provider(server)
+                    fresh = await provider.get_user(cc["username"])
+                    if fresh.subscription_url:
+                        if fresh.subscription_url != sub_url:
+                            (await asyncio.to_thread(
+                                db.update_custom_config_subscription_url, cc["id"], fresh.subscription_url,
+                            ))
+                        sub_url = fresh.subscription_url
+                except PanelError:
+                    # پنل در دسترس نبود یا کاربر پیدا نشد؛ به‌جای کرش‌کردن، همان
+                    # لینک ذخیره‌شده (احتمالاً قدیمی) به کاربر نشان داده می‌شود.
+                    pass
             text = (
                 f"🛠 کانفیگ شخصی «{cc['username']}»\n"
                 f"📶 حجم: {cc['volume_gb']} گیگ | ⏳ مدت: {cc['duration_days']} روز\n"
             )
             if cc["expires_at"]:
                 text += f"📅 انقضا: {cc['expires_at']}\n"
-            if cc["subscription_url"]:
-                text += f"🔗 `{cc['subscription_url']}`\n"
-                info = await fetch_sub_info(cc["subscription_url"])
+            if sub_url:
+                text += f"🔗 `{sub_url}`\n"
+                info = await fetch_sub_info(sub_url)
                 text += f"\n{format_sub_info_fa(info)}"
                 try:
-                    individual_links = await fetch_individual_links(cc["subscription_url"])
+                    individual_links = await fetch_individual_links(sub_url)
                 except Exception:
                     individual_links = []
                 if individual_links:
@@ -1744,23 +1809,29 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await state.update_data(topup_amount=amount)
         await state.set_state(WalletTopup.waiting_receipt)
 
-        card_number = (await asyncio.to_thread(db.get_setting, "card_number"))
-        card_holder = (await asyncio.to_thread(db.get_setting, "card_holder"))
-
-        text = (
-            f"مبلغ {amount:,} تومان را به شماره کارت زیر واریز کرده و سپس عکس رسید را ارسال کنید:\n\n"
-            f"💳 شماره کارت: `{card_number}`\n"
-            f"👤 به نام: {card_holder}\n"
-        )
-        sent = await message.answer(
+        text = f"💰 مبلغ شارژ: {amount:,} تومان\n\nلطفاً روش پرداخت را انتخاب کنید:"
+        await message.answer(
             text, parse_mode="Markdown",
             reply_markup=kb.payment_choice_kb(
                 crypto_payment.crypto_payment_available(db),
                 abangateway_payment.abangateway_payment_available(db),
                 custom_gateway_payment.list_enabled_gateways(db),
+                (await asyncio.to_thread(db.get_setting, "card_to_card_enabled", "1")) == "1",
             ),
         )
-        await _schedule_card_msg_autodelete(sent.chat.id, sent.message_id)
+
+    @router.callback_query(F.data == "pay_card2card", WalletTopup.waiting_receipt)
+    async def cb_pay_card2card_topup(call: CallbackQuery, state: FSMContext):
+        if (await asyncio.to_thread(db.get_setting, "card_to_card_enabled", "1")) != "1":
+            await call.answer("این روش پرداخت در حال حاضر غیرفعال است.", show_alert=True)
+            return
+        data = await state.get_data()
+        amount = data.get("topup_amount")
+        if not amount:
+            await call.answer("درخواست شارژ معتبر یافت نشد.", show_alert=True)
+            return
+        await call.answer()
+        await _send_card2card_details(call.message, [], amount)
 
     @router.callback_query(F.data == "pay_crypto", WalletTopup.waiting_receipt)
     async def cb_pay_crypto_topup(call: CallbackQuery, state: FSMContext):

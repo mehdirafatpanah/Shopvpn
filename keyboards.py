@@ -348,11 +348,15 @@ def reseller_panel_kb() -> InlineKeyboardMarkup:
 
 
 def payment_choice_kb(crypto_enabled: bool, abangateway_enabled: bool = False,
-                       custom_gateways: list = None) -> InlineKeyboardMarkup:
-    """کیبورد مرحله‌ی پرداخت: اگر درگاه کریپتو/آبان گیت وی/درگاه‌های سفارشی فعال باشند،
-    دکمه‌ی مربوطه هم نمایش داده می‌شود. custom_gateways لیستی از دیکشنری‌های
-    {"id", "key", "name"} است (خروجی custom_gateway_payment.list_enabled_gateways)."""
+                       custom_gateways: list = None, card_to_card_enabled: bool = True) -> InlineKeyboardMarkup:
+    """کیبورد مرحله‌ی انتخاب روش پرداخت: کاربر ابتدا این لیست را می‌بیند و روش پرداخت را
+    انتخاب می‌کند (به‌جای اینکه مستقیم شماره کارت نمایش داده شود). اگر درگاه کریپتو/آبان
+    گیت وی/درگاه‌های سفارشی فعال باشند، دکمه‌ی مربوطه هم نمایش داده می‌شود. کارت‌به‌کارت
+    دستی هم با تنظیم card_to_card_enabled قابل غیرفعال‌سازی است. custom_gateways لیستی
+    از دیکشنری‌های {"id", "key", "name"} است (خروجی custom_gateway_payment.list_enabled_gateways)."""
     rows = []
+    if card_to_card_enabled:
+        rows.append([InlineKeyboardButton(text="💳 کارت‌به‌کارت (ارسال رسید)", callback_data="pay_card2card")])
     if abangateway_enabled:
         rows.append([InlineKeyboardButton(text="💳 پرداخت خودکار کارت‌به‌کارت (تایید آنی)", callback_data="pay_abangateway")])
     if crypto_enabled:
@@ -360,6 +364,24 @@ def payment_choice_kb(crypto_enabled: bool, abangateway_enabled: bool = False,
     for gw in (custom_gateways or []):
         rows.append([InlineKeyboardButton(text=f"💠 {gw['name']} (تایید آنی)", callback_data=f"pay_customgw:{gw['id']}")])
     rows.append([InlineKeyboardButton(text="❌ انصراف", callback_data="cancel_flow")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def card_settings_kb(db) -> InlineKeyboardMarkup:
+    """منوی تنظیمات پرداخت کارت‌به‌کارت (دستی): نمایش شماره کارت فعلی، وضعیت
+    فعال/غیرفعال و دکمه‌های تغییر."""
+    card_number = db.get_setting("card_number") or "-"
+    card_holder = db.get_setting("card_holder") or "-"
+    enabled = db.get_setting("card_to_card_enabled", "1") == "1"
+    toggle_text = "🔴 غیرفعال کردن پرداخت کارت‌به‌کارت" if enabled else "🟢 فعال کردن پرداخت کارت‌به‌کارت"
+    rows = [
+        [InlineKeyboardButton(text=f"وضعیت: {'🟢 فعال' if enabled else '🔴 غیرفعال'}", callback_data="noop")],
+        [InlineKeyboardButton(text=f"💳 شماره کارت: {card_number}", callback_data="noop")],
+        [InlineKeyboardButton(text=f"👤 به نام: {card_holder}", callback_data="noop")],
+        [InlineKeyboardButton(text=toggle_text, callback_data="adm_card_toggle")],
+        [InlineKeyboardButton(text="✏️ تغییر شماره کارت / صاحب حساب", callback_data="adm_set_card_edit")],
+        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:finance")],
+    ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -540,7 +562,7 @@ def admin_panel_kb(db, is_main_bot: bool = True) -> InlineKeyboardMarkup:
             current_row = []
     if current_row:
         rows.append(current_row)
-    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="back_main")])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_exit_panel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

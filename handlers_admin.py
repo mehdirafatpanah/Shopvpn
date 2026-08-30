@@ -331,6 +331,30 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await replace_admin_view(call, "🔧 پنل مدیریت:", reply_markup=kb.admin_panel_kb(db, is_main_bot))
         await call.answer()
 
+    @router.callback_query(F.data == "adm_exit_panel")
+    async def cb_exit_admin_panel(call: CallbackQuery, state: FSMContext):
+        """خروج کامل از پنل مدیریت (دکمه‌ی «بازگشت» صفحه‌ی اول پنل): برخلاف
+        «adm_back_panel» که به داخل خود پنل برمی‌گردد، این دکمه باید کاربر را
+        به منوی اصلی بات ببرد. قبلاً از کال‌بک مشترک «back_main» (مخصوص مسیر
+        خرید) استفاده می‌شد که فقط پیام را حذف می‌کرد و چیزی جایگزینش نمی‌کرد؛
+        چون پنل مدیریت پیام مستقلی است (نه ادامه‌ی یک ری‌پلای-کیبورد تازه باز
+        شده)، نتیجه‌اش این بود که بعد از حذف پیام، هیچ منویی برای کاربر باقی
+        نمی‌ماند."""
+        if not admin_only(call.from_user.id):
+            return await call.answer()
+        await state.clear()
+        try:
+            await call.message.delete()
+        except Exception:
+            try:
+                await call.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+        welcome = (await asyncio.to_thread(db.get_setting, "welcome_text"))
+        await call.message.answer(welcome, reply_markup=kb.menu_for_user(db, call.from_user.id, is_main_bot))
+        await _notify_user_inline_menu(call.bot, call.from_user.id)
+        await call.answer()
+
     @router.callback_query(F.data == "noop")
     async def cb_noop(call: CallbackQuery):
         await call.answer()
@@ -3895,7 +3919,23 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     # -------------------------------------------------------------------
 
     @router.callback_query(F.data == "adm_set_card")
-    async def cb_admin_set_card(call: CallbackQuery, state: FSMContext):
+    async def cb_admin_set_card(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await replace_admin_view(call, "💳 تنظیمات پرداخت کارت‌به‌کارت:", reply_markup=kb.card_settings_kb(db))
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_card_toggle")
+    async def cb_admin_card_toggle(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        current = (await asyncio.to_thread(db.get_setting, "card_to_card_enabled", "1"))
+        (await asyncio.to_thread(db.set_setting, "card_to_card_enabled", "0" if current == "1" else "1"))
+        await safe_edit(call, "💳 تنظیمات پرداخت کارت‌به‌کارت:", reply_markup=kb.card_settings_kb(db))
+        await call.answer("وضعیت تغییر کرد.")
+
+    @router.callback_query(F.data == "adm_set_card_edit")
+    async def cb_admin_set_card_edit(call: CallbackQuery, state: FSMContext):
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
         await state.set_state(AdminSetCard.waiting_number)
@@ -3918,7 +3958,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             message.from_user.id, "card_change",
             f"شماره کارت جدید: {data['card_number']} | به نام: {message.text.strip()}",
         ))
-        await message.answer("✅ اطلاعات کارت به‌روزرسانی شد.", reply_markup=kb.admin_category_kb(db, is_main_bot, "finance"))
+        await message.answer("✅ اطلاعات کارت به‌روزرسانی شد.", reply_markup=kb.card_settings_kb(db))
 
     # -------------------------------------------------------------------
     # حذف خودکار پیام‌های حاوی شماره کارت
