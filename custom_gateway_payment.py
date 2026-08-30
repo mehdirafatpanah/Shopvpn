@@ -68,10 +68,16 @@ async def create_invoice_for(db, tenant_id: str, tg_id: int, gateway_key: str, k
 
     tenant_slug = tenant_id or "main"
     our_ref = f"{kind}-{tenant_slug}-{ref_id}-{int(datetime.now(timezone.utc).timestamp())}"
+    # برخی درگاه‌ها (مثل TonPays) سقف طول کاراکتر برای order_id دارند (مثلاً حداکثر
+    # ۲۰ کاراکتر)؛ چون ردیابی واقعی سفارش از طریق gateway_ref (شناسه‌ای که خودِ
+    # درگاه در پاسخ create_invoice برمی‌گرداند) انجام می‌شود نه با پارس order_id،
+    # اینجا یک نسخه‌ی کوتاه‌شده و یکتا فقط برای ارسال به درگاه می‌سازیم؛ our_ref
+    # کامل همچنان برای callback_url/webhook_url و ذخیره‌ی txn_id داخلی حفظ می‌شود.
+    short_order_id = f"{ref_id}-{int(datetime.now(timezone.utc).timestamp())}"[:20]
     gw = payment_engine.GenericGateway(config)
     try:
         result = await gw.create_invoice(
-            amount=amount_toman, amount_toman=amount_toman, order_id=our_ref,
+            amount=amount_toman, amount_toman=amount_toman, order_id=short_order_id,
             currency="IRT", description=order_name, tenant_id=tenant_slug,
             callback_url=f"{API_BASE_URL}/api/pay/custom/{gateway_key}/return?b={tenant_id or ''}&txn={our_ref}",
             webhook_url=f"{API_BASE_URL}/api/webhooks/custom/{gateway_key}?b={tenant_id or ''}",
