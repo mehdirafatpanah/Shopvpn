@@ -1680,10 +1680,14 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                                 db.update_custom_config_subscription_url, cc["id"], fresh.subscription_url,
                             ))
                         sub_url = fresh.subscription_url
-                except PanelError:
-                    # پنل در دسترس نبود یا کاربر پیدا نشد؛ به‌جای کرش‌کردن، همان
-                    # لینک ذخیره‌شده (احتمالاً قدیمی) به کاربر نشان داده می‌شود.
-                    pass
+                except Exception:
+                    # پنل در دسترس نبود، تایم‌اوت داد یا کاربر پیدا نشد؛ به‌جای کرش‌کردن
+                    # کل صفحه (که باعث می‌شود چیزی برای کاربر نمایش داده نشود)،
+                    # همان لینک ذخیره‌شده (احتمالاً قدیمی) نشان داده می‌شود.
+                    logging.getLogger("handlers_user").exception(
+                        "خواندن اطلاعات تازه از پنل برای «%s» ناموفق بود؛ لینک ذخیره‌شده نمایش داده می‌شود.",
+                        cc["username"],
+                    )
             text = (
                 f"🛠 کانفیگ شخصی «{cc['username']}»\n"
                 f"📶 حجم: {cc['volume_gb']} گیگ | ⏳ مدت: {cc['duration_days']} روز\n"
@@ -1736,7 +1740,19 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await _show_my_orders_list(call.message, call.from_user.id, edit=True)
             return
         await call.answer()
-        text = await _my_orders_item_text(item)
+        try:
+            text = await _my_orders_item_text(item)
+        except Exception:
+            logging.getLogger("handlers_user").exception(
+                "ساخت متن جزئیات سرویس (cb_id=%s) برای کاربر %s ناموفق بود.", cb_id, call.from_user.id,
+            )
+            await _safe_edit(
+                call.message,
+                "⚠️ در دریافت اطلاعات این سرویس خطایی رخ داد (احتمالاً پنل موقتاً در دسترس نیست).\n"
+                "لطفاً چند لحظه دیگر دوباره تلاش کنید یا با پشتیبانی تماس بگیرید.",
+                reply_markup=kb.my_order_error_back_kb(),
+            )
+            return
         deletable = item["kind"] in ("config", "custom")
         markup = kb.service_detail_kb(db, cb_id, item["kind"], deletable)
         if len(text) > 4000:

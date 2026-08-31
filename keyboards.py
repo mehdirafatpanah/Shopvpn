@@ -329,6 +329,10 @@ def my_order_item_kb(cb_id: str, deletable: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def my_order_error_back_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ بازگشت به لیست", callback_data="mo_back")]])
+
+
 def service_detail_kb(db, cb_id: str, kind: str, deletable: bool) -> InlineKeyboardMarkup:
     """دکمه‌های صفحه‌ی جزئیات یک سرویس (kind: 'config' استخری یا 'custom'
     پنلی). هر دکمه با یک تنظیم svc_show_* از پنل ادمین قابل فعال/غیرفعال
