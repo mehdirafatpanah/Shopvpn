@@ -29,6 +29,7 @@ from renewal_engine import execute_renewal, RenewalError
 from temp_messages import schedule_message_autodelete
 from force_join import is_channel_member, CHECK_CALLBACK
 from sub_info import fetch_sub_info, format_sub_info_fa, fetch_individual_links
+from jalali import to_jalali_str
 from stock_alerts import check_and_notify_low_stock
 import crypto_payment
 import abangateway_payment
@@ -110,6 +111,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if min_amt and order["final_price"] < min_amt:
             return f"⛔️ حداقل مبلغ قابل پرداخت با این روش {min_amt:,} تومان است."
         return None
+
 
     router = Router()
 
@@ -1590,6 +1592,15 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         fake_message = call.message.model_copy(update={"from_user": call.from_user})
         await wallet_menu(fake_message)
 
+    @router.callback_query(F.data == "acct:main_menu")
+    async def cb_account_back_to_main(call: CallbackQuery):
+        await call.answer()
+        try:
+            await call.message.delete()
+        except Exception:
+            pass
+        await _send_inline_main_menu(call.message, call.from_user.id)
+
     # -----------------------------------------------------------------------
     # سفارش‌های من (منوی کانفیگ‌ها + امکان حذف کامل هر کانفیگ)
     # -----------------------------------------------------------------------
@@ -1601,11 +1612,15 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         """هر آیتم یک ردیف/دکمه‌ی جدا در منوست: یک کانفیگ محصول، یک کانفیگ شخصی،
         یا (فقط برای سفارش‌های در انتظار بررسی که هنوز کانفیگی ندارند) خود
         سفارش. سفارش‌های رد‌شده اصلاً نمایش داده نمی‌شوند (کانفیگی برایشان
-        ساخته نشده، پس چیزی برای کاربر ندارند)."""
+        ساخته نشده، پس چیزی برای کاربر ندارند).
+        در پایان بر اساس تاریخ ثبت (created_at سفارش/کانفیگ شخصی) از جدید به
+        قدیم مرتب می‌شود - مستقل از این‌که آیتم از کدام منبع (سفارش عادی یا
+        کانفیگ شخصی) آمده باشد."""
         items = []
         for o in db.get_user_orders(user_tg_id):
             if o["status"] == "rejected":
                 continue
+            order_ts = o["created_at"] or ""
             if o["is_custom_config"]:
                 # نسخه‌ی تاییدشده‌ی کانفیگ شخصی از جدول custom_configs (پایین‌تر)
                 # با جزئیات کامل نمایش داده می‌شود؛ اینجا فقط سفارش‌های در
@@ -1615,7 +1630,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                         f"{_MO_STATUS_ICON.get(o['status'], '')} #{o['id']} "
                         f"کانفیگ شخصی «{o['custom_username']}» ({o['custom_volume_gb']} گیگ)"
                     )
-                    items.append({"cb_id": f"o{o['id']}", "kind": "order", "label": label, "order": o})
+                    items.append({"cb_id": f"o{o['id']}", "kind": "order", "label": label, "order": o, "_ts": order_ts})
                 continue
             product = db.get_product(o["product_id"])
             pname = product["name"] if product else "نامشخص"
@@ -1631,16 +1646,21 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                         label = base_label + (f" ({i}/{len(configs)})" if len(configs) > 1 else "")
                         items.append({
                             "cb_id": f"c{cfg['id']}", "kind": "config", "label": label,
-                            "order": o, "product_name": pname, "config": cfg,
+                            "order": o, "product_name": pname, "config": cfg, "_ts": order_ts,
                         })
                     continue
-            items.append({"cb_id": f"o{o['id']}", "kind": "order", "label": base_label, "order": o, "product_name": pname})
+            items.append({
+                "cb_id": f"o{o['id']}", "kind": "order", "label": base_label, "order": o,
+                "product_name": pname, "_ts": order_ts,
+            })
 
         for cc in db.get_custom_configs_for_user(user_tg_id):
             if cc["source"] == "test":
                 continue
             label = f"🛠 «{cc['username']}» ({cc['volume_gb']} گیگ / {cc['duration_days']} روز)"
-            items.append({"cb_id": f"x{cc['id']}", "kind": "custom", "label": label, "custom": cc})
+            items.append({"cb_id": f"x{cc['id']}", "kind": "custom", "label": label, "custom": cc, "_ts": cc["created_at"] or ""})
+
+        items.sort(key=lambda it: it["_ts"], reverse=True)
         return items
 
     def _find_my_orders_item(user_tg_id: int, cb_id: str):
@@ -1649,22 +1669,32 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 return it
         return None
 
+    def _item_sub_link(item) -> str:
+        """لینک ساب یک آیتم (برای QR/بروزرسانی/کانفیگ‌های تکی) - یا رشته‌ی
+        خالی اگر آیتم اصلاً لینکی نداشته باشد."""
+        if item["kind"] == "config":
+            return item["config"]["link"] or ""
+        if item["kind"] == "custom":
+            return item["custom"]["subscription_url"] or ""
+        return ""
+
+    def _item_has_individual_links(item) -> bool:
+        link = _item_sub_link(item)
+        return str(link).startswith(("http://", "https://"))
+
     async def _my_orders_item_text(item) -> str:
         kind = item["kind"]
         if kind == "config":
             cfg, o, pname = item["config"], item["order"], item["product_name"]
-            text = f"📦 سفارش #{o['id']} | {pname}\n🔗 `{cfg['link']}`\n"
+            text = f"📦 محصول: {pname} (سفارش #{o['id']})\n"
+            text += f"🗓 تاریخ خرید: {to_jalali_str(o['created_at'], with_time=True)}\n"
             if cfg["expires_at"]:
-                text += f"⏳ انقضا: {cfg['expires_at']}\n"
+                text += f"⏳ انقضا: {to_jalali_str(cfg['expires_at'], with_time=True)}\n"
+            text += f"🔗 `{cfg['link']}`\n"
             info = await fetch_sub_info(cfg["link"])
             text += f"\n{format_sub_info_fa(info)}"
             if str(cfg["link"]).startswith(("http://", "https://")):
-                try:
-                    individual_links = await fetch_individual_links(cfg["link"])
-                except Exception:
-                    individual_links = []
-                if individual_links:
-                    text += "\n\n📋 کانفیگ‌های تکی:\n" + "\n".join(f"`{c}`" for c in individual_links)
+                text += "\n\n📋 برای دیدن کانفیگ‌های تکی این لینک، دکمه‌ی «کانفیگ‌های تکی» پایین را بزنید."
             return text
         if kind == "custom":
             cc = item["custom"]
@@ -1691,19 +1721,16 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             text = (
                 f"🛠 کانفیگ شخصی «{cc['username']}»\n"
                 f"📶 حجم: {cc['volume_gb']} گیگ | ⏳ مدت: {cc['duration_days']} روز\n"
+                f"🗓 تاریخ خرید: {to_jalali_str(cc['created_at'], with_time=True)}\n"
             )
             if cc["expires_at"]:
-                text += f"📅 انقضا: {cc['expires_at']}\n"
+                text += f"📅 انقضا: {to_jalali_str(cc['expires_at'], with_time=True)}\n"
             if sub_url:
                 text += f"🔗 `{sub_url}`\n"
                 info = await fetch_sub_info(sub_url)
                 text += f"\n{format_sub_info_fa(info)}"
-                try:
-                    individual_links = await fetch_individual_links(sub_url)
-                except Exception:
-                    individual_links = []
-                if individual_links:
-                    text += "\n\n📋 کانفیگ‌های تکی:\n" + "\n".join(f"`{c}`" for c in individual_links)
+                if str(sub_url).startswith(("http://", "https://")):
+                    text += "\n\n📋 برای دیدن کانفیگ‌های تکی این لینک، دکمه‌ی «کانفیگ‌های تکی» پایین را بزنید."
             return text
         # kind == "order": سفارشی بدون کانفیگ فعلی (در انتظار بررسی/رد‌شده)
         o = item["order"]
@@ -1754,10 +1781,65 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             )
             return
         deletable = item["kind"] in ("config", "custom")
-        markup = kb.service_detail_kb(db, cb_id, item["kind"], deletable)
+        show_links = _item_has_individual_links(item)
+        markup = kb.service_detail_kb(db, cb_id, item["kind"], deletable, show_links)
         if len(text) > 4000:
             text = text[:3950] + "\n\n… (فهرست کوتاه شد؛ تعداد کانفیگ‌ها زیاد است)"
         await _safe_edit(call.message, text, parse_mode="Markdown", reply_markup=markup)
+
+    @router.callback_query(F.data.startswith("mo_refresh:"))
+    async def cb_my_orders_refresh(call: CallbackQuery):
+        """دکمه‌ی «بروزرسانی کانفیگ». چون خودِ صفحه‌ی جزئیات هر بار با اطلاعات
+        زنده (fetch_sub_info) ساخته می‌شود، ممکن است متن با قبل فرقی نکند و
+        ویرایش پیام در تلگرام بی‌اثر به‌نظر برسد؛ برای همین همیشه یک پیام
+        تاییدیه‌ی جدا (toast) هم نشان می‌دهیم تا کاربر مطمئن شود کاری انجام شد."""
+        cb_id = call.data.split(":", 1)[1]
+        item = _find_my_orders_item(call.from_user.id, cb_id)
+        if not item:
+            await call.answer("این مورد یافت نشد (شاید قبلاً حذف شده).", show_alert=True)
+            await _show_my_orders_list(call.message, call.from_user.id, edit=True)
+            return
+        try:
+            text = await _my_orders_item_text(item)
+        except Exception:
+            logging.getLogger("handlers_user").exception(
+                "بروزرسانی اطلاعات سرویس (cb_id=%s) برای کاربر %s ناموفق بود.", cb_id, call.from_user.id,
+            )
+            await call.answer("⚠️ بروزرسانی ناموفق بود؛ کمی بعد دوباره تلاش کنید.", show_alert=True)
+            return
+        deletable = item["kind"] in ("config", "custom")
+        show_links = _item_has_individual_links(item)
+        markup = kb.service_detail_kb(db, cb_id, item["kind"], deletable, show_links)
+        if len(text) > 4000:
+            text = text[:3950] + "\n\n… (فهرست کوتاه شد؛ تعداد کانفیگ‌ها زیاد است)"
+        await _safe_edit(call.message, text, parse_mode="Markdown", reply_markup=markup)
+        await call.answer("✅ اطلاعات بروزرسانی شد.")
+
+    @router.callback_query(F.data.startswith("mo_links:"))
+    async def cb_my_orders_links(call: CallbackQuery):
+        """دکمه‌ی واحد «کانفیگ‌های تکی»: فقط با زدن همین دکمه، تمام لینک‌های
+        تکیِ این سرویس (نه از همان ابتدا) به‌صورت یک پیام جدا ارسال می‌شوند."""
+        cb_id = call.data.split(":", 1)[1]
+        item = _find_my_orders_item(call.from_user.id, cb_id)
+        if not item:
+            await call.answer("این مورد یافت نشد (شاید قبلاً حذف شده).", show_alert=True)
+            return
+        link = _item_sub_link(item)
+        if not link.startswith(("http://", "https://")):
+            await call.answer("کانفیگ تکی‌ای برای این لینک موجود نیست.", show_alert=True)
+            return
+        await call.answer()
+        try:
+            links = await fetch_individual_links(link)
+        except Exception:
+            links = []
+        if not links:
+            await call.answer("در حال حاضر کانفیگ تکی‌ای یافت نشد.", show_alert=True)
+            return
+        text = f"📋 کانفیگ‌های تکی این سرویس ({len(links)} عدد):\n\n" + "\n".join(f"`{c}`" for c in links)
+        if len(text) > 4000:
+            text = text[:3950] + "\n\n… (فهرست کوتاه شد؛ تعداد کانفیگ‌ها زیاد است)"
+        await call.message.answer(text, parse_mode="Markdown")
 
     @router.callback_query(F.data.startswith("mo_del:"))
     async def cb_my_orders_delete_ask(call: CallbackQuery):

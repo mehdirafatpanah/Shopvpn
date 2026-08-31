@@ -333,14 +333,15 @@ def my_order_error_back_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ بازگشت به لیست", callback_data="mo_back")]])
 
 
-def service_detail_kb(db, cb_id: str, kind: str, deletable: bool) -> InlineKeyboardMarkup:
+def service_detail_kb(db, cb_id: str, kind: str, deletable: bool, show_links: bool = False) -> InlineKeyboardMarkup:
     """دکمه‌های صفحه‌ی جزئیات یک سرویس.
     kind == 'custom' (کاربر واقعی روی پنل): هر سه نوع تمدید + قطع دسترسی +
     بروزرسانی + کیوآر در دسترس است.
     kind == 'config' (لینک استخری بانک کانفیگ، بدون پنل/یوزرنیم واقعی):
-    این نوع کنترلی روی خود لینک ندارد (نه تمدید، نه قطع دسترسی، نه
-    بروزرسانی، نه کیوآر معنا دارد) - فقط لینک/کانفیگ‌ها در متن نمایش داده
-    می‌شود و تنها دکمه‌ی این بخش «حذف کامل سرویس» است."""
+    این نوع کنترلی روی خودِ حجم/زمان سرویس ندارد (نه تمدید، نه قطع دسترسی)
+    ولی چون خودِ لینک/QR واقعی و قابل‌استفاده است، «بروزرسانی کانفیگ» و
+    «کیوآر کانفیگ» هم برایش معنا دارد؛ در نهایت «حذف کامل سرویس» همیشه ته
+    لیست است (اگر فعال باشد)."""
     def on(key: str) -> bool:
         return db.get_setting(key, "1") == "1"
 
@@ -360,13 +361,16 @@ def service_detail_kb(db, cb_id: str, kind: str, deletable: bool) -> InlineKeybo
             row3.append(InlineKeyboardButton(text="🚫 قطع دسترسی و لینک جدید", callback_data=f"svc_cut:{cb_id}"))
         if row3:
             rows.append(row3)
+    if kind in ("custom", "config"):
         row4 = []
         if on("svc_show_update_config"):
-            row4.append(InlineKeyboardButton(text="♻️ بروزرسانی کانفیگ", callback_data=f"mo_v:{cb_id}"))
+            row4.append(InlineKeyboardButton(text="♻️ بروزرسانی کانفیگ", callback_data=f"mo_refresh:{cb_id}"))
         if on("svc_show_qr"):
             row4.append(InlineKeyboardButton(text="⬜ کیوآر کانفیگ", callback_data=f"svc_qr:{cb_id}"))
         if row4:
             rows.append(row4)
+        if show_links:
+            rows.append([InlineKeyboardButton(text="📋 کانفیگ‌های تکی", callback_data=f"mo_links:{cb_id}")])
     if deletable and on("svc_show_delete"):
         rows.append([InlineKeyboardButton(text="🗑 حذف کامل این سرویس", callback_data=f"mo_del:{cb_id}")])
     rows.append([InlineKeyboardButton(text="⬅️ بازگشت به لیست", callback_data="mo_back")])
@@ -386,6 +390,7 @@ def account_hub_kb(db) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(text="🤝 زیرمجموعه‌گیری من", callback_data="acct:referral")])
     if db.get_setting("acct_show_wallet", "1") == "1":
         rows.append([InlineKeyboardButton(text="👛 کیف پول من", callback_data="acct:wallet")])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت به منوی اصلی", callback_data="acct:main_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
