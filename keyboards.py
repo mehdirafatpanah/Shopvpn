@@ -423,6 +423,13 @@ def my_order_delete_confirm_kb(cb_id: str) -> InlineKeyboardMarkup:
     ])
 
 
+def service_cut_confirm_kb(cb_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚠️ بله، دسترسی قطع و لینک جدید صادر شود", callback_data=f"svc_cutok:{cb_id}")],
+        [InlineKeyboardButton(text="↩️ انصراف", callback_data=f"mo_v:{cb_id}")],
+    ])
+
+
 def my_orders_back_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="⬅️ بازگشت به لیست", callback_data="mo_back")]]

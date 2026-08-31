@@ -1932,11 +1932,65 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await bot.send_photo(call.from_user.id, photo, caption="⬜ کیوآر کانفیگ شما")
 
     @router.callback_query(F.data.startswith("svc_cut:"))
-    async def cb_service_cut(call: CallbackQuery):
+    async def cb_service_cut_ask(call: CallbackQuery):
         if (await asyncio.to_thread(db.get_setting, "svc_show_cut_access", "1")) != "1":
             await call.answer("این قابلیت غیرفعال است.", show_alert=True)
             return
-        await call.answer("این قابلیت به‌زودی اضافه می‌شود.", show_alert=True)
+        cb_id = call.data.split(":", 1)[1]
+        item = _find_my_orders_item(call.from_user.id, cb_id)
+        if not item or item["kind"] != "custom":
+            await call.answer("این مورد یافت نشد.", show_alert=True)
+            return
+        await call.answer()
+        await _safe_edit(
+            call.message,
+            "⚠️ آیا مطمئن هستید؟\n\n"
+            "با این کار، لینک/کانفیگ فعلی شما از کار می‌افتد و بلافاصله یک "
+            "لینک جدید با **دقیقاً همان حجم و زمان باقی‌مانده‌ی فعلی** صادر "
+            "می‌شود (نه یک سرویس تازه). این عملیات **غیرقابل بازگشت** است.",
+            parse_mode="Markdown",
+            reply_markup=kb.service_cut_confirm_kb(cb_id),
+        )
+
+    @router.callback_query(F.data.startswith("svc_cutok:"))
+    async def cb_service_cut_confirm(call: CallbackQuery):
+        if (await asyncio.to_thread(db.get_setting, "svc_show_cut_access", "1")) != "1":
+            await call.answer("این قابلیت غیرفعال است.", show_alert=True)
+            return
+        cb_id = call.data.split(":", 1)[1]
+        user_tg_id = call.from_user.id
+        item = _find_my_orders_item(user_tg_id, cb_id)
+        if not item or item["kind"] != "custom":
+            await call.answer("این مورد یافت نشد (شاید قبلاً حذف شده).", show_alert=True)
+            await _show_my_orders_list(call.message, user_tg_id, edit=True)
+            return
+        cc = item["custom"]
+        server = (await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])) if cc["panel_server_id"] else None
+        if not server or not server["is_active"]:
+            await call.answer("سرور پنل مربوط به این سرویس یافت نشد یا غیرفعال است.", show_alert=True)
+            return
+        await call.answer()
+        try:
+            provider = get_provider(server)
+            result = await provider.revoke_credentials(cc["username"])
+        except PanelError as e:
+            await _safe_edit(
+                call.message, f"⛔️ قطع دسترسی ناموفق بود: {e}",
+                reply_markup=kb.my_order_error_back_kb(),
+            )
+            return
+        if result.subscription_url:
+            (await asyncio.to_thread(db.update_custom_config_subscription_url, cc["id"], result.subscription_url))
+        item2 = _find_my_orders_item(user_tg_id, cb_id)
+        if item2:
+            text = await _my_orders_item_text(item2)
+            await _safe_edit(
+                call.message, "✅ دسترسی قبلی قطع شد و لینک جدید صادر شد.\n\n" + text,
+                parse_mode="Markdown",
+                reply_markup=kb.service_detail_kb(db, cb_id, item2["kind"], True),
+            )
+        else:
+            await _safe_edit(call.message, "✅ دسترسی قبلی قطع شد و لینک جدید صادر شد.")
 
     @router.callback_query(F.data.startswith("svc_renew:"))
     async def cb_service_renew_start(call: CallbackQuery):
