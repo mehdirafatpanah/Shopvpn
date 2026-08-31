@@ -4776,8 +4776,6 @@ const SETTINGS_GROUPS = [
     { key: 'btn_test_style', label: 'رنگ دکمه کانفیگ تست', type: 'color' },
     { key: 'btn_my_orders', label: 'متن دکمه سفارش‌های من', type: 'text' },
     { key: 'btn_my_orders_style', label: 'رنگ دکمه سفارش‌های من', type: 'color' },
-    { key: 'btn_wallet', label: 'متن دکمه کیف پول', type: 'text' },
-    { key: 'btn_wallet_style', label: 'رنگ دکمه کیف پول', type: 'color' },
     { key: 'btn_referral', label: 'متن دکمه زیرمجموعه‌گیری', type: 'text' },
     { key: 'btn_referral_style', label: 'رنگ دکمه زیرمجموعه‌گیری', type: 'color' },
     { key: 'btn_wheel', label: 'متن دکمه گردونه شانس', type: 'text' },
