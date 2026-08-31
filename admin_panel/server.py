@@ -26,7 +26,7 @@ from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from config import DB_PATH, BOT_TOKEN, OWNER_ID, ADMIN_PANEL_SECRET, VAPID_PUBLIC_KEY, resolve_db_path, API_BASE_URL
+from config import DB_PATH, BOT_TOKEN, OWNER_ID, ADMIN_PANEL_SECRET, VAPID_PUBLIC_KEY, resolve_db_path, API_BASE_URL, RESELLER_DBS_DIR
 from database import Database, WEB_ADMIN_PERMISSIONS, MENU_BUTTON_META
 from admin_panel.security import hash_password, verify_password, create_session_token, verify_session_token
 from admin_panel.telegram_notify import send_message as tg_send, send_document as tg_send_document, fetch_telegram_file
@@ -2889,6 +2889,111 @@ def api_delete_web_admin(admin_id: int, admin=Depends(require_owner)):
     if not db.delete_web_admin(admin_id):
         raise HTTPException(400, "امکان حذف این حساب نیست.")
     db.log_admin_action(admin["id"], "web_admin_delete", f"admin#{admin_id}", "webadmin", admin_id)
+    return {"ok": True}
+
+
+# ------------------------------------------------------- telegram admins ---
+# ادمین‌های تلگرامی ربات (جدول admins، بر اساس آیدی عددی) - جدا از وب‌ادمین‌ها
+# که برای لاگین به همین پنل وب هستند.
+
+TG_ADMIN_ROLES = ("admin", "mid", "support")
+
+
+@app.get("/api/telegram-admins")
+def api_telegram_admins(admin=Depends(require_owner)):
+    return db.list_admins_with_roles()
+
+
+class TelegramAdminAddBody(BaseModel):
+    telegram_id: int
+    role: str = "admin"
+
+
+@app.post("/api/telegram-admins")
+def api_add_telegram_admin(body: TelegramAdminAddBody, admin=Depends(require_owner)):
+    if body.role not in TG_ADMIN_ROLES:
+        raise HTTPException(400, "نقش نامعتبر است.")
+    if db.get_admin_role(body.telegram_id):
+        raise HTTPException(400, "این کاربر از قبل ادمین است.")
+    db.add_admin(body.telegram_id, body.role)
+    db.log_admin_action(admin["id"], "tg_admin_add", f"{body.telegram_id} ({body.role})", "tg_admin", str(body.telegram_id))
+    return {"ok": True}
+
+
+class TelegramAdminRoleBody(BaseModel):
+    role: str
+
+
+@app.post("/api/telegram-admins/{telegram_id}/role")
+def api_set_telegram_admin_role(telegram_id: int, body: TelegramAdminRoleBody, admin=Depends(require_owner)):
+    if body.role not in TG_ADMIN_ROLES:
+        raise HTTPException(400, "نقش نامعتبر است.")
+    if not db.set_admin_role(telegram_id, body.role):
+        raise HTTPException(400, "امکان تغییر نقش این کاربر نیست (شاید مالک اصلی باشد یا اصلاً ادمین نباشد).")
+    db.log_admin_action(admin["id"], "tg_admin_role", f"{telegram_id} -> {body.role}", "tg_admin", str(telegram_id))
+    return {"ok": True}
+
+
+@app.delete("/api/telegram-admins/{telegram_id}")
+def api_remove_telegram_admin(telegram_id: int, admin=Depends(require_owner)):
+    if not db.remove_admin(telegram_id, protected_owner_id=OWNER_ID):
+        raise HTTPException(400, "امکان حذف این کاربر نیست (شاید مالک اصلی باشد یا اصلاً ادمین نباشد).")
+    db.log_admin_action(admin["id"], "tg_admin_remove", str(telegram_id), "tg_admin", str(telegram_id))
+    return {"ok": True}
+
+
+# ---------------------------------------------------------- orphan db files --
+# فایل‌های .db داخل پوشه‌ی reseller_dbs که هیچ رکورد نماینده‌ای (حتی حذف‌شده)
+# در جدول reseller_bots به مسیرشان اشاره نمی‌کند.
+
+def _find_orphan_reseller_db_files():
+    if not os.path.isdir(RESELLER_DBS_DIR):
+        return []
+    referenced = set()
+    for r in db.list_reseller_bots():
+        try:
+            referenced.add(os.path.normcase(os.path.abspath(resolve_db_path(r["db_path"]))))
+        except Exception:
+            continue
+    orphans = []
+    try:
+        disk_files = sorted(os.listdir(RESELLER_DBS_DIR))
+    except OSError:
+        return []
+    for fname in disk_files:
+        if not fname.endswith(".db"):
+            continue
+        full_path = os.path.normcase(os.path.abspath(os.path.join(RESELLER_DBS_DIR, fname)))
+        if full_path not in referenced:
+            size = 0
+            try:
+                size = os.path.getsize(os.path.join(RESELLER_DBS_DIR, fname))
+            except OSError:
+                pass
+            orphans.append({"filename": fname, "size": size})
+    return orphans
+
+
+@app.get("/api/orphan-db-files")
+def api_orphan_db_files(admin=Depends(require_permission("system"))):
+    return _find_orphan_reseller_db_files()
+
+
+@app.delete("/api/orphan-db-files/{filename}")
+def api_delete_orphan_db_file(filename: str, admin=Depends(require_permission("system"))):
+    # ضدضربه: فقط اجازه‌ی حذف فایل مستقیماً داخل پوشه‌ی reseller_dbs را بده،
+    # نه هر مسیر دلخواهی (جلوگیری از path traversal).
+    if "/" in filename or "\\" in filename or filename in (".", ".."):
+        raise HTTPException(400, "نام فایل نامعتبر است.")
+    orphan_names = {o["filename"] for o in _find_orphan_reseller_db_files()}
+    if filename not in orphan_names:
+        raise HTTPException(400, "این فایل یتیم نیست یا وجود ندارد.")
+    full_path = os.path.join(RESELLER_DBS_DIR, filename)
+    try:
+        os.remove(full_path)
+    except OSError as e:
+        raise HTTPException(500, f"حذف فایل ناموفق بود: {e}")
+    db.log_admin_action(admin["id"], "orphan_db_delete", filename, "orphan_db", filename)
     return {"ok": True}
 
 
