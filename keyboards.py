@@ -334,29 +334,27 @@ def my_order_error_back_kb() -> InlineKeyboardMarkup:
 
 
 def service_detail_kb(db, cb_id: str, kind: str, deletable: bool) -> InlineKeyboardMarkup:
-    """دکمه‌های صفحه‌ی جزئیات یک سرویس (kind: 'config' استخری یا 'custom'
-    پنلی). هر دکمه با یک تنظیم svc_show_* از پنل ادمین قابل فعال/غیرفعال
-    است. برای kind == 'custom' (کاربر واقعی روی پنل) هر سه نوع تمدید در
-    دسترس است؛ برای kind == 'config' (لینک استخری بدون پنل/یوزرنیم ذخیره‌شده)
-    فقط تمدید زمانی (بوکینگ محلی) معنا دارد."""
+    """دکمه‌های صفحه‌ی جزئیات یک سرویس.
+    kind == 'custom' (کاربر واقعی روی پنل): هر سه نوع تمدید + قطع دسترسی +
+    بروزرسانی + کیوآر در دسترس است.
+    kind == 'config' (لینک استخری بانک کانفیگ، بدون پنل/یوزرنیم واقعی):
+    این نوع کنترلی روی خود لینک ندارد (نه تمدید، نه قطع دسترسی، نه
+    بروزرسانی، نه کیوآر معنا دارد) - فقط لینک/کانفیگ‌ها در متن نمایش داده
+    می‌شود و تنها دکمه‌ی این بخش «حذف کامل سرویس» است."""
     def on(key: str) -> bool:
         return db.get_setting(key, "1") == "1"
 
     rows = []
-    if kind in ("config", "custom"):
-        if kind == "custom":
-            if on("svc_show_renew_full"):
-                rows.append([InlineKeyboardButton(text="🛠 تمدید کامل سرویس", callback_data=f"svc_renew:full:{cb_id}")])
-            row2 = []
-            if on("svc_show_renew_volume"):
-                row2.append(InlineKeyboardButton(text="🔋 تمدید حجم سرویس", callback_data=f"svc_renew:volume:{cb_id}"))
-            if on("svc_show_renew_time"):
-                row2.append(InlineKeyboardButton(text="⏱ تمدید زمان سرویس", callback_data=f"svc_renew:time:{cb_id}"))
-            if row2:
-                rows.append(row2)
-        else:
-            if on("svc_show_renew_time"):
-                rows.append([InlineKeyboardButton(text="⏱ تمدید زمان سرویس", callback_data=f"svc_renew:time:{cb_id}")])
+    if kind == "custom":
+        if on("svc_show_renew_full"):
+            rows.append([InlineKeyboardButton(text="🛠 تمدید کامل سرویس", callback_data=f"svc_renew:full:{cb_id}")])
+        row2 = []
+        if on("svc_show_renew_volume"):
+            row2.append(InlineKeyboardButton(text="🔋 تمدید حجم سرویس", callback_data=f"svc_renew:volume:{cb_id}"))
+        if on("svc_show_renew_time"):
+            row2.append(InlineKeyboardButton(text="⏱ تمدید زمان سرویس", callback_data=f"svc_renew:time:{cb_id}"))
+        if row2:
+            rows.append(row2)
         row3 = []
         if on("svc_show_cut_access"):
             row3.append(InlineKeyboardButton(text="🚫 قطع دسترسی و لینک جدید", callback_data=f"svc_cut:{cb_id}"))
