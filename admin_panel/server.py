@@ -35,6 +35,7 @@ from admin_panel.webpush import PUSH_ENABLED, send_push
 from reseller_auto_provision import provision_auto_config, ProvisionError
 from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
 from stock_alerts import check_and_notify_low_stock
+from renewal_engine import execute_renewal, RenewalError
 from panel_providers import (
     get_provider, PanelError, PanelUsernameTakenError, PANEL_TYPE_LABELS,
     PROVIDERS, SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES, TEMPLATE_BASED_PANEL_TYPES,
@@ -881,10 +882,28 @@ async def api_approve_order(order_id: int, admin=Depends(require_permission("ord
     order = (await asyncio.to_thread(db.get_order, order_id))
     if not order or order["status"] != "pending":
         raise HTTPException(400, "سفارش یافت نشد یا قبلاً بررسی شده.")
+    if not (await asyncio.to_thread(db.claim_order, order_id)):
+        raise HTTPException(400, "سفارش یافت نشد یا قبلاً بررسی شده.")
+
+    if order["is_renewal"]:
+        try:
+            result_text = await execute_renewal(db, order)
+        except RenewalError as e:
+            await asyncio.to_thread(db.release_order_claim, order_id)
+            raise HTTPException(400, f"تمدید ناموفق بود: {e}")
+        (await asyncio.to_thread(db.approve_renewal_order, order_id))
+        (await asyncio.to_thread(db.log_admin_action,
+            admin["id"], "renewal_approve",
+            f"سفارش تمدید #{order_id} | کاربر {order['user_id']} | مبلغ: {order['final_price']:,} (پنل وب - {admin['username']})",
+            "order", order_id,
+        ))
+        await notify_user(order["user_id"], result_text)
+        return {"ok": True}
 
     if order["is_custom_config"]:
         server = (await asyncio.to_thread(db.get_panel_server, order["custom_panel_server_id"]))
         if not server or not server["is_active"]:
+            await asyncio.to_thread(db.release_order_claim, order_id)
             raise HTTPException(400, "سرور پنل مربوطه یافت نشد یا غیرفعال است.")
 
         try:
@@ -895,8 +914,10 @@ async def api_approve_order(order_id: int, admin=Depends(require_permission("ord
                 duration_days=(await asyncio.to_thread(db.get_custom_config_settings))["duration_days"],
             )
         except PanelUsernameTakenError:
+            await asyncio.to_thread(db.release_order_claim, order_id)
             raise HTTPException(400, "این نام کاربری روی پنل تکراری است؛ از کاربر بخواه نام دیگری انتخاب کند.")
         except PanelError as e:
+            await asyncio.to_thread(db.release_order_claim, order_id)
             raise HTTPException(400, f"خطا در ارتباط با پنل: {e}")
 
         (await asyncio.to_thread(db.approve_custom_config_order, order_id))
@@ -932,6 +953,7 @@ async def api_approve_order(order_id: int, admin=Depends(require_permission("ord
             else:
                 results = await provision_auto_config(db, product, quantity)
         except (ProvisionError, DirectProvisionError) as e:
+            await asyncio.to_thread(db.release_order_claim, order_id)
             raise HTTPException(400, str(e))
         (await asyncio.to_thread(db.approve_order_auto, order_id))
         (await asyncio.to_thread(db.log_admin_action, 
@@ -949,6 +971,7 @@ async def api_approve_order(order_id: int, admin=Depends(require_permission("ord
 
     results = (await asyncio.to_thread(db.take_unused_configs, order["product_id"], order["user_id"], quantity))
     if not results:
+        await asyncio.to_thread(db.release_order_claim, order_id)
         raise HTTPException(400, "موجودی این محصول تمام شده است.")
     (await asyncio.to_thread(db.approve_order, order_id, [r["id"] for r in results]))
     (await asyncio.to_thread(db.log_admin_action, 
@@ -972,7 +995,8 @@ async def api_reject_order(order_id: int, admin=Depends(require_permission("orde
     order = (await asyncio.to_thread(db.get_order, order_id))
     if not order or order["status"] != "pending":
         raise HTTPException(400, "سفارش یافت نشد یا قبلاً بررسی شده.")
-    (await asyncio.to_thread(db.reject_order, order_id))
+    if not (await asyncio.to_thread(db.reject_order, order_id)):
+        raise HTTPException(400, "سفارش یافت نشد یا قبلاً بررسی شده.")
     (await asyncio.to_thread(db.log_admin_action, admin["id"], "order_reject", f"سفارش #{order_id} رد شد (پنل وب - {admin['username']})", "order", order_id))
     await notify_user(order["user_id"], "⛔️ سفارش شما رد شد. در صورت کسر از کیف پول، مبلغ برگشت داده شد.")
     return {"ok": True}
@@ -1022,7 +1046,8 @@ async def api_reject_topup(topup_id: int, admin=Depends(require_permission("orde
     topup = (await asyncio.to_thread(db.get_topup, topup_id))
     if not topup or topup["status"] != "pending":
         raise HTTPException(400, "یافت نشد یا قبلاً بررسی شده.")
-    (await asyncio.to_thread(db.reject_topup, topup_id))
+    if not (await asyncio.to_thread(db.reject_topup, topup_id)):
+        raise HTTPException(400, "یافت نشد یا قبلاً بررسی شده.")
     (await asyncio.to_thread(db.log_admin_action, admin["id"], "topup_reject", f"شارژ #{topup_id} رد شد (پنل وب - {admin['username']})", "topup", topup_id))
     await notify_user(topup["user_id"], "⛔️ درخواست شارژ کیف پول شما رد شد.")
     return {"ok": True}
