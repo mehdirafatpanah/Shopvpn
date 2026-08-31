@@ -328,6 +328,42 @@ class ThreeXUIProvider(BasePanelProvider):
         sub_url = f"{sub_base_url.rstrip('/')}/{sub_id}" if (sub_id and sub_base_url) else ""
         return PanelUserResult(username=username, subscription_url=sub_url, raw=updated_client)
 
+    async def revoke_credentials(self, username: str) -> PanelUserResult:
+        """چون 3X-UI endpoint مستقلی برای «revoke» ندارد، همان کلاینت را با
+        clients/update به‌روزرسانی می‌کنیم: فقط id/password/subId جدید (UUID
+        تازه) می‌سازیم، ولی expiryTime/totalGB را دقیقاً دست‌نخورده نگه
+        می‌داریم. مصرف (traffic) بر اساس «email» (همان username) شمرده
+        می‌شود، نه UUID، پس با عوض‌شدن UUID مصرف قبلی هم از بین نمی‌رود."""
+        sub_base_url = self.server["xui_sub_base_url"]
+        async with self._session() as session:
+            client, inbound_id = await self._find_client_with_inbound(session, username)
+
+            new_uuid = str(uuid.uuid4())
+            new_sub_id = secrets.token_hex(8)
+            updated_client = dict(client)
+            updated_client["id"] = new_uuid
+            updated_client["password"] = new_uuid
+            updated_client["subId"] = new_sub_id
+
+            payload = {"id": inbound_id, "client": updated_client}
+            try:
+                async with session.post(
+                    f"{self._base_url()}/panel/api/clients/update/{client['id']}", json=payload,
+                ) as resp:
+                    if resp.status in (401, 403):
+                        raise PanelError(f"خطا در احراز هویت (کد {resp.status}): API Token را بررسی کن.")
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise PanelError(f"خطا در قطع دسترسی/تولید لینک جدید (کد {resp.status}): {text[:300]}")
+                    data = await resp.json()
+                    if data.get("success") is False:
+                        raise PanelError(data.get("msg") or "قطع دسترسی/تولید لینک جدید ناموفق بود.")
+            except aiohttp.ClientError as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+
+        sub_url = f"{sub_base_url.rstrip('/')}/{new_sub_id}" if sub_base_url else ""
+        return PanelUserResult(username=username, subscription_url=sub_url, raw=updated_client)
+
     async def test_connection(self) -> bool:
         try:
             async with self._session() as session:

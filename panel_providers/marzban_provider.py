@@ -193,6 +193,31 @@ class MarzbanProvider(BasePanelProvider):
             sub_url = self._base_url() + sub_url
         return PanelUserResult(username=data.get("username", username), subscription_url=sub_url, raw=data)
 
+    async def revoke_credentials(self, username: str) -> PanelUserResult:
+        """POST /api/user/{username}/revoke_sub: UUID/پسورد هر پروکسی کاربر را
+        عوض می‌کند و لینک اشتراک تازه می‌سازد؛ data_limit/expire/مصرف فعلی
+        دست‌نخورده می‌ماند (endpoint رسمی Marzban برای همین منظور)."""
+        async with aiohttp.ClientSession() as session:
+            token = await self._get_token(session)
+            headers = {"Authorization": f"Bearer {token}", "accept": "application/json"}
+            try:
+                async with session.post(
+                    f"{self._base_url()}/api/user/{username}/revoke_sub", headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status == 404:
+                        raise PanelError(f"کاربری با نام «{username}» روی پنل پیدا نشد.")
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise PanelError(f"خطا در قطع دسترسی/تولید لینک جدید (کد {resp.status}): {text[:300]}")
+                    data = await resp.json()
+            except aiohttp.ClientError as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+        sub_url = data.get("subscription_url") or ""
+        if sub_url.startswith("/"):
+            sub_url = self._base_url() + sub_url
+        return PanelUserResult(username=data.get("username", username), subscription_url=sub_url, raw=data)
+
     async def test_connection(self) -> bool:
         try:
             async with aiohttp.ClientSession() as session:

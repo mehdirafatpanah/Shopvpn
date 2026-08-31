@@ -66,6 +66,14 @@ class BasePanelProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def revoke_credentials(self, username: str) -> PanelUserResult:
+        """اعتبار/لینک فعلی کاربر را باطل می‌کند و یک لینک تازه صادر می‌کند،
+        بدون این‌که حجم، انقضا یا مصرف قبلی‌اش تغییر کند (دقیقاً همان حجم/زمان
+        باقی‌مانده‌ی قبلی حفظ می‌شود؛ فقط UUID/کلید کاربر روی پنل عوض می‌شود
+        تا لینک قدیمی از کار بیفتد). برای دکمه‌ی «قطع دسترسی و لینک جدید»."""
+        raise NotImplementedError
+
+    @abstractmethod
     async def test_connection(self) -> bool:
         """برای دکمه‌ی «تست اتصال» در پنل ادمین؛ فقط احراز هویت را چک می‌کند."""
         raise NotImplementedError
