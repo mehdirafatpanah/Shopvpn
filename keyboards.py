@@ -1147,33 +1147,45 @@ BUTTON_LABELS = {
 
 
 def admin_edit_buttons_kb(db) -> InlineKeyboardMarkup:
+    """این صفحه قبلاً همه‌چیز (متن/رنگ/فعال‌بودن) را در یک ردیف فشرده کنار هم
+    می‌چید که با برچسب‌های فارسیِ بلند، متن‌ها روی هم می‌افتاد و معلوم نبود
+    کدام دکمه‌ی رنگ/فعال مال کدام آیتم است. الان هر دکمه یک بلوکِ جدا دارد:
+    یک ردیفِ عنوانِ تمام‌عرض (فقط نمایشی) و زیرش ردیفِ عملیات همان دکمه، با
+    یک خط جداکننده بین بلوک‌ها."""
+    style_icon = {"primary": "🔵", "success": "🟢", "danger": "🔴", "": "⚪️"}
     rows = []
-    for key, label in BUTTON_LABELS.items():
+    for i, (key, label) in enumerate(BUTTON_LABELS.items()):
+        if i > 0:
+            rows.append([InlineKeyboardButton(text="➖➖➖➖➖➖➖➖➖➖", callback_data="noop")])
         current_style = db.get_setting(f"{key}_style", "")
-        style_icon = {"primary": "🔵", "success": "🟢", "danger": "🔴", "": "⚪️"}.get(current_style, "⚪️")
-        row = [
-            InlineKeyboardButton(text=f"✏️ {style_icon} {label}", callback_data=f"adm_btn_edit:{key}"),
-            InlineKeyboardButton(text="🎨 تغییر رنگ", callback_data=f"adm_btn_color_menu:{key}"),
-        ]
+        icon = style_icon.get(current_style, "⚪️")
         toggle_key = MENU_BUTTON_META.get(key, {}).get("toggle_key")
+        status_suffix = ""
         if toggle_key:
             enabled = db.get_setting(toggle_key, "1") == "1"
-            row.append(
-                InlineKeyboardButton(
-                    text="🟢 فعال" if enabled else "🔴 غیرفعال",
-                    callback_data=f"adm_btn_toggle:{key}",
-                )
-            )
-        rows.append(row)
-    miniapp_enabled = db.get_setting("miniapp_enabled", "1") == "1"
-    rows.append(
-        [
-            InlineKeyboardButton(
-                text=f"دکمه مینی‌اپ فروشگاه: {'🟢 فعال' if miniapp_enabled else '🔴 غیرفعال'}",
-                callback_data="adm_btn_toggle:miniapp",
-            )
+            status_suffix = " (فعال)" if enabled else " (غیرفعال)"
+        rows.append([InlineKeyboardButton(text=f"{icon} {label}{status_suffix}", callback_data="noop")])
+        action_row = [
+            InlineKeyboardButton(text="✏️ ویرایش متن", callback_data=f"adm_btn_edit:{key}"),
+            InlineKeyboardButton(text="🎨 تغییر رنگ", callback_data=f"adm_btn_color_menu:{key}"),
         ]
-    )
+        if toggle_key:
+            enabled = db.get_setting(toggle_key, "1") == "1"
+            action_row.append(InlineKeyboardButton(
+                text="🔴 غیرفعال‌سازی" if enabled else "🟢 فعال‌سازی",
+                callback_data=f"adm_btn_toggle:{key}",
+            ))
+        rows.append(action_row)
+
+    rows.append([InlineKeyboardButton(text="➖➖➖➖➖➖➖➖➖➖", callback_data="noop")])
+    miniapp_enabled = db.get_setting("miniapp_enabled", "1") == "1"
+    rows.append([InlineKeyboardButton(
+        text=f"✨ دکمه مینی‌اپ فروشگاه{' (فعال)' if miniapp_enabled else ' (غیرفعال)'}", callback_data="noop",
+    )])
+    rows.append([InlineKeyboardButton(
+        text="🔴 غیرفعال‌سازی" if miniapp_enabled else "🟢 فعال‌سازی",
+        callback_data="adm_btn_toggle:miniapp",
+    )])
     rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:appearance")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
