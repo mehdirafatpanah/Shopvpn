@@ -353,6 +353,7 @@ const NAV = [
   { key: 'gateways', label: 'درگاه‌های پرداخت سفارشی', icon: 'settings', role: 'settings', section: 'تنظیمات و سیستم' },
   { key: 'salessettings', label: 'تنظیمات فروش', icon: 'settings', role: 'settings', section: 'تنظیمات و سیستم' },
   { key: 'webadmins', label: 'کاربران پنل', icon: 'webadmins', role: 'owner', section: 'تنظیمات و سیستم' },
+  { key: 'tgadmins', label: 'ادمین‌های ربات', icon: 'webadmins', role: 'owner', section: 'تنظیمات و سیستم' },
   { key: 'system', label: 'سیستم و نگهداری', icon: 'system', role: 'system', section: 'تنظیمات و سیستم' },
   { key: 'logs', label: 'لاگ فعالیت ادمین‌ها', icon: 'logs', role: 'system', section: 'تنظیمات و سیستم' },
 
@@ -795,6 +796,7 @@ async function renderPage(tab) {
       case 'banners': return renderBanners();
       case 'logs': return renderLogs();
       case 'webadmins': return renderWebAdmins();
+      case 'tgadmins': return renderTelegramAdmins();
       case 'account': return renderAccount();
     }
   } catch (e) { handleErr(e); setContent(`<div class="empty-state">${esc(e.message)}</div>`); }
@@ -4823,6 +4825,20 @@ const SETTINGS_GROUPS = [
     { key: 'custom_config_duration_days', label: 'مدت اعتبار (روز)', type: 'number' },
     { key: 'btn_custom_config', label: 'متن دکمه ساخت کانفیگ شخصی', type: 'text' },
   ]},
+  { tab: 'services', title: '🧾 نمایش دکمه‌های حساب کاربری', fields: [
+    { key: 'acct_show_orders', label: 'نمایش «سرویس‌ها و سفارش‌های من»', type: 'bool' },
+    { key: 'acct_show_referral', label: 'نمایش «زیرمجموعه‌گیری من»', type: 'bool' },
+    { key: 'acct_show_wallet', label: 'نمایش «کیف پول من»', type: 'bool' },
+  ]},
+  { tab: 'services', title: '🛠 نمایش دکمه‌های سرویس', fields: [
+    { key: 'svc_show_renew_full', label: 'دکمه «تمدید کامل سرویس»', type: 'bool' },
+    { key: 'svc_show_renew_volume', label: 'دکمه «تمدید حجم سرویس»', type: 'bool' },
+    { key: 'svc_show_renew_time', label: 'دکمه «تمدید زمان سرویس»', type: 'bool' },
+    { key: 'svc_show_cut_access', label: 'دکمه «قطع دسترسی و لینک جدید»', type: 'bool' },
+    { key: 'svc_show_update_config', label: 'دکمه «بروزرسانی کانفیگ»', type: 'bool' },
+    { key: 'svc_show_qr', label: 'دکمه «کیوآر کانفیگ»', type: 'bool' },
+    { key: 'svc_show_delete', label: 'دکمه «حذف کامل سرویس»', type: 'bool' },
+  ]},
 ];
 
 function settingsFieldHtml(f, settings) {
@@ -5822,6 +5838,71 @@ async function renderWebAdmins() {
   }));
 }
 
+/* ========================================================= tg admins === */
+// ادمین‌های تلگرامی ربات (جدول admins، بر اساس آیدی عددی) - جدا از «کاربران
+// پنل» بالا که برای لاگین با یوزرنیم/پسورد به همین پنل وب هستند. این‌ها
+// دسترسی ادمین داخل خود بات تلگرام را کنترل می‌کنند.
+const TG_ADMIN_ROLE_LABEL = { admin: 'مدیر کامل', mid: 'ادمین میانی', support: 'پشتیبان' };
+
+async function renderTelegramAdmins() {
+  const admins = await apiGet('/telegram-admins');
+  setContent(`
+    <div class="toolbar"><button class="btn btn-primary btn-sm" id="add-tgadmin">+ افزودن ادمین</button></div>
+    <p class="card-sub" style="margin-bottom:14px">این‌ها ادمین‌های خودِ ربات تلگرام‌اند (بر اساس آیدی عددی)، جدا از «کاربران پنل» که برای ورود به همین پنل وب استفاده می‌شوند.</p>
+    <div class="card"><div class="table-wrap"><table>
+      <thead><tr><th>آیدی عددی تلگرام</th><th>نقش</th><th>عملیات</th></tr></thead>
+      <tbody>${admins.map(a => `<tr>
+        <td class="mono">${a.telegram_id}</td>
+        <td>${a.role === 'owner' ? '<span class="badge">مالک اصلی</span>' : `<span class="badge badge-${a.role}">${TG_ADMIN_ROLE_LABEL[a.role] || a.role}</span>`}</td>
+        <td>${a.role === 'owner' ? '<span class="card-sub">مالک</span>' : `
+          <button class="btn btn-sm" data-change-role="${a.telegram_id}" data-role="${a.role}">تغییر نقش</button>
+          <button class="btn btn-danger btn-sm" data-del-tgadmin="${a.telegram_id}">حذف</button>`}</td>
+      </tr>`).join('') || `<tr><td colspan="3" class="empty-state"><div class="icon">${svg('empty')}</div>ادمینی ثبت نشده است</td></tr>`}</tbody>
+    </table></div></div>
+  `);
+
+  function roleOptionsHtml(selected) {
+    return Object.entries(TG_ADMIN_ROLE_LABEL).map(([v, l]) => `<option value="${v}" ${v === selected ? 'selected' : ''}>${l}</option>`).join('');
+  }
+
+  $('#add-tgadmin').addEventListener('click', () => openModal('افزودن ادمین ربات', `
+    <div class="form-grid">
+      <input class="input" id="na-tgid" type="number" placeholder="آیدی عددی تلگرام">
+      <label class="field"><span>نقش</span><select class="input" id="na-role">${roleOptionsHtml('admin')}</select></label>
+      <button class="btn btn-primary" id="na-tg-save">ثبت</button>
+    </div>`, (body, close) => {
+    $('#na-tg-save', body).addEventListener('click', async () => {
+      const tgId = Number($('#na-tgid', body).value);
+      if (!tgId) { toast('آیدی عددی معتبر وارد کنید.'); return; }
+      try {
+        await apiPost('/telegram-admins', { telegram_id: tgId, role: $('#na-role', body).value });
+        toast('ادمین اضافه شد.'); close(); renderTelegramAdmins();
+      } catch (e) { handleErr(e); }
+    });
+  }));
+
+  $$('[data-change-role]', content()).forEach(b => b.addEventListener('click', () => {
+    const tgId = b.dataset.changeRole;
+    openModal(`تغییر نقش ${tgId}`, `
+      <div class="form-grid">
+        <select class="input" id="cr-role">${roleOptionsHtml(b.dataset.role)}</select>
+        <button class="btn btn-primary" id="cr-save">ذخیره</button>
+      </div>`, (body, close) => {
+      $('#cr-save', body).addEventListener('click', async () => {
+        try {
+          await apiPost(`/telegram-admins/${tgId}/role`, { role: $('#cr-role', body).value });
+          toast('نقش تغییر کرد.'); close(); renderTelegramAdmins();
+        } catch (e) { handleErr(e); }
+      });
+    });
+  }));
+
+  $$('[data-del-tgadmin]', content()).forEach(b => b.addEventListener('click', async () => {
+    if (!confirm('این ادمین از ربات حذف شود؟')) return;
+    try { await apiDelete(`/telegram-admins/${b.dataset.delTgadmin}`); toast('حذف شد.'); renderTelegramAdmins(); } catch (e) { handleErr(e); }
+  }));
+}
+
 /* ------------------------------------------------------- webadmins: bento */
 function renderWebAdminsBento(admins) {
   setContent(`
@@ -5978,6 +6059,7 @@ async function renderSystem() {
   const stockRows = jobs.stock;
   const lowCount = stockRows.filter(p => p.low).length;
   const backupStatus = await apiGet('/system/backup/status');
+  const orphanFiles = await apiGet('/orphan-db-files').catch(() => []);
   const isOwner = ME.role === 'owner';
 
   setContent(`
@@ -6028,7 +6110,31 @@ async function renderSystem() {
       <div id="restore-area"></div>
       ` : `<p class="card-sub">گرفتن بکاپ فوری و بازیابی فقط برای مالک در دسترس است.</p>`}
     </div>
+
+    <div class="card" style="margin-bottom:18px">
+      <div class="card-head">
+        <h3>فایل‌های دیتابیس یتیم</h3>
+        <span class="card-sub">${orphanFiles.length ? `${orphanFiles.length} فایل یتیم پیدا شد` : 'فایل یتیمی پیدا نشد'}</span>
+      </div>
+      <p class="card-sub" style="margin-bottom:10px">فایل‌های <span class="mono">.db</span> داخل پوشه‌ی reseller_dbs که هیچ رکورد نماینده‌ای (حتی حذف‌شده) در جدول نماینده‌ها به آن‌ها اشاره نمی‌کند؛ معمولاً باقیمانده‌ی نماینده‌های حذف‌شده با گزینه‌ی «فقط حذف، دیتابیس نگه داشته شود» هستند. حذف این فایل‌ها غیرقابل بازگشت است.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>نام فایل</th><th>حجم</th><th>عملیات</th></tr></thead>
+        <tbody>${orphanFiles.map(o => `<tr>
+          <td class="mono">${esc(o.filename)}</td>
+          <td class="mono">${(o.size / 1024).toFixed(1)} کیلوبایت</td>
+          <td><button class="btn btn-danger btn-sm" data-del-orphan="${esc(o.filename)}">حذف</button></td>
+        </tr>`).join('') || `<tr><td colspan="3" class="empty-state"><div class="icon">${svg('empty')}</div>فایل یتیمی روی دیسک نیست</td></tr>`}</tbody>
+      </table></div>
+    </div>
   `);
+
+  $$('[data-del-orphan]', content()).forEach(b => b.addEventListener('click', async () => {
+    if (!confirm(`فایل «${b.dataset.delOrphan}» برای همیشه حذف شود؟`)) return;
+    try {
+      await apiDelete(`/orphan-db-files/${encodeURIComponent(b.dataset.delOrphan)}`);
+      toast('حذف شد.'); renderSystem();
+    } catch (e) { handleErr(e); }
+  }));
 
   if (!isOwner) return;
 
