@@ -199,7 +199,7 @@ DEFAULT_SETTINGS = {
     "adm_panel_servers_style": "",
     "adm_custom_config_settings_style": "",
     # چیدمان دکمه‌های منوی اصلی (ترتیب و نمایش) - آرایه JSON از کلیدها
-    "menu_order": '["miniapp","btn_buy","btn_test","btn_my_orders","btn_wallet","btn_referral","btn_wheel","btn_contact","btn_admin_panel"]',
+    "menu_order": '["miniapp","btn_buy","btn_test","btn_my_orders","btn_referral","btn_wheel","btn_contact","btn_admin_panel"]',
     "miniapp_enabled": "1",
     "reseller_request_enabled": "1",
     # حداقل مبلغ مجاز برای هر روش پرداخت (تومان). 0 یعنی بدون محدودیت.
@@ -228,7 +228,6 @@ MENU_BUTTON_META = {
     "btn_buy": {"label": "دکمه خرید کانفیگ", "toggle_key": None, "admin_only": False, "has_text": True, "has_style": True},
     "btn_test": {"label": "دکمه کانفیگ تست", "toggle_key": "test_enabled", "admin_only": False, "has_text": True, "has_style": True},
     "btn_my_orders": {"label": "دکمه حساب کاربری من", "toggle_key": None, "admin_only": False, "has_text": True, "has_style": True},
-    "btn_wallet": {"label": "دکمه کیف پول", "toggle_key": None, "admin_only": False, "has_text": True, "has_style": True},
     "btn_referral": {"label": "دکمه زیرمجموعه‌گیری", "toggle_key": "referral_button_enabled", "admin_only": False, "has_text": True, "has_style": True},
     "btn_wheel": {"label": "دکمه گردونه شانس", "toggle_key": "wheel_enabled", "admin_only": False, "has_text": True, "has_style": True},
     "btn_contact": {"label": "دکمه ارتباط با پشتیبانی", "toggle_key": None, "admin_only": False, "has_text": True, "has_style": True},
@@ -257,7 +256,7 @@ DEFAULT_SETTINGS.update({key: default for key, _label, default in ACCOUNT_TOGGLE
 
 DEFAULT_MENU_ORDER = [
     "miniapp", "btn_reseller_panel", "btn_reseller_request", "btn_buy", "btn_test",
-    "btn_my_orders", "btn_wallet", "btn_referral", "btn_wheel", "btn_contact", "btn_admin_panel",
+    "btn_my_orders", "btn_referral", "btn_wheel", "btn_contact", "btn_admin_panel",
 ]
 
 

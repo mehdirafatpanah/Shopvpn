@@ -82,9 +82,6 @@ def _menu_items(db, is_admin: bool, is_reseller: bool, is_main_bot: bool, show_r
     def item_my_orders():
         return (settings.get("btn_my_orders", "🧾 حساب کاربری من"), settings.get("btn_my_orders_style", ""))
 
-    def item_wallet():
-        return (settings.get("btn_wallet", "👛 کیف پول من"), settings.get("btn_wallet_style", ""))
-
     def item_referral():
         if settings.get("referral_button_enabled", "1") != "1":
             return None
@@ -127,7 +124,6 @@ def _menu_items(db, is_admin: bool, is_reseller: bool, is_main_bot: bool, show_r
         "btn_buy": item_buy,
         "btn_test": item_test,
         "btn_my_orders": item_my_orders,
-        "btn_wallet": item_wallet,
         "btn_referral": item_referral,
         "btn_wheel": item_wheel,
         "btn_contact": item_contact,
