@@ -962,10 +962,12 @@ def admin_products_list_kb(db, products) -> InlineKeyboardMarkup:
     for p in products:
         stock = db.count_available_configs(p["id"])
         state_icon = "🟢" if p["is_active"] else "🔴"
+        dur = p["duration_days"]
+        dur_label = "نامحدود" if (p["provision_server_id"] and dur == 0) else f"{dur if dur is not None else 30} روز"
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"{state_icon} {p['name']} | {p['price']:,}ت | موجودی: {stock} | مدت: {p['duration_days'] or 30} روز",
+                    text=f"{state_icon} {p['name']} | {p['price']:,}ت | موجودی: {stock} | مدت: {dur_label}",
                     callback_data="noop",
                 )
             ]
@@ -1055,6 +1057,15 @@ def admin_pick_provision_server_kb(servers) -> InlineKeyboardMarkup:
     for s in servers:
         rows.append([InlineKeyboardButton(text=f"🖥 {s['name']}", callback_data=f"adm_newprod_srv:{s['id']}")])
     rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:products")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_newprod_duration_mode_kb(limited_days: int) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=f"⏳ محدود ({limited_days} روز)", callback_data="adm_newprod_durmode:limited")],
+        [InlineKeyboardButton(text="♾ نامحدود", callback_data="adm_newprod_durmode:unlimited")],
+        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:products")],
+    ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

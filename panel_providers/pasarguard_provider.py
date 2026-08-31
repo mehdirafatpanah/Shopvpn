@@ -101,8 +101,8 @@ class PasarguardProvider(BasePanelProvider):
             "username": username,
             "proxy_settings": json.loads(proxy_settings) if isinstance(proxy_settings, str) else proxy_settings,
             "group_ids": json.loads(group_ids) if isinstance(group_ids, str) else group_ids,
-            "data_limit": int(volume_gb * (1024 ** 3)),
-            "expire": int(time.time()) + duration_days * 86400,
+            "data_limit": int(volume_gb * (1024 ** 3)),  # 0 = نامحدود
+            "expire": (int(time.time()) + duration_days * 86400) if duration_days else 0,  # 0 = بدون انقضا
             "note": "ساخته‌شده توسط ShopVPN (کانفیگ شخصی)",
             "data_limit_reset_strategy": "no_reset",
         }

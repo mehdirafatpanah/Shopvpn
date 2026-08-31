@@ -108,8 +108,8 @@ class MarzbanProvider(BasePanelProvider):
             "username": username,
             "proxies": json.loads(proxies) if isinstance(proxies, str) else proxies,
             "inbounds": json.loads(inbounds) if isinstance(inbounds, str) else inbounds,
-            "data_limit": int(volume_gb * (1024 ** 3)),
-            "expire": int(time.time()) + duration_days * 86400,
+            "data_limit": int(volume_gb * (1024 ** 3)),  # 0 = نامحدود (استاندارد Marzban)
+            "expire": (int(time.time()) + duration_days * 86400) if duration_days else 0,  # 0 = بدون انقضا
             "note": "ساخته‌شده توسط ShopVPN (کانفیگ شخصی)",
             "data_limit_reset_strategy": "no_reset",
             "status": "active",

@@ -35,6 +35,7 @@ class AdminAddProduct(StatesGroup):
     waiting_duration = State()
     waiting_provision_choice = State()
     waiting_provision_server = State()
+    waiting_provision_duration_mode = State()
     waiting_auto_provision_volume = State()
     waiting_payment_methods = State()
 

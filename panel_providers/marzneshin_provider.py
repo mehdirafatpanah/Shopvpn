@@ -86,16 +86,19 @@ class MarzneshinProvider(BasePanelProvider):
             raise PanelError(
                 "سرویس‌های این سرور تنظیم نشده. اول از «تعیین کاربر نمونه» استفاده کن."
             )
-        expire_dt = datetime.datetime.now() + datetime.timedelta(days=duration_days)
         payload = {
             "username": username,
             "service_ids": json.loads(service_ids) if isinstance(service_ids, str) else service_ids,
-            "data_limit": int(volume_gb * (1024 ** 3)),
+            "data_limit": int(volume_gb * (1024 ** 3)),  # 0 = نامحدود
             "data_limit_reset_strategy": "no_reset",
-            "expire_strategy": "fixed_date",
-            "expire_date": expire_dt.strftime("%Y-%m-%dT%H:%M:%S"),
             "note": "ساخته‌شده توسط ShopVPN (کانفیگ شخصی)",
         }
+        if duration_days:
+            expire_dt = datetime.datetime.now() + datetime.timedelta(days=duration_days)
+            payload["expire_strategy"] = "fixed_date"
+            payload["expire_date"] = expire_dt.strftime("%Y-%m-%dT%H:%M:%S")
+        else:
+            payload["expire_strategy"] = "never"  # بدون انقضا
         async with aiohttp.ClientSession() as session:
             token = await self._get_token(session)
             try:

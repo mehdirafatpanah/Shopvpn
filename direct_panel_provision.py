@@ -41,9 +41,10 @@ async def provision_direct(db, product, quantity: int = 1, user_id: int = None, 
         raise ProvisionError("پنل متصل به این محصول یافت نشد یا غیرفعال است؛ با پشتیبانی تماس بگیرید.")
 
     volume_gb = product["auto_provision_volume_gb"]
-    if not volume_gb or volume_gb <= 0:
+    if volume_gb is None or volume_gb < 0:
         raise ProvisionError("حجم این محصول تنظیم نشده است.")
-    duration_days = product["duration_days"] or 30
+    # 0 یعنی نامحدود (هم برای حجم و هم برای مدت) - نباید با مقدار پیش‌فرض جایگزین شود
+    duration_days = product["duration_days"] if product["duration_days"] is not None else 30
 
     provider = get_provider(server)
     built = []

@@ -819,15 +819,36 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await call.answer("❌ درخواست نامعتبر است.", show_alert=True)
             return
         await state.update_data(provision_server_id=server_id)
+        data = await state.get_data()
+        await state.set_state(AdminAddProduct.waiting_provision_duration_mode)
+        await safe_edit(call, 
+            "⏳ مدت اعتبار این محصول چطور باشد؟\n\n"
+            "«محدود» یعنی همان مدتی که قبلاً وارد کردید؛ «نامحدود» یعنی این سرویس هیچ‌وقت روی پنل منقضی نمی‌شود.",
+            reply_markup=kb.admin_newprod_duration_mode_kb(data.get("duration_days", 30)),
+        )
+        await call.answer()
+
+    @router.callback_query(AdminAddProduct.waiting_provision_duration_mode, F.data.startswith("adm_newprod_durmode:"))
+    async def cb_pick_provision_duration_mode(call: CallbackQuery, state: FSMContext):
+        mode = call.data.split(":", 1)[1]
+        if mode == "unlimited":
+            await state.update_data(duration_days=0)
         await state.set_state(AdminAddProduct.waiting_auto_provision_volume)
-        await safe_edit(call, "این محصول چند گیگابایت باشد؟ فقط عدد وارد کنید (مثال: 30):", reply_markup=None)
+        await safe_edit(call, 
+            "این محصول چند گیگابایت باشد؟ فقط عدد وارد کنید (مثال: 30).\n"
+            "برای حجم نامحدود، عدد 0 را ارسال کنید:",
+            reply_markup=None,
+        )
         await call.answer()
 
     @router.message(AdminAddProduct.waiting_auto_provision_volume)
     async def process_product_auto_provision_volume(message: Message, state: FSMContext):
         text = message.text.strip()
-        if not text.isdigit() or int(text) <= 0:
-            await message.answer("لطفاً فقط عدد صحیح و بزرگ‌تر از صفر وارد کنید. مثال: 30")
+        data = await state.get_data()
+        is_direct_panel = bool(data.get("provision_server_id"))
+        if not text.isdigit() or (int(text) <= 0 and not is_direct_panel):
+            hint = " (یا 0 برای نامحدود)" if is_direct_panel else ""
+            await message.answer(f"لطفاً فقط عدد صحیح و بزرگ‌تر از صفر وارد کنید{hint}. مثال: 30")
             return
         await state.update_data(auto_provision_volume_gb=int(text), payment_methods=None)
         await state.set_state(AdminAddProduct.waiting_payment_methods)
@@ -884,15 +905,17 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
 
         (await asyncio.to_thread(db.add_product, 
             data["category_id"], data["name"], data["price"], data["description"], data["duration_days"],
-            is_auto_provision=bool(auto_provision_volume_gb), auto_provision_volume_gb=auto_provision_volume_gb,
+            is_auto_provision=(auto_provision_volume_gb is not None), auto_provision_volume_gb=auto_provision_volume_gb,
             provision_server_id=provision_server_id, payment_methods=payment_methods,
         ))
         pm_log = "همه" if payment_methods is None else "، ".join(payment_methods)
-        if auto_provision_volume_gb:
+        if auto_provision_volume_gb is not None:
+            volume_log = "نامحدود" if auto_provision_volume_gb == 0 else f"{auto_provision_volume_gb} گیگ"
+            duration_log = "نامحدود" if data["duration_days"] == 0 else f"{data['duration_days']} روز"
             log_text = (
                 f"محصول «{data['name']}» (خودکار"
                 + (" - اتصال مستقیم به پنل" if provision_server_id else "")
-                + f"، {auto_provision_volume_gb} گیگ) | قیمت: {data['price']:,} | پرداخت: {pm_log}"
+                + f"، {volume_log} / {duration_log}) | قیمت: {data['price']:,} | پرداخت: {pm_log}"
             )
         else:
             log_text = f"محصول «{data['name']}» | قیمت: {data['price']:,} | پرداخت: {pm_log}"
@@ -1002,10 +1025,12 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 await call.answer(f"⛔️ {e}", show_alert=True)
                 return
             item = built[0]
+            vol_label = "نامحدود" if item["volume_gb"] == 0 else f"{item['volume_gb']} گیگ"
+            dur_label = "نامحدود" if item["duration_days"] == 0 else f"{item['duration_days']} روز"
             text = (
                 f"🎲 یک کانفیگ از پنل متصل به «{product['name']}» ساخته شد:\n\n"
                 f"`{item['subscription_url']}`\n\n"
-                f"📦 حجم: {item['volume_gb']} گیگ | ⏳ مدت: {item['duration_days']} روز"
+                f"📦 حجم: {vol_label} | ⏳ مدت: {dur_label}"
             )
             await safe_edit(call, text, parse_mode="Markdown", reply_markup=kb.admin_back_kb())
             await call.answer("کانفیگ دریافت شد ✅")

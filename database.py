@@ -3833,8 +3833,10 @@ class Database:
     def add_custom_config(self, user_id: int, panel_server_id: int, username: str,
                            volume_gb: int, duration_days: int, subscription_url: str,
                            order_id: int = None, expires_at: str = None, source: str = "custom_config") -> int:
-        """source: 'custom_config' (خرید شخصی)، 'test' (کانفیگ تست پنلی)، یا 'reseller'."""
-        if expires_at is None:
+        """source: 'custom_config' (خرید شخصی)، 'test' (کانفیگ تست پنلی)، یا 'reseller'.
+        duration_days=0 یعنی سرویس نامحدود/بدون انقضاست؛ در این حالت expires_at
+        خالی (NULL) می‌ماند تا همه‌جا به‌صورت «نامحدود» نمایش داده شود."""
+        if expires_at is None and duration_days:
             expires_at = (datetime.utcnow() + timedelta(days=duration_days)).isoformat()
         with self._get_conn() as conn:
             cur = conn.execute(

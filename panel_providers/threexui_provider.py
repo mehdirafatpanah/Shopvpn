@@ -148,8 +148,8 @@ class ThreeXUIProvider(BasePanelProvider):
         (مثلاً ساخت لینک کانفیگ دستی به‌جای subscription) هم قابل استفاده باشد."""
         sub_id = secrets.token_hex(8)
         client_uuid = str(uuid.uuid4())
-        expiry_ms = int((time.time() + duration_days * 86400) * 1000)
-        data_limit_bytes = int(volume_gb * (1024 ** 3))
+        expiry_ms = int((time.time() + duration_days * 86400) * 1000) if duration_days else 0  # 0 = بدون انقضا
+        data_limit_bytes = int(volume_gb * (1024 ** 3))  # 0 = نامحدود
         client = {
             "id": client_uuid,
             "password": client_uuid,
