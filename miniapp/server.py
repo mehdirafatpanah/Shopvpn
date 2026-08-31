@@ -1391,9 +1391,12 @@ async def api_abangateway_webhook(request: Request, tenant: Tenant = Depends(get
         return {"status": "ok"}
 
     if order["is_renewal"]:
+        if not db.claim_order(order_id):
+            return {"status": "ok"}
         try:
             result_text = await execute_renewal(db, order)
         except RenewalError as e:
+            db.release_order_claim(order_id)
             for admin_id in db.list_admins():
                 try:
                     async with aiohttp.ClientSession() as session:
@@ -1437,6 +1440,8 @@ async def api_abangateway_webhook(request: Request, tenant: Tenant = Depends(get
 
     product = db.get_product(order["product_id"])
     if product and product["is_auto_provision"]:
+        if not db.claim_order(order_id):
+            return {"status": "ok"}
         quantity = order["quantity"] or 1
         try:
             if product["provision_server_id"]:
@@ -1444,6 +1449,7 @@ async def api_abangateway_webhook(request: Request, tenant: Tenant = Depends(get
             else:
                 prov_results = await provision_auto_config(db, product, quantity, user_id=order["user_id"], order_id=order_id)
         except (ProvisionError, DirectProvisionError) as e:
+            db.release_order_claim(order_id)
             admin_ids = db.list_admins()
             async with aiohttp.ClientSession() as session:
                 for admin_id in admin_ids:
@@ -1478,6 +1484,8 @@ async def api_abangateway_webhook(request: Request, tenant: Tenant = Depends(get
         ))
         return {"status": "ok"}
 
+    if not db.claim_order(order_id):
+        return {"status": "ok"}
     quantity = order["quantity"] or 1
     results = db.take_unused_configs(order["product_id"], order["user_id"], quantity)
     if results:
@@ -1499,6 +1507,7 @@ async def api_abangateway_webhook(request: Request, tenant: Tenant = Depends(get
             final_price=order["final_price"], order_id=order_id, db=db, bot_token=tenant.bot_token,
         ))
     else:
+        db.release_order_claim(order_id)
         admin_ids = db.list_admins()
         async with aiohttp.ClientSession() as session:
             for admin_id in admin_ids:
@@ -1701,9 +1710,12 @@ async def _complete_custom_gateway_payment(db: Database, tenant: "Tenant", invoi
         return
 
     if order["is_renewal"]:
+        if not db.claim_order(order_id):
+            return
         try:
             result_text = await execute_renewal(db, order)
         except RenewalError as e:
+            db.release_order_claim(order_id)
             for admin_id in db.list_admins():
                 await _notify(
                     admin_id,
@@ -1725,12 +1737,15 @@ async def _complete_custom_gateway_payment(db: Database, tenant: "Tenant", invoi
     product = db.get_product(order["product_id"])
     quantity = order["quantity"] or 1
     if product and product["is_auto_provision"]:
+        if not db.claim_order(order_id):
+            return
         try:
             if product["provision_server_id"]:
                 prov_results = await provision_direct(db, product, quantity, user_id=order["user_id"], order_id=order_id)
             else:
                 prov_results = await provision_auto_config(db, product, quantity, user_id=order["user_id"], order_id=order_id)
         except (ProvisionError, DirectProvisionError) as e:
+            db.release_order_claim(order_id)
             for admin_id in db.list_admins():
                 await _notify(
                     admin_id,
@@ -1747,6 +1762,8 @@ async def _complete_custom_gateway_payment(db: Database, tenant: "Tenant", invoi
         ))
         return
 
+    if not db.claim_order(order_id):
+        return
     results = db.take_unused_configs(order["product_id"], order["user_id"], quantity)
     if results:
         db.approve_order(order_id, [r["id"] for r in results])
@@ -1758,6 +1775,7 @@ async def _complete_custom_gateway_payment(db: Database, tenant: "Tenant", invoi
         ))
         await check_and_notify_low_stock(_notify, db, order["product_id"])
     else:
+        db.release_order_claim(order_id)
         for admin_id in db.list_admins():
             await _notify(
                 admin_id,
@@ -1992,9 +2010,12 @@ async def api_plisio_webhook(request: Request, tenant: Tenant = Depends(get_tena
         order = db.get_order(order_id)
         if order and order["status"] == "pending":
             if order["is_renewal"]:
+                if not db.claim_order(order_id):
+                    return {"status": "ok"}
                 try:
                     result_text = await execute_renewal(db, order)
                 except RenewalError as e:
+                    db.release_order_claim(order_id)
                     admin_ids = db.list_admins()
                     async with aiohttp.ClientSession() as session:
                         for admin_id in admin_ids:
@@ -2020,6 +2041,8 @@ async def api_plisio_webhook(request: Request, tenant: Tenant = Depends(get_tena
             product = db.get_product(order["product_id"])
 
             if product and product["is_auto_provision"]:
+                if not db.claim_order(order_id):
+                    return {"status": "ok"}
                 quantity = order["quantity"] or 1
                 try:
                     if product["provision_server_id"]:
@@ -2027,6 +2050,7 @@ async def api_plisio_webhook(request: Request, tenant: Tenant = Depends(get_tena
                     else:
                         prov_results = await provision_auto_config(db, product, quantity, user_id=order["user_id"], order_id=order_id)
                 except (ProvisionError, DirectProvisionError) as e:
+                    db.release_order_claim(order_id)
                     admin_ids = db.list_admins()
                     async with aiohttp.ClientSession() as session:
                         for admin_id in admin_ids:
@@ -2061,6 +2085,8 @@ async def api_plisio_webhook(request: Request, tenant: Tenant = Depends(get_tena
                 ))
                 return {"status": "ok"}
 
+            if not db.claim_order(order_id):
+                return {"status": "ok"}
             quantity = order["quantity"] or 1
             results = db.take_unused_configs(order["product_id"], order["user_id"], quantity)
             if results:
@@ -2082,6 +2108,7 @@ async def api_plisio_webhook(request: Request, tenant: Tenant = Depends(get_tena
                     final_price=order["final_price"], order_id=order_id, db=db, bot_token=tenant.bot_token,
                 ))
             else:
+                db.release_order_claim(order_id)
                 # موجودی هم‌زمان تمام شده - به ادمین اطلاع بده تا دستی رسیدگی کند
                 admin_ids = db.list_admins()
                 async with aiohttp.ClientSession() as session:
