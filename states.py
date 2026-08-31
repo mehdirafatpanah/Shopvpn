@@ -238,6 +238,10 @@ class CustomConfigFlow(StatesGroup):
     waiting_receipt = State()
 
 
+class RenewalFlow(StatesGroup):
+    waiting_receipt = State()
+
+
 class ResellerFlow(StatesGroup):
     waiting_username = State()
     waiting_volume = State()

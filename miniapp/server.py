@@ -61,6 +61,7 @@ from panel_providers import (
 )
 from reseller_auto_provision import provision_auto_config, provision_test_config, ProvisionError
 from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
+from renewal_engine import execute_renewal, RenewalError
 from admin_panel.telegram_notify import send_message as _tg_notify, fetch_telegram_file as _tg_fetch_file
 
 app = FastAPI(title="V2Ray Shop Mini App API")
@@ -1389,6 +1390,31 @@ async def api_abangateway_webhook(request: Request, tenant: Tenant = Depends(get
     if not order or order["status"] != "pending":
         return {"status": "ok"}
 
+    if order["is_renewal"]:
+        try:
+            result_text = await execute_renewal(db, order)
+        except RenewalError as e:
+            for admin_id in db.list_admins():
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        await session.post(
+                            f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+                            json={"chat_id": admin_id, "text": f"⚠️ سفارش تمدید #{order_id} با آبان گیت وی پرداخت شد ولی تمدید ناموفق بود: {e}\nلطفاً دستی رسیدگی کنید."},
+                        )
+                except Exception:
+                    pass
+            return {"status": "ok"}
+        db.approve_renewal_order(order_id)
+        try:
+            async with aiohttp.ClientSession() as session:
+                await session.post(
+                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+                    json={"chat_id": order["user_id"], "text": result_text},
+                )
+        except Exception:
+            pass
+        return {"status": "ok"}
+
     if order["is_custom_config"]:
         # ساخت کانفیگ شخصی نیازمند panel provider است که در این سرور مستقل هم در
         # دسترس است؛ برای سادگی و یکسان بودن با مسیر «بررسی دستی» در بات، همان
@@ -1674,6 +1700,20 @@ async def _complete_custom_gateway_payment(db: Database, tenant: "Tenant", invoi
     if not order or order["status"] != "pending":
         return
 
+    if order["is_renewal"]:
+        try:
+            result_text = await execute_renewal(db, order)
+        except RenewalError as e:
+            for admin_id in db.list_admins():
+                await _notify(
+                    admin_id,
+                    f"⚠️ سفارش تمدید #{order_id} با درگاه سفارشی پرداخت شد ولی تمدید ناموفق بود: {e}\nلطفاً دستی رسیدگی کنید.",
+                )
+            return
+        db.approve_renewal_order(order_id)
+        await _notify(order["user_id"], result_text)
+        return
+
     if order["is_custom_config"]:
         await _notify(
             order["user_id"],
@@ -1951,6 +1991,32 @@ async def api_plisio_webhook(request: Request, tenant: Tenant = Depends(get_tena
         order_id = invoice["ref_id"]
         order = db.get_order(order_id)
         if order and order["status"] == "pending":
+            if order["is_renewal"]:
+                try:
+                    result_text = await execute_renewal(db, order)
+                except RenewalError as e:
+                    admin_ids = db.list_admins()
+                    async with aiohttp.ClientSession() as session:
+                        for admin_id in admin_ids:
+                            try:
+                                await session.post(
+                                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+                                    json={"chat_id": admin_id, "text": f"⚠️ سفارش تمدید #{order_id} با کریپتو پرداخت شد ولی تمدید ناموفق بود: {e}\nلطفاً دستی رسیدگی کنید."},
+                                )
+                            except Exception:
+                                pass
+                    return {"status": "ok"}
+                db.approve_renewal_order(order_id)
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        await session.post(
+                            f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+                            json={"chat_id": order["user_id"], "text": result_text},
+                        )
+                except Exception:
+                    pass
+                return {"status": "ok"}
+
             product = db.get_product(order["product_id"])
 
             if product and product["is_auto_provision"]:

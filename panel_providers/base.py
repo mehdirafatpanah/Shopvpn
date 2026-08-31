@@ -57,6 +57,15 @@ class BasePanelProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
+                           reset_usage: bool = False) -> PanelUserResult:
+        """حجم/انقضای یک کاربر موجود روی پنل را برای «تمدید سرویس» افزایش می‌دهد.
+        add_volume_gb/add_days روی مقدار فعلی جمع می‌شوند (نه جایگزین آن).
+        اگر انقضای فعلی گذشته باشد، مبنای محاسبه‌ی انقضای جدید «اکنون» است، نه
+        تاریخ گذشته. reset_usage=True یعنی مصرف قبلی صفر شود (تمدید کامل)."""
+        raise NotImplementedError
+
+    @abstractmethod
     async def test_connection(self) -> bool:
         """برای دکمه‌ی «تست اتصال» در پنل ادمین؛ فقط احراز هویت را چک می‌کند."""
         raise NotImplementedError

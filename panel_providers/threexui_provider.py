@@ -259,6 +259,75 @@ class ThreeXUIProvider(BasePanelProvider):
                     return PanelUserResult(username=username, subscription_url=sub_url, raw=client)
         raise PanelError(f"کاربری با نام «{username}» روی پنل پیدا نشد.")
 
+    async def _find_client_with_inbound(self, session: aiohttp.ClientSession, username: str) -> tuple:
+        """کلاینت با email==username و id همان inbound که در آن قرار دارد را
+        برمی‌گرداند: (client_dict, inbound_id)."""
+        try:
+            async with session.get(f"{self._base_url()}/panel/api/inbounds/list") as resp:
+                if resp.status in (401, 403):
+                    raise PanelError(f"خطا در احراز هویت (کد {resp.status}): API Token را بررسی کن.")
+                if resp.status >= 400:
+                    text = await resp.text()
+                    raise PanelError(f"خطا در دریافت لیست inbound (کد {resp.status}): {text[:300]}")
+                data = await resp.json()
+        except aiohttp.ClientError as e:
+            raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+        if data.get("success") is False:
+            raise PanelError(data.get("msg") or "دریافت اطلاعات کاربر ناموفق بود.")
+        for ib in (data.get("obj") or []):
+            settings_raw = ib.get("settings")
+            try:
+                settings = json.loads(settings_raw) if isinstance(settings_raw, str) else (settings_raw or {})
+            except (ValueError, TypeError):
+                continue
+            for client in (settings.get("clients") or []):
+                if client.get("email") == username:
+                    return client, ib["id"]
+        raise PanelError(f"کاربری با نام «{username}» روی پنل پیدا نشد.")
+
+    async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
+                           reset_usage: bool = False) -> PanelUserResult:
+        sub_base_url = self.server["xui_sub_base_url"]
+        async with self._session() as session:
+            client, inbound_id = await self._find_client_with_inbound(session, username)
+
+            now_ms = int(time.time() * 1000)
+            current_expiry = client.get("expiryTime") or 0
+            base_ms = current_expiry if current_expiry > now_ms else now_ms
+            new_expiry = base_ms + add_days * 86400000 if add_days else current_expiry
+            new_total = int(client.get("totalGB") or 0) + int(add_volume_gb * (1024 ** 3)) if add_volume_gb else client.get("totalGB")
+
+            updated_client = dict(client)
+            updated_client["expiryTime"] = new_expiry
+            updated_client["totalGB"] = new_total
+            updated_client["enable"] = True
+
+            payload = {"id": inbound_id, "client": updated_client}
+            try:
+                async with session.post(
+                    f"{self._base_url()}/panel/api/clients/update/{updated_client['id']}", json=payload,
+                ) as resp:
+                    if resp.status in (401, 403):
+                        raise PanelError(f"خطا در احراز هویت (کد {resp.status}): API Token را بررسی کن.")
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise PanelError(f"خطا در بروزرسانی کاربر (کد {resp.status}): {text[:300]}")
+                    data = await resp.json()
+                    if data.get("success") is False:
+                        raise PanelError(data.get("msg") or "بروزرسانی کاربر روی پنل ناموفق بود.")
+            except aiohttp.ClientError as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+
+            if reset_usage:
+                try:
+                    await session.post(f"{self._base_url()}/panel/api/inbounds/{inbound_id}/resetClientTraffic/{username}")
+                except aiohttp.ClientError:
+                    pass
+
+        sub_id = updated_client.get("subId")
+        sub_url = f"{sub_base_url.rstrip('/')}/{sub_id}" if (sub_id and sub_base_url) else ""
+        return PanelUserResult(username=username, subscription_url=sub_url, raw=updated_client)
+
     async def test_connection(self) -> bool:
         try:
             async with self._session() as session:

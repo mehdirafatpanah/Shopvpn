@@ -18,7 +18,7 @@ from aiogram.types import (
 
 from config import MINIAPP_URL
 from panel_providers import PANEL_TYPE_LABELS
-from database import MENU_BUTTON_META
+from database import MENU_BUTTON_META, ACCOUNT_TOGGLE_KEYS
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +80,7 @@ def _menu_items(db, is_admin: bool, is_reseller: bool, is_main_bot: bool, show_r
         return (settings.get("btn_test", "🧪 کانفیگ تست رایگان"), settings.get("btn_test_style", ""))
 
     def item_my_orders():
-        return (settings.get("btn_my_orders", "📦 سفارش‌های من"), settings.get("btn_my_orders_style", ""))
+        return (settings.get("btn_my_orders", "🧾 حساب کاربری من"), settings.get("btn_my_orders_style", ""))
 
     def item_wallet():
         return (settings.get("btn_wallet", "👛 کیف پول من"), settings.get("btn_wallet_style", ""))
@@ -317,6 +317,7 @@ def custom_config_username_kb() -> InlineKeyboardMarkup:
 def my_orders_menu_kb(items) -> InlineKeyboardMarkup:
     """items: لیستی از دیکشنری‌های {cb_id, label} که هر کدام یک ردیف/دکمه‌ی جدا می‌شوند."""
     rows = [[InlineKeyboardButton(text=it["label"], callback_data=f"mo_v:{it['cb_id']}")] for it in items]
+    rows.append([InlineKeyboardButton(text="⬅️ حساب کاربری", callback_data="acct:hub")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -325,6 +326,90 @@ def my_order_item_kb(cb_id: str, deletable: bool) -> InlineKeyboardMarkup:
     if deletable:
         rows.append([InlineKeyboardButton(text="🗑 حذف کامل این کانفیگ", callback_data=f"mo_del:{cb_id}")])
     rows.append([InlineKeyboardButton(text="⬅️ بازگشت به لیست", callback_data="mo_back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def service_detail_kb(db, cb_id: str, kind: str, deletable: bool) -> InlineKeyboardMarkup:
+    """دکمه‌های صفحه‌ی جزئیات یک سرویس (kind: 'config' استخری یا 'custom'
+    پنلی). هر دکمه با یک تنظیم svc_show_* از پنل ادمین قابل فعال/غیرفعال
+    است. برای kind == 'custom' (کاربر واقعی روی پنل) هر سه نوع تمدید در
+    دسترس است؛ برای kind == 'config' (لینک استخری بدون پنل/یوزرنیم ذخیره‌شده)
+    فقط تمدید زمانی (بوکینگ محلی) معنا دارد."""
+    def on(key: str) -> bool:
+        return db.get_setting(key, "1") == "1"
+
+    rows = []
+    if kind in ("config", "custom"):
+        if kind == "custom":
+            if on("svc_show_renew_full"):
+                rows.append([InlineKeyboardButton(text="🛠 تمدید کامل سرویس", callback_data=f"svc_renew:full:{cb_id}")])
+            row2 = []
+            if on("svc_show_renew_volume"):
+                row2.append(InlineKeyboardButton(text="🔋 تمدید حجم سرویس", callback_data=f"svc_renew:volume:{cb_id}"))
+            if on("svc_show_renew_time"):
+                row2.append(InlineKeyboardButton(text="⏱ تمدید زمان سرویس", callback_data=f"svc_renew:time:{cb_id}"))
+            if row2:
+                rows.append(row2)
+        else:
+            if on("svc_show_renew_time"):
+                rows.append([InlineKeyboardButton(text="⏱ تمدید زمان سرویس", callback_data=f"svc_renew:time:{cb_id}")])
+        row3 = []
+        if on("svc_show_cut_access"):
+            row3.append(InlineKeyboardButton(text="🚫 قطع دسترسی و لینک جدید", callback_data=f"svc_cut:{cb_id}"))
+        if row3:
+            rows.append(row3)
+        row4 = []
+        if on("svc_show_update_config"):
+            row4.append(InlineKeyboardButton(text="♻️ بروزرسانی کانفیگ", callback_data=f"mo_v:{cb_id}"))
+        if on("svc_show_qr"):
+            row4.append(InlineKeyboardButton(text="⬜ کیوآر کانفیگ", callback_data=f"svc_qr:{cb_id}"))
+        if row4:
+            rows.append(row4)
+    if deletable and on("svc_show_delete"):
+        rows.append([InlineKeyboardButton(text="🗑 حذف کامل این سرویس", callback_data=f"mo_del:{cb_id}")])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت به لیست", callback_data="mo_back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ---------------------------------------------------------------------------
+# حساب کاربری (جایگزین دکمه‌ی «سفارش‌های من»؛ سفارش‌ها/زیرمجموعه‌گیری/کیف‌پول
+# حالا همه یک ورودی واحد دارند)
+# ---------------------------------------------------------------------------
+
+def account_hub_kb(db) -> InlineKeyboardMarkup:
+    rows = []
+    if db.get_setting("acct_show_orders", "1") == "1":
+        rows.append([InlineKeyboardButton(text="📦 سرویس‌ها و سفارش‌های من", callback_data="acct:orders")])
+    if db.get_setting("acct_show_referral", "1") == "1":
+        rows.append([InlineKeyboardButton(text="🤝 زیرمجموعه‌گیری من", callback_data="acct:referral")])
+    if db.get_setting("acct_show_wallet", "1") == "1":
+        rows.append([InlineKeyboardButton(text="👛 کیف پول من", callback_data="acct:wallet")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def renewal_plans_kb(products, mode: str, cb_id: str) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(
+            text=f"{p['name']} - {p['auto_provision_volume_gb']} گیگ / {p['duration_days']} روز - {p['price']:,} تومان",
+            callback_data=f"svc_renew_pick:{mode}:{cb_id}:{p['id']}",
+        )]
+        for p in products
+    ]
+    rows.append([InlineKeyboardButton(text="⬅️ انصراف", callback_data=f"mo_v:{cb_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ---------------------------------------------------------------------------
+# تنظیمات ادمین: فعال/غیرفعال کردن دکمه‌های حساب کاربری/صفحه‌ی سرویس
+# ---------------------------------------------------------------------------
+
+def account_settings_kb(db) -> InlineKeyboardMarkup:
+    rows = []
+    for key, label, default in ACCOUNT_TOGGLE_KEYS:
+        state_on = db.get_setting(key, default) == "1"
+        icon = "🟢" if state_on else "🔴"
+        rows.append([InlineKeyboardButton(text=f"{icon} {label}", callback_data=f"adm_acct_toggle:{key}")])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:appearance")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -449,6 +534,7 @@ ADMIN_PANEL_ITEMS = [
     ("adm_credit_resellers_menu", "💳 نمایندگی حجمی (اعتبار)", "adm_credit_resellers_menu"),
     ("adm_reseller_requests_menu", "📋 درخواست‌های نمایندگی", "adm_reseller_requests_menu"),
     ("adm_edit_buttons", "✏️ ویرایش متن دکمه‌ها", "adm_edit_buttons"),
+    ("adm_account_settings", "🧾 تنظیمات حساب کاربری کاربران", "adm_account_settings"),
     ("adm_main_menu_settings", "🧩 چیدمان/نمایش منوی اصلی", "adm_main_menu_settings"),
     ("adm_set_card", "💳 تنظیم شماره کارت", "adm_set_card"),
     ("adm_card_autodelete", "⏱ حذف خودکار پیام شماره کارت", "adm_card_autodelete"),
@@ -523,6 +609,7 @@ ADMIN_PANEL_CATEGORIES = [
     ]),
     ("appearance", "🎨 ظاهر و رنگ‌بندی", [
         "adm_edit_buttons",
+        "adm_account_settings",
         "adm_main_menu_settings",
         "adm_edit_welcome",
         "adm_panel_colors_menu",
@@ -1031,7 +1118,7 @@ BUTTON_LABELS = {
     "btn_buy": "دکمه خرید کانفیگ",
     "btn_test": "دکمه کانفیگ تست",
     "btn_contact": "دکمه ارتباط با پشتیبانی",
-    "btn_my_orders": "دکمه سفارش‌های من",
+    "btn_my_orders": "دکمه حساب کاربری",
     "btn_referral": "دکمه زیرمجموعه‌گیری",
     "btn_wallet": "دکمه کیف پول",
     "btn_wheel": "دکمه گردونه شانس",

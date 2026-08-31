@@ -84,7 +84,7 @@ DEFAULT_SETTINGS = {
     "btn_buy": "🛒 خرید کانفیگ",
     "btn_test": "🧪 کانفیگ تست رایگان",
     "btn_contact": "📞 ارتباط با پشتیبانی",
-    "btn_my_orders": "📦 سفارش‌های من",
+    "btn_my_orders": "🧾 حساب کاربری من",
     "btn_referral": "🤝 زیرمجموعه‌گیری من",
     "btn_wallet": "👛 کیف پول من",
     "btn_admin_panel": "⚙️ پنل مدیریت",
@@ -227,7 +227,7 @@ MENU_BUTTON_META = {
     "miniapp": {"label": "دکمه مینی‌اپ فروشگاه", "toggle_key": "miniapp_enabled", "admin_only": False, "has_text": False, "has_style": False},
     "btn_buy": {"label": "دکمه خرید کانفیگ", "toggle_key": None, "admin_only": False, "has_text": True, "has_style": True},
     "btn_test": {"label": "دکمه کانفیگ تست", "toggle_key": "test_enabled", "admin_only": False, "has_text": True, "has_style": True},
-    "btn_my_orders": {"label": "دکمه سفارش‌های من", "toggle_key": None, "admin_only": False, "has_text": True, "has_style": True},
+    "btn_my_orders": {"label": "دکمه حساب کاربری من", "toggle_key": None, "admin_only": False, "has_text": True, "has_style": True},
     "btn_wallet": {"label": "دکمه کیف پول", "toggle_key": None, "admin_only": False, "has_text": True, "has_style": True},
     "btn_referral": {"label": "دکمه زیرمجموعه‌گیری", "toggle_key": "referral_button_enabled", "admin_only": False, "has_text": True, "has_style": True},
     "btn_wheel": {"label": "دکمه گردونه شانس", "toggle_key": "wheel_enabled", "admin_only": False, "has_text": True, "has_style": True},
@@ -239,6 +239,22 @@ MENU_BUTTON_META = {
     "btn_reseller_panel": {"label": "دکمه پنل نمایندگی", "toggle_key": None, "admin_only": False, "has_text": True, "has_style": True},
     "btn_reseller_request": {"label": "دکمه درخواست نمایندگی سطح ۲", "toggle_key": "reseller_request_enabled", "admin_only": False, "has_text": True, "has_style": True},
 }
+# دکمه‌های داخل «حساب کاربری» و صفحه‌ی جزئیات هر سرویس: هرکدام با یک تنظیم
+# جدا فعال/غیرفعال می‌شوند (پیش‌فرض همه فعال). کلید -> (برچسب برای ادمین، مقدار پیش‌فرض)
+ACCOUNT_TOGGLE_KEYS = [
+    ("acct_show_orders", "📦 نمایش «سرویس‌ها و سفارش‌های من»", "1"),
+    ("acct_show_referral", "🤝 نمایش «زیرمجموعه‌گیری من»", "1"),
+    ("acct_show_wallet", "👛 نمایش «کیف پول من»", "1"),
+    ("svc_show_renew_full", "🛠 دکمه «تمدید کامل سرویس»", "1"),
+    ("svc_show_renew_volume", "🔋 دکمه «تمدید حجم سرویس»", "1"),
+    ("svc_show_renew_time", "⏱ دکمه «تمدید زمان سرویس»", "1"),
+    ("svc_show_cut_access", "🚫 دکمه «قطع دسترسی و لینک جدید»", "1"),
+    ("svc_show_update_config", "♻️ دکمه «بروزرسانی کانفیگ»", "1"),
+    ("svc_show_qr", "⬜ دکمه «کیوآر کانفیگ»", "1"),
+    ("svc_show_delete", "🗑 دکمه «حذف کامل سرویس»", "1"),
+]
+DEFAULT_SETTINGS.update({key: default for key, _label, default in ACCOUNT_TOGGLE_KEYS})
+
 DEFAULT_MENU_ORDER = [
     "miniapp", "btn_reseller_panel", "btn_reseller_request", "btn_buy", "btn_test",
     "btn_my_orders", "btn_wallet", "btn_referral", "btn_wheel", "btn_contact", "btn_admin_panel",
@@ -845,6 +861,15 @@ class Database:
             ("products", "payment_methods", "TEXT"),
             # حداقل مبلغ واریزی مجاز برای هر درگاه سفارشی/پویا (به تومان).
             ("custom_gateways", "min_amount", "INTEGER DEFAULT 0"),
+            # تمدید سرویس از حساب کاربری: مثل is_custom_config از همان جدول orders
+            # با product_id=0 سنتینل استفاده می‌کند تا همه‌ی روش‌های پرداخت
+            # (کارت/کیف‌پول/کریپتو/آبان‌گیت‌وی/درگاه سفارشی) بدون تغییر کار کنند.
+            ("orders", "is_renewal", "INTEGER DEFAULT 0"),
+            ("orders", "renewal_target_kind", "TEXT"),
+            ("orders", "renewal_target_id", "INTEGER"),
+            ("orders", "renewal_mode", "TEXT"),
+            ("orders", "renewal_add_volume_gb", "INTEGER DEFAULT 0"),
+            ("orders", "renewal_add_days", "INTEGER DEFAULT 0"),
         ]
         for table, col, coltype in migrations:
             if not self._column_exists(conn, table, col):
@@ -1887,6 +1912,37 @@ class Database:
             return cur.lastrowid
 
     def approve_custom_config_order(self, order_id: int):
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE orders SET status='approved', updated_at=? WHERE id=?",
+                (datetime.utcnow().isoformat(), order_id),
+            )
+
+    def create_renewal_order(
+        self,
+        user_tg_id: int,
+        target_kind: str,
+        target_id: int,
+        mode: str,
+        add_volume_gb: int,
+        add_days: int,
+        base_price: int,
+        wallet_used: int = 0,
+    ) -> int:
+        """سفارش «تمدید سرویس» از حساب کاربری - مثل is_custom_config از همان جدول
+        orders با product_id=0 سنتینل استفاده می‌کند تا همه‌ی روش‌های پرداخت
+        (کارت/کیف‌پول/کریپتو/آبان‌گیت‌وی/درگاه سفارشی) بدون تغییر کار کنند."""
+        final_price = max(base_price - wallet_used, 0)
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO orders (user_id, product_id, status, base_price, wallet_used, final_price, "
+                "quantity, is_renewal, renewal_target_kind, renewal_target_id, renewal_mode, "
+                "renewal_add_volume_gb, renewal_add_days) VALUES (?, 0, 'pending', ?, ?, ?, 1, 1, ?, ?, ?, ?, ?)",
+                (user_tg_id, base_price, wallet_used, final_price, target_kind, target_id, mode, add_volume_gb, add_days),
+            )
+            return cur.lastrowid
+
+    def approve_renewal_order(self, order_id: int):
         with self._get_conn() as conn:
             conn.execute(
                 "UPDATE orders SET status='approved', updated_at=? WHERE id=?",
@@ -3814,6 +3870,61 @@ class Database:
                 "SELECT * FROM custom_configs WHERE user_id=? AND source='test' ORDER BY id DESC LIMIT 1",
                 (user_id,),
             ).fetchone()
+
+    def get_custom_config_owned(self, custom_config_id: int, user_tg_id: int):
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM custom_configs WHERE id=? AND user_id=?", (custom_config_id, user_tg_id)
+            ).fetchone()
+
+    def apply_custom_config_renewal(self, custom_config_id: int, add_volume_gb: int = 0, add_days: int = 0) -> dict:
+        """بعد از موفقیت‌آمیز بودن به‌روزرسانی روی خودِ پنل (provider.update_user)،
+        رکورد بوکینگ محلی (حجم/مدت/تاریخ انقضا) را هم‌سو با آن به‌روز می‌کند."""
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT * FROM custom_configs WHERE id=?", (custom_config_id,)).fetchone()
+            if not row:
+                return None
+            now = datetime.utcnow()
+            current_expires_at = row["expires_at"]
+            base = now
+            if current_expires_at:
+                try:
+                    current_dt = datetime.fromisoformat(current_expires_at)
+                    if current_dt > now:
+                        base = current_dt
+                except ValueError:
+                    pass
+            new_expires_at = (base + timedelta(days=add_days)).isoformat() if add_days else current_expires_at
+            new_volume = (row["volume_gb"] or 0) + add_volume_gb if add_volume_gb else row["volume_gb"]
+            new_duration = (row["duration_days"] or 0) + add_days if add_days else row["duration_days"]
+            conn.execute(
+                "UPDATE custom_configs SET volume_gb=?, duration_days=?, expires_at=? WHERE id=?",
+                (new_volume, new_duration, new_expires_at, custom_config_id),
+            )
+            return {"volume_gb": new_volume, "duration_days": new_duration, "expires_at": new_expires_at}
+
+    def extend_pool_config_expiry(self, config_id: int, user_tg_id: int, add_days: int) -> str:
+        """تمدید «زمانی» یک کانفیگ استخری قدیمی (جدول configs) که فقط لینک/تاریخ
+        انقضا دارد و اطلاعات پنل/یوزرنیم برایش ذخیره نشده - فقط بوکینگ محلی
+        (تاریخ انقضا) عوض می‌شود، بدون تماس با پنل."""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM configs WHERE id=? AND assigned_user_id=?", (config_id, user_tg_id)
+            ).fetchone()
+            if not row:
+                return None
+            now = datetime.utcnow()
+            base = now
+            if row["expires_at"]:
+                try:
+                    current_dt = datetime.fromisoformat(row["expires_at"])
+                    if current_dt > now:
+                        base = current_dt
+                except ValueError:
+                    pass
+            new_expires_at = (base + timedelta(days=add_days)).isoformat()
+            conn.execute("UPDATE configs SET expires_at=? WHERE id=?", (new_expires_at, config_id))
+            return new_expires_at
 
     def is_custom_username_taken(self, username: str) -> bool:
         with self._get_conn() as conn:

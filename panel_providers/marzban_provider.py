@@ -200,3 +200,56 @@ class MarzbanProvider(BasePanelProvider):
             return True
         except PanelError:
             return False
+
+    async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
+                           reset_usage: bool = False) -> PanelUserResult:
+        async with aiohttp.ClientSession() as session:
+            token = await self._get_token(session)
+            headers = {"Authorization": f"Bearer {token}", "accept": "application/json", "Content-Type": "application/json"}
+            try:
+                async with session.get(
+                    f"{self._base_url()}/api/user/{username}", headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status == 404:
+                        raise PanelError(f"کاربری با نام «{username}» روی پنل پیدا نشد.")
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise PanelError(f"خطا در دریافت اطلاعات کاربر (کد {resp.status}): {text[:300]}")
+                    current = await resp.json()
+            except aiohttp.ClientError as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+
+            now_ts = int(time.time())
+            current_expire = current.get("expire")
+            base_expire = current_expire if (current_expire and current_expire > now_ts) else now_ts
+            new_expire = base_expire + add_days * 86400 if add_days else current_expire
+            new_limit = int(current.get("data_limit") or 0) + int(add_volume_gb * (1024 ** 3)) if add_volume_gb else current.get("data_limit")
+
+            payload = {"data_limit": new_limit, "expire": new_expire, "status": "active"}
+            try:
+                async with session.put(
+                    f"{self._base_url()}/api/user/{username}", json=payload, headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise PanelError(f"خطا در بروزرسانی کاربر روی پنل (کد {resp.status}): {text[:300]}")
+                    data = await resp.json()
+            except aiohttp.ClientError as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+
+            if reset_usage:
+                try:
+                    async with session.post(
+                        f"{self._base_url()}/api/user/{username}/reset", headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=20),
+                    ):
+                        pass
+                except aiohttp.ClientError:
+                    pass
+
+        sub_url = data.get("subscription_url") or ""
+        if sub_url.startswith("/"):
+            sub_url = self._base_url() + sub_url
+        return PanelUserResult(username=data.get("username", username), subscription_url=sub_url, raw=data)

@@ -24,6 +24,7 @@ from panel_providers import get_provider
 from reseller_auto_provision import provision_auto_config, ProvisionError
 from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
 from stock_alerts import check_and_notify_low_stock
+from renewal_engine import execute_renewal, RenewalError
 
 logger = logging.getLogger("abangateway_payment")
 
@@ -179,6 +180,23 @@ async def finalize_paid_order(db, bot, order_id: int, notify_admins_fn=None) -> 
         return "⚠️ سفارش یافت نشد."
     if order["status"] != "pending":
         return "✅ این سفارش قبلاً بررسی و تحویل داده شده است."
+
+    if order["is_renewal"]:
+        try:
+            result_text = await execute_renewal(db, order)
+        except RenewalError as e:
+            return f"⛔️ تمدید ناموفق بود: {e}\nبا پشتیبانی تماس بگیرید."
+        db.approve_renewal_order(order_id)
+        try:
+            await bot.send_message(order["user_id"], result_text)
+        except Exception:
+            pass
+        if notify_admins_fn:
+            try:
+                await notify_admins_fn(bot, order_id)
+            except Exception:
+                pass
+        return result_text
 
     if order["is_custom_config"]:
         server = db.get_panel_server(order["custom_panel_server_id"])

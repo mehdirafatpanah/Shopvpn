@@ -16,15 +16,16 @@ import logging
 
 from aiogram import Router, F, Bot
 from aiogram.filters import CommandStart
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError, TelegramBadRequest, TelegramNetworkError
 
 import keyboards as kb
-from states import BuyFlow, ContactFlow, DiscountEntry, WalletTopup, CustomConfigFlow, ResellerFlow, ResellerRequestFlow
+from states import BuyFlow, ContactFlow, DiscountEntry, WalletTopup, CustomConfigFlow, RenewalFlow, ResellerFlow, ResellerRequestFlow
 from config import MAX_TEST_PER_USER, RESELLER_DBS_DIR, resolve_db_path
 from database import Database
-from config_delivery import deliver_config_to_user, send_individual_configs
+from config_delivery import deliver_config_to_user, send_individual_configs, build_qr_bytes
+from renewal_engine import execute_renewal, RenewalError
 from temp_messages import schedule_message_autodelete
 from force_join import is_channel_member, CHECK_CALLBACK
 from sub_info import fetch_sub_info, format_sub_info_fa, fetch_individual_links
@@ -1539,6 +1540,56 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         )
         await _send_inline_main_menu(message, message.from_user.id)
 
+    async def _account_hub_text(user_tg_id: int) -> str:
+        user = (await asyncio.to_thread(db.get_user, user_tg_id))
+        username = f"@{user['username']}" if (user and user["username"]) else "—"
+        orders = (await asyncio.to_thread(db.get_user_orders, user_tg_id))
+        balance = (await asyncio.to_thread(db.get_wallet_credit, user_tg_id))
+        return (
+            "🧾 حساب کاربری من\n\n"
+            f"🆔 شناسه کاربری: `{user_tg_id}`\n"
+            f"👤 نام کاربری: {username}\n"
+            f"👛 موجودی کیف پول: {balance:,} تومان\n"
+            f"📦 تعداد سفارش‌ها: {len(orders)}"
+        )
+
+    @router.message(F.text.func(lambda t: t == db.get_setting("btn_my_orders")))
+    async def my_orders(message: Message):
+        text = await _account_hub_text(message.from_user.id)
+        await message.answer(text, parse_mode="Markdown", reply_markup=kb.account_hub_kb(db))
+
+    @router.callback_query(F.data == "acct:hub")
+    async def cb_account_hub(call: CallbackQuery):
+        text = await _account_hub_text(call.from_user.id)
+        await _safe_edit(call.message, text, parse_mode="Markdown", reply_markup=kb.account_hub_kb(db))
+        await call.answer()
+
+    @router.callback_query(F.data == "acct:orders")
+    async def cb_account_orders(call: CallbackQuery):
+        if (await asyncio.to_thread(db.get_setting, "acct_show_orders", "1")) != "1":
+            await call.answer("این بخش غیرفعال است.", show_alert=True)
+            return
+        await _show_my_orders_list(call.message, call.from_user.id, edit=True)
+        await call.answer()
+
+    @router.callback_query(F.data == "acct:referral")
+    async def cb_account_referral(call: CallbackQuery, bot: Bot):
+        if (await asyncio.to_thread(db.get_setting, "acct_show_referral", "1")) != "1":
+            await call.answer("این بخش غیرفعال است.", show_alert=True)
+            return
+        await call.answer()
+        fake_message = call.message.model_copy(update={"from_user": call.from_user})
+        await referral_menu(fake_message, bot)
+
+    @router.callback_query(F.data == "acct:wallet")
+    async def cb_account_wallet(call: CallbackQuery):
+        if (await asyncio.to_thread(db.get_setting, "acct_show_wallet", "1")) != "1":
+            await call.answer("این بخش غیرفعال است.", show_alert=True)
+            return
+        await call.answer()
+        fake_message = call.message.model_copy(update={"from_user": call.from_user})
+        await wallet_menu(fake_message)
+
     # -----------------------------------------------------------------------
     # سفارش‌های من (منوی کانفیگ‌ها + امکان حذف کامل هر کانفیگ)
     # -----------------------------------------------------------------------
@@ -1671,10 +1722,6 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         else:
             await target.answer(text, reply_markup=markup)
 
-    @router.message(F.text.func(lambda t: t == db.get_setting("btn_my_orders")))
-    async def my_orders(message: Message):
-        await _show_my_orders_list(message, message.from_user.id, edit=False)
-
     @router.callback_query(F.data == "mo_back")
     async def cb_my_orders_back(call: CallbackQuery):
         await _show_my_orders_list(call.message, call.from_user.id, edit=True)
@@ -1691,13 +1738,16 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await call.answer()
         text = await _my_orders_item_text(item)
         deletable = item["kind"] in ("config", "custom")
-        markup = kb.my_order_item_kb(cb_id, deletable)
+        markup = kb.service_detail_kb(db, cb_id, item["kind"], deletable)
         if len(text) > 4000:
             text = text[:3950] + "\n\n… (فهرست کوتاه شد؛ تعداد کانفیگ‌ها زیاد است)"
         await _safe_edit(call.message, text, parse_mode="Markdown", reply_markup=markup)
 
     @router.callback_query(F.data.startswith("mo_del:"))
     async def cb_my_orders_delete_ask(call: CallbackQuery):
+        if (await asyncio.to_thread(db.get_setting, "svc_show_delete", "1")) != "1":
+            await call.answer("این قابلیت غیرفعال است.", show_alert=True)
+            return
         cb_id = call.data.split(":", 1)[1]
         item = _find_my_orders_item(call.from_user.id, cb_id)
         if not item or item["kind"] not in ("config", "custom"):
@@ -1754,6 +1804,282 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await call.answer("درخواست نامعتبر.", show_alert=True)
 
         await _show_my_orders_list(call.message, user_tg_id, edit=True)
+
+    # -----------------------------------------------------------------------
+    # تمدید سرویس / کیوآر / قطع دسترسی (دکمه‌های صفحه‌ی جزئیات یک سرویس)
+    # -----------------------------------------------------------------------
+
+    _RENEW_MODE_LABEL = {"full": "تمدید کامل سرویس", "volume": "تمدید حجم سرویس", "time": "تمدید زمان سرویس"}
+
+    @router.callback_query(F.data.startswith("svc_qr:"))
+    async def cb_service_qr(call: CallbackQuery, bot: Bot):
+        if (await asyncio.to_thread(db.get_setting, "svc_show_qr", "1")) != "1":
+            await call.answer("این قابلیت غیرفعال است.", show_alert=True)
+            return
+        cb_id = call.data.split(":", 1)[1]
+        item = _find_my_orders_item(call.from_user.id, cb_id)
+        if not item:
+            await call.answer("این مورد یافت نشد.", show_alert=True)
+            return
+        link = None
+        if item["kind"] == "config":
+            link = item["config"]["link"]
+        elif item["kind"] == "custom":
+            link = item["custom"]["subscription_url"]
+        if not link:
+            await call.answer("لینکی برای ساخت کیوآر پیدا نشد.", show_alert=True)
+            return
+        await call.answer()
+        photo = BufferedInputFile(build_qr_bytes(link), filename="config_qr.png")
+        await bot.send_photo(call.from_user.id, photo, caption="⬜ کیوآر کانفیگ شما")
+
+    @router.callback_query(F.data.startswith("svc_cut:"))
+    async def cb_service_cut(call: CallbackQuery):
+        if (await asyncio.to_thread(db.get_setting, "svc_show_cut_access", "1")) != "1":
+            await call.answer("این قابلیت غیرفعال است.", show_alert=True)
+            return
+        await call.answer("این قابلیت به‌زودی اضافه می‌شود.", show_alert=True)
+
+    @router.callback_query(F.data.startswith("svc_renew:"))
+    async def cb_service_renew_start(call: CallbackQuery):
+        _, mode, cb_id = call.data.split(":", 2)
+        toggle_key = {"full": "svc_show_renew_full", "volume": "svc_show_renew_volume", "time": "svc_show_renew_time"}[mode]
+        if (await asyncio.to_thread(db.get_setting, toggle_key, "1")) != "1":
+            await call.answer("این قابلیت غیرفعال است.", show_alert=True)
+            return
+        item = _find_my_orders_item(call.from_user.id, cb_id)
+        if not item or item["kind"] not in ("config", "custom"):
+            await call.answer("این مورد یافت نشد.", show_alert=True)
+            return
+        if item["kind"] == "config" and mode != "time":
+            await call.answer("برای این کانفیگ فقط «تمدید زمان» ممکن است.", show_alert=True)
+            return
+        products = [p for p in (await asyncio.to_thread(db.get_all_products)) if p["is_auto_provision"] and p["is_active"]]
+        if not products:
+            await call.answer("در حال حاضر پلن قابل انتخابی برای تمدید تعریف نشده.", show_alert=True)
+            return
+        await call.answer()
+        await _safe_edit(
+            call.message,
+            f"🔄 {_RENEW_MODE_LABEL[mode]}\n\nیکی از پلن‌های زیر را برای اعمال روی همین سرویس انتخاب کنید:",
+            reply_markup=kb.renewal_plans_kb(products, mode, cb_id),
+        )
+
+    @router.callback_query(F.data.startswith("svc_renew_pick:"))
+    async def cb_service_renew_pick(call: CallbackQuery, state: FSMContext):
+        _, mode, cb_id, product_id = call.data.split(":", 3)
+        user_tg_id = call.from_user.id
+        item = _find_my_orders_item(user_tg_id, cb_id)
+        if not item or item["kind"] not in ("config", "custom"):
+            await call.answer("این مورد یافت نشد (شاید قبلاً حذف شده).", show_alert=True)
+            return
+        if item["kind"] == "config" and mode != "time":
+            await call.answer("برای این کانفیگ فقط «تمدید زمان» ممکن است.", show_alert=True)
+            return
+        product = (await asyncio.to_thread(db.get_product, int(product_id)))
+        if not product:
+            await call.answer("این پلن یافت نشد.", show_alert=True)
+            return
+
+        add_volume = product["auto_provision_volume_gb"] if mode in ("full", "volume") else 0
+        add_days = product["duration_days"] if mode in ("full", "time") else 0
+        target_kind = item["kind"]
+        target_id = item["custom"]["id"] if target_kind == "custom" else item["config"]["id"]
+        price = product["price"]
+
+        wallet_credit = (await asyncio.to_thread(db.get_wallet_credit, user_tg_id))
+        wallet_used = min(wallet_credit, price)
+        if wallet_used > 0:
+            (await asyncio.to_thread(db.add_wallet_credit, user_tg_id, -wallet_used))
+
+        order_id = (await asyncio.to_thread(
+            db.create_renewal_order, user_tg_id, target_kind, target_id, mode,
+            add_volume, add_days, price, wallet_used,
+        ))
+        order = (await asyncio.to_thread(db.get_order, order_id))
+        await call.answer()
+
+        if order["final_price"] <= 0:
+            try:
+                result_text = await execute_renewal(db, order)
+            except RenewalError as e:
+                (await asyncio.to_thread(db.reject_order, order_id))
+                await _safe_edit(call.message, f"⛔️ تمدید ناموفق بود: {e}\nمبلغ کسرشده از کیف پول شما بازگردانده شد.")
+                return
+            (await asyncio.to_thread(db.approve_renewal_order, order_id))
+            await _safe_edit(call.message, result_text)
+            item2 = _find_my_orders_item(user_tg_id, cb_id)
+            if item2:
+                text = await _my_orders_item_text(item2)
+                deletable = item2["kind"] in ("config", "custom")
+                await call.message.answer(text, parse_mode="Markdown", reply_markup=kb.service_detail_kb(db, cb_id, item2["kind"], deletable))
+            return
+
+        remaining_amount = order["final_price"]
+        if not (await asyncio.to_thread(db.has_any_payable_method, remaining_amount, None)):
+            (await asyncio.to_thread(db.reject_order, order_id))
+            await _safe_edit(
+                call.message,
+                "⛔️ در حال حاضر هیچ روش پرداخت فعالی برای این مبلغ در دسترس نیست."
+                + ("\nمبلغ کسرشده از کیف پول شما بازگردانده شد." if wallet_used > 0 else ""),
+            )
+            return
+
+        await state.set_state(RenewalFlow.waiting_receipt)
+        await state.update_data(order_id=order_id, renew_cb_id=cb_id)
+
+        text = f"🔄 {_RENEW_MODE_LABEL[mode]} - {product['name']}\n\n"
+        if wallet_used:
+            text += f"👛 استفاده از کیف پول: {wallet_used:,} تومان\n"
+        text += f"💰 مبلغ نهایی قابل پرداخت: {order['final_price']:,} تومان\n\n"
+        text += "لطفاً روش پرداخت را انتخاب کنید:"
+        await _safe_edit(
+            call.message,
+            text, parse_mode="Markdown",
+            reply_markup=kb.payment_choice_kb(
+                crypto_payment.crypto_payment_available(db),
+                abangateway_payment.abangateway_payment_available(db),
+                custom_gateway_payment.list_enabled_gateways(db),
+                (await asyncio.to_thread(db.get_setting, "card_to_card_enabled", "1")) == "1",
+                amount=remaining_amount,
+                db=db,
+            ),
+        )
+
+    @router.callback_query(F.data == "pay_card2card", RenewalFlow.waiting_receipt)
+    async def cb_pay_card2card_renewal(call: CallbackQuery, state: FSMContext):
+        if (await asyncio.to_thread(db.get_setting, "card_to_card_enabled", "1")) != "1":
+            await call.answer("این روش پرداخت در حال حاضر غیرفعال است.", show_alert=True)
+            return
+        data = await state.get_data()
+        order_id = data.get("order_id")
+        order = (await asyncio.to_thread(db.get_order, order_id)) if order_id else None
+        if not order or order["status"] != "pending":
+            await call.answer("سفارش معتبر یافت نشد.", show_alert=True)
+            return
+        await call.answer()
+        intro_lines = [f"🔄 {_RENEW_MODE_LABEL[order['renewal_mode']]}"]
+        if order["wallet_used"]:
+            intro_lines.append(f"👛 استفاده از کیف پول: {order['wallet_used']:,} تومان")
+        await _send_card2card_details(call.message, intro_lines, order["final_price"])
+
+    @router.callback_query(F.data == "pay_crypto", RenewalFlow.waiting_receipt)
+    async def cb_pay_crypto_renewal(call: CallbackQuery, state: FSMContext):
+        data = await state.get_data()
+        order_id = data.get("order_id")
+        order = (await asyncio.to_thread(db.get_order, order_id)) if order_id else None
+        if not order or order["status"] != "pending":
+            await call.answer("سفارش معتبر یافت نشد.", show_alert=True)
+            return
+        await call.answer("در حال ساخت فاکتور...")
+        tenant_id = (await asyncio.to_thread(db.get_setting, "miniapp_tenant_id", ""))
+        try:
+            result = await crypto_payment.create_invoice_for(
+                db, tenant_id, call.from_user.id, "order", order_id, order["final_price"],
+                order_name=f"تمدید سرویس #{order_id}",
+            )
+        except crypto_payment.CryptoPaymentError as e:
+            await call.message.answer(f"⚠️ {e}")
+            return
+        await call.message.answer(
+            "🪙 فاکتور پرداخت ساخته شد. روی دکمه‌ی زیر بزن، ارز و مبلغ رو انتخاب کن و پرداخت رو تکمیل کن.\n"
+            "⏳ اعتبار این فاکتور فقط ۸۰ دقیقه است.\n"
+            "به‌محض تایید تراکنش روی بلاک‌چین، سرویس شما به‌صورت خودکار تمدید می‌شود.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["invoice_url"]),
+            ]]),
+        )
+
+    @router.callback_query(F.data == "pay_abangateway", RenewalFlow.waiting_receipt)
+    async def cb_pay_abangateway_renewal(call: CallbackQuery, state: FSMContext):
+        data = await state.get_data()
+        order_id = data.get("order_id")
+        order = (await asyncio.to_thread(db.get_order, order_id)) if order_id else None
+        if not order or order["status"] != "pending":
+            await call.answer("سفارش معتبر یافت نشد.", show_alert=True)
+            return
+        await call.answer("در حال ساخت فاکتور...")
+        tenant_id = (await asyncio.to_thread(db.get_setting, "miniapp_tenant_id", ""))
+        try:
+            result = await abangateway_payment.create_invoice_for(
+                db, tenant_id, call.from_user.id, "order", order_id, order["final_price"],
+                order_name=f"تمدید سرویس #{order_id}",
+            )
+        except abangateway_payment.AbanGatewayPaymentError as e:
+            await call.message.answer(f"⚠️ {e}")
+            return
+        invoice_row = (await asyncio.to_thread(db.get_abangateway_invoice_by_invoice_id, result["invoice_id"]))
+        await call.message.answer(
+            "💳 فاکتور پرداخت ساخته شد. روی دکمه‌ی زیر بزن و پرداخت رو تکمیل کن.\n"
+            "معمولاً به‌محض واریز، سرویس خودکار تمدید می‌شود؛ اگر چند دقیقه طول کشید، "
+            "دکمه‌ی «بررسی وضعیت پرداخت» را بزن.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["payment_url"])],
+                [InlineKeyboardButton(text="🔄 بررسی وضعیت پرداخت", callback_data=f"check_aban:{invoice_row['id']}")],
+            ]),
+        )
+
+    @router.callback_query(F.data.startswith("pay_customgw:"), RenewalFlow.waiting_receipt)
+    async def cb_pay_customgw_renewal(call: CallbackQuery, state: FSMContext):
+        data = await state.get_data()
+        order_id = data.get("order_id")
+        order = (await asyncio.to_thread(db.get_order, order_id)) if order_id else None
+        if not order or order["status"] != "pending":
+            await call.answer("سفارش معتبر یافت نشد.", show_alert=True)
+            return
+        gw_row = (await asyncio.to_thread(db.get_custom_gateway, int(call.data.split(":", 1)[1])))
+        if not gw_row or not gw_row["enabled"]:
+            await call.answer("این درگاه در دسترس نیست.", show_alert=True)
+            return
+        await call.answer("در حال ساخت فاکتور...")
+        tenant_id = (await asyncio.to_thread(db.get_setting, "miniapp_tenant_id", ""))
+        try:
+            result = await custom_gateway_payment.create_invoice_for(
+                db, tenant_id, call.from_user.id, gw_row["gateway_key"], "order", order_id, order["final_price"],
+                order_name=f"تمدید سرویس #{order_id}",
+            )
+        except custom_gateway_payment.CustomGatewayPaymentError as e:
+            await call.message.answer(f"⚠️ {e}")
+            return
+        if not result.get("invoice_url"):
+            await call.message.answer(
+                f"💠 فاکتور «{gw_row['name']}» ساخته شد ولی این درگاه لینک پرداخت برنگرداند.\n"
+                "پس از انجام پرداخت، سرویس به‌محض تایید درگاه به‌صورت خودکار تمدید می‌شود."
+            )
+            return
+        await call.message.answer(
+            f"💠 فاکتور پرداخت «{gw_row['name']}» ساخته شد. روی دکمه‌ی زیر بزن و پرداخت رو تکمیل کن.\n"
+            "به‌محض تایید پرداخت توسط درگاه، سرویس شما به‌صورت خودکار تمدید می‌شود.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["invoice_url"]),
+            ]]),
+        )
+
+    @router.message(RenewalFlow.waiting_receipt, F.photo | F.document)
+    async def receive_renewal_receipt(message: Message, state: FSMContext, bot: Bot):
+        data = await state.get_data()
+        order_id = data.get("order_id")
+        order = (await asyncio.to_thread(db.get_order, order_id))
+        if not order or order["status"] != "pending":
+            await message.answer("سفارش معتبر یافت نشد. لطفاً دوباره از منو شروع کنید.")
+            await state.clear()
+            return
+        file_id, receipt_type = _receipt_payload(message)
+        if not file_id:
+            await message.answer("لطفاً عکس یا فایل رسید پرداخت را ارسال کنید.")
+            return
+        (await asyncio.to_thread(db.set_order_receipt, order_id, file_id, receipt_type))
+        await _notify_admins_of_order(bot, order_id, receipt_file_id=file_id, receipt_type=receipt_type)
+        await message.answer(
+            "✅ رسید شما برای بررسی ارسال شد. پس از تایید ادمین، سرویس شما تمدید خواهد شد.",
+            reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
+        )
+        await _send_inline_main_menu(message, message.from_user.id)
+        await state.clear()
+
+    @router.message(RenewalFlow.waiting_receipt)
+    async def renewal_receipt_wrong_type(message: Message):
+        await message.answer("لطفاً عکس یا فایل رسید پرداخت را ارسال کنید.")
 
     # -----------------------------------------------------------------------
     # زیرمجموعه‌گیری (رفرال)

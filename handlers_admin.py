@@ -37,6 +37,7 @@ from panel_providers import (
 )
 from reseller_auto_provision import provision_auto_config, ProvisionError
 from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
+from renewal_engine import execute_renewal, RenewalError
 from states import (
     AdminAddCategory,
     AdminAddProduct,
@@ -1228,6 +1229,34 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         if order["status"] != "pending":
             await call.answer("این سفارش قبلاً بررسی شده است.", show_alert=True)
+            return
+
+        # ===== سفارش تمدید سرویس از حساب کاربری =====
+        if order["is_renewal"]:
+            try:
+                result_text = await execute_renewal(db, order)
+            except RenewalError as e:
+                await call.answer(f"⛔️ تمدید ناموفق بود: {e}", show_alert=True)
+                return
+            (await asyncio.to_thread(db.approve_renewal_order, order_id))
+            (await asyncio.to_thread(db.log_admin_action, 
+                call.from_user.id, "renewal_approve",
+                f"سفارش تمدید #{order_id} | کاربر {order['user_id']} | مبلغ: {order['final_price']:,}",
+            ))
+            try:
+                await bot.send_message(order["user_id"], result_text)
+                await _notify_user_inline_menu(bot, order["user_id"])
+            except Exception:
+                pass
+            try:
+                await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n✅ تایید شد و سرویس تمدید شد.")
+            except Exception:
+                try:
+                    await safe_edit(call, (call.message.text or "") + "\n\n✅ تایید شد و سرویس تمدید شد.")
+                except Exception:
+                    pass
+            await call.answer("سفارش تایید و سرویس تمدید شد.")
+            await _notify_admin_panel_menu(bot, call.from_user.id)
             return
 
         # ===== سفارش کانفیگ شخصی: به‌جای برداشتن از انبار، کاربر روی پنل ساخته می‌شود =====
@@ -3988,6 +4017,35 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_support(call)
         await replace_admin_view(call, "کدام دکمه ویرایش شود؟", reply_markup=kb.admin_edit_buttons_kb(db))
         await call.answer()
+
+    @router.callback_query(F.data == "adm_account_settings")
+    async def cb_admin_account_settings(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await replace_admin_view(
+            call,
+            "🧾 تنظیمات حساب کاربری کاربران\n\nهر دکمه را برای فعال/غیرفعال‌کردن لمس کنید:",
+            reply_markup=kb.account_settings_kb(db),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_acct_toggle:"))
+    async def cb_admin_acct_toggle(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        key = call.data.split(":", 1)[1]
+        valid_keys = {k for k, _label, _default in kb.ACCOUNT_TOGGLE_KEYS}
+        if key not in valid_keys:
+            await call.answer("کلید نامعتبر.", show_alert=True)
+            return
+        current = (await asyncio.to_thread(db.get_setting, key, "1"))
+        (await asyncio.to_thread(db.set_setting, key, "0" if current == "1" else "1"))
+        await safe_edit(
+            call,
+            "🧾 تنظیمات حساب کاربری کاربران\n\nهر دکمه را برای فعال/غیرفعال‌کردن لمس کنید:",
+            reply_markup=kb.account_settings_kb(db),
+        )
+        await call.answer("وضعیت تغییر کرد.")
 
     @router.callback_query(F.data.startswith("adm_btn_edit:"))
     async def cb_admin_btn_edit(call: CallbackQuery, state: FSMContext):

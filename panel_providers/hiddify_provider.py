@@ -147,3 +147,30 @@ class HiddifyProvider(BasePanelProvider):
                     return resp.status < 400
         except aiohttp.ClientError:
             return False
+
+    async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
+                           reset_usage: bool = False) -> PanelUserResult:
+        async with aiohttp.ClientSession() as session:
+            user = await self._find_by_name(session, username)
+            new_limit = float(user.get("usage_limit_GB") or 0) + add_volume_gb if add_volume_gb else user.get("usage_limit_GB")
+            new_days = int(user.get("package_days") or 0) + add_days if add_days else user.get("package_days")
+            payload = dict(user)
+            payload["usage_limit_GB"] = new_limit
+            payload["package_days"] = new_days
+            if reset_usage:
+                payload["current_usage_GB"] = 0
+            try:
+                async with session.put(
+                    f"{self._base_url()}/api/v2/admin/user/{user['uuid']}/",
+                    json=payload,
+                    headers=self._headers(),
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise PanelError(f"خطا در بروزرسانی کاربر روی پنل (کد {resp.status}): {text[:300]}")
+            except aiohttp.ClientError as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+
+        sub_url = f"{self._sub_base_url()}/{user['uuid']}/"
+        return PanelUserResult(username=username, subscription_url=sub_url, raw=payload)
