@@ -402,6 +402,18 @@ def renewal_plans_kb(products, mode: str, cb_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def renewal_pricing_kb(db) -> InlineKeyboardMarkup:
+    """نرخ ثابتِ «هر گیگابایت» و «هر روز» برای تمدید فقط-حجم / فقط-زمان سرویس‌ها
+    (مستقل از قیمت پلن‌ها که مخصوص تمدید کامل است)."""
+    price_per_gb = int(db.get_setting("renewal_price_per_gb", "0") or "0")
+    price_per_day = int(db.get_setting("renewal_price_per_day", "0") or "0")
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"🔋 نرخ هر گیگ: {price_per_gb:,} تومان", callback_data="adm_renewal_price_gb")],
+        [InlineKeyboardButton(text=f"⏱ نرخ هر روز: {price_per_day:,} تومان", callback_data="adm_renewal_price_day")],
+        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:finance")],
+    ])
+
+
 # ---------------------------------------------------------------------------
 # تنظیمات ادمین: فعال/غیرفعال کردن دکمه‌های حساب کاربری/صفحه‌ی سرویس
 # ---------------------------------------------------------------------------
@@ -538,6 +550,7 @@ ADMIN_PANEL_ITEMS = [
     ("adm_volume_reminder_settings", "📉 یادآوری اتمام حجم", "adm_volume_reminder_settings"),
     ("adm_stock_alert_settings", "📦 آستانه‌ی هشدار موجودی", "adm_stock_alert_settings"),
     ("adm_custom_config_settings", "🛠 ساخت کانفیگ شخصی (پنل‌های VPN)", "adm_custom_config_settings"),
+    ("adm_renewal_pricing", "💳 قیمت‌گذاری تمدید حجم/زمان", "adm_renewal_pricing"),
     ("adm_delivery_settings", "📤 تنظیمات ارسال کانفیگ", "adm_delivery_settings"),
     ("adm_referral_settings", "🤝 تنظیمات زیرمجموعه‌گیری", "adm_referral_settings"),
     ("adm_resellers_menu", "🏪 مدیریت بات‌های نمایندگی", "adm_resellers_menu"),
@@ -607,6 +620,7 @@ ADMIN_PANEL_CATEGORIES = [
         "adm_set_abangateway",
         "adm_custom_gateways",
         "adm_min_amount_settings",
+        "adm_renewal_pricing",
     ]),
     ("alerts", "🔔 یادآوری‌ها و هشدارها", [
         "adm_renewal_settings",

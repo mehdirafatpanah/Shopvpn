@@ -240,7 +240,13 @@ class CustomConfigFlow(StatesGroup):
 
 
 class RenewalFlow(StatesGroup):
+    waiting_amount = State()
     waiting_receipt = State()
+
+
+class AdminRenewalPricing(StatesGroup):
+    waiting_price_per_gb = State()
+    waiting_price_per_day = State()
 
 
 class ResellerFlow(StatesGroup):

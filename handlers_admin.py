@@ -78,6 +78,7 @@ from states import (
     AdminSetPanelSubUrl,
     AdminAddPricingTier,
     AdminCustomConfigSettings,
+    AdminRenewalPricing,
     AdminResetTestConfig,
     ResellerRequestFlow,
     AdminResellerRequestFlow,
@@ -2380,6 +2381,80 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await message.answer(
             f"✅ بازه‌ی حجم مجاز روی {data['min_gb']} تا {text} گیگابایت تنظیم شد.",
             reply_markup=kb.custom_config_menu_kb(db, is_main_bot),
+        )
+
+    # -------------------------------------------------------------------
+    # قیمت‌گذاری تمدید حجم/زمان سرویس‌ها (نرخ ثابت هر گیگ + نرخ ثابت هر روز)
+    # -------------------------------------------------------------------
+
+    @router.callback_query(F.data == "adm_renewal_pricing")
+    async def cb_admin_renewal_pricing(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        await replace_admin_view(
+            call,
+            "💳 قیمت‌گذاری تمدید حجم/زمان سرویس\n\n"
+            "این نرخ‌ها فقط برای «تمدید حجم» و «تمدید زمان» (از حساب کاربری) استفاده می‌شود؛ "
+            "«تمدید کامل سرویس» همچنان بر اساس قیمت همان پلن انتخابی محاسبه می‌شود.\n"
+            "اگر نرخی صفر باشد، آن دکمه‌ی تمدید برای کاربران قابل استفاده نخواهد بود.",
+            reply_markup=kb.renewal_pricing_kb(db),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_renewal_price_gb")
+    async def cb_admin_renewal_price_gb(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        await state.set_state(AdminRenewalPricing.waiting_price_per_gb)
+        await safe_edit(
+            call,
+            "نرخ هر گیگابایتِ «تمدید حجم» چند تومان باشد؟ (فقط عدد صحیح؛ صفر = غیرفعال):",
+            reply_markup=kb.admin_back_kb("adm_renewal_pricing"),
+        )
+        await call.answer()
+
+    @router.message(AdminRenewalPricing.waiting_price_per_gb)
+    async def process_renewal_price_gb(message: Message, state: FSMContext):
+        text = (message.text or "").strip()
+        if not text.isdigit():
+            await message.answer("لطفاً فقط عدد صحیح (بدون اعشار و منفی) ارسال کنید.")
+            return
+        (await asyncio.to_thread(db.set_setting, "renewal_price_per_gb", text))
+        (await asyncio.to_thread(
+            db.log_admin_action, message.from_user.id, "renewal_price_gb_set", f"مقدار جدید: {text}",
+        ))
+        await state.clear()
+        await message.answer(
+            f"✅ نرخ هر گیگ تمدید حجم روی {int(text):,} تومان تنظیم شد.",
+            reply_markup=kb.renewal_pricing_kb(db),
+        )
+
+    @router.callback_query(F.data == "adm_renewal_price_day")
+    async def cb_admin_renewal_price_day(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        await state.set_state(AdminRenewalPricing.waiting_price_per_day)
+        await safe_edit(
+            call,
+            "نرخ هر روزِ «تمدید زمان» چند تومان باشد؟ (فقط عدد صحیح؛ صفر = غیرفعال):",
+            reply_markup=kb.admin_back_kb("adm_renewal_pricing"),
+        )
+        await call.answer()
+
+    @router.message(AdminRenewalPricing.waiting_price_per_day)
+    async def process_renewal_price_day(message: Message, state: FSMContext):
+        text = (message.text or "").strip()
+        if not text.isdigit():
+            await message.answer("لطفاً فقط عدد صحیح (بدون اعشار و منفی) ارسال کنید.")
+            return
+        (await asyncio.to_thread(db.set_setting, "renewal_price_per_day", text))
+        (await asyncio.to_thread(
+            db.log_admin_action, message.from_user.id, "renewal_price_day_set", f"مقدار جدید: {text}",
+        ))
+        await state.clear()
+        await message.answer(
+            f"✅ نرخ هر روز تمدید زمان روی {int(text):,} تومان تنظیم شد.",
+            reply_markup=kb.renewal_pricing_kb(db),
         )
 
     async def deny_reseller_panel_access(call: CallbackQuery):
