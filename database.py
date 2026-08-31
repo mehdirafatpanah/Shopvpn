@@ -1910,12 +1910,14 @@ class Database:
             )
             return cur.lastrowid
 
-    def approve_custom_config_order(self, order_id: int):
+    def approve_custom_config_order(self, order_id: int) -> bool:
+        """فقط اگر سفارش pending یا processing (بعد از claim_order) باشد اعمال می‌شود."""
         with self._get_conn() as conn:
-            conn.execute(
-                "UPDATE orders SET status='approved', updated_at=? WHERE id=?",
+            cur = conn.execute(
+                "UPDATE orders SET status='approved', updated_at=? WHERE id=? AND status IN ('pending','processing')",
                 (datetime.utcnow().isoformat(), order_id),
             )
+            return cur.rowcount > 0
 
     def create_renewal_order(
         self,
@@ -1941,12 +1943,14 @@ class Database:
             )
             return cur.lastrowid
 
-    def approve_renewal_order(self, order_id: int):
+    def approve_renewal_order(self, order_id: int) -> bool:
+        """فقط اگر سفارش pending یا processing (بعد از claim_order) باشد تایید می‌کند."""
         with self._get_conn() as conn:
-            conn.execute(
-                "UPDATE orders SET status='approved', updated_at=? WHERE id=?",
+            cur = conn.execute(
+                "UPDATE orders SET status='approved', updated_at=? WHERE id=? AND status IN ('pending','processing')",
                 (datetime.utcnow().isoformat(), order_id),
             )
+            return cur.rowcount > 0
 
     def set_order_receipt(self, order_id: int, file_id: str, receipt_type: str = "photo"):
         with self._get_conn() as conn:
@@ -1966,30 +1970,56 @@ class Database:
         with self._get_conn() as conn:
             return conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
 
-    def approve_order(self, order_id: int, config_ids):
+    def claim_order(self, order_id: int) -> bool:
+        """قبل از اجرای عملیات جانبی (تمدید روی پنل، ساخت کانفیگ) صدا زده می‌شود تا از
+        اجرای همزمان دو تایید برای یک سفارش (مثلاً کال‌بک تکراری درگاه) جلوگیری شود.
+        اگر سفارش pending باشد آن را processing می‌کند و True برمی‌گرداند، وگرنه False."""
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "UPDATE orders SET status='processing', updated_at=? WHERE id=? AND status='pending'",
+                (datetime.utcnow().isoformat(), order_id),
+            )
+            return cur.rowcount > 0
+
+    def release_order_claim(self, order_id: int):
+        """در صورت شکست عملیات جانبی بعد از claim_order، سفارش را به pending برمی‌گرداند
+        تا قابل تلاش مجدد (توسط ادمین یا وب‌هوک بعدی) باشد."""
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE orders SET status='pending', updated_at=? WHERE id=? AND status='processing'",
+                (datetime.utcnow().isoformat(), order_id),
+            )
+
+    def approve_order(self, order_id: int, config_ids) -> bool:
         """config_ids می‌تواند یک id تکی یا لیستی از id ها باشد (برای سفارش با تعداد بیشتر از ۱).
         config_id ستون سفارش برای سازگاری با کدهای قدیمی، همیشه اولین کانفیگ را نگه می‌دارد؛
-        برای گرفتن همه‌ی کانفیگ‌های یک سفارش از get_order_configs استفاده کن."""
+        برای گرفتن همه‌ی کانفیگ‌های یک سفارش از get_order_configs استفاده کن.
+        فقط اگر سفارش pending یا processing (بعد از claim_order) باشد اعمال می‌شود."""
         if isinstance(config_ids, int):
             config_ids = [config_ids]
         with self._get_conn() as conn:
-            conn.execute(
-                "UPDATE orders SET status='approved', config_id=?, updated_at=? WHERE id=?",
+            cur = conn.execute(
+                "UPDATE orders SET status='approved', config_id=?, updated_at=? WHERE id=? AND status IN ('pending','processing')",
                 (config_ids[0], datetime.utcnow().isoformat(), order_id),
             )
+            if cur.rowcount == 0:
+                return False
             conn.executemany(
                 "UPDATE configs SET order_id=? WHERE id=?",
                 [(order_id, cid) for cid in config_ids],
             )
+            return True
 
-    def approve_order_auto(self, order_id: int):
+    def approve_order_auto(self, order_id: int) -> bool:
         """تایید سفارش محصولات is_auto_provision که کانفیگشان لحظه‌ی خرید و بدون
-        استفاده از بانک کانفیگ ساخته می‌شود (بدون config_id)."""
+        استفاده از بانک کانفیگ ساخته می‌شود (بدون config_id).
+        فقط اگر سفارش pending یا processing (بعد از claim_order) باشد اعمال می‌شود."""
         with self._get_conn() as conn:
-            conn.execute(
-                "UPDATE orders SET status='approved', updated_at=? WHERE id=?",
+            cur = conn.execute(
+                "UPDATE orders SET status='approved', updated_at=? WHERE id=? AND status IN ('pending','processing')",
                 (datetime.utcnow().isoformat(), order_id),
             )
+            return cur.rowcount > 0
 
     def get_order_configs(self, order_id: int):
         with self._get_conn() as conn:
@@ -1997,18 +2027,23 @@ class Database:
                 "SELECT * FROM configs WHERE order_id=? ORDER BY id", (order_id,)
             ).fetchall()
 
-    def reject_order(self, order_id: int):
-        order = self.get_order(order_id)
+    def reject_order(self, order_id: int) -> bool:
+        """فقط سفارش pending را رد می‌کند (نه processing/approved)، تا با یک تایید
+        هم‌زمان (claim_order) تداخل نکند. در صورت رد شدن، مبلغ کیف پول را برمی‌گرداند."""
         with self._get_conn() as conn:
-            conn.execute(
-                "UPDATE orders SET status='rejected', updated_at=? WHERE id=?",
+            cur = conn.execute(
+                "UPDATE orders SET status='rejected', updated_at=? WHERE id=? AND status='pending'",
                 (datetime.utcnow().isoformat(), order_id),
             )
+            if cur.rowcount == 0:
+                return False
+        order = self.get_order(order_id)
         if order:
             if order["wallet_used"]:
                 self.add_wallet_credit(order["user_id"], order["wallet_used"])
             if order["discount_code_id"]:
                 self.decrement_discount_usage(order["discount_code_id"])
+        return True
 
     def get_orders_by_status(self, status: str, limit: int = 200):
         with self._get_conn() as conn:
@@ -2578,23 +2613,28 @@ class Database:
             ).fetchone()
 
     def approve_topup(self, topup_id: int) -> bool:
+        """فقط اگر topup هنوز pending یا processing (بعد از claim_topup) باشد اعمال می‌شود."""
         topup = self.get_topup(topup_id)
-        if not topup or topup["status"] != "pending":
+        if not topup:
             return False
         with self._get_conn() as conn:
-            conn.execute(
-                "UPDATE wallet_topups SET status='approved', updated_at=? WHERE id=?",
+            cur = conn.execute(
+                "UPDATE wallet_topups SET status='approved', updated_at=? WHERE id=? AND status='pending'",
                 (datetime.utcnow().isoformat(), topup_id),
             )
+            if cur.rowcount == 0:
+                return False
         self.add_wallet_credit(topup["user_id"], topup["amount"])
         return True
 
-    def reject_topup(self, topup_id: int):
+    def reject_topup(self, topup_id: int) -> bool:
+        """فقط topup pending را رد می‌کند (نه processing/approved)."""
         with self._get_conn() as conn:
-            conn.execute(
-                "UPDATE wallet_topups SET status='rejected', updated_at=? WHERE id=?",
+            cur = conn.execute(
+                "UPDATE wallet_topups SET status='rejected', updated_at=? WHERE id=? AND status='pending'",
                 (datetime.utcnow().isoformat(), topup_id),
             )
+            return cur.rowcount > 0
 
     def get_topups_by_status(self, status: str, limit: int = 200):
         with self._get_conn() as conn:

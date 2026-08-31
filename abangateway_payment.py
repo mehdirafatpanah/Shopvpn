@@ -180,11 +180,14 @@ async def finalize_paid_order(db, bot, order_id: int, notify_admins_fn=None) -> 
         return "⚠️ سفارش یافت نشد."
     if order["status"] != "pending":
         return "✅ این سفارش قبلاً بررسی و تحویل داده شده است."
+    if not db.claim_order(order_id):
+        return "✅ این سفارش قبلاً بررسی و تحویل داده شده است."
 
     if order["is_renewal"]:
         try:
             result_text = await execute_renewal(db, order)
         except RenewalError as e:
+            db.release_order_claim(order_id)
             return f"⛔️ تمدید ناموفق بود: {e}\nبا پشتیبانی تماس بگیرید."
         db.approve_renewal_order(order_id)
         try:
@@ -201,12 +204,14 @@ async def finalize_paid_order(db, bot, order_id: int, notify_admins_fn=None) -> 
     if order["is_custom_config"]:
         server = db.get_panel_server(order["custom_panel_server_id"])
         if not server:
+            db.release_order_claim(order_id)
             return "⛔️ سرور مربوط به کانفیگ شخصی یافت نشد؛ با پشتیبانی تماس بگیرید."
         duration_days = db.get_custom_config_settings()["duration_days"]
         try:
             provider = get_provider(server)
             result = await provider.create_user(order["custom_username"], order["custom_volume_gb"], duration_days)
         except Exception as e:
+            db.release_order_claim(order_id)
             return f"⛔️ خطا در ساخت کانفیگ روی پنل: {e}\nبا پشتیبانی تماس بگیرید."
         db.add_custom_config(
             order["user_id"], server["id"], result.username, order["custom_volume_gb"],
@@ -227,12 +232,14 @@ async def finalize_paid_order(db, bot, order_id: int, notify_admins_fn=None) -> 
                 else:
                     prov_results = await provision_auto_config(db, product, quantity, user_id=order["user_id"], order_id=order_id)
             except (ProvisionError, DirectProvisionError) as e:
+                db.release_order_claim(order_id)
                 return f"⚠️ پرداخت تایید شد ولی ساخت خودکار کانفیگ ناموفق بود: {e}\nبا پشتیبانی تماس بگیرید."
             db.approve_order_auto(order_id)
             links = [r["subscription_url"] for r in prov_results]
         else:
             results = db.take_unused_configs(order["product_id"], order["user_id"], quantity)
             if not results:
+                db.release_order_claim(order_id)
                 return "⚠️ پرداخت تایید شد ولی موجودی هم‌زمان تمام شده؛ ادمین به‌زودی دستی رسیدگی می‌کند."
             db.approve_order(order_id, [r["id"] for r in results])
             links = [r["link"] for r in results]
@@ -265,9 +272,8 @@ async def finalize_paid_topup(db, topup_id: int) -> str:
     topup = db.get_topup(topup_id)
     if not topup:
         return "⚠️ درخواست شارژ یافت نشد."
-    if topup["status"] != "pending":
+    if not db.approve_topup(topup_id):
         return "✅ این درخواست شارژ قبلاً بررسی شده است."
-    db.approve_topup(topup_id)
     return f"✅ پرداخت تایید شد و {topup['amount']:,} تومان به کیف پول کاربر اضافه شد."
 
 

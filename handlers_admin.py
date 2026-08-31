@@ -1256,12 +1256,16 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if order["status"] != "pending":
             await call.answer("این سفارش قبلاً بررسی شده است.", show_alert=True)
             return
+        if not (await asyncio.to_thread(db.claim_order, order_id)):
+            await call.answer("این سفارش قبلاً بررسی شده است.", show_alert=True)
+            return
 
         # ===== سفارش تمدید سرویس از حساب کاربری =====
         if order["is_renewal"]:
             try:
                 result_text = await execute_renewal(db, order)
             except RenewalError as e:
+                await asyncio.to_thread(db.release_order_claim, order_id)
                 await call.answer(f"⛔️ تمدید ناموفق بود: {e}", show_alert=True)
                 return
             (await asyncio.to_thread(db.approve_renewal_order, order_id))
@@ -1299,9 +1303,11 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                     duration_days=(await asyncio.to_thread(db.get_custom_config_settings))["duration_days"],
                 )
             except PanelUsernameTakenError:
+                await asyncio.to_thread(db.release_order_claim, order_id)
                 await call.answer("⛔️ این نام کاربری روی پنل تکراری است؛ از کاربر بخواه نام دیگری انتخاب کند.", show_alert=True)
                 return
             except PanelError as e:
+                await asyncio.to_thread(db.release_order_claim, order_id)
                 await call.answer(f"⛔️ خطا در ارتباط با پنل: {e}", show_alert=True)
                 return
 
@@ -1350,6 +1356,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 else:
                     prov_results = await provision_auto_config(db, product, quantity, user_id=order["user_id"], order_id=order_id)
             except (ProvisionError, DirectProvisionError) as e:
+                await asyncio.to_thread(db.release_order_claim, order_id)
                 await call.answer(f"⛔️ {e}", show_alert=True)
                 return
             (await asyncio.to_thread(db.approve_order_auto, order_id))
@@ -1381,6 +1388,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         quantity = order["quantity"] or 1
         results = (await asyncio.to_thread(db.take_unused_configs, order["product_id"], order["user_id"], quantity))
         if not results:
+            await asyncio.to_thread(db.release_order_claim, order_id)
             await call.answer("⛔️ موجودی این محصول تمام شده! ابتدا لینک جدید اضافه کنید.", show_alert=True)
             return
 
@@ -1445,7 +1453,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await call.answer("این سفارش قبلاً بررسی شده است.", show_alert=True)
             return
 
-        (await asyncio.to_thread(db.reject_order, order_id))
+        if not (await asyncio.to_thread(db.reject_order, order_id)):
+            await call.answer("این سفارش قبلاً بررسی شده است.", show_alert=True)
+            return
         (await asyncio.to_thread(db.log_admin_action, 
             call.from_user.id, "order_reject",
             f"سفارش #{order_id} | کاربر {order['user_id']}",
@@ -1786,7 +1796,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await call.answer("این درخواست قبلاً بررسی شده است.", show_alert=True)
             return
 
-        (await asyncio.to_thread(db.approve_topup, topup_id))
+        if not (await asyncio.to_thread(db.approve_topup, topup_id)):
+            await call.answer("این درخواست قبلاً بررسی شده است.", show_alert=True)
+            return
         new_balance = (await asyncio.to_thread(db.get_wallet_credit, topup["user_id"]))
         (await asyncio.to_thread(db.log_admin_action, 
             call.from_user.id, "topup_approve",
@@ -1830,7 +1842,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await call.answer("این درخواست قبلاً بررسی شده است.", show_alert=True)
             return
 
-        (await asyncio.to_thread(db.reject_topup, topup_id))
+        if not (await asyncio.to_thread(db.reject_topup, topup_id)):
+            await call.answer("این درخواست قبلاً بررسی شده است.", show_alert=True)
+            return
         (await asyncio.to_thread(db.log_admin_action, 
             call.from_user.id, "topup_reject",
             f"شارژ #{topup_id} | کاربر {topup['user_id']} | مبلغ: {topup['amount']:,}",
