@@ -4658,10 +4658,30 @@ async function renderAdminFinanceSection() {
           <label class="switch"><input type="checkbox" id="fin-crypto-enabled" ${crypto.enabled ? "checked" : ""} /><span class="switch-slider"></span></label>
         </div>
         <label class="field-label">نرخ تبدیل هر ۱ دلار به تومان (خالی یا ۰ = خودکار از tgju/نوبیتکس/والکس/ارزدیجیتال)</label>
-        <input class="input" id="fin-crypto-rate" type="number" placeholder="خودکار" value="${crypto.usd_to_toman_rate || ""}" style="margin-bottom:4px" />
+        <input class="input" id="fin-crypto-rate" type="number" placeholder="خودکار" value="${crypto.usd_to_toman_rate || ""}" style="margin-bottom:10px" />
+        <label class="field-label">مهلت انقضای فاکتور (دقیقه)</label>
+        <input class="input" id="fin-crypto-expire" type="number" placeholder="80" value="${crypto.expire_min || 80}" style="margin-bottom:10px" />
+        <label class="field-label">ارزهای مجاز (خالی = همه‌ی ارزهای فعال Plisio). با کاما جدا کن، مثل: BTC,ETH,USDT_TRX</label>
+        <input class="input" id="fin-crypto-currencies" type="text" placeholder="BTC,ETH,USDT_TRX" value="${(crypto.allowed_currencies || "").replace(/"/g, "&quot;")}" style="direction:ltr;text-align:left;margin-bottom:4px" />
         <div class="field-error" id="fin-crypto-error"></div>
         <button class="btn" id="fin-crypto-save" style="margin-top:8px">💾 ذخیره</button>
+        <button class="btn outline" id="fin-crypto-selftest" style="margin-top:8px">🧪 خودآزمایی امضا (بدون تراکنش واقعی)</button>
+        <div id="fin-crypto-selftest-result" style="margin-top:6px;font-size:13px"></div>
         ${crypto.has_own_key ? `<button class="btn outline danger" id="fin-crypto-clear" style="margin-top:8px">🗑 حذف کلید و غیرفعال‌سازی</button>` : ""}
+      </div>
+
+      <div class="card">
+        <div class="eyebrow" style="margin-top:0">🧾 لاگ وبهوک درگاه‌ها</div>
+        <p class="hint-text">آخرین کال‌بک‌های دریافتی از هر درگاه، برای دیباگ سریع مشکلاتی مثل رد شدن امضا یا برنگشتن تایید پرداخت.</p>
+        <button class="btn outline" id="fin-webhook-logs-btn">📋 نمایش آخرین ۵۰ لاگ</button>
+        <div id="fin-webhook-logs-box" style="margin-top:10px"></div>
+      </div>
+
+      <div class="card">
+        <div class="eyebrow" style="margin-top:0">📊 گزارش درآمد به تفکیک درگاه</div>
+        <p class="hint-text">جمع تراکنش‌های تکمیل‌شده هر درگاه (کارت‌به‌کارت دستی چون invoice مجزا ندارد در این گزارش نیست).</p>
+        <button class="btn outline" id="fin-revenue-btn">📊 نمایش گزارش</button>
+        <div id="fin-revenue-box" style="margin-top:10px"></div>
       </div>
 
       <div class="card">
@@ -4712,7 +4732,11 @@ async function renderAdminFinanceSection() {
       const rateRaw = document.getElementById("fin-crypto-rate").value.trim();
       const rate = rateRaw ? Number(rateRaw) : 0;
       if (isNaN(rate) || rate < 0) { errBox.textContent = "نرخ تبدیل باید عددی معتبر باشد (یا خالی بذار برای حالت خودکار)."; return; }
+      const expireRaw = document.getElementById("fin-crypto-expire").value.trim();
+      const expireMin = expireRaw ? Number(expireRaw) : 80;
+      if (isNaN(expireMin) || expireMin <= 0) { errBox.textContent = "مهلت انقضا باید عددی بزرگ‌تر از صفر باشد."; return; }
       const keyInput = document.getElementById("fin-crypto-key").value;
+      const currencies = document.getElementById("fin-crypto-currencies").value;
       try {
         await api("/api/admin/settings/crypto", {
           method: "POST",
@@ -4720,12 +4744,57 @@ async function renderAdminFinanceSection() {
             enabled: document.getElementById("fin-crypto-enabled").checked,
             usd_to_toman_rate: rate,
             api_key: keyInput === "" ? null : keyInput,
+            expire_min: expireMin,
+            allowed_currencies: currencies,
           }),
         });
         tg.HapticFeedback.notificationOccurred("success");
         notify("تنظیمات پرداخت کریپتو ذخیره شد.");
         renderAdminFinanceSection();
       } catch (e) { errBox.textContent = e.message; }
+    };
+
+    const selfTestBtn = document.getElementById("fin-crypto-selftest");
+    if (selfTestBtn) {
+      selfTestBtn.onclick = async () => {
+        const box = document.getElementById("fin-crypto-selftest-result");
+        box.textContent = "در حال بررسی...";
+        try {
+          const r = await api("/api/admin/settings/crypto/self-test", { method: "POST" });
+          box.textContent = r.message;
+          box.style.color = r.ok ? "#2ecc71" : "#e55";
+        } catch (e) { box.textContent = e.message; box.style.color = "#e55"; }
+      };
+    }
+
+    document.getElementById("fin-webhook-logs-btn").onclick = async () => {
+      const box = document.getElementById("fin-webhook-logs-box");
+      box.innerHTML = skeleton(2);
+      try {
+        const { logs } = await api("/api/admin/payment-webhook-logs?limit=50");
+        if (!logs.length) { box.innerHTML = `<p class="hint-text">هنوز لاگی ثبت نشده.</p>`; return; }
+        box.innerHTML = logs.map(l => `
+          <div style="border-bottom:1px solid var(--border-color,#333);padding:6px 0;font-size:13px">
+            <div><b>${l.gateway}</b> — ${l.verified ? "✅ verified" : "❌ NOT verified"} — وضعیت: ${l.status || "-"}</div>
+            <div style="color:#999">${l.created_at} ${l.txn_id ? "· txn: " + l.txn_id : ""}</div>
+            ${l.error ? `<div style="color:#e55">${l.error}</div>` : ""}
+          </div>
+        `).join("");
+      } catch (e) { box.innerHTML = `<p class="field-error">${e.message}</p>`; }
+    };
+
+    document.getElementById("fin-revenue-btn").onclick = async () => {
+      const box = document.getElementById("fin-revenue-box");
+      box.innerHTML = skeleton(1);
+      try {
+        const { gateways } = await api("/api/admin/reports/gateway-revenue");
+        box.innerHTML = gateways.map(g => `
+          <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border-color,#333)">
+            <span>${g.label}</span>
+            <span>${g.count.toLocaleString("fa-IR")} تراکنش — ${g.amount_toman.toLocaleString("fa-IR")} تومان</span>
+          </div>
+        `).join("");
+      } catch (e) { box.innerHTML = `<p class="field-error">${e.message}</p>`; }
     };
 
     const cryptoClearBtn = document.getElementById("fin-crypto-clear");
