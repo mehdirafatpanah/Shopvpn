@@ -3263,13 +3263,34 @@ class Database:
                 "SELECT * FROM custom_gateway_invoices WHERE id=?", (invoice_id,)
             ).fetchone()
 
-    def get_pending_custom_gateway_invoice_for_ref(self, gateway_id: int, kind: str, ref_id: int):
+    def get_pending_custom_gateway_invoice_for_ref(self, gateway_id: int, kind: str, ref_id: int,
+                                                    max_age_minutes: int = 60):
+        """آخرین فاکتور «هنوز تصمیم‌نگرفته» (new/pending) برای این سفارش/شارژ را برمی‌گرداند
+        تا با هر بار کلیک، فاکتور تکراری ساخته نشود. اگر فاکتور قدیمی از max_age_minutes
+        دقیقه‌ی گذشته بگذرد، دیگر آن را بازنمی‌گرداند (منقضی‌اش می‌کند) تا کاربری که واقعاً
+        پرداختش شکست خورده گیر یک لینک/وضعیت مرده نماند و بتواند فاکتور تازه بسازد.
+        نکته: created_at توسط ستون DEFAULT CURRENT_TIMESTAMP خودِ SQLite با فرمت
+        'YYYY-MM-DD HH:MM:SS' (بدون میکروثانیه، جداکننده‌ی فاصله نه T) پر می‌شود؛
+        این‌جا به‌جای مقایسه‌ی رشته‌ای (که با isoformat() ناسازگار است)، هر دو را
+        به datetime واقعی تبدیل می‌کنیم."""
         with self._get_conn() as conn:
-            return conn.execute(
+            row = conn.execute(
                 "SELECT * FROM custom_gateway_invoices WHERE gateway_id=? AND kind=? AND ref_id=? "
                 "AND status IN ('new','pending') ORDER BY id DESC LIMIT 1",
                 (gateway_id, kind, ref_id),
             ).fetchone()
+            if row and row["created_at"]:
+                try:
+                    created = datetime.fromisoformat(str(row["created_at"]).replace("Z", ""))
+                except ValueError:
+                    created = None
+                if created and created < datetime.utcnow() - timedelta(minutes=max_age_minutes):
+                    conn.execute(
+                        "UPDATE custom_gateway_invoices SET status='expired', updated_at=? WHERE id=?",
+                        (datetime.utcnow().isoformat(), row["id"]),
+                    )
+                    return None
+            return row
 
     def update_custom_gateway_invoice_status(self, invoice_id: int, status: str):
         with self._get_conn() as conn:

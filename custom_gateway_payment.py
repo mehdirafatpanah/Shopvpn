@@ -13,6 +13,7 @@
 
 import json
 import logging
+import secrets
 from datetime import datetime, timezone
 
 from config import API_BASE_URL
@@ -67,7 +68,11 @@ async def create_invoice_for(db, tenant_id: str, tg_id: int, gateway_key: str, k
         return {"invoice_url": existing["invoice_url"], "txn_id": existing["txn_id"]}
 
     tenant_slug = tenant_id or "main"
-    our_ref = f"{kind}-{tenant_slug}-{ref_id}-{int(datetime.now(timezone.utc).timestamp())}"
+    # نکته‌ی امنیتی: یک قطعه‌ی تصادفی (نه فقط ref_id/زمان که برای خودِ کاربر
+    # قابل‌حدس است) به txn_id داخلی اضافه می‌شود تا وقتی webhook_auth یک درگاه
+    # روی "none" تنظیم شده (بعضی API‌ها اصلاً امضا/رمز پشتیبانی نمی‌کنند)، کاربر
+    # نتواند با حدس‌زدن txn خودش، وب‌هوک را دستی صدا بزند و پرداخت جعلی ثبت کند.
+    our_ref = f"{kind}-{tenant_slug}-{ref_id}-{int(datetime.now(timezone.utc).timestamp())}-{secrets.token_hex(6)}"
     # برخی درگاه‌ها (مثل TonPays) سقف طول کاراکتر برای order_id دارند (مثلاً حداکثر
     # ۲۰ کاراکتر)؛ چون ردیابی واقعی سفارش از طریق gateway_ref (شناسه‌ای که خودِ
     # درگاه در پاسخ create_invoice برمی‌گرداند) انجام می‌شود نه با پارس order_id،

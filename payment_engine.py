@@ -29,15 +29,26 @@ JSONPath، بدون نیاز به کتابخانه‌ی جانبی).
       "headers": {"Authorization": "Bearer {api_key}"}, "body_type": "json",
       "body": {"authority": "{query.Authority}", "amount": "{amount}"}
   },
-  "verify_response": {"status_path": "data.code", "success_values": ["100", "101"]},
+  "verify_response": {"status_path": "data.code", "success_values": ["100", "101"],
+                       "amount_path": "data.amount"},
 
   "webhook_enabled": true,
   "webhook_auth": {"mode": "none|header_secret|query_secret|hmac_sha256",
                     "header_name": "X-Signature", "query_param": "secret",
                     "secret_field": "webhook_secret", "hmac_algo": "sha256"},
   "webhook_mapping": {"txn_id_path": "txn_id", "status_path": "status",
-                       "success_values": ["completed", "paid"], "amount_path": "amount"}
+                       "success_values": ["completed", "paid"], "amount_path": "amount"},
+
+  "amount_tolerance_percent": 1.0
 }
+
+نکته‌ی امنیتی مهم: اگر «amount_path» در verify_response یا webhook_mapping پر شده باشد،
+مبلغ برگشتی از درگاه با مبلغ واقعی فاکتور (amount_toman) مقایسه می‌شود (با
+تحمل خطای amount_tolerance_percent درصد، برای گردکردن‌های رایج در درگاه‌های
+کریپتویی/تبدیل ارز) و در صورت مغایرت، سفارش/شارژ تکمیل نمی‌شود. این فیلد
+اختیاری است چون همه‌ی درگاه‌ها مبلغ را در پاسخشان برنمی‌گردانند؛ اگر خالی
+بماند، مثل قبل فقط بر اساس وضعیت/txn_id تصمیم گرفته می‌شود (برای این‌که
+اتصال هر نوع درگاهی - حتی بی‌کیفیت‌ترین API - همچنان ممکن باشد).
 
 متغیرهایی که همیشه در context templateها در دسترس‌اند: amount, amount_toman,
 order_id, callback_url, currency, description, tenant_id، به‌علاوه‌ی هر چیزی
@@ -101,6 +112,26 @@ def render(value, context: "_AttrDict"):
     if isinstance(value, list):
         return [render(v, context) for v in value]
     return value
+
+
+def amounts_match(paid_amount, expected_toman, tolerance_percent: float = 1.0) -> bool:
+    """مقایسه‌ی مبلغ پرداخت‌شده‌ی برگشتی از درگاه (paid_amount، از هر نوعی که
+    باشد: str/int/float) با مبلغ واقعی فاکتور (expected_toman)، با تحمل
+    tolerance_percent درصد (پیش‌فرض ۱٪، برای گردکردن رایج در تبدیل ارز/کریپتو).
+    اگر paid_amount قابل‌تبدیل به عدد نباشد یا None باشد => True برمی‌گرداند
+    (یعنی «قابل‌بررسی نیست»؛ تصمیم را با فراخوان است - چون خیلی از درگاه‌ها
+    اصلاً مبلغ را در پاسخ برنمی‌گردانند و نباید همه را بلاک کند)."""
+    if paid_amount is None:
+        return True
+    try:
+        paid = float(str(paid_amount).replace(",", "").strip())
+        expected = float(expected_toman)
+    except (TypeError, ValueError):
+        return True
+    if expected <= 0:
+        return True
+    tolerance = max(0.0, tolerance_percent) / 100.0
+    return paid >= expected * (1.0 - tolerance)
 
 
 def extract_path(data, path: str):
@@ -239,7 +270,8 @@ class GenericGateway:
         status_val = extract_path(data, resp_map.get("status_path") or "")
         success_values = [str(v) for v in (resp_map.get("success_values") or [])]
         success = (str(status_val) in success_values) if success_values else bool(status_val)
-        return {"checked": True, "success": success, "raw": data, "status_value": status_val}
+        amount_val = extract_path(data, resp_map.get("amount_path") or "") if resp_map.get("amount_path") else None
+        return {"checked": True, "success": success, "raw": data, "status_value": status_val, "amount": amount_val}
 
     # -- Webhook ---------------------------------------------------------
 
@@ -255,12 +287,12 @@ class GenericGateway:
         if mode == "header_secret":
             hname = (auth_cfg.get("header_name") or "").lower()
             got = headers_lower.get(hname, "")
-            return bool(secret) and got == secret
+            return bool(secret) and hmac.compare_digest(str(got), str(secret))
 
         if mode == "query_secret":
             qname = auth_cfg.get("query_param") or ""
             got = (query or {}).get(qname, "")
-            return bool(secret) and got == secret
+            return bool(secret) and hmac.compare_digest(str(got), str(secret))
 
         if mode == "hmac_sha256" or mode == "hmac":
             hname = (auth_cfg.get("header_name") or "").lower()
