@@ -917,6 +917,23 @@ class Database:
                 "WHERE status IN ('pending', '') OR status IS NULL"
             )
 
+        # مهاجرت یک‌باره: تغییر نام دکمه‌ی «سفارش‌های من» به مقدار جدید پیش‌فرض
+        # («🧾 حساب کاربری من»). چون تنظیمات با INSERT OR IGNORE ذخیره می‌شوند،
+        # نصب‌های قدیمی‌تر که این مقدار را از قبل در دیتابیس داشتند با آپدیت کد
+        # به‌تنهایی متنشان عوض نمی‌شد. این مهاجرت فقط یک‌بار (به ازای هر نصب)
+        # اجرا می‌شود؛ اگر ادمین بعداً دستی متن دکمه را عوض کند، دیگر توسط
+        # آپدیت‌های بعدی بازنویسی نخواهد شد.
+        if conn.execute(
+            "SELECT 1 FROM settings WHERE key='_migrated_btn_my_orders_rename'"
+        ).fetchone() is None:
+            conn.execute(
+                "UPDATE settings SET value=? WHERE key='btn_my_orders'",
+                (DEFAULT_SETTINGS["btn_my_orders"],),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO settings (key, value) VALUES ('_migrated_btn_my_orders_rename', '1')"
+            )
+
         conn.execute("CREATE INDEX IF NOT EXISTS idx_configs_order_id ON configs(order_id)")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_admin_logs_record ON admin_logs(record_type, record_id)"
