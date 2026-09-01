@@ -2793,6 +2793,49 @@ def api_menu_layout_set(body: MenuLayoutBody, admin=Depends(require_permission("
     return {"ok": True}
 
 
+# ------------------------------------------------------- main menu display --
+# این سه تنظیم با «ترتیب منو»/«چیدمان منو» بالا فرق دارند: آن‌ها ترتیب و
+# گروه‌بندی آیتم‌های منو را کنترل می‌کنند، این‌ها نوع نمایش منو (Reply در
+# مقابل Inline) و چیدمان فیزیکی دکمه‌ها (تعداد دکمه در هر ردیف) را کنترل
+# می‌کنند - معادل adm_main_menu_settings در ربات.
+
+
+@app.get("/api/settings/main-menu-display")
+def api_main_menu_display_get(admin=Depends(require_permission("settings"))):
+    return {
+        "reply_enabled": db.get_setting("main_menu_reply_enabled", "1") == "1",
+        "inline_enabled": db.get_setting("main_menu_inline_enabled", "0") == "1",
+        "columns": int(db.get_setting("main_menu_columns", "1") or "1"),
+    }
+
+
+class MainMenuDisplayBody(BaseModel):
+    reply_enabled: bool
+    inline_enabled: bool
+    columns: int
+
+
+@app.post("/api/settings/main-menu-display")
+def api_main_menu_display_set(body: MainMenuDisplayBody, admin=Depends(require_permission("settings"))):
+    # قانون محافظتی: هردو منو همزمان نباید خاموش باشند وگرنه کاربر هیچ راهی
+    # برای پیمایش منو نخواهد داشت (همان چکی که در ربات هم هست).
+    if not body.reply_enabled and not body.inline_enabled:
+        raise HTTPException(400, "حداقل یکی از منوی پایین یا منوی شیشه‌ای بالا باید فعال باشد.")
+    if body.columns not in (1, 2):
+        raise HTTPException(400, "چیدمان باید ۱ یا ۲ ستون باشد.")
+
+    db.set_setting("main_menu_reply_enabled", "1" if body.reply_enabled else "0")
+    db.set_setting("main_menu_inline_enabled", "1" if body.inline_enabled else "0")
+    db.set_setting("main_menu_columns", str(body.columns))
+    db.log_admin_action(
+        admin["id"], "main_menu_display_change",
+        f"نمایش منوی اصلی تغییر کرد: Reply={'روشن' if body.reply_enabled else 'خاموش'}, "
+        f"Inline={'روشن' if body.inline_enabled else 'خاموش'}, ستون={body.columns} (پنل وب - {admin['username']})",
+        "setting", "main_menu_display",
+    )
+    return {"ok": True}
+
+
 # ----------------------------------------------------------------- logs ---
 
 
