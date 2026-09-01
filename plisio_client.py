@@ -29,9 +29,12 @@ async def create_invoice(
     email: str = None,
     currency: str = None,
     expire_min: int = None,
+    allowed_psys_cids: str = None,
 ) -> dict:
     """یک فاکتور پرداخت کریپتو در Plisio می‌سازد.
     اگر currency مشخص نشود، کاربر خودش داخل صفحه‌ی Plisio ارز را انتخاب می‌کند.
+    allowed_psys_cids: رشته‌ی جدا‌شده با کاما از ارزهای مجاز (مثل 'BTC,ETH,USDT_TRX')
+    برای محدود کردن گزینه‌های قابل‌انتخاب کاربر در صفحه‌ی پرداخت.
     خروجی: dict شامل txn_id و invoice_url.
     """
     if not api_key:
@@ -51,6 +54,8 @@ async def create_invoice(
         params["email"] = email
     if expire_min is not None:
         params["expire_min"] = str(int(expire_min))
+    if allowed_psys_cids:
+        params["allowed_psys_cids"] = allowed_psys_cids
 
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{PLISIO_BASE_URL}/invoices/new", params=params, timeout=15) as resp:
@@ -69,6 +74,14 @@ def verify_callback(api_key: str, data: dict) -> bool:
     فیلد verify_hash را جدا می‌کنیم، بقیه‌ی دیکشنری را دقیقاً با همان ترتیبی که از JSON
     دریافت شده به رشته تبدیل می‌کنیم و HMAC-SHA1 با کلید api_key می‌گیریم.
     مهم: باید callback_url شامل ?json=true باشد تا Plisio بدنه را به‌صورت JSON بفرستد.
+
+    نکته‌ی حیاتی: باید ensure_ascii=False باشد. نمونه‌ی رسمی Plisio از
+    JSON.stringify جاوااسکریپت استفاده می‌کند که کاراکترهای غیر-ASCII (مثل
+    حروف فارسی داخل order_name که Plisio عیناً در کال‌بک برمی‌گرداند) را
+    escape نمی‌کند. json.dumps پایتون به‌صورت پیش‌فرض این کاراکترها را به
+    \\uXXXX تبدیل می‌کند که رشته‌ی متفاوتی نسبت به سمت Plisio می‌سازد و
+    verify_hash همیشه نامعتبر تشخیص داده می‌شود (باگ اصلی «تایید پرداخت
+    کریپتو به بات برنمی‌گردد» همین‌جا بود).
     """
     if not api_key:
         return False
@@ -76,6 +89,6 @@ def verify_callback(api_key: str, data: dict) -> bool:
     verify_hash = ordered.pop("verify_hash", None)
     if not verify_hash:
         return False
-    payload = json.dumps(ordered, separators=(",", ":"))
-    computed = hmac.new(api_key.encode(), payload.encode(), hashlib.sha1).hexdigest()
+    payload = json.dumps(ordered, separators=(",", ":"), ensure_ascii=False)
+    computed = hmac.new(api_key.encode(), payload.encode("utf-8"), hashlib.sha1).hexdigest()
     return hmac.compare_digest(computed, verify_hash)

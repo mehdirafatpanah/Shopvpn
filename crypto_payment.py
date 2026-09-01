@@ -65,6 +65,20 @@ async def toman_to_usd(db, amount_toman: int) -> float:
     return round(usd, 2)
 
 
+def resolve_expire_min(db) -> int:
+    try:
+        val = int(db.get_setting("crypto_expire_min", "80") or 80)
+    except ValueError:
+        val = 80
+    return val if val > 0 else 80
+
+
+def resolve_allowed_currencies(db) -> str:
+    """رشته‌ی CSV ارزهای مجاز که ادمین از پنل تنظیم کرده (مثل 'BTC,ETH,USDT_TRX').
+    خالی یعنی همه‌ی ارزهای فعال Plisio مجازند."""
+    return (db.get_setting("crypto_allowed_currencies", "") or "").strip()
+
+
 def callback_url(tenant_id: str) -> str:
     if not API_BASE_URL:
         raise CryptoPaymentError("آدرس مینی‌اپ (MINIAPP_URL) روی سرور تنظیم نشده است.")
@@ -100,7 +114,8 @@ async def create_invoice_for(db, tenant_id: str, tg_id: int, kind: str, ref_id: 
             order_name=order_name,
             source_amount_usd=source_amount_usd,
             callback_url=cb_url,
-            expire_min=80,
+            expire_min=resolve_expire_min(db),
+            allowed_psys_cids=resolve_allowed_currencies(db),
         )
     except plisio_client.PlisioError as e:
         raise CryptoPaymentError(f"خطا از درگاه پرداخت: {e}")

@@ -730,6 +730,19 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_web_admins_username ON web_admins(username);
 
+                CREATE TABLE IF NOT EXISTS payment_webhook_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    gateway TEXT NOT NULL,        -- 'plisio' / 'abangateway' / 'custom:<gateway_key>'
+                    txn_id TEXT,
+                    verified INTEGER DEFAULT 0,   -- آیا امضا/اعتبارسنجی تایید شد؟
+                    status TEXT,                  -- وضعیتی که کال‌بک اعلام کرده (completed/pending/...)
+                    error TEXT,                   -- در صورت رد شدن یا خطا، دلیل
+                    raw_body TEXT,                -- بدنه‌ی خام کال‌بک (برای دیباگ)
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_webhook_logs_created ON payment_webhook_logs(created_at);
+
                 CREATE TABLE IF NOT EXISTS web_push_subscriptions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     admin_id INTEGER NOT NULL,
@@ -2887,6 +2900,59 @@ class Database:
             return conn.execute(
                 "SELECT * FROM crypto_invoices ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
+
+    # -----------------------------------------------------------------------
+    # لاگ وبهوک درگاه‌های پرداخت (برای دیباگ مشکلاتی مثل رد شدن امضا)
+    # -----------------------------------------------------------------------
+
+    def log_webhook_event(self, gateway: str, txn_id: str = None, verified: bool = False,
+                           status: str = None, error: str = None, raw_body: str = None):
+        raw_body = (raw_body or "")[:4000]  # جلوگیری از رشد بی‌رویه‌ی دیتابیس
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO payment_webhook_logs (gateway, txn_id, verified, status, error, raw_body) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (gateway, txn_id, 1 if verified else 0, status, error, raw_body),
+            )
+
+    def get_recent_webhook_logs(self, limit: int = 50, gateway: str = None):
+        limit = max(1, min(int(limit or 50), 200))
+        with self._get_conn() as conn:
+            if gateway:
+                return conn.execute(
+                    "SELECT * FROM payment_webhook_logs WHERE gateway=? ORDER BY id DESC LIMIT ?",
+                    (gateway, limit),
+                ).fetchall()
+            return conn.execute(
+                "SELECT * FROM payment_webhook_logs ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+
+    def get_gateway_revenue_report(self):
+        """جمع تومانی تراکنش‌های کامل‌شده به تفکیک درگاه (بر پایه‌ی جداول invoice هر درگاه).
+        توجه: کارت‌به‌کارت دستی جدول invoice مجزا ندارد (تایید دستی روی سفارش انجام می‌شود)
+        و در این گزارش لحاظ نشده."""
+        with self._get_conn() as conn:
+            crypto = conn.execute(
+                "SELECT COUNT(*) c, COALESCE(SUM(amount_toman),0) s FROM crypto_invoices WHERE status='completed'"
+            ).fetchone()
+            aban = conn.execute(
+                "SELECT COUNT(*) c, COALESCE(SUM(amount_toman),0) s FROM abangateway_invoices WHERE status IN ('paid','completed')"
+            ).fetchone()
+            custom_rows = conn.execute(
+                "SELECT cg.name AS name, COUNT(*) c, COALESCE(SUM(cgi.amount_toman),0) s "
+                "FROM custom_gateway_invoices cgi JOIN custom_gateways cg ON cg.id = cgi.gateway_id "
+                "WHERE cgi.status='completed' GROUP BY cgi.gateway_id"
+            ).fetchall()
+        result = [
+            {"gateway": "crypto", "label": "کریپتو (Plisio)", "count": crypto["c"], "amount_toman": crypto["s"]},
+            {"gateway": "abangateway", "label": "آبان گیت‌وی", "count": aban["c"], "amount_toman": aban["s"]},
+        ]
+        for row in custom_rows:
+            result.append({
+                "gateway": f"custom:{row['name']}", "label": row["name"] or "درگاه سفارشی",
+                "count": row["c"], "amount_toman": row["s"],
+            })
+        return result
 
     def expire_stale_crypto_invoices(self):
         """فاکتورهایی که هنوز 'new'/'pending' مانده‌اند ولی زمان اعتبارشان (expires_at)
