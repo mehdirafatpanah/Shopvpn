@@ -208,6 +208,74 @@ async def check_and_send_volume_reminders(bot, db) -> int:
     return sent
 
 
+async def check_and_process_auto_renewals(bot, db) -> int:
+    """کانفیگ‌های مستقیم-پنل که «تمدید خودکار» برایشان فعال است و نزدیک انقضا
+    هستند را بررسی می‌کند: در صورت کافی‌بودن موجودی کیف پول، همان حجم/مدت
+    فعلی‌شان را دوباره روی پنل و در دیتابیس تمدید می‌کند (و از کیف پول کسر
+    می‌کند)؛ در غیر این صورت یک‌بار در روز به کاربر هشدار کمبود موجودی
+    می‌فرستد. تعداد تمدیدهای موفق را برمی‌گرداند."""
+    from panel_providers import get_provider, PanelError
+
+    renewed = 0
+    try:
+        rows = db.get_custom_configs_due_for_auto_renew()
+    except Exception:
+        logger.exception("خطا در دریافت لیست تمدید خودکار کانفیگ‌های پنلی")
+        rows = []
+
+    price_per_gb = int(db.get_setting("renewal_price_per_gb", "0") or "0")
+    price_per_day = int(db.get_setting("renewal_price_per_day", "0") or "0")
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    for row in rows:
+        user_id = row["user_id"]
+        volume_gb = row["volume_gb"] or 0
+        duration_days = row["duration_days"] or 0
+        price = volume_gb * price_per_gb + duration_days * price_per_day
+        label = row["display_name"] if ("display_name" in row.keys() and row["display_name"]) else row["username"]
+
+        wallet_credit = db.get_wallet_credit(user_id)
+        if price <= 0 or wallet_credit < price:
+            if row["auto_renew_alert_date"] != today:
+                try:
+                    await bot.send_message(
+                        user_id,
+                        f"⚠️ تمدید خودکار کانفیگ «{label}» به‌دلیل کمبود موجودی کیف پول انجام نشد.\n"
+                        f"مبلغ لازم: {price:,} تومان — موجودی فعلی: {wallet_credit:,} تومان.\n"
+                        "لطفاً کیف پول خود را شارژ کنید یا تمدید خودکار را از صفحه‌ی سرویس خاموش کنید.",
+                    )
+                except Exception:
+                    logger.warning("ارسال هشدار کمبود موجودی تمدید خودکار به کاربر %s ناموفق بود.", user_id)
+                db.mark_custom_config_auto_renew_alert(row["id"], today)
+            continue
+
+        server = db.get_panel_server(row["panel_server_id"]) if row["panel_server_id"] else None
+        if not server or not server["is_active"]:
+            continue
+        try:
+            provider = get_provider(server)
+            await provider.update_user(row["username"], add_volume_gb=volume_gb, add_days=duration_days, reset_usage=True)
+        except PanelError:
+            logger.exception("تمدید خودکار روی پنل برای کانفیگ «%s» ناموفق بود.", row["username"])
+            continue
+
+        db.add_wallet_credit(user_id, -price)
+        db.apply_custom_config_renewal(row["id"], add_volume_gb=0, add_days=duration_days)
+        db.add_custom_config_history(
+            row["id"], "auto_renew", f"{volume_gb} گیگ / {duration_days} روز — {price:,} تومان از کیف پول",
+        )
+        renewed += 1
+        try:
+            await bot.send_message(
+                user_id,
+                f"🔄 کانفیگ «{label}» با موفقیت به‌صورت خودکار تمدید شد و {price:,} تومان از کیف پول شما کسر شد.",
+            )
+        except Exception:
+            logger.warning("ارسال تاییدیه‌ی تمدید خودکار به کاربر %s ناموفق بود.", user_id)
+
+    return renewed
+
+
 async def renewal_reminder_loop(bot, db, interval_seconds: int = 3600) -> None:
     """در پس‌زمینه، به‌صورت دوره‌ای (پیش‌فرض هر ۱ ساعت) بررسی و یادآوری‌های تاریخ انقضا و اتمام حجم را ارسال می‌کند.
     برای نمایش فقط‌خواندنی در پنل وب، بعد از هر چرخه‌ی کامل، زمان و تعداد یادآوری‌های
@@ -215,6 +283,10 @@ async def renewal_reminder_loop(bot, db, interval_seconds: int = 3600) -> None:
     while True:
         date_sent = 0
         volume_sent = 0
+        try:
+            await check_and_process_auto_renewals(bot, db)
+        except Exception:
+            logger.exception("خطا در چرخه‌ی تمدید خودکار کانفیگ‌های پنلی")
         try:
             date_sent = await check_and_send_renewal_reminders(bot, db)
         except Exception:

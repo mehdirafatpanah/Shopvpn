@@ -246,7 +246,8 @@ def inline_menu_for_user(db, user_tg_id: int, is_main_bot: bool = True) -> Inlin
 
 def categories_kb(db, categories, is_main_bot: bool = True) -> InlineKeyboardMarkup:
     rows = []
-    if db.is_full_access_bot(is_main_bot) and db.get_setting("custom_config_enabled", "0") == "1":
+    custom_enabled = db.get_setting("custom_config_enabled", "0") == "1" or db.count_active_custom_config_products() > 0
+    if db.is_full_access_bot(is_main_bot) and custom_enabled:
         rows.append([_styled_inline(db, "🛠 ساخت کانفیگ شخصی", "custom_config_start", "btn_custom_config_style")])
     for cat in categories:
         rows.append([_styled_inline(db, f"📁 {cat['name']}", f"cat:{cat['id']}", "btn_cat_select_style")])
@@ -329,10 +330,12 @@ def my_order_error_back_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ بازگشت به لیست", callback_data="mo_back")]])
 
 
-def service_detail_kb(db, cb_id: str, kind: str, deletable: bool, show_links: bool = False) -> InlineKeyboardMarkup:
+def service_detail_kb(db, cb_id: str, kind: str, deletable: bool, show_links: bool = False,
+                       enabled: bool = True, auto_renew: bool = False) -> InlineKeyboardMarkup:
     """دکمه‌های صفحه‌ی جزئیات یک سرویس.
     kind == 'custom' (کاربر واقعی روی پنل): هر سه نوع تمدید + قطع دسترسی +
-    بروزرسانی + کیوآر در دسترس است.
+    بروزرسانی + کیوآر + فعال/غیرفعال + تغییر نام + تمدید خودکار + انتقال +
+    تاریخچه در دسترس است.
     kind == 'config' (لینک استخری بانک کانفیگ، بدون پنل/یوزرنیم واقعی):
     این نوع کنترلی روی خودِ حجم/زمان سرویس ندارد (نه تمدید، نه قطع دسترسی)
     ولی چون خودِ لینک/QR واقعی و قابل‌استفاده است، «بروزرسانی کانفیگ» و
@@ -357,6 +360,27 @@ def service_detail_kb(db, cb_id: str, kind: str, deletable: bool, show_links: bo
             row3.append(InlineKeyboardButton(text="🚫 قطع دسترسی و لینک جدید", callback_data=f"svc_cut:{cb_id}"))
         if row3:
             rows.append(row3)
+        row5 = []
+        if on("svc_show_toggle"):
+            toggle_icon = "🔴 غیرفعال کردن کانفیگ" if enabled else "🟢 فعال کردن کانفیگ"
+            row5.append(InlineKeyboardButton(text=toggle_icon, callback_data=f"svc_toggle:{cb_id}"))
+        if on("svc_show_rename"):
+            row5.append(InlineKeyboardButton(text="✏️ تغییر نام کانفیگ", callback_data=f"svc_rename:{cb_id}"))
+        if row5:
+            rows.append(row5)
+        row6 = []
+        if on("svc_show_auto_renew"):
+            ar_icon = "🔄 تمدید خودکار: 🟢 فعال" if auto_renew else "🔄 تمدید خودکار: 🔴 غیرفعال"
+            row6.append(InlineKeyboardButton(text=ar_icon, callback_data=f"svc_autorenew:{cb_id}"))
+        if row6:
+            rows.append(row6)
+        row7 = []
+        if on("svc_show_transfer"):
+            row7.append(InlineKeyboardButton(text="👤 انتقال کانفیگ", callback_data=f"svc_transfer:{cb_id}"))
+        if on("svc_show_history"):
+            row7.append(InlineKeyboardButton(text="📜 تاریخچه سرویس", callback_data=f"svc_hist:{cb_id}"))
+        if row7:
+            rows.append(row7)
     if kind in ("custom", "config"):
         row4 = []
         if on("svc_show_update_config"):
@@ -439,6 +463,25 @@ def service_cut_confirm_kb(cb_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚠️ بله، دسترسی قطع و لینک جدید صادر شود", callback_data=f"svc_cutok:{cb_id}")],
         [InlineKeyboardButton(text="↩️ انصراف", callback_data=f"mo_v:{cb_id}")],
+    ])
+
+
+def service_rename_cancel_kb(cb_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ انصراف", callback_data="cancel_flow")],
+    ])
+
+
+def service_transfer_confirm_kb(cb_id: str, target_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚠️ بله، منتقل شود", callback_data=f"svc_transok:{cb_id}:{target_id}")],
+        [InlineKeyboardButton(text="↩️ انصراف", callback_data=f"mo_v:{cb_id}")],
+    ])
+
+
+def service_history_back_kb(cb_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data=f"mo_v:{cb_id}")],
     ])
 
 
@@ -1670,19 +1713,140 @@ def min_amount_settings_kb(db) -> InlineKeyboardMarkup:
 def custom_config_menu_kb(db, is_main_bot: bool = True) -> InlineKeyboardMarkup:
     settings = db.get_custom_config_settings()
     status = "🟢 فعال" if settings["enabled"] else "🔴 غیرفعال"
+    prefix = db.get_custom_config_prefix()
+    prefix_label = f"«{prefix}-»" if prefix else "خاموش (بدون پیش‌وند)"
     rows = [
         [InlineKeyboardButton(text=f"وضعیت: {status} (برای تغییر بزنید)", callback_data="adm_custom_config_toggle")],
         [InlineKeyboardButton(
             text=f"📶 حداقل/حداکثر حجم: {settings['min_gb']} تا {settings['max_gb']} گیگ",
             callback_data="adm_custom_config_edit_range",
         )],
+        [InlineKeyboardButton(text=f"🏷 پیش‌وند نام کانفیگ: {prefix_label}", callback_data="adm_custom_config_prefix")],
     ]
     if db.is_full_access_bot(is_main_bot):
         # اتصال پنل VPN فقط توسط بات اصلی یا نمایندگی سطح کامل مدیریت می‌شود؛ نمایندگی سطح ۲
         # از استخر حجمی که ادمین بات اصلی تعیین می‌کند استفاده می‌کند، نه پنل خودش.
         rows.append([InlineKeyboardButton(text="🖥 مدیریت سرورهای پنل", callback_data="adm_panel_servers")])
-    rows.append([InlineKeyboardButton(text="💰 مدیریت قیمت‌گذاری بر اساس بازه", callback_data="adm_pricing_tiers")])
+    rows.append([InlineKeyboardButton(text="💰 مدیریت قیمت‌گذاری بر اساس بازه (تنظیم قدیمی/پیش‌فرض)", callback_data="adm_pricing_tiers")])
+    rows.append([InlineKeyboardButton(text="🧩 محصولات کانفیگ‌ساز (چندمحصولی)", callback_data="adm_ccp_list")])
     rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:products")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ---------------------------------------------------------------------------
+# محصولات «ساخت کانفیگ شخصی» (چندمحصولی: هرکدوم پنل/اینباند، بازه‌ی حجم/مدت
+# و قیمت‌گذاری خودشو داره)
+# ---------------------------------------------------------------------------
+
+def custom_config_products_list_kb(db) -> InlineKeyboardMarkup:
+    products = db.get_custom_config_products()
+    rows = []
+    for p in products:
+        icon = "🟢" if p["is_active"] else "🔴"
+        rows.append([InlineKeyboardButton(
+            text=f"{icon} {p['icon'] or '🛠'} {p['name']}", callback_data=f"adm_ccp_view:{p['id']}",
+        )])
+    rows.append([InlineKeyboardButton(text="➕ افزودن محصول جدید", callback_data="adm_ccp_add")])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_custom_config_settings")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def custom_config_product_view_kb(db, product) -> InlineKeyboardMarkup:
+    pid = product["id"]
+    server = db.get_panel_server(product["panel_server_id"])
+    toggle_text = "🔴 غیرفعال‌سازی" if product["is_active"] else "🟢 فعال‌سازی"
+    duration_label = (
+        f"⏳ مدت: ثابت، {product['duration_days']} روز"
+        if product["duration_mode"] == "fixed"
+        else f"⏳ مدت: انتخاب کاربر، {product['min_days'] or 1} تا {product['max_days'] or 90} روز"
+    )
+    pricing_label = (
+        f"💰 قیمت: {product['flat_price_per_gb']:,} تومان/گیگ (فلت)"
+        if product["pricing_mode"] == "flat" and product["flat_price_per_gb"]
+        else "💰 قیمت: پله‌ای (بر اساس بازه‌ی حجم)"
+    )
+    rows = [
+        [InlineKeyboardButton(text=f"✏️ نام: {product['name']}", callback_data=f"adm_ccp_edit_name:{pid}")],
+        [InlineKeyboardButton(text=f"✏️ توضیح: {product['description'] or '—'}", callback_data=f"adm_ccp_edit_desc:{pid}")],
+        [InlineKeyboardButton(
+            text=f"🖥 پنل: {server['name'] if server else '—'}", callback_data=f"adm_ccp_edit_panel:{pid}",
+        )],
+        [InlineKeyboardButton(
+            text=f"📶 حجم: {product['min_gb']} تا {product['max_gb']} گیگ", callback_data=f"adm_ccp_edit_volume:{pid}",
+        )],
+        [InlineKeyboardButton(text=duration_label, callback_data=f"adm_ccp_duration_mode:{pid}")],
+        [InlineKeyboardButton(text=pricing_label, callback_data=f"adm_ccp_pricing_mode:{pid}")],
+    ]
+    if product["pricing_mode"] == "tiered":
+        rows.append([InlineKeyboardButton(text="💰 مدیریت تعرفه‌های پله‌ای این محصول", callback_data=f"adm_ccp_tiers:{pid}")])
+    else:
+        rows.append([InlineKeyboardButton(text="✏️ تغییر قیمت هر گیگ", callback_data=f"adm_ccp_edit_flat_price:{pid}")])
+    rows += [
+        [InlineKeyboardButton(text=toggle_text, callback_data=f"adm_ccp_toggle:{pid}")],
+        [InlineKeyboardButton(text="🗑 حذف محصول", callback_data=f"adm_ccp_delete:{pid}")],
+        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_ccp_list")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def custom_config_product_delete_confirm_kb(product_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚠️ بله، این محصول حذف شود", callback_data=f"adm_ccp_delete_force:{product_id}")],
+        [InlineKeyboardButton(text="⬅️ انصراف", callback_data=f"adm_ccp_view:{product_id}")],
+    ])
+
+
+def custom_config_product_panel_select_kb(db, product_id: int) -> InlineKeyboardMarkup:
+    servers = db.get_panel_servers(active_only=True)
+    rows = [
+        [InlineKeyboardButton(
+            text=f"{s['name']} ({PANEL_TYPE_LABELS.get(s['panel_type'], s['panel_type'])})",
+            callback_data=f"adm_ccp_set_panel:{product_id}:{s['id']}",
+        )]
+        for s in servers
+    ]
+    rows.append([InlineKeyboardButton(text="➕ افزودن سرور جدید", callback_data="adm_panel_server_add")])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data=f"adm_ccp_view:{product_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def custom_config_product_duration_mode_kb(product_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⏳ مدت ثابت (ادمین تعیین می‌کند)", callback_data=f"adm_ccp_set_duration_mode:{product_id}:fixed")],
+        [InlineKeyboardButton(text="🧑‍💻 مدت قابل‌انتخاب توسط مشتری", callback_data=f"adm_ccp_set_duration_mode:{product_id}:user_choice")],
+        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data=f"adm_ccp_view:{product_id}")],
+    ])
+
+
+def custom_config_product_pricing_mode_kb(product_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💵 قیمت فلت (یک نرخ ثابت هر گیگ)", callback_data=f"adm_ccp_set_pricing_mode:{product_id}:flat")],
+        [InlineKeyboardButton(text="📊 قیمت پله‌ای (بر اساس بازه‌ی حجم)", callback_data=f"adm_ccp_set_pricing_mode:{product_id}:tiered")],
+        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data=f"adm_ccp_view:{product_id}")],
+    ])
+
+
+def custom_config_product_tiers_kb(db, product_id: int) -> InlineKeyboardMarkup:
+    tiers = db.get_custom_config_product_tiers(product_id)
+    rows = []
+    for t in tiers:
+        to_label = f"{t['to_gb']}" if t["to_gb"] is not None else "∞"
+        rows.append([InlineKeyboardButton(
+            text=f"{t['from_gb']} تا {to_label} گیگ ← {t['price_per_gb']:,} تومان/گیگ  🗑",
+            callback_data=f"adm_ccp_tier_delete:{product_id}:{t['id']}",
+        )])
+    rows.append([InlineKeyboardButton(text="➕ افزودن بازه‌ی قیمت", callback_data=f"adm_ccp_tier_add:{product_id}")])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data=f"adm_ccp_view:{product_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def custom_config_product_select_kb(products) -> InlineKeyboardMarkup:
+    """کیبورد انتخاب محصول برای کاربر، وقتی بیش از یک محصول فعال وجود دارد."""
+    rows = [
+        [InlineKeyboardButton(text=f"{p['icon'] or '🛠'} {p['name']}", callback_data=f"ccf_pick_product:{p['id']}")]
+        for p in products
+    ]
+    rows.append([InlineKeyboardButton(text="❌ انصراف", callback_data="cancel_flow")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

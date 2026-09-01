@@ -80,6 +80,8 @@ from states import (
     AdminSetPanelSubUrl,
     AdminAddPricingTier,
     AdminCustomConfigSettings,
+    AdminCustomConfigProduct,
+    AdminAddCustomConfigProductTier,
     AdminRenewalPricing,
     AdminResetTestConfig,
     ResellerRequestFlow,
@@ -1300,12 +1302,15 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             if not server or not server["is_active"]:
                 await call.answer("⛔️ سرور پنل مربوطه یافت نشد یا غیرفعال است.", show_alert=True)
                 return
+            duration_days = order["custom_duration_days"]
+            if duration_days is None:
+                duration_days = (await asyncio.to_thread(db.get_custom_config_settings))["duration_days"]
             try:
                 provider = get_provider(server)
                 result = await provider.create_user(
                     username=order["custom_username"],
                     volume_gb=order["custom_volume_gb"],
-                    duration_days=(await asyncio.to_thread(db.get_custom_config_settings))["duration_days"],
+                    duration_days=duration_days,
                 )
             except PanelUsernameTakenError:
                 await asyncio.to_thread(db.release_order_claim, order_id)
@@ -1322,9 +1327,10 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 panel_server_id=server["id"],
                 username=result.username,
                 volume_gb=order["custom_volume_gb"],
-                duration_days=db.get_custom_config_settings()["duration_days"],
+                duration_days=duration_days,
                 subscription_url=result.subscription_url,
                 order_id=order_id,
+                product_id=order["custom_product_id"],
             ))
             (await asyncio.to_thread(db.log_admin_action, 
                 call.from_user.id, "custom_config_approve",
@@ -2401,6 +2407,493 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             f"✅ بازه‌ی حجم مجاز روی {data['min_gb']} تا {text} گیگابایت تنظیم شد.",
             reply_markup=kb.custom_config_menu_kb(db, is_main_bot),
         )
+
+    @router.callback_query(F.data == "adm_custom_config_prefix")
+    async def cb_admin_custom_config_prefix(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        current = (await asyncio.to_thread(db.get_custom_config_prefix))
+        await state.set_state(AdminCustomConfigSettings.waiting_prefix)
+        await safe_edit(
+            call,
+            "🏷 پیش‌وند ثابت نام کانفیگ‌ها را وارد کنید (فقط حروف انگلیسی، عدد و آندرلاین، ۲ تا ۱۵ کاراکتر؛ "
+            "بدون خط تیره - خودِ خط تیره خودکار اضافه می‌شود).\n"
+            f"وضعیت فعلی: {('«' + current + '-»') if current else 'خاموش'}\n\n"
+            "برای خاموش‌کردن پیش‌وند، کلمه‌ی «خاموش» را ارسال کنید.",
+            reply_markup=kb.admin_back_kb(),
+        )
+        await call.answer()
+
+    @router.message(AdminCustomConfigSettings.waiting_prefix)
+    async def process_custom_config_prefix(message: Message, state: FSMContext):
+        text = (message.text or "").strip()
+        if text in ("خاموش", "-", "off", "none"):
+            (await asyncio.to_thread(db.set_custom_config_prefix, ""))
+            await state.clear()
+            await message.answer("✅ پیش‌وند غیرفعال شد.", reply_markup=kb.custom_config_menu_kb(db, is_main_bot))
+            return
+        if not re.fullmatch(r"[A-Za-z0-9_]{2,15}", text):
+            await message.answer("❌ نامعتبر است. فقط حروف انگلیسی، عدد و آندرلاین، بین ۲ تا ۱۵ کاراکتر (بدون خط تیره).")
+            return
+        (await asyncio.to_thread(db.set_custom_config_prefix, text))
+        await state.clear()
+        await message.answer(
+            f"✅ پیش‌وند روی «{text}-» تنظیم شد.", reply_markup=kb.custom_config_menu_kb(db, is_main_bot),
+        )
+
+    # -------------------------------------------------------------------
+    # محصولات کانفیگ‌ساز (چندمحصولی): هرکدوم پنل/اینباند، بازه‌ی حجم/مدت
+    # و قیمت‌گذاری خودشو داره. ویزارد افزودن و صفحات ویرایش زیر همه از
+    # editing_product_id در FSM data استفاده می‌کنن تا مسیر «افزودن» و
+    # «ویرایش» بتونن از همون state ها و همون پیام‌ها به‌صورت مشترک رد بشن.
+    # -------------------------------------------------------------------
+
+    async def _ccp_show_view(target, product_id: int, extra_note: str = ""):
+        product = (await asyncio.to_thread(db.get_custom_config_product, product_id))
+        if not product:
+            return
+        text = f"🧩 محصول: {product['name']}" + (f"\n\n{extra_note}" if extra_note else "")
+        markup = kb.custom_config_product_view_kb(db, product)
+        if isinstance(target, CallbackQuery):
+            await replace_admin_view(target, text, reply_markup=markup)
+        else:
+            await target.answer(text, reply_markup=markup)
+
+    @router.callback_query(F.data == "adm_ccp_list")
+    async def cb_ccp_list(call: CallbackQuery):
+        if not (await asyncio.to_thread(db.is_full_access_bot, is_main_bot)):
+            return await deny_reseller_panel_access(call)
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        await replace_admin_view(call,
+            "🧩 محصولات کانفیگ‌ساز\n\n"
+            "هر محصول می‌تواند پنل/اینباند، بازه‌ی حجم، مدت و قیمت‌گذاری مستقل خودش را داشته باشد. "
+            "اگر بیش از یک محصول فعال باشد، کاربر قبل از ساخت کانفیگ اول محصول را انتخاب می‌کند.",
+            reply_markup=kb.custom_config_products_list_kb(db),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_ccp_view:"))
+    async def cb_ccp_view(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_ccp_view")
+        await state.clear()
+        await _ccp_show_view(call, product_id)
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_ccp_add")
+    async def cb_ccp_add(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        if not (await asyncio.to_thread(db.get_panel_servers, True)):
+            await call.answer("⛔️ اول باید حداقل یک سرور پنل فعال ثبت کنی.", show_alert=True)
+            return
+        await state.clear()
+        await state.set_state(AdminCustomConfigProduct.waiting_name)
+        await safe_edit(call, "نام این محصول چیست؟ (مثلاً «پلن آلمان»):", reply_markup=kb.admin_back_kb())
+        await call.answer()
+
+    @router.message(AdminCustomConfigProduct.waiting_name)
+    async def process_ccp_name(message: Message, state: FSMContext):
+        name = (message.text or "").strip()
+        if not name:
+            await message.answer("لطفاً یک نام معتبر ارسال کن.")
+            return
+        data = await state.get_data()
+        product_id = data.get("editing_product_id")
+        if product_id:
+            (await asyncio.to_thread(db.update_custom_config_product, product_id, name=name))
+            await state.clear()
+            await _ccp_show_view(message, product_id, "✅ نام به‌روزرسانی شد.")
+            return
+        await state.update_data(name=name)
+        servers = (await asyncio.to_thread(db.get_panel_servers, True))
+        rows = [
+            [InlineKeyboardButton(
+                text=f"{s['name']} ({kb.PANEL_TYPE_LABELS.get(s['panel_type'], s['panel_type'])})",
+                callback_data=f"adm_ccp_new_panel:{s['id']}",
+            )]
+            for s in servers
+        ]
+        rows.append([InlineKeyboardButton(text="❌ انصراف", callback_data="cancel_flow")])
+        await state.set_state(AdminCustomConfigProduct.waiting_panel_pick)
+        await message.answer(
+            "این محصول روی کدام سرور پنل (و اینباند متصل به آن) ساخته شود؟",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        )
+
+    @router.callback_query(F.data.startswith("adm_ccp_new_panel:"), AdminCustomConfigProduct.waiting_panel_pick)
+    async def cb_ccp_new_panel_pick(call: CallbackQuery, state: FSMContext):
+        server_id = int(call.data.split(":", 1)[1])
+        await state.update_data(panel_server_id=server_id)
+        await state.set_state(AdminCustomConfigProduct.waiting_volume_min)
+        await safe_edit(call, "حداقل حجم مجاز این محصول چند گیگابایت باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb())
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_ccp_edit_panel:"))
+    async def cb_ccp_edit_panel(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_ccp_edit_panel")
+        await safe_edit(call, "پنل جدید این محصول را انتخاب کن:",
+                         reply_markup=kb.custom_config_product_panel_select_kb(db, product_id))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_ccp_set_panel:"))
+    async def cb_ccp_set_panel(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        _, product_id, server_id = call.data.split(":")
+        (await asyncio.to_thread(db.update_custom_config_product, int(product_id), panel_server_id=int(server_id)))
+        await _ccp_show_view(call, int(product_id), "✅ پنل محصول به‌روزرسانی شد.")
+        await call.answer()
+
+    @router.message(AdminCustomConfigProduct.waiting_volume_min)
+    async def process_ccp_volume_min(message: Message, state: FSMContext):
+        text = message.text.strip()
+        if not text.isdigit() or int(text) <= 0:
+            await message.answer("لطفاً یک عدد صحیح مثبت ارسال کن.")
+            return
+        await state.update_data(min_gb=int(text))
+        await state.set_state(AdminCustomConfigProduct.waiting_volume_max)
+        await message.answer("حداکثر حجم مجاز چند گیگابایت باشد؟ (فقط عدد):")
+
+    @router.message(AdminCustomConfigProduct.waiting_volume_max)
+    async def process_ccp_volume_max(message: Message, state: FSMContext):
+        text = message.text.strip()
+        data = await state.get_data()
+        min_gb = data.get("min_gb", 0)
+        if not text.isdigit() or int(text) <= min_gb:
+            await message.answer(f"لطفاً عددی بزرگ‌تر از حداقل ({min_gb}) ارسال کن.")
+            return
+        max_gb = int(text)
+        product_id = data.get("editing_product_id")
+        if product_id:
+            (await asyncio.to_thread(db.update_custom_config_product, product_id, min_gb=min_gb, max_gb=max_gb))
+            await state.clear()
+            await _ccp_show_view(message, product_id, "✅ بازه‌ی حجم به‌روزرسانی شد.")
+            return
+        await state.update_data(max_gb=max_gb)
+        await state.set_state(AdminCustomConfigProduct.waiting_duration_mode_pick)
+        await message.answer(
+            "مدت اعتبار این محصول چطور تعیین شود؟",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⏳ مدت ثابت (ادمین تعیین می‌کند)", callback_data="adm_ccp_new_duration:fixed")],
+                [InlineKeyboardButton(text="🧑‍💻 مدت قابل‌انتخاب توسط مشتری", callback_data="adm_ccp_new_duration:user_choice")],
+                [InlineKeyboardButton(text="❌ انصراف", callback_data="cancel_flow")],
+            ]),
+        )
+
+    @router.callback_query(F.data.startswith("adm_ccp_edit_volume:"))
+    async def cb_ccp_edit_volume(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_ccp_edit_volume")
+        await state.set_state(AdminCustomConfigProduct.waiting_volume_min)
+        await state.update_data(editing_product_id=product_id)
+        await safe_edit(call, "حداقل حجم مجاز جدید چند گیگابایت باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb())
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_ccp_new_duration:"), AdminCustomConfigProduct.waiting_duration_mode_pick)
+    async def cb_ccp_new_duration_mode(call: CallbackQuery, state: FSMContext):
+        mode = call.data.split(":", 1)[1]
+        if mode == "fixed":
+            await state.set_state(AdminCustomConfigProduct.waiting_duration_value)
+            await safe_edit(call, "مدت اعتبار (روز) چند روز باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb())
+        else:
+            await state.set_state(AdminCustomConfigProduct.waiting_duration_min)
+            await safe_edit(call, "حداقل مدت قابل‌انتخاب (روز) چند روز باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb())
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_ccp_duration_mode:"))
+    async def cb_ccp_duration_mode_menu(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_ccp_duration_mode")
+        await safe_edit(call, "مدت اعتبار این محصول چطور تعیین شود؟",
+                         reply_markup=kb.custom_config_product_duration_mode_kb(product_id))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_ccp_set_duration_mode:"))
+    async def cb_ccp_set_duration_mode(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        _, product_id, mode = call.data.split(":")
+        product_id = int(product_id)
+        await state.update_data(editing_product_id=product_id)
+        if mode == "fixed":
+            await state.set_state(AdminCustomConfigProduct.waiting_duration_value)
+            await safe_edit(call, "مدت اعتبار جدید (روز) چند روز باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb())
+        else:
+            await state.set_state(AdminCustomConfigProduct.waiting_duration_min)
+            await safe_edit(call, "حداقل مدت قابل‌انتخاب (روز) چند روز باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb())
+        await call.answer()
+
+    @router.message(AdminCustomConfigProduct.waiting_duration_value)
+    async def process_ccp_duration_value(message: Message, state: FSMContext):
+        text = message.text.strip()
+        if not text.isdigit() or int(text) <= 0:
+            await message.answer("لطفاً یک عدد صحیح مثبت ارسال کن.")
+            return
+        data = await state.get_data()
+        product_id = data.get("editing_product_id")
+        if product_id:
+            (await asyncio.to_thread(db.update_custom_config_product, product_id,
+                                      duration_mode="fixed", duration_days=int(text)))
+            await state.clear()
+            await _ccp_show_view(message, product_id, "✅ مدت اعتبار به‌روزرسانی شد.")
+            return
+        await state.update_data(duration_mode="fixed", duration_days=int(text))
+        await _ccp_ask_pricing_mode(message, state)
+
+    @router.message(AdminCustomConfigProduct.waiting_duration_min)
+    async def process_ccp_duration_min(message: Message, state: FSMContext):
+        text = message.text.strip()
+        if not text.isdigit() or int(text) <= 0:
+            await message.answer("لطفاً یک عدد صحیح مثبت ارسال کن.")
+            return
+        await state.update_data(min_days=int(text))
+        await state.set_state(AdminCustomConfigProduct.waiting_duration_max)
+        await message.answer("حداکثر مدت قابل‌انتخاب (روز) چند روز باشد؟ (فقط عدد):")
+
+    @router.message(AdminCustomConfigProduct.waiting_duration_max)
+    async def process_ccp_duration_max(message: Message, state: FSMContext):
+        text = message.text.strip()
+        data = await state.get_data()
+        min_days = data.get("min_days", 0)
+        if not text.isdigit() or int(text) <= min_days:
+            await message.answer(f"لطفاً عددی بزرگ‌تر از حداقل ({min_days}) ارسال کن.")
+            return
+        max_days = int(text)
+        product_id = data.get("editing_product_id")
+        if product_id:
+            (await asyncio.to_thread(db.update_custom_config_product, product_id,
+                                      duration_mode="user_choice", min_days=min_days, max_days=max_days))
+            await state.clear()
+            await _ccp_show_view(message, product_id, "✅ مدت اعتبار به‌روزرسانی شد.")
+            return
+        await state.update_data(duration_mode="user_choice", min_days=min_days, max_days=max_days)
+        await _ccp_ask_pricing_mode(message, state)
+
+    async def _ccp_ask_pricing_mode(message: Message, state: FSMContext):
+        await state.set_state(AdminCustomConfigProduct.waiting_pricing_mode_pick)
+        await message.answer(
+            "قیمت‌گذاری این محصول چطور باشد؟",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💵 قیمت فلت (یک نرخ ثابت هر گیگ)", callback_data="adm_ccp_new_pricing:flat")],
+                [InlineKeyboardButton(text="📊 قیمت پله‌ای (بر اساس بازه‌ی حجم)", callback_data="adm_ccp_new_pricing:tiered")],
+                [InlineKeyboardButton(text="❌ انصراف", callback_data="cancel_flow")],
+            ]),
+        )
+
+    async def _ccp_finalize_creation(target, state: FSMContext, flat_price_per_gb=None, pricing_mode="flat"):
+        data = await state.get_data()
+        product_id = (await asyncio.to_thread(db.create_custom_config_product,
+            name=data["name"], panel_server_id=data["panel_server_id"], min_gb=data["min_gb"],
+            max_gb=data["max_gb"], duration_mode=data["duration_mode"],
+            duration_days=data.get("duration_days", 30), min_days=data.get("min_days"),
+            max_days=data.get("max_days"), pricing_mode=pricing_mode, flat_price_per_gb=flat_price_per_gb,
+        ))
+        (await asyncio.to_thread(db.log_admin_action, target.from_user.id, "ccp_add", f"محصول کانفیگ‌ساز «{data['name']}» (#{product_id})"))
+        await state.clear()
+        note = "✅ محصول ساخته شد." if pricing_mode == "flat" else "✅ محصول ساخته شد. حالا تعرفه‌های پله‌ای را اضافه کن."
+        await _ccp_show_view(target, product_id, note)
+
+    @router.callback_query(F.data.startswith("adm_ccp_new_pricing:"), AdminCustomConfigProduct.waiting_pricing_mode_pick)
+    async def cb_ccp_new_pricing_mode(call: CallbackQuery, state: FSMContext):
+        mode = call.data.split(":", 1)[1]
+        if mode == "flat":
+            await state.set_state(AdminCustomConfigProduct.waiting_flat_price)
+            await safe_edit(call, "قیمت هر گیگابایت چند تومان باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb())
+            await call.answer()
+        else:
+            await call.answer()
+            await _ccp_finalize_creation(call, state, pricing_mode="tiered")
+
+    @router.callback_query(F.data.startswith("adm_ccp_pricing_mode:"))
+    async def cb_ccp_pricing_mode_menu(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_ccp_pricing_mode")
+        await safe_edit(call, "قیمت‌گذاری این محصول چطور باشد؟",
+                         reply_markup=kb.custom_config_product_pricing_mode_kb(product_id))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_ccp_set_pricing_mode:"))
+    async def cb_ccp_set_pricing_mode(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        _, product_id, mode = call.data.split(":")
+        product_id = int(product_id)
+        if mode == "flat":
+            await state.update_data(editing_product_id=product_id)
+            await state.set_state(AdminCustomConfigProduct.waiting_flat_price)
+            await safe_edit(call, "قیمت جدید هر گیگابایت چند تومان باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb())
+        else:
+            (await asyncio.to_thread(db.update_custom_config_product, product_id, pricing_mode="tiered"))
+            await _ccp_show_view(call, product_id, "✅ حالت قیمت‌گذاری روی «پله‌ای» تنظیم شد؛ تعرفه‌ها را از همین صفحه اضافه کن.")
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_ccp_edit_flat_price:"))
+    async def cb_ccp_edit_flat_price(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_ccp_edit_flat_price")
+        await state.update_data(editing_product_id=product_id)
+        await state.set_state(AdminCustomConfigProduct.waiting_flat_price)
+        await safe_edit(call, "قیمت جدید هر گیگابایت چند تومان باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb())
+        await call.answer()
+
+    @router.message(AdminCustomConfigProduct.waiting_flat_price)
+    async def process_ccp_flat_price(message: Message, state: FSMContext):
+        text = message.text.strip()
+        if not text.isdigit() or int(text) <= 0:
+            await message.answer("لطفاً یک عدد صحیح مثبت ارسال کن.")
+            return
+        data = await state.get_data()
+        product_id = data.get("editing_product_id")
+        if product_id:
+            (await asyncio.to_thread(db.update_custom_config_product, product_id,
+                                      pricing_mode="flat", flat_price_per_gb=int(text)))
+            await state.clear()
+            await _ccp_show_view(message, product_id, "✅ قیمت به‌روزرسانی شد.")
+            return
+        await _ccp_finalize_creation(message, state, flat_price_per_gb=int(text), pricing_mode="flat")
+
+    @router.callback_query(F.data.startswith("adm_ccp_edit_name:"))
+    async def cb_ccp_edit_name(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_ccp_edit_name")
+        await state.update_data(editing_product_id=product_id)
+        await state.set_state(AdminCustomConfigProduct.waiting_name)
+        await safe_edit(call, "نام جدید محصول را ارسال کن:", reply_markup=kb.admin_back_kb())
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_ccp_edit_desc:"))
+    async def cb_ccp_edit_desc(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_ccp_edit_desc")
+        await state.update_data(editing_product_id=product_id)
+        await state.set_state(AdminCustomConfigProduct.waiting_description)
+        await safe_edit(call, "توضیح جدید این محصول را ارسال کن (برای کاربر نمایش داده می‌شود):", reply_markup=kb.admin_back_kb())
+        await call.answer()
+
+    @router.message(AdminCustomConfigProduct.waiting_description)
+    async def process_ccp_description(message: Message, state: FSMContext):
+        data = await state.get_data()
+        product_id = data.get("editing_product_id")
+        (await asyncio.to_thread(db.update_custom_config_product, product_id, description=(message.text or "").strip()))
+        await state.clear()
+        await _ccp_show_view(message, product_id, "✅ توضیح به‌روزرسانی شد.")
+
+    @router.callback_query(F.data.startswith("adm_ccp_toggle:"))
+    async def cb_ccp_toggle(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_ccp_toggle")
+        product = (await asyncio.to_thread(db.get_custom_config_product, product_id))
+        if not product:
+            return await call.answer("یافت نشد.", show_alert=True)
+        (await asyncio.to_thread(db.update_custom_config_product, product_id, is_active=0 if product["is_active"] else 1))
+        await _ccp_show_view(call, product_id)
+        await call.answer("وضعیت تغییر کرد.")
+
+    @router.callback_query(F.data.startswith("adm_ccp_delete:"))
+    async def cb_ccp_delete_confirm(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_ccp_delete")
+        await safe_edit(call, "⚠️ با حذف این محصول، کانفیگ‌های ساخته‌شده قبلی دست‌نخورده می‌مانند ولی دیگر قابل خرید نیست. مطمئنی؟",
+                         reply_markup=kb.custom_config_product_delete_confirm_kb(product_id))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_ccp_delete_force:"))
+    async def cb_ccp_delete_force(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_ccp_delete_force")
+        (await asyncio.to_thread(db.delete_custom_config_product, product_id))
+        (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "ccp_delete", f"محصول #{product_id}"))
+        await replace_admin_view(call, "🧩 محصولات کانفیگ‌ساز:", reply_markup=kb.custom_config_products_list_kb(db))
+        await call.answer("محصول حذف شد.")
+
+    @router.callback_query(F.data.startswith("adm_ccp_tiers:"))
+    async def cb_ccp_tiers(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_ccp_tiers")
+        await replace_admin_view(call,
+            "💰 تعرفه‌های پله‌ای این محصول:\n\n"
+            "قیمت نهایی = کل حجم انتخابی کاربر × نرخ همان بازه‌ای که حجم داخلش قرار می‌گیرد.",
+            reply_markup=kb.custom_config_product_tiers_kb(db, product_id),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_ccp_tier_add:"))
+    async def cb_ccp_tier_add(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_ccp_tier_add")
+        await state.update_data(ccp_tier_product_id=product_id)
+        await state.set_state(AdminAddCustomConfigProductTier.waiting_from_gb)
+        await safe_edit(call, "ابتدای این بازه چند گیگابایت باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb())
+        await call.answer()
+
+    @router.message(AdminAddCustomConfigProductTier.waiting_from_gb)
+    async def process_ccp_tier_from(message: Message, state: FSMContext):
+        text = message.text.strip()
+        if not text.isdigit() or int(text) <= 0:
+            await message.answer("لطفاً یک عدد صحیح مثبت ارسال کن.")
+            return
+        await state.update_data(from_gb=int(text))
+        await state.set_state(AdminAddCustomConfigProductTier.waiting_to_gb)
+        await message.answer(
+            "انتهای این بازه چند گیگابایت باشد؟ (فقط عدد)\n"
+            "برای بی‌سقف/آخرین بازه، عدد 0 بفرست."
+        )
+
+    @router.message(AdminAddCustomConfigProductTier.waiting_to_gb)
+    async def process_ccp_tier_to(message: Message, state: FSMContext):
+        text = message.text.strip()
+        data = await state.get_data()
+        if not text.isdigit():
+            await message.answer("لطفاً فقط عدد صحیح ارسال کن (یا 0 برای بی‌نهایت).")
+            return
+        to_gb = None if int(text) == 0 else int(text)
+        if to_gb is not None and to_gb <= data["from_gb"]:
+            await message.answer(f"انتهای بازه باید بزرگ‌تر از ابتدای آن ({data['from_gb']}) باشد.")
+            return
+        await state.update_data(to_gb=to_gb)
+        await state.set_state(AdminAddCustomConfigProductTier.waiting_price)
+        await message.answer("قیمت هر گیگابایت در این بازه چند تومان باشد؟ (فقط عدد):")
+
+    @router.message(AdminAddCustomConfigProductTier.waiting_price)
+    async def process_ccp_tier_price(message: Message, state: FSMContext):
+        text = message.text.strip()
+        if not text.isdigit() or int(text) <= 0:
+            await message.answer("لطفاً یک عدد صحیح مثبت ارسال کن.")
+            return
+        data = await state.get_data()
+        product_id = data["ccp_tier_product_id"]
+        (await asyncio.to_thread(db.add_custom_config_product_tier, product_id, data["from_gb"], data.get("to_gb"), int(text)))
+        (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "ccp_tier_add", f"محصول #{product_id}"))
+        await state.clear()
+        await message.answer("💰 تعرفه‌های پله‌ای این محصول:",
+                              reply_markup=kb.custom_config_product_tiers_kb(db, product_id))
+
+    @router.callback_query(F.data.startswith("adm_ccp_tier_delete:"))
+    async def cb_ccp_tier_delete(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        _, product_id, tier_id = call.data.split(":")
+        (await asyncio.to_thread(db.delete_custom_config_product_tier, int(tier_id)))
+        (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "ccp_tier_delete", f"بازه #{tier_id}"))
+        await replace_admin_view(call, "💰 تعرفه‌های پله‌ای این محصول:",
+                                  reply_markup=kb.custom_config_product_tiers_kb(db, int(product_id)))
+        await call.answer()
 
     # -------------------------------------------------------------------
     # قیمت‌گذاری تمدید حجم/زمان سرویس‌ها (نرخ ثابت هر گیگ + نرخ ثابت هر روز)

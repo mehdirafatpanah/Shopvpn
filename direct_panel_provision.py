@@ -19,8 +19,9 @@ class ProvisionError(Exception):
     pass
 
 
-def _random_username() -> str:
-    return "d" + "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+def _random_username(prefix: str = "") -> str:
+    suffix = "d" + "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    return f"{prefix}-{suffix}" if prefix else suffix
 
 
 async def provision_direct(db, product, quantity: int = 1, user_id: int = None, order_id: int = None) -> list:
@@ -47,13 +48,14 @@ async def provision_direct(db, product, quantity: int = 1, user_id: int = None, 
     duration_days = product["duration_days"] if product["duration_days"] is not None else 30
 
     provider = get_provider(server)
+    prefix = db.get_custom_config_prefix()
     built = []
     try:
         for _ in range(quantity):
             username = None
             result = None
             for _try in range(5):
-                candidate = _random_username()
+                candidate = _random_username(prefix)
                 try:
                     result = await provider.create_user(candidate, volume_gb, duration_days)
                     username = candidate

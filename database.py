@@ -255,6 +255,11 @@ ACCOUNT_TOGGLE_KEYS = [
     ("svc_show_update_config", "♻️ دکمه «بروزرسانی کانفیگ»", "1"),
     ("svc_show_qr", "⬜ دکمه «کیوآر کانفیگ»", "1"),
     ("svc_show_delete", "🗑 دکمه «حذف کامل سرویس»", "1"),
+    ("svc_show_toggle", "🟢 دکمه «فعال/غیرفعال کردن کانفیگ»", "1"),
+    ("svc_show_rename", "✏️ دکمه «تغییر نام کانفیگ»", "1"),
+    ("svc_show_auto_renew", "🔄 دکمه «تمدید خودکار»", "1"),
+    ("svc_show_transfer", "👤 دکمه «انتقال کانفیگ»", "1"),
+    ("svc_show_history", "📜 دکمه «تاریخچه سرویس»", "1"),
 ]
 DEFAULT_SETTINGS.update({key: default for key, _label, default in ACCOUNT_TOGGLE_KEYS})
 
@@ -668,6 +673,42 @@ class Database:
                     sort_order INTEGER DEFAULT 0
                 );
 
+                -- چندمحصولی‌کردن «ساخت کانفیگ شخصی»: هر محصول پنل/اینباند، بازه‌ی
+                -- حجم/مدت و قیمت‌گذاری خودش را دارد. تنظیمات سراسری و
+                -- custom_config_pricing_tiers بالا برای سازگاری با نصب‌های قبلی
+                -- حذف نشده‌اند و به‌عنوان منبع مهاجرت محصول پیش‌فرض استفاده می‌شوند.
+                CREATE TABLE IF NOT EXISTS custom_config_products (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    icon TEXT DEFAULT '🛠',
+                    panel_server_id INTEGER NOT NULL REFERENCES panel_servers(id),
+                    min_gb INTEGER NOT NULL DEFAULT 5,
+                    max_gb INTEGER NOT NULL DEFAULT 1000,
+                    duration_mode TEXT NOT NULL DEFAULT 'fixed',
+                    duration_days INTEGER NOT NULL DEFAULT 30,
+                    min_days INTEGER,
+                    max_days INTEGER,
+                    pricing_mode TEXT NOT NULL DEFAULT 'flat',
+                    flat_price_per_gb INTEGER,
+                    payment_methods TEXT,
+                    is_active INTEGER DEFAULT 1,
+                    sort_order INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS custom_config_product_pricing_tiers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    product_id INTEGER NOT NULL REFERENCES custom_config_products(id) ON DELETE CASCADE,
+                    from_gb INTEGER NOT NULL,
+                    to_gb INTEGER,
+                    price_per_gb INTEGER NOT NULL,
+                    sort_order INTEGER DEFAULT 0
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_ccp_active ON custom_config_products(is_active);
+                CREATE INDEX IF NOT EXISTS idx_ccp_tiers_product ON custom_config_product_pricing_tiers(product_id);
+
                 CREATE TABLE IF NOT EXISTS custom_configs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     order_id INTEGER,
@@ -686,6 +727,15 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_panel_servers_active ON panel_servers(is_active);
                 CREATE INDEX IF NOT EXISTS idx_custom_configs_user_id ON custom_configs(user_id);
                 CREATE INDEX IF NOT EXISTS idx_custom_configs_order_id ON custom_configs(order_id);
+
+                CREATE TABLE IF NOT EXISTS custom_config_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    custom_config_id INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    detail TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_custom_config_history_config_id ON custom_config_history(custom_config_id);
 
                 CREATE TABLE IF NOT EXISTS reseller_credit_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -770,6 +820,7 @@ class Database:
                 c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
 
             self._migrate_columns(conn)
+            self._seed_default_custom_config_product(conn)
             # اطمینان از این‌که همیشه مالک اصلی (از env) نقش «owner» را داشته باشد،
             # چه در نصب تازه و چه در ارتقای نصب‌های قدیمی‌تر که این ستون را نداشتند.
             conn.execute("UPDATE admins SET role='owner' WHERE telegram_id=?", (owner_id,))
@@ -843,6 +894,10 @@ class Database:
             ("custom_configs", "renewal_reminder_sent", "INTEGER DEFAULT 0"),
             ("custom_configs", "volume_reminder_sent", "INTEGER DEFAULT 0"),
             ("custom_configs", "source", "TEXT DEFAULT 'custom_config'"),
+            ("custom_configs", "enabled", "INTEGER DEFAULT 1"),
+            ("custom_configs", "auto_renew", "INTEGER DEFAULT 0"),
+            ("custom_configs", "auto_renew_alert_date", "TEXT"),
+            ("custom_configs", "display_name", "TEXT"),
             ("users", "reseller_panel_id", "INTEGER"),
             # نصب‌های قدیمی‌تر ممکن است جدول reseller_requests را قبل از اضافه‌شدن
             # این ستون‌ها ساخته باشند (چون CREATE TABLE IF NOT EXISTS در آن حالت
@@ -886,6 +941,11 @@ class Database:
             ("orders", "renewal_mode", "TEXT"),
             ("orders", "renewal_add_volume_gb", "INTEGER DEFAULT 0"),
             ("orders", "renewal_add_days", "INTEGER DEFAULT 0"),
+            # چندمحصولی‌کردن «ساخت کانفیگ شخصی»: NULL یعنی سفارش/کانفیگ از
+            # مسیر سراسری قدیمی ساخته شده (پیش از وجود جدول محصولات).
+            ("orders", "custom_product_id", "INTEGER"),
+            ("orders", "custom_duration_days", "INTEGER"),
+            ("custom_configs", "product_id", "INTEGER"),
         ]
         for table, col, coltype in migrations:
             if not self._column_exists(conn, table, col):
@@ -938,6 +998,51 @@ class Database:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_admin_logs_record ON admin_logs(record_type, record_id)"
         )
+
+    def _seed_default_custom_config_product(self, conn):
+        """مهاجرت یک‌باره: اگر نصب قدیمی‌تر تنظیمات سراسری «ساخت کانفیگ شخصی»
+        را فعال داشته و هنوز هیچ ردیفی در custom_config_products ندارد، یک
+        محصول پیش‌فرض از روی همان تنظیمات/تعرفه‌ها/سرور ساخته می‌شود تا رفتار
+        نصب‌های موجود بدون تغییر بماند (کاربر همچنان مستقیم می‌رود سراغ
+        یوزرنیم/حجم، بدون مرحله‌ی اضافه‌ی «انتخاب محصول»)."""
+        if conn.execute("SELECT 1 FROM custom_config_products LIMIT 1").fetchone() is not None:
+            return
+        enabled = conn.execute(
+            "SELECT value FROM settings WHERE key='custom_config_enabled'"
+        ).fetchone()
+        if not enabled or enabled["value"] != "1":
+            return
+        server = conn.execute(
+            "SELECT * FROM panel_servers WHERE is_active=1 AND used_for_custom_config=1 ORDER BY id LIMIT 1"
+        ).fetchone()
+        if not server:
+            return
+
+        def _setting(key, default):
+            row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+            return row["value"] if row and row["value"] is not None else default
+
+        min_gb = int(_setting("custom_config_min_gb", "5") or 5)
+        max_gb = int(_setting("custom_config_max_gb", "1000") or 1000)
+        duration_days = int(_setting("custom_config_duration_days", "30") or 30)
+
+        cur = conn.execute(
+            "INSERT INTO custom_config_products (name, description, panel_server_id, min_gb, max_gb, "
+            "duration_mode, duration_days, pricing_mode, is_active, sort_order) "
+            "VALUES (?, '', ?, ?, ?, 'fixed', ?, 'tiered', 1, 0)",
+            ("کانفیگ شخصی", server["id"], min_gb, max_gb, duration_days),
+        )
+        product_id = cur.lastrowid
+
+        tiers = conn.execute(
+            "SELECT from_gb, to_gb, price_per_gb, sort_order FROM custom_config_pricing_tiers ORDER BY sort_order, from_gb"
+        ).fetchall()
+        for t in tiers:
+            conn.execute(
+                "INSERT INTO custom_config_product_pricing_tiers (product_id, from_gb, to_gb, price_per_gb, sort_order) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (product_id, t["from_gb"], t["to_gb"], t["price_per_gb"], t["sort_order"]),
+            )
 
     # -----------------------------------------------------------------------
     # تنظیمات (settings)
@@ -1931,16 +2036,24 @@ class Database:
         panel_server_id: int,
         base_price: int,
         wallet_used: int = 0,
+        custom_product_id: int = None,
+        custom_duration_days: int = None,
     ) -> int:
         """سفارش «ساخت کانفیگ شخصی» - از همان جدول orders استفاده می‌کند (product_id=0
-        سنتینل بدون FK) تا مسیر پرداخت کارت/کیف‌پول/کریپتوی فعلی بدون تغییر کار کند."""
+        سنتینل بدون FK) تا مسیر پرداخت کارت/کیف‌پول/کریپتوی فعلی بدون تغییر کار کند.
+        custom_product_id به یک ردیف custom_config_products اشاره می‌کند؛ NULL یعنی
+        سفارش از مسیر سراسری قدیمی (تک‌محصولی) ثبت شده است. custom_duration_days
+        همان لحظه‌ی ثبت سفارش قفل می‌شود (چه از مدت ثابت محصول، چه از انتخاب
+        کاربر) تا مسیرهای مختلف تایید سفارش (دستی/درگاه خودکار) مجبور نباشند
+        دوباره تنظیمات/محصول را برای محاسبه‌ی مدت لوکاپ کنند."""
         final_price = max(base_price - wallet_used, 0)
         with self._get_conn() as conn:
             cur = conn.execute(
                 "INSERT INTO orders (user_id, product_id, status, base_price, wallet_used, final_price, "
-                "quantity, is_custom_config, custom_volume_gb, custom_username, custom_panel_server_id) "
-                "VALUES (?, 0, 'pending', ?, ?, ?, 1, 1, ?, ?, ?)",
-                (user_tg_id, base_price, wallet_used, final_price, volume_gb, username, panel_server_id),
+                "quantity, is_custom_config, custom_volume_gb, custom_username, custom_panel_server_id, "
+                "custom_product_id, custom_duration_days) VALUES (?, 0, 'pending', ?, ?, ?, 1, 1, ?, ?, ?, ?, ?)",
+                (user_tg_id, base_price, wallet_used, final_price, volume_gb, username, panel_server_id,
+                 custom_product_id, custom_duration_days),
             )
             return cur.lastrowid
 
@@ -3263,34 +3376,13 @@ class Database:
                 "SELECT * FROM custom_gateway_invoices WHERE id=?", (invoice_id,)
             ).fetchone()
 
-    def get_pending_custom_gateway_invoice_for_ref(self, gateway_id: int, kind: str, ref_id: int,
-                                                    max_age_minutes: int = 60):
-        """آخرین فاکتور «هنوز تصمیم‌نگرفته» (new/pending) برای این سفارش/شارژ را برمی‌گرداند
-        تا با هر بار کلیک، فاکتور تکراری ساخته نشود. اگر فاکتور قدیمی از max_age_minutes
-        دقیقه‌ی گذشته بگذرد، دیگر آن را بازنمی‌گرداند (منقضی‌اش می‌کند) تا کاربری که واقعاً
-        پرداختش شکست خورده گیر یک لینک/وضعیت مرده نماند و بتواند فاکتور تازه بسازد.
-        نکته: created_at توسط ستون DEFAULT CURRENT_TIMESTAMP خودِ SQLite با فرمت
-        'YYYY-MM-DD HH:MM:SS' (بدون میکروثانیه، جداکننده‌ی فاصله نه T) پر می‌شود؛
-        این‌جا به‌جای مقایسه‌ی رشته‌ای (که با isoformat() ناسازگار است)، هر دو را
-        به datetime واقعی تبدیل می‌کنیم."""
+    def get_pending_custom_gateway_invoice_for_ref(self, gateway_id: int, kind: str, ref_id: int):
         with self._get_conn() as conn:
-            row = conn.execute(
+            return conn.execute(
                 "SELECT * FROM custom_gateway_invoices WHERE gateway_id=? AND kind=? AND ref_id=? "
                 "AND status IN ('new','pending') ORDER BY id DESC LIMIT 1",
                 (gateway_id, kind, ref_id),
             ).fetchone()
-            if row and row["created_at"]:
-                try:
-                    created = datetime.fromisoformat(str(row["created_at"]).replace("Z", ""))
-                except ValueError:
-                    created = None
-                if created and created < datetime.utcnow() - timedelta(minutes=max_age_minutes):
-                    conn.execute(
-                        "UPDATE custom_gateway_invoices SET status='expired', updated_at=? WHERE id=?",
-                        (datetime.utcnow().isoformat(), row["id"]),
-                    )
-                    return None
-            return row
 
     def update_custom_gateway_invoice_status(self, invoice_id: int, status: str):
         with self._get_conn() as conn:
@@ -3987,19 +4079,24 @@ class Database:
 
     def add_custom_config(self, user_id: int, panel_server_id: int, username: str,
                            volume_gb: int, duration_days: int, subscription_url: str,
-                           order_id: int = None, expires_at: str = None, source: str = "custom_config") -> int:
+                           order_id: int = None, expires_at: str = None, source: str = "custom_config",
+                           product_id: int = None) -> int:
         """source: 'custom_config' (خرید شخصی)، 'test' (کانفیگ تست پنلی)، یا 'reseller'.
         duration_days=0 یعنی سرویس نامحدود/بدون انقضاست؛ در این حالت expires_at
-        خالی (NULL) می‌ماند تا همه‌جا به‌صورت «نامحدود» نمایش داده شود."""
+        خالی (NULL) می‌ماند تا همه‌جا به‌صورت «نامحدود» نمایش داده شود. product_id
+        به custom_config_products اشاره می‌کند (NULL برای مسیر سراسری قدیمی)."""
         if expires_at is None and duration_days:
             expires_at = (datetime.utcnow() + timedelta(days=duration_days)).isoformat()
         with self._get_conn() as conn:
             cur = conn.execute(
                 "INSERT INTO custom_configs (order_id, user_id, panel_server_id, username, volume_gb, "
-                "duration_days, subscription_url, expires_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (order_id, user_id, panel_server_id, username, volume_gb, duration_days, subscription_url, expires_at, source),
+                "duration_days, subscription_url, expires_at, source, product_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (order_id, user_id, panel_server_id, username, volume_gb, duration_days, subscription_url,
+                 expires_at, source, product_id),
             )
-            return cur.lastrowid
+            new_id = cur.lastrowid
+        self.add_custom_config_history(new_id, "purchase", f"{volume_gb} گیگ / {duration_days} روز")
+        return new_id
 
     def get_custom_configs_for_user(self, user_id: int, source: str = None):
         with self._get_conn() as conn:
@@ -4058,7 +4155,11 @@ class Database:
                 "UPDATE custom_configs SET volume_gb=?, duration_days=?, expires_at=? WHERE id=?",
                 (new_volume, new_duration, new_expires_at, custom_config_id),
             )
-            return {"volume_gb": new_volume, "duration_days": new_duration, "expires_at": new_expires_at}
+        self.add_custom_config_history(
+            custom_config_id, "renewal",
+            f"+{add_volume_gb} گیگ / +{add_days} روز" if (add_volume_gb or add_days) else "تمدید کامل",
+        )
+        return {"volume_gb": new_volume, "duration_days": new_duration, "expires_at": new_expires_at}
 
     def extend_pool_config_expiry(self, config_id: int, user_tg_id: int, add_days: int) -> str:
         """تمدید «زمانی» یک کانفیگ استخری قدیمی (جدول configs) که فقط لینک/تاریخ
@@ -4097,6 +4198,221 @@ class Database:
             "max_gb": int(self.get_setting("custom_config_max_gb", "1000") or 1000),
             "duration_days": int(self.get_setting("custom_config_duration_days", "30") or 30),
         }
+
+    def get_custom_config_prefix(self) -> str:
+        """پیش‌وند ثابتی که ادمین برای نام کانفیگ‌های مستقیم-پنل تعیین می‌کند
+        (مثلاً hunter -> hunter-<ادامه‌ی دلخواه کاربر>). خالی یعنی غیرفعال."""
+        return (self.get_setting("custom_config_prefix", "") or "").strip()
+
+    def set_custom_config_prefix(self, prefix: str):
+        self.set_setting("custom_config_prefix", (prefix or "").strip())
+
+    # -----------------------------------------------------------------------
+    # تاریخچه‌ی سرویس (custom_config_history)
+    # -----------------------------------------------------------------------
+
+    def add_custom_config_history(self, custom_config_id: int, event_type: str, detail: str = None):
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO custom_config_history (custom_config_id, event_type, detail) VALUES (?, ?, ?)",
+                (custom_config_id, event_type, detail),
+            )
+
+    def get_custom_config_history(self, custom_config_id: int, limit: int = 30):
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM custom_config_history WHERE custom_config_id=? ORDER BY id DESC LIMIT ?",
+                (custom_config_id, limit),
+            ).fetchall()
+
+    # -----------------------------------------------------------------------
+    # فعال/غیرفعال، تمدید خودکار، تغییر نام و انتقال کانفیگ‌های مستقیم-پنل
+    # -----------------------------------------------------------------------
+
+    def set_custom_config_enabled(self, custom_config_id: int, user_tg_id: int, enabled: bool) -> bool:
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "UPDATE custom_configs SET enabled=? WHERE id=? AND user_id=?",
+                (1 if enabled else 0, custom_config_id, user_tg_id),
+            )
+            return cur.rowcount > 0
+
+    def set_custom_config_auto_renew(self, custom_config_id: int, user_tg_id: int, auto_renew: bool) -> bool:
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "UPDATE custom_configs SET auto_renew=? WHERE id=? AND user_id=?",
+                (1 if auto_renew else 0, custom_config_id, user_tg_id),
+            )
+            return cur.rowcount > 0
+
+    def rename_custom_config(self, custom_config_id: int, user_tg_id: int, display_name: str,
+                              new_panel_username: str = None) -> bool:
+        """display_name همیشه (فقط برای نمایش در بات) به‌روز می‌شود؛ ستون واقعی
+        username (شناسه‌ی کاربر روی خودِ پنل که همه‌ی عملیات دیگر - تمدید/حذف/
+        فعال‌سازی - با آن کار می‌کنند) فقط وقتی عوض می‌شود که rename روی خودِ
+        پنل هم موفق بوده (new_panel_username داده شده باشد) تا هیچ‌وقت بین
+        دیتابیس و پنل ناهماهنگی پیش نیاید."""
+        with self._get_conn() as conn:
+            if new_panel_username:
+                cur = conn.execute(
+                    "UPDATE custom_configs SET username=?, display_name=? WHERE id=? AND user_id=?",
+                    (new_panel_username, display_name, custom_config_id, user_tg_id),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE custom_configs SET display_name=? WHERE id=? AND user_id=?",
+                    (display_name, custom_config_id, user_tg_id),
+                )
+            return cur.rowcount > 0
+
+    def transfer_custom_config(self, custom_config_id: int, from_user_tg_id: int, to_user_tg_id: int) -> bool:
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "UPDATE custom_configs SET user_id=? WHERE id=? AND user_id=?",
+                (to_user_tg_id, custom_config_id, from_user_tg_id),
+            )
+            return cur.rowcount > 0
+
+    def get_custom_configs_due_for_auto_renew(self, hours_before: int = 24):
+        """کانفیگ‌های مستقیم-پنل که تمدید خودکار برایشان فعال است و انقضایشان
+        در بازه‌ی hours_before ساعت آینده قرار دارد (duration_days=0 یعنی
+        نامحدود و اصلاً وارد این لیست نمی‌شود)."""
+        threshold = (datetime.utcnow() + timedelta(hours=hours_before)).isoformat()
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM custom_configs WHERE auto_renew=1 AND enabled=1 AND duration_days>0 "
+                "AND expires_at IS NOT NULL AND expires_at<=?",
+                (threshold,),
+            ).fetchall()
+
+    def mark_custom_config_auto_renew_alert(self, custom_config_id: int, date_str: str):
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE custom_configs SET auto_renew_alert_date=? WHERE id=?", (date_str, custom_config_id),
+            )
+
+    # -----------------------------------------------------------------------
+    # محصولات «ساخت کانفیگ شخصی» (چندمحصولی)
+    # -----------------------------------------------------------------------
+
+    def get_custom_config_products(self, active_only: bool = False):
+        q = "SELECT * FROM custom_config_products"
+        if active_only:
+            q += " WHERE is_active=1"
+        q += " ORDER BY sort_order, id"
+        with self._get_conn() as conn:
+            return conn.execute(q).fetchall()
+
+    def count_active_custom_config_products(self) -> int:
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) AS c FROM custom_config_products WHERE is_active=1"
+            ).fetchone()["c"]
+
+    def get_custom_config_product(self, product_id: int):
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM custom_config_products WHERE id=?", (product_id,)
+            ).fetchone()
+
+    def create_custom_config_product(self, name: str, panel_server_id: int, min_gb: int = 5,
+                                      max_gb: int = 1000, duration_mode: str = "fixed",
+                                      duration_days: int = 30, min_days: int = None,
+                                      max_days: int = None, pricing_mode: str = "flat",
+                                      flat_price_per_gb: int = None, description: str = "",
+                                      icon: str = "🛠") -> int:
+        with self._get_conn() as conn:
+            max_sort = conn.execute(
+                "SELECT COALESCE(MAX(sort_order), -1) AS m FROM custom_config_products"
+            ).fetchone()["m"]
+            cur = conn.execute(
+                "INSERT INTO custom_config_products (name, description, icon, panel_server_id, min_gb, max_gb, "
+                "duration_mode, duration_days, min_days, max_days, pricing_mode, flat_price_per_gb, "
+                "is_active, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+                (name, description, icon, panel_server_id, min_gb, max_gb, duration_mode, duration_days,
+                 min_days, max_days, pricing_mode, flat_price_per_gb, max_sort + 1),
+            )
+            return cur.lastrowid
+
+    def update_custom_config_product(self, product_id: int, **fields) -> None:
+        """fields می‌تواند شامل هرکدام از ستون‌های custom_config_products باشد،
+        مثلاً update_custom_config_product(5, name="پلن آلمان", is_active=0)."""
+        allowed = {
+            "name", "description", "icon", "panel_server_id", "min_gb", "max_gb",
+            "duration_mode", "duration_days", "min_days", "max_days", "pricing_mode",
+            "flat_price_per_gb", "payment_methods", "is_active", "sort_order",
+        }
+        sets, values = [], []
+        for k, v in fields.items():
+            if k in allowed:
+                sets.append(f"{k}=?")
+                values.append(v)
+        if not sets:
+            return
+        values.append(product_id)
+        with self._get_conn() as conn:
+            conn.execute(f"UPDATE custom_config_products SET {', '.join(sets)} WHERE id=?", values)
+
+    def delete_custom_config_product(self, product_id: int) -> None:
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM custom_config_products WHERE id=?", (product_id,))
+
+    def get_custom_config_product_tiers(self, product_id: int):
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM custom_config_product_pricing_tiers WHERE product_id=? ORDER BY sort_order, from_gb",
+                (product_id,),
+            ).fetchall()
+
+    def add_custom_config_product_tier(self, product_id: int, from_gb: int, to_gb, price_per_gb: int) -> int:
+        with self._get_conn() as conn:
+            max_sort = conn.execute(
+                "SELECT COALESCE(MAX(sort_order), -1) AS m FROM custom_config_product_pricing_tiers WHERE product_id=?",
+                (product_id,),
+            ).fetchone()["m"]
+            cur = conn.execute(
+                "INSERT INTO custom_config_product_pricing_tiers (product_id, from_gb, to_gb, price_per_gb, sort_order) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (product_id, from_gb, to_gb, price_per_gb, max_sort + 1),
+            )
+            return cur.lastrowid
+
+    def update_custom_config_product_tier(self, tier_id: int, from_gb: int = None, to_gb=None, price_per_gb: int = None):
+        sets, values = [], []
+        if from_gb is not None:
+            sets.append("from_gb=?"); values.append(from_gb)
+        if to_gb is not None or to_gb is None:
+            sets.append("to_gb=?"); values.append(to_gb)
+        if price_per_gb is not None:
+            sets.append("price_per_gb=?"); values.append(price_per_gb)
+        if not sets:
+            return
+        values.append(tier_id)
+        with self._get_conn() as conn:
+            conn.execute(f"UPDATE custom_config_product_pricing_tiers SET {', '.join(sets)} WHERE id=?", values)
+
+    def delete_custom_config_product_tier(self, tier_id: int):
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM custom_config_product_pricing_tiers WHERE id=?", (tier_id,))
+
+    def calc_custom_config_product_price(self, product_id: int, volume_gb: int) -> int:
+        product = self.get_custom_config_product(product_id)
+        if not product:
+            return 0
+        if product["pricing_mode"] == "flat":
+            return int(volume_gb * (product["flat_price_per_gb"] or 0))
+        tiers = self.get_custom_config_product_tiers(product_id)
+        if not tiers:
+            return 0
+        for tier in tiers:
+            frm, to = tier["from_gb"], tier["to_gb"]
+            if volume_gb < frm:
+                break
+            if to is None or volume_gb <= to:
+                return int(volume_gb * tier["price_per_gb"])
+        if volume_gb < tiers[0]["from_gb"]:
+            return int(volume_gb * tiers[0]["price_per_gb"])
+        return int(volume_gb * tiers[-1]["price_per_gb"])
 
     # -----------------------------------------------------------------------
     # نمایندگی بر پایه‌ی استخر حجم (reseller credit)

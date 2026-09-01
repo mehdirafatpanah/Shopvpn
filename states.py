@@ -244,6 +244,7 @@ class AdminAddPricingTier(StatesGroup):
 class AdminCustomConfigSettings(StatesGroup):
     waiting_min_gb = State()
     waiting_max_gb = State()
+    waiting_prefix = State()
 
 
 class AdminResetTestConfig(StatesGroup):
@@ -251,9 +252,39 @@ class AdminResetTestConfig(StatesGroup):
 
 
 class CustomConfigFlow(StatesGroup):
+    waiting_product_select = State()
     waiting_username = State()
     waiting_volume = State()
+    waiting_duration = State()
     waiting_receipt = State()
+
+
+class AdminCustomConfigProduct(StatesGroup):
+    waiting_name = State()
+    waiting_panel_pick = State()
+    waiting_volume_min = State()
+    waiting_volume_max = State()
+    waiting_duration_mode_pick = State()
+    waiting_duration_value = State()
+    waiting_duration_min = State()
+    waiting_duration_max = State()
+    waiting_pricing_mode_pick = State()
+    waiting_flat_price = State()
+    waiting_description = State()
+
+
+class AdminAddCustomConfigProductTier(StatesGroup):
+    waiting_from_gb = State()
+    waiting_to_gb = State()
+    waiting_price = State()
+
+
+class ServiceRenameFlow(StatesGroup):
+    waiting_suffix = State()
+
+
+class ServiceTransferFlow(StatesGroup):
+    waiting_target_id = State()
 
 
 class RenewalFlow(StatesGroup):

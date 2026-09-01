@@ -21,7 +21,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError, TelegramBadRequest, TelegramNetworkError
 
 import keyboards as kb
-from states import BuyFlow, ContactFlow, TicketFlow, TicketReplyFlow, DiscountEntry, WalletTopup, CustomConfigFlow, RenewalFlow, ResellerFlow, ResellerRequestFlow
+from states import BuyFlow, ContactFlow, TicketFlow, TicketReplyFlow, DiscountEntry, WalletTopup, CustomConfigFlow, RenewalFlow, ResellerFlow, ResellerRequestFlow, ServiceRenameFlow, ServiceTransferFlow
 from config import MAX_TEST_PER_USER, RESELLER_DBS_DIR, resolve_db_path
 from database import Database
 from config_delivery import deliver_config_to_user, send_individual_configs, build_qr_bytes
@@ -370,7 +370,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     async def show_categories(message: Message, state: FSMContext):
         await state.clear()
         categories = (await asyncio.to_thread(db.get_categories, active_only=True))
-        custom_enabled = is_main_bot and (await asyncio.to_thread(db.get_setting, "custom_config_enabled", "0")) == "1"
+        custom_enabled = is_main_bot and (
+            (await asyncio.to_thread(db.get_setting, "custom_config_enabled", "0")) == "1"
+            or (await asyncio.to_thread(db.count_active_custom_config_products)) > 0
+        )
         if not categories and not custom_enabled:
             await message.answer("در حال حاضر دسته‌بندی فعالی وجود ندارد.")
             return
@@ -1085,31 +1088,92 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if not (await asyncio.to_thread(db.is_full_access_bot, is_main_bot)):
             await message.answer("این بخش در حال حاضر غیرفعال است.")
             return
-        settings = (await asyncio.to_thread(db.get_custom_config_settings))
-        if not settings["enabled"]:
-            await message.answer("این بخش در حال حاضر غیرفعال است.")
+        products = (await asyncio.to_thread(db.get_custom_config_products, True))
+        if not products:
+            # نصب‌های بسیار قدیمی که هنوز مهاجرت به مدل محصولی برایشان اجرا
+            # نشده (یا اصلاً هرگز فعال نبوده‌اند): همان مسیر سراسری قدیمی.
+            settings = (await asyncio.to_thread(db.get_custom_config_settings))
+            if not settings["enabled"]:
+                await message.answer("این بخش در حال حاضر غیرفعال است.")
+                return
+            server = (await asyncio.to_thread(db.get_panel_server_for_usage, "custom_config"))
+            if not server:
+                await message.answer("در حال حاضر سروری برای ساخت کانفیگ شخصی فعال نیست. لطفاً بعداً تلاش کنید.")
+                return
+            tiers = (await asyncio.to_thread(db.get_pricing_tiers))
+            if not tiers:
+                await message.answer("قیمت‌گذاری این بخش هنوز توسط ادمین تنظیم نشده است.")
+                return
+            await state.update_data(product_id=None, panel_server_id=server["id"])
+            await _custom_config_ask_username(message, state)
             return
-        server = (await asyncio.to_thread(db.get_panel_server_for_usage, "custom_config"))
-        if not server:
-            await message.answer("در حال حاضر سروری برای ساخت کانفیگ شخصی فعال نیست. لطفاً بعداً تلاش کنید.")
+
+        if len(products) == 1:
+            await _custom_config_select_product(message, state, products[0])
             return
-        tiers = (await asyncio.to_thread(db.get_pricing_tiers))
-        if not tiers:
-            await message.answer("قیمت‌گذاری این بخش هنوز توسط ادمین تنظیم نشده است.")
-            return
-        await state.set_state(CustomConfigFlow.waiting_username)
-        await state.update_data(panel_server_id=server["id"])
+
+        await state.set_state(CustomConfigFlow.waiting_product_select)
+        lines = ["🛠 ساخت کانفیگ شخصی\n", "لطفاً یکی از پلن‌های زیر را انتخاب کن:"]
+        for p in products:
+            if p["description"]:
+                lines.append(f"\n{p['icon'] or '🛠'} <b>{p['name']}</b>\n{p['description']}")
+            else:
+                lines.append(f"\n{p['icon'] or '🛠'} <b>{p['name']}</b>")
         await message.answer(
-            "🛠 ساخت کانفیگ شخصی\n\n"
-            "لطفاً یک نام کاربری دلخواه برای کانفیگ خود ارسال کنید، یا از دکمه‌ی زیر یک نام تصادفی بگیر.\n"
-            "فقط حروف انگلیسی، عدد و آندرلاین مجاز است (بین ۳ تا ۲۰ کاراکتر).",
-            reply_markup=kb.custom_config_username_kb(),
+            "\n".join(lines), parse_mode="HTML",
+            reply_markup=kb.custom_config_product_select_kb(products),
         )
+
+    @router.callback_query(F.data.startswith("ccf_pick_product:"), CustomConfigFlow.waiting_product_select)
+    async def cb_custom_config_pick_product(call: CallbackQuery, state: FSMContext):
+        product_id = int(call.data.split(":", 1)[1])
+        product = (await asyncio.to_thread(db.get_custom_config_product, product_id))
+        if not product or not product["is_active"]:
+            await call.answer("این پلن دیگر در دسترس نیست.", show_alert=True)
+            return
+        await call.answer()
+        try:
+            await call.message.delete()
+        except Exception:
+            pass
+        await _custom_config_select_product(call.message, state, product)
+
+    async def _custom_config_select_product(message: Message, state: FSMContext, product):
+        server = (await asyncio.to_thread(db.get_panel_server, product["panel_server_id"]))
+        if not server or not server["is_active"]:
+            await message.answer("⛔️ سرور این پلن در حال حاضر در دسترس نیست. لطفاً بعداً تلاش کنید.")
+            return
+        if product["pricing_mode"] == "tiered" and not (await asyncio.to_thread(db.get_custom_config_product_tiers, product["id"])):
+            await message.answer("⚠️ قیمت‌گذاری این پلن هنوز توسط ادمین تنظیم نشده. لطفاً با پشتیبانی تماس بگیر.")
+            return
+        await state.update_data(product_id=product["id"], panel_server_id=server["id"])
+        await _custom_config_ask_username(message, state)
+
+    async def _custom_config_ask_username(message: Message, state: FSMContext):
+        await state.set_state(CustomConfigFlow.waiting_username)
+        prefix = (await asyncio.to_thread(db.get_custom_config_prefix))
+        if prefix:
+            await message.answer(
+                "🛠 ساخت کانفیگ شخصی\n\n"
+                f"نام هر کانفیگ با پیش‌وند ثابت «{prefix}-» شروع می‌شود. لطفاً فقط ادامه‌ی نام "
+                "(بعد از خط تیره) را ارسال کنید، یا از دکمه‌ی زیر یک نام تصادفی بگیر.\n"
+                "فقط حروف انگلیسی، عدد و آندرلاین مجاز است (بین ۳ تا ۲۰ کاراکتر).",
+                reply_markup=kb.custom_config_username_kb(),
+            )
+        else:
+            await message.answer(
+                "🛠 ساخت کانفیگ شخصی\n\n"
+                "لطفاً یک نام کاربری دلخواه برای کانفیگ خود ارسال کنید، یا از دکمه‌ی زیر یک نام تصادفی بگیر.\n"
+                "فقط حروف انگلیسی، عدد و آندرلاین مجاز است (بین ۳ تا ۲۰ کاراکتر).",
+                reply_markup=kb.custom_config_username_kb(),
+            )
 
     @router.callback_query(F.data == "custom_config_random_username", CustomConfigFlow.waiting_username)
     async def cb_custom_config_random_username(call: CallbackQuery, state: FSMContext):
+        prefix = (await asyncio.to_thread(db.get_custom_config_prefix))
         for _ in range(10):
-            candidate = "u" + "".join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8))
+            suffix = "u" + "".join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8))
+            candidate = f"{prefix}-{suffix}" if prefix else suffix
             if not (await asyncio.to_thread(db.is_custom_username_taken, candidate)):
                 break
         await call.answer()
@@ -1117,51 +1181,115 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
     @router.message(CustomConfigFlow.waiting_username)
     async def custom_config_receive_username(message: Message, state: FSMContext):
-        username = (message.text or "").strip()
-        if not re.fullmatch(r"[A-Za-z0-9_]{3,20}", username):
+        suffix = (message.text or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_]{3,20}", suffix):
             await message.answer("❌ نام کاربری نامعتبر است. فقط حروف انگلیسی، عدد و آندرلاین، بین ۳ تا ۲۰ کاراکتر.")
             return
+        prefix = (await asyncio.to_thread(db.get_custom_config_prefix))
+        username = f"{prefix}-{suffix}" if prefix else suffix
         if (await asyncio.to_thread(db.is_custom_username_taken, username)):
             await message.answer("❌ این نام کاربری قبلاً استفاده شده. لطفاً نام دیگری انتخاب کنید.")
             return
         await _custom_config_apply_username(message, state, username)
 
     async def _custom_config_apply_username(message: Message, state: FSMContext, username: str):
-        settings = (await asyncio.to_thread(db.get_custom_config_settings))
-        tiers = (await asyncio.to_thread(db.get_pricing_tiers))
+        data = await state.get_data()
+        product_id = data.get("product_id")
         await state.update_data(custom_username=username)
         await state.set_state(CustomConfigFlow.waiting_volume)
-        await message.answer(
-            f"✅ نام کاربری: {username}\n\n"
-            f"{_format_pricing_table(tiers)}\n\n"
-            f"📶 حالا حجم مورد نظر خود را به گیگابایت وارد کنید.\n"
-            f"حداقل: {settings['min_gb']} گیگ — حداکثر: {settings['max_gb']} گیگ\n"
-            f"⏳ مدت اعتبار: {settings['duration_days']} روز (ثابت)",
-            reply_markup=kb.cancel_kb(),
-        )
+        if product_id:
+            product = (await asyncio.to_thread(db.get_custom_config_product, product_id))
+            duration_note = (
+                f"⏳ مدت اعتبار: {product['duration_days']} روز (ثابت)"
+                if product["duration_mode"] == "fixed"
+                else f"⏳ مدت اعتبار: بعد از انتخاب حجم، بین {product['min_days'] or 1} تا {product['max_days'] or 90} روز خودت انتخاب می‌کنی"
+            )
+            pricing_note = (
+                f"💰 قیمت: {product['flat_price_per_gb']:,} تومان/گیگ"
+                if product["pricing_mode"] == "flat"
+                else _format_pricing_table((await asyncio.to_thread(db.get_custom_config_product_tiers, product_id)))
+            )
+            await message.answer(
+                f"✅ نام کاربری: {username}\n\n"
+                f"{pricing_note}\n\n"
+                f"📶 حالا حجم مورد نظر خود را به گیگابایت وارد کنید.\n"
+                f"حداقل: {product['min_gb']} گیگ — حداکثر: {product['max_gb']} گیگ\n"
+                f"{duration_note}",
+                reply_markup=kb.cancel_kb(),
+            )
+        else:
+            settings = (await asyncio.to_thread(db.get_custom_config_settings))
+            tiers = (await asyncio.to_thread(db.get_pricing_tiers))
+            await message.answer(
+                f"✅ نام کاربری: {username}\n\n"
+                f"{_format_pricing_table(tiers)}\n\n"
+                f"📶 حالا حجم مورد نظر خود را به گیگابایت وارد کنید.\n"
+                f"حداقل: {settings['min_gb']} گیگ — حداکثر: {settings['max_gb']} گیگ\n"
+                f"⏳ مدت اعتبار: {settings['duration_days']} روز (ثابت)",
+                reply_markup=kb.cancel_kb(),
+            )
+
+    @router.message(CustomConfigFlow.waiting_duration)
+    async def custom_config_receive_duration(message: Message, state: FSMContext):
+        text = (message.text or "").strip()
+        data = await state.get_data()
+        product = (await asyncio.to_thread(db.get_custom_config_product, data.get("product_id")))
+        if not product:
+            await message.answer("⛔️ این پلن دیگر در دسترس نیست. لطفاً دوباره از منو شروع کنید.")
+            await state.clear()
+            return
+        min_days, max_days = product["min_days"] or 1, product["max_days"] or 90
+        if not text.isdigit() or int(text) < min_days or int(text) > max_days:
+            await message.answer(f"❌ مدت باید بین {min_days} تا {max_days} روز باشد.")
+            return
+        await _custom_config_finalize_order(message, state, int(text))
+
 
     @router.message(CustomConfigFlow.waiting_volume)
     async def custom_config_receive_volume(message: Message, state: FSMContext):
-        settings = (await asyncio.to_thread(db.get_custom_config_settings))
+        data = await state.get_data()
+        product_id = data.get("product_id")
+        product = (await asyncio.to_thread(db.get_custom_config_product, product_id)) if product_id else None
         text = (message.text or "").strip()
         if not text.isdigit():
             await message.answer("❌ لطفاً فقط عدد صحیح وارد کنید (به گیگابایت).")
             return
         volume_gb = int(text)
-        if volume_gb < settings["min_gb"] or volume_gb > settings["max_gb"]:
-            await message.answer(
-                f"❌ حجم باید بین {settings['min_gb']} تا {settings['max_gb']} گیگابایت باشد."
-            )
-            return
 
-        price = (await asyncio.to_thread(db.calc_custom_config_price, volume_gb))
+        if product:
+            if volume_gb < product["min_gb"] or volume_gb > product["max_gb"]:
+                await message.answer(f"❌ حجم باید بین {product['min_gb']} تا {product['max_gb']} گیگابایت باشد.")
+                return
+            price = (await asyncio.to_thread(db.calc_custom_config_product_price, product_id, volume_gb))
+        else:
+            settings = (await asyncio.to_thread(db.get_custom_config_settings))
+            if volume_gb < settings["min_gb"] or volume_gb > settings["max_gb"]:
+                await message.answer(f"❌ حجم باید بین {settings['min_gb']} تا {settings['max_gb']} گیگابایت باشد.")
+                return
+            price = (await asyncio.to_thread(db.calc_custom_config_price, volume_gb))
+
         if price <= 0:
             await message.answer("⚠️ قیمت‌گذاری برای این بخش هنوز تنظیم نشده. لطفاً با پشتیبانی تماس بگیرید.")
             await state.clear()
             return
 
+        await state.update_data(custom_volume_gb=volume_gb, custom_price=price)
+
+        if product and product["duration_mode"] == "user_choice":
+            await state.set_state(CustomConfigFlow.waiting_duration)
+            min_days, max_days = product["min_days"] or 1, product["max_days"] or 90
+            await message.answer(f"⏳ مدت اعتبار را به روز وارد کن (بین {min_days} تا {max_days} روز):")
+            return
+
+        duration_days = product["duration_days"] if product else (await asyncio.to_thread(db.get_custom_config_settings))["duration_days"]
+        await _custom_config_finalize_order(message, state, duration_days)
+
+    async def _custom_config_finalize_order(message: Message, state: FSMContext, duration_days: int):
         data = await state.get_data()
+        volume_gb = data.get("custom_volume_gb")
+        price = data.get("custom_price")
         username = data.get("custom_username")
+        product_id = data.get("product_id")
         server = (await asyncio.to_thread(db.get_panel_server, data.get("panel_server_id")))
         if not server or not server["is_active"]:
             await message.answer("⛔️ سرور این بخش دیگر در دسترس نیست. لطفاً دوباره از منو شروع کنید.")
@@ -1177,6 +1305,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         order_id = (await asyncio.to_thread(db.create_custom_config_order, 
             message.from_user.id, volume_gb, username, server["id"],
             base_price=price, wallet_used=wallet_used,
+            custom_product_id=product_id, custom_duration_days=duration_days,
         ))
         order = (await asyncio.to_thread(db.get_order, order_id))
         await state.update_data(order_id=order_id, custom_volume_gb=volume_gb)
@@ -1187,14 +1316,14 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             server_row = (await asyncio.to_thread(db.get_panel_server, server["id"]))
             try:
                 provider = get_provider(server_row)
-                result = await provider.create_user(username, volume_gb, settings["duration_days"])
+                result = await provider.create_user(username, volume_gb, duration_days)
             except Exception as e:
                 (await asyncio.to_thread(db.reject_order, order_id))
                 await message.answer(f"⛔️ خطا در ساخت کانفیگ روی پنل: {e}\nمبلغ به کیف پول بازگردانده شد.")
                 return
             (await asyncio.to_thread(db.add_custom_config, 
                 message.from_user.id, server["id"], result.username, volume_gb,
-                settings["duration_days"], result.subscription_url, order_id=order_id,
+                duration_days, result.subscription_url, order_id=order_id, product_id=product_id,
             ))
             await message.answer(
                 "✅ مبلغ سفارش شما به‌طور کامل از کیف پول پوشش داده شد.\n"
@@ -1228,7 +1357,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         text = (
             f"🛠 نام کاربری: {username}\n"
             f"📶 حجم: {volume_gb} گیگابایت\n"
-            f"⏳ مدت: {settings['duration_days']} روز\n\n"
+            f"⏳ مدت: {duration_days} روز\n\n"
         )
         if wallet_used:
             text += f"👛 استفاده از کیف پول: {wallet_used:,} تومان\n"
@@ -1258,11 +1387,13 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await call.answer("سفارش معتبر یافت نشد.", show_alert=True)
             return
         await call.answer()
-        settings = (await asyncio.to_thread(db.get_custom_config_settings))
+        duration_days = order["custom_duration_days"]
+        if duration_days is None:
+            duration_days = (await asyncio.to_thread(db.get_custom_config_settings))["duration_days"]
         intro_lines = [
             f"🛠 نام کاربری: {order['custom_username']}",
             f"📶 حجم: {order['custom_volume_gb']} گیگابایت",
-            f"⏳ مدت: {settings['duration_days']} روز",
+            f"⏳ مدت: {duration_days} روز",
         ]
         if order["wallet_used"]:
             intro_lines.append(f"👛 استفاده از کیف پول: {order['wallet_used']:,} تومان")
@@ -1500,17 +1631,28 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
         await state.set_state(ResellerFlow.waiting_username)
         await state.update_data(panel_server_id=server["id"])
+        prefix = (await asyncio.to_thread(db.get_custom_config_prefix))
         await call.answer()
-        await call.message.answer(
-            "یک نام کاربری برای این کانفیگ وارد کن، یا از دکمه‌ی زیر یک نام تصادفی بگیر.\n"
-            "فقط حروف انگلیسی، عدد و آندرلاین (بین ۳ تا ۲۰ کاراکتر).",
-            reply_markup=kb.custom_config_username_kb(),
-        )
+        if prefix:
+            await call.message.answer(
+                f"نام هر کانفیگ با پیش‌وند ثابت «{prefix}-» شروع می‌شود. فقط ادامه‌ی نام (بعد از خط تیره) را "
+                "وارد کن، یا از دکمه‌ی زیر یک نام تصادفی بگیر.\n"
+                "فقط حروف انگلیسی، عدد و آندرلاین (بین ۳ تا ۲۰ کاراکتر).",
+                reply_markup=kb.custom_config_username_kb(),
+            )
+        else:
+            await call.message.answer(
+                "یک نام کاربری برای این کانفیگ وارد کن، یا از دکمه‌ی زیر یک نام تصادفی بگیر.\n"
+                "فقط حروف انگلیسی، عدد و آندرلاین (بین ۳ تا ۲۰ کاراکتر).",
+                reply_markup=kb.custom_config_username_kb(),
+            )
 
     @router.callback_query(F.data == "custom_config_random_username", ResellerFlow.waiting_username)
     async def cb_reseller_random_username(call: CallbackQuery, state: FSMContext):
+        prefix = (await asyncio.to_thread(db.get_custom_config_prefix))
         for _ in range(10):
-            candidate = "r" + "".join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8))
+            suffix = "r" + "".join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8))
+            candidate = f"{prefix}-{suffix}" if prefix else suffix
             if not (await asyncio.to_thread(db.is_custom_username_taken, candidate)):
                 break
         await call.answer()
@@ -1518,10 +1660,12 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
     @router.message(ResellerFlow.waiting_username)
     async def reseller_receive_username(message: Message, state: FSMContext):
-        username = (message.text or "").strip()
-        if not re.fullmatch(r"[A-Za-z0-9_]{3,20}", username):
+        suffix = (message.text or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_]{3,20}", suffix):
             await message.answer("❌ نام کاربری نامعتبر است. فقط حروف انگلیسی، عدد و آندرلاین، بین ۳ تا ۲۰ کاراکتر.")
             return
+        prefix = (await asyncio.to_thread(db.get_custom_config_prefix))
+        username = f"{prefix}-{suffix}" if prefix else suffix
         if (await asyncio.to_thread(db.is_custom_username_taken, username)):
             await message.answer("❌ این نام کاربری قبلاً استفاده شده. لطفاً نام دیگری انتخاب کنید.")
             return
@@ -1701,7 +1845,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         for cc in db.get_custom_configs_for_user(user_tg_id):
             if cc["source"] == "test":
                 continue
-            label = f"🛠 «{cc['username']}» ({cc['volume_gb']} گیگ / {cc['duration_days']} روز)"
+            label_name = cc["display_name"] or cc["username"]
+            label = f"🛠 «{label_name}» ({cc['volume_gb']} گیگ / {cc['duration_days']} روز)"
             items.append({"cb_id": f"x{cc['id']}", "kind": "custom", "label": label, "custom": cc, "_ts": cc["created_at"] or ""})
 
         items.sort(key=lambda it: it["_ts"], reverse=True)
@@ -1712,6 +1857,15 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             if it["cb_id"] == cb_id:
                 return it
         return None
+
+    def _svc_kb_kwargs(item) -> dict:
+        if item["kind"] != "custom":
+            return {}
+        cc = item["custom"]
+        return {
+            "enabled": (cc["enabled"] if "enabled" in cc.keys() else 1) == 1,
+            "auto_renew": (cc["auto_renew"] if "auto_renew" in cc.keys() else 0) == 1,
+        }
 
     def _item_sub_link(item) -> str:
         """لینک ساب یک آیتم (برای QR/بروزرسانی/کانفیگ‌های تکی) - یا رشته‌ی
@@ -1763,8 +1917,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                         cc["username"],
                     )
             text = (
-                f"🛠 کانفیگ شخصی «{cc['username']}»\n"
+                f"🛠 کانفیگ شخصی «{cc['display_name'] or cc['username']}»\n"
                 f"📶 حجم: {cc['volume_gb']} گیگ | ⏳ مدت: {cc['duration_days']} روز\n"
+                f"وضعیت: {'🟢 فعال' if (cc['enabled'] if 'enabled' in cc.keys() else 1) == 1 else '🔴 غیرفعال'} | "
+                f"تمدید خودکار: {'🟢 فعال' if (cc['auto_renew'] if 'auto_renew' in cc.keys() else 0) == 1 else '🔴 غیرفعال'}\n"
                 f"🗓 تاریخ خرید: {to_jalali_str(cc['created_at'], with_time=True)}\n"
             )
             if cc["expires_at"]:
@@ -1826,7 +1982,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
         deletable = item["kind"] in ("config", "custom")
         show_links = _item_has_individual_links(item)
-        markup = kb.service_detail_kb(db, cb_id, item["kind"], deletable, show_links)
+        markup = kb.service_detail_kb(db, cb_id, item["kind"], deletable, show_links, **_svc_kb_kwargs(item))
         if len(text) > 4000:
             text = text[:3950] + "\n\n… (فهرست کوتاه شد؛ تعداد کانفیگ‌ها زیاد است)"
         await _safe_edit(call.message, text, parse_mode="Markdown", reply_markup=markup)
@@ -1853,7 +2009,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
         deletable = item["kind"] in ("config", "custom")
         show_links = _item_has_individual_links(item)
-        markup = kb.service_detail_kb(db, cb_id, item["kind"], deletable, show_links)
+        markup = kb.service_detail_kb(db, cb_id, item["kind"], deletable, show_links, **_svc_kb_kwargs(item))
         if len(text) > 4000:
             text = text[:3950] + "\n\n… (فهرست کوتاه شد؛ تعداد کانفیگ‌ها زیاد است)"
         await _safe_edit(call.message, text, parse_mode="Markdown", reply_markup=markup)
@@ -2025,16 +2181,280 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
         if result.subscription_url:
             (await asyncio.to_thread(db.update_custom_config_subscription_url, cc["id"], result.subscription_url))
+        (await asyncio.to_thread(db.add_custom_config_history, cc["id"], "cut_access", "دسترسی قطع و لینک جدید صادر شد"))
         item2 = _find_my_orders_item(user_tg_id, cb_id)
         if item2:
             text = await _my_orders_item_text(item2)
             await _safe_edit(
                 call.message, "✅ دسترسی قبلی قطع شد و لینک جدید صادر شد.\n\n" + text,
                 parse_mode="Markdown",
-                reply_markup=kb.service_detail_kb(db, cb_id, item2["kind"], True),
+                reply_markup=kb.service_detail_kb(db, cb_id, item2["kind"], True, **_svc_kb_kwargs(item2)),
             )
         else:
             await _safe_edit(call.message, "✅ دسترسی قبلی قطع شد و لینک جدید صادر شد.")
+
+    # -----------------------------------------------------------------------
+    # فعال/غیرفعال، تغییر نام، تمدید خودکار، انتقال و تاریخچه‌ی کانفیگ‌های
+    # مستقیم-پنل (دکمه‌های اضافه‌ی صفحه‌ی جزئیات یک سرویس)
+    # -----------------------------------------------------------------------
+
+    async def _refresh_service_card(target, user_tg_id: int, cb_id: str, prefix_text: str = None):
+        item2 = _find_my_orders_item(user_tg_id, cb_id)
+        if not item2:
+            await target.answer("این مورد دیگر یافت نشد.")
+            return
+        text = await _my_orders_item_text(item2)
+        if prefix_text:
+            text = prefix_text + "\n\n" + text
+        deletable = item2["kind"] in ("config", "custom")
+        show_links = _item_has_individual_links(item2)
+        markup = kb.service_detail_kb(db, cb_id, item2["kind"], deletable, show_links, **_svc_kb_kwargs(item2))
+        if isinstance(target, Message):
+            await target.answer(text, parse_mode="Markdown", reply_markup=markup)
+        else:
+            await _safe_edit(target, text, parse_mode="Markdown", reply_markup=markup)
+
+    @router.callback_query(F.data.startswith("svc_toggle:"))
+    async def cb_service_toggle(call: CallbackQuery):
+        if (await asyncio.to_thread(db.get_setting, "svc_show_toggle", "1")) != "1":
+            await call.answer("این قابلیت غیرفعال است.", show_alert=True)
+            return
+        cb_id = call.data.split(":", 1)[1]
+        user_tg_id = call.from_user.id
+        item = _find_my_orders_item(user_tg_id, cb_id)
+        if not item or item["kind"] != "custom":
+            await call.answer("این مورد یافت نشد.", show_alert=True)
+            return
+        cc = item["custom"]
+        new_enabled = not ((cc["enabled"] if "enabled" in cc.keys() else 1) == 1)
+        server = (await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])) if cc["panel_server_id"] else None
+        if not server or not server["is_active"]:
+            await call.answer("سرور پنل مربوط به این سرویس یافت نشد یا غیرفعال است.", show_alert=True)
+            return
+        try:
+            provider = get_provider(server)
+            await provider.set_enabled(cc["username"], new_enabled)
+        except PanelError as e:
+            await call.answer(f"⛔️ ناموفق بود: {e}", show_alert=True)
+            return
+        (await asyncio.to_thread(db.set_custom_config_enabled, cc["id"], user_tg_id, new_enabled))
+        (await asyncio.to_thread(
+            db.add_custom_config_history, cc["id"], "toggle", "فعال شد" if new_enabled else "غیرفعال شد",
+        ))
+        await _refresh_service_card(call.message, user_tg_id, cb_id)
+        await call.answer("✅ وضعیت بروزرسانی شد.")
+
+    @router.callback_query(F.data.startswith("svc_rename:"))
+    async def cb_service_rename_ask(call: CallbackQuery, state: FSMContext):
+        if (await asyncio.to_thread(db.get_setting, "svc_show_rename", "1")) != "1":
+            await call.answer("این قابلیت غیرفعال است.", show_alert=True)
+            return
+        cb_id = call.data.split(":", 1)[1]
+        item = _find_my_orders_item(call.from_user.id, cb_id)
+        if not item or item["kind"] != "custom":
+            await call.answer("این مورد یافت نشد.", show_alert=True)
+            return
+        cc = item["custom"]
+        await state.set_state(ServiceRenameFlow.waiting_suffix)
+        await state.update_data(cb_id=cb_id)
+        prefix = (await asyncio.to_thread(db.get_custom_config_prefix))
+        current_label = cc["display_name"] or cc["username"]
+        if prefix and current_label.startswith(prefix + "-"):
+            current_suffix = current_label[len(prefix) + 1:]
+            prompt = (
+                f"✏️ نام فعلی: «{current_label}»\n\n"
+                f"ادامه‌ی نام جدید (بعد از «{prefix}-») را ارسال کنید.\n"
+                "فقط حروف انگلیسی، عدد و آندرلاین، بین ۳ تا ۲۰ کاراکتر."
+            )
+        else:
+            prompt = (
+                f"✏️ نام فعلی: «{current_label}»\n\n"
+                "نام جدید کانفیگ را ارسال کنید. فقط حروف انگلیسی، عدد و آندرلاین، بین ۳ تا ۲۰ کاراکتر."
+            )
+        await call.answer()
+        await call.message.answer(prompt, reply_markup=kb.service_rename_cancel_kb(cb_id))
+
+    @router.message(ServiceRenameFlow.waiting_suffix)
+    async def service_rename_receive(message: Message, state: FSMContext):
+        data = await state.get_data()
+        cb_id = data.get("cb_id")
+        suffix = (message.text or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_]{3,20}", suffix):
+            await message.answer("❌ نامعتبر است. فقط حروف انگلیسی، عدد و آندرلاین، بین ۳ تا ۲۰ کاراکتر.")
+            return
+        user_tg_id = message.from_user.id
+        item = _find_my_orders_item(user_tg_id, cb_id)
+        if not item or item["kind"] != "custom":
+            await state.clear()
+            await message.answer("این مورد دیگر یافت نشد.")
+            return
+        cc = item["custom"]
+        prefix = (await asyncio.to_thread(db.get_custom_config_prefix))
+        current_label = cc["display_name"] or cc["username"]
+        new_label = f"{prefix}-{suffix}" if (prefix and current_label.startswith(prefix + "-")) else suffix
+        if new_label == current_label:
+            await message.answer("این نام همان نام فعلی است.")
+            return
+        if (await asyncio.to_thread(db.is_custom_username_taken, new_label)):
+            await message.answer("❌ این نام قبلاً استفاده شده. نام دیگری بفرست.")
+            return
+        server = (await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])) if cc["panel_server_id"] else None
+        panel_username = None
+        note = "(فقط نام نمایشی داخل بات تغییر کرد؛ لینک/کانفیگ فعلی روی پنل بدون تغییر کار می‌کند)"
+        if server and server["is_active"]:
+            try:
+                provider = get_provider(server)
+                await provider.rename_user(cc["username"], new_label)
+                panel_username = new_label
+                note = "(روی خودِ پنل هم اعمال شد)"
+            except PanelError:
+                pass
+        old_label = current_label
+        (await asyncio.to_thread(db.rename_custom_config, cc["id"], user_tg_id, new_label, panel_username))
+        (await asyncio.to_thread(
+            db.add_custom_config_history, cc["id"], "rename", f"{old_label} ← {new_label} {note}",
+        ))
+        await state.clear()
+        await _refresh_service_card(message, user_tg_id, cb_id, f"✅ نام کانفیگ به «{new_label}» تغییر کرد. {note}")
+
+    @router.callback_query(F.data.startswith("svc_autorenew:"))
+    async def cb_service_autorenew_toggle(call: CallbackQuery):
+        if (await asyncio.to_thread(db.get_setting, "svc_show_auto_renew", "1")) != "1":
+            await call.answer("این قابلیت غیرفعال است.", show_alert=True)
+            return
+        cb_id = call.data.split(":", 1)[1]
+        user_tg_id = call.from_user.id
+        item = _find_my_orders_item(user_tg_id, cb_id)
+        if not item or item["kind"] != "custom":
+            await call.answer("این مورد یافت نشد.", show_alert=True)
+            return
+        cc = item["custom"]
+        if (cc["duration_days"] or 0) <= 0:
+            await call.answer("این کانفیگ نامحدود است و نیازی به تمدید خودکار ندارد.", show_alert=True)
+            return
+        new_val = not ((cc["auto_renew"] if "auto_renew" in cc.keys() else 0) == 1)
+        (await asyncio.to_thread(db.set_custom_config_auto_renew, cc["id"], user_tg_id, new_val))
+        (await asyncio.to_thread(
+            db.add_custom_config_history, cc["id"], "auto_renew_toggle", "فعال شد" if new_val else "غیرفعال شد",
+        ))
+        await _refresh_service_card(call.message, user_tg_id, cb_id)
+        if new_val:
+            await call.answer("✅ تمدید خودکار فعال شد. هر بار نزدیک انقضا، از کیف پول کسر و تمدید می‌شود.")
+        else:
+            await call.answer("✅ تمدید خودکار غیرفعال شد.")
+
+    @router.callback_query(F.data.startswith("svc_transfer:"))
+    async def cb_service_transfer_ask(call: CallbackQuery, state: FSMContext):
+        if (await asyncio.to_thread(db.get_setting, "svc_show_transfer", "1")) != "1":
+            await call.answer("این قابلیت غیرفعال است.", show_alert=True)
+            return
+        cb_id = call.data.split(":", 1)[1]
+        item = _find_my_orders_item(call.from_user.id, cb_id)
+        if not item or item["kind"] != "custom":
+            await call.answer("این مورد یافت نشد.", show_alert=True)
+            return
+        await state.set_state(ServiceTransferFlow.waiting_target_id)
+        await state.update_data(cb_id=cb_id)
+        await call.answer()
+        await call.message.answer(
+            "👤 آی‌دی عددی تلگرام کاربری که می‌خواهید این کانفیگ به او منتقل شود را ارسال کنید.\n"
+            "توجه: آن کاربر باید قبلاً بات را استارت کرده باشد.",
+            reply_markup=kb.service_rename_cancel_kb(cb_id),
+        )
+
+    @router.message(ServiceTransferFlow.waiting_target_id)
+    async def service_transfer_receive(message: Message, state: FSMContext):
+        text = (message.text or "").strip()
+        if not text.isdigit():
+            await message.answer("❌ فقط آی‌دی عددی تلگرام را ارسال کنید.")
+            return
+        target_id = int(text)
+        data = await state.get_data()
+        cb_id = data.get("cb_id")
+        user_tg_id = message.from_user.id
+        if target_id == user_tg_id:
+            await message.answer("این کانفیگ همین الان مال شماست.")
+            return
+        target_user = (await asyncio.to_thread(db.get_user, target_id))
+        if not target_user:
+            await message.answer("❌ این کاربر بات را استارت نکرده یا آی‌دی نادرست است.")
+            return
+        item = _find_my_orders_item(user_tg_id, cb_id)
+        if not item or item["kind"] != "custom":
+            await state.clear()
+            await message.answer("این مورد دیگر یافت نشد.")
+            return
+        await state.clear()
+        await message.answer(
+            f"⚠️ آیا مطمئن هستید که این کانفیگ به کاربر با آی‌دی {target_id} منتقل شود؟\n"
+            "این عملیات **غیرقابل بازگشت** است.",
+            parse_mode="Markdown",
+            reply_markup=kb.service_transfer_confirm_kb(cb_id, target_id),
+        )
+
+    @router.callback_query(F.data.startswith("svc_transok:"))
+    async def cb_service_transfer_confirm(call: CallbackQuery):
+        if (await asyncio.to_thread(db.get_setting, "svc_show_transfer", "1")) != "1":
+            await call.answer("این قابلیت غیرفعال است.", show_alert=True)
+            return
+        _, cb_id, target_id_s = call.data.split(":", 2)
+        target_id = int(target_id_s)
+        user_tg_id = call.from_user.id
+        item = _find_my_orders_item(user_tg_id, cb_id)
+        if not item or item["kind"] != "custom":
+            await call.answer("این مورد یافت نشد (شاید قبلاً حذف/منتقل شده).", show_alert=True)
+            await _show_my_orders_list(call.message, user_tg_id, edit=True)
+            return
+        cc = item["custom"]
+        ok = (await asyncio.to_thread(db.transfer_custom_config, cc["id"], user_tg_id, target_id))
+        if not ok:
+            await call.answer("انتقال ناموفق بود.", show_alert=True)
+            return
+        (await asyncio.to_thread(
+            db.add_custom_config_history, cc["id"], "transfer", f"از {user_tg_id} به {target_id}",
+        ))
+        await call.answer("✅ کانفیگ منتقل شد.", show_alert=True)
+        try:
+            await call.bot.send_message(
+                target_id,
+                f"📦 یک کانفیگ («{cc['display_name'] or cc['username']}») از طرف کاربر دیگری به حساب شما منتقل شد.\n"
+                "برای مشاهده، حساب کاربری ← سرویس‌ها و سفارش‌های من را ببینید.",
+            )
+        except Exception:
+            pass
+        await _show_my_orders_list(call.message, user_tg_id, edit=True)
+
+    @router.callback_query(F.data.startswith("svc_hist:"))
+    async def cb_service_history(call: CallbackQuery):
+        if (await asyncio.to_thread(db.get_setting, "svc_show_history", "1")) != "1":
+            await call.answer("این قابلیت غیرفعال است.", show_alert=True)
+            return
+        cb_id = call.data.split(":", 1)[1]
+        item = _find_my_orders_item(call.from_user.id, cb_id)
+        if not item or item["kind"] != "custom":
+            await call.answer("این مورد یافت نشد.", show_alert=True)
+            return
+        cc = item["custom"]
+        rows = (await asyncio.to_thread(db.get_custom_config_history, cc["id"]))
+        _EVENT_LABEL = {
+            "purchase": "🛒 خرید", "renewal": "🔄 تمدید", "toggle": "🟢 فعال/غیرفعال",
+            "auto_renew_toggle": "🔁 تمدید خودکار", "rename": "✏️ تغییر نام", "transfer": "👤 انتقال",
+            "cut_access": "🚫 قطع دسترسی", "auto_renew": "🔄 تمدید خودکار (خودکار انجام‌شده)",
+        }
+        if not rows:
+            text = "📜 تاریخچه‌ای برای این سرویس ثبت نشده است."
+        else:
+            lines = [f"📜 تاریخچه‌ی سرویس «{cc['display_name'] or cc['username']}»\n"]
+            for r in rows:
+                label = _EVENT_LABEL.get(r["event_type"], r["event_type"])
+                when = to_jalali_str(r["created_at"], with_time=True)
+                detail = f" — {r['detail']}" if r["detail"] else ""
+                lines.append(f"{label}{detail}\n🗓 {when}\n")
+            text = "\n".join(lines)
+            if len(text) > 4000:
+                text = text[:3950] + "\n\n… (فهرست کوتاه شد)"
+        await call.answer()
+        await _safe_edit(call.message, text, reply_markup=kb.service_history_back_kb(cb_id))
 
     async def _process_renewal_order(
         user_tg_id: int, cb_id: str, mode: str, target_kind: str, target_id: int,
@@ -2069,7 +2489,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             if item2:
                 text = await _my_orders_item_text(item2)
                 deletable = item2["kind"] in ("config", "custom")
-                await send_fn(text, parse_mode="Markdown", reply_markup=kb.service_detail_kb(db, cb_id, item2["kind"], deletable))
+                await send_fn(text, parse_mode="Markdown", reply_markup=kb.service_detail_kb(db, cb_id, item2["kind"], deletable, **_svc_kb_kwargs(item2)))
             return
 
         remaining_amount = order["final_price"]
