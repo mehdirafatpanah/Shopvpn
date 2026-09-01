@@ -175,6 +175,44 @@ class HiddifyProvider(BasePanelProvider):
         sub_url = f"{self._sub_base_url()}/{user['uuid']}/"
         return PanelUserResult(username=username, subscription_url=sub_url, raw=payload)
 
+    async def set_enabled(self, username: str, enabled: bool) -> None:
+        async with aiohttp.ClientSession() as session:
+            user = await self._find_by_name(session, username)
+            payload = dict(user)
+            payload["enable"] = bool(enabled)
+            try:
+                async with session.put(
+                    f"{self._base_url()}/api/v2/admin/user/{user['uuid']}/",
+                    json=payload,
+                    headers=self._headers(),
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise PanelError(f"خطا در تغییر وضعیت کاربر (کد {resp.status}): {text[:300]}")
+            except aiohttp.ClientError as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+
+    async def rename_user(self, username: str, new_username: str) -> None:
+        """روی هیدیفای «name» فقط یک برچسب نمایشی است (شناسه‌ی واقعی uuid
+        است)، پس تغییر آن کاملاً بی‌خطر است و لینک/مصرف قبلی دست‌نخورده می‌ماند."""
+        async with aiohttp.ClientSession() as session:
+            user = await self._find_by_name(session, username)
+            payload = dict(user)
+            payload["name"] = new_username
+            try:
+                async with session.put(
+                    f"{self._base_url()}/api/v2/admin/user/{user['uuid']}/",
+                    json=payload,
+                    headers=self._headers(),
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise PanelError(f"خطا در تغییر نام کاربر (کد {resp.status}): {text[:300]}")
+            except aiohttp.ClientError as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+
     async def revoke_credentials(self, username: str) -> PanelUserResult:
         """روی هیدیفای خودِ UUID هم شناسه‌ی کاربر و هم لینک اشتراک است، پس
         «قطع دسترسی و لینک جدید» یعنی یک UUID تازه بسازیم و در همان PUT که

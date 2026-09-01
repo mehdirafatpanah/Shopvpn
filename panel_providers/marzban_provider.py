@@ -226,6 +226,24 @@ class MarzbanProvider(BasePanelProvider):
         except PanelError:
             return False
 
+    async def set_enabled(self, username: str, enabled: bool) -> None:
+        async with aiohttp.ClientSession() as session:
+            token = await self._get_token(session)
+            headers = {"Authorization": f"Bearer {token}", "accept": "application/json", "Content-Type": "application/json"}
+            payload = {"status": "active" if enabled else "disabled"}
+            try:
+                async with session.put(
+                    f"{self._base_url()}/api/user/{username}", json=payload, headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status == 404:
+                        raise PanelError(f"کاربری با نام «{username}» روی پنل پیدا نشد.")
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise PanelError(f"خطا در تغییر وضعیت کاربر (کد {resp.status}): {text[:300]}")
+            except aiohttp.ClientError as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
                            reset_usage: bool = False) -> PanelUserResult:
         async with aiohttp.ClientSession() as session:

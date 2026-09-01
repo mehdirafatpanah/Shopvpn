@@ -77,3 +77,15 @@ class BasePanelProvider(ABC):
     async def test_connection(self) -> bool:
         """برای دکمه‌ی «تست اتصال» در پنل ادمین؛ فقط احراز هویت را چک می‌کند."""
         raise NotImplementedError
+
+    async def set_enabled(self, username: str, enabled: bool) -> None:
+        """کاربر را روی خودِ پنل فعال/غیرفعال می‌کند (بدون تغییر حجم/انقضا).
+        پیاده‌سازی پیش‌فرض: پشتیبانی نمی‌شود؛ provider هایی که این قابلیت را
+        دارند این متد را override می‌کنند."""
+        raise PanelError("این نوع پنل از فعال/غیرفعال کردن مستقیم کاربر پشتیبانی نمی‌کند.")
+
+    async def rename_user(self, username: str, new_username: str) -> None:
+        """نام/برچسب کاربر را روی خودِ پنل عوض می‌کند. پیاده‌سازی پیش‌فرض:
+        پشتیبانی نمی‌شود (بعضی پنل‌ها username را به‌عنوان شناسه‌ی ثابت/کلید
+        ردیابی مصرف استفاده می‌کنند و تغییر آن API ندارد)."""
+        raise PanelError("این نوع پنل از تغییر نام کاربر روی خودِ پنل پشتیبانی نمی‌کند.")

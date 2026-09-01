@@ -364,6 +364,52 @@ class ThreeXUIProvider(BasePanelProvider):
         sub_url = f"{sub_base_url.rstrip('/')}/{new_sub_id}" if sub_base_url else ""
         return PanelUserResult(username=username, subscription_url=sub_url, raw=updated_client)
 
+    async def set_enabled(self, username: str, enabled: bool) -> None:
+        async with self._session() as session:
+            client, inbound_id = await self._find_client_with_inbound(session, username)
+            updated_client = dict(client)
+            updated_client["enable"] = bool(enabled)
+            payload = {"id": inbound_id, "client": updated_client}
+            try:
+                async with session.post(
+                    f"{self._base_url()}/panel/api/clients/update/{updated_client['id']}", json=payload,
+                ) as resp:
+                    if resp.status in (401, 403):
+                        raise PanelError(f"خطا در احراز هویت (کد {resp.status}): API Token را بررسی کن.")
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise PanelError(f"خطا در تغییر وضعیت کاربر (کد {resp.status}): {text[:300]}")
+                    data = await resp.json()
+                    if data.get("success") is False:
+                        raise PanelError(data.get("msg") or "تغییر وضعیت کاربر روی پنل ناموفق بود.")
+            except aiohttp.ClientError as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+
+    async def rename_user(self, username: str, new_username: str) -> None:
+        """چون traffic روی 3X-UI بر اساس فیلد email شمرده می‌شود، تغییر آن
+        باعث می‌شود مصرف قبلی زیر email جدید دیده نشود (خودِ حجم/انقضای
+        کلاینت دست‌نخورده می‌ماند، فقط شمارنده‌ی مصرف روی پنل صفر به‌نظر
+        می‌رسد)."""
+        async with self._session() as session:
+            client, inbound_id = await self._find_client_with_inbound(session, username)
+            updated_client = dict(client)
+            updated_client["email"] = new_username
+            payload = {"id": inbound_id, "client": updated_client}
+            try:
+                async with session.post(
+                    f"{self._base_url()}/panel/api/clients/update/{updated_client['id']}", json=payload,
+                ) as resp:
+                    if resp.status in (401, 403):
+                        raise PanelError(f"خطا در احراز هویت (کد {resp.status}): API Token را بررسی کن.")
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise PanelError(f"خطا در تغییر نام کاربر (کد {resp.status}): {text[:300]}")
+                    data = await resp.json()
+                    if data.get("success") is False:
+                        raise PanelError(data.get("msg") or "تغییر نام کاربر روی پنل ناموفق بود.")
+            except aiohttp.ClientError as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+
     async def test_connection(self) -> bool:
         try:
             async with self._session() as session:
