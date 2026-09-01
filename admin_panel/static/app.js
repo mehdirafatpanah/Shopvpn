@@ -5094,6 +5094,56 @@ function menuOrderCardHtml(items) {
     </div>`;
 }
 
+function mainMenuDisplayCardHtml(mm) {
+  return `
+    <div class="card" style="margin-bottom:18px">
+      <div class="card-head">
+        <h3>نمایش منوی اصلی</h3>
+        <button class="btn btn-primary btn-sm" id="mm-display-save">ذخیره</button>
+      </div>
+      <span class="card-sub">نوع نمایش منو (پایین/شیشه‌ای) و چیدمان دکمه‌ها - جدا از ترتیب آیتم‌های منو در پایین. حداقل یکی از دو منو باید فعال بماند.</span>
+      <div class="form-grid" style="margin-top:12px">
+        <label class="field"><span>منوی پایین (Reply Keyboard)</span>
+          <select class="input" id="mm-reply">
+            <option value="1" ${mm.reply_enabled ? 'selected' : ''}>فعال</option>
+            <option value="0" ${!mm.reply_enabled ? 'selected' : ''}>غیرفعال</option>
+          </select>
+        </label>
+        <label class="field"><span>منوی شیشه‌ای بالا (Inline)</span>
+          <select class="input" id="mm-inline">
+            <option value="1" ${mm.inline_enabled ? 'selected' : ''}>فعال</option>
+            <option value="0" ${!mm.inline_enabled ? 'selected' : ''}>غیرفعال</option>
+          </select>
+        </label>
+        <label class="field"><span>چیدمان دکمه‌ها</span>
+          <select class="input" id="mm-columns">
+            <option value="1" ${mm.columns === 1 ? 'selected' : ''}>۱ دکمه در هر ردیف</option>
+            <option value="2" ${mm.columns === 2 ? 'selected' : ''}>۲ دکمه در هر ردیف</option>
+          </select>
+        </label>
+      </div>
+    </div>`;
+}
+
+async function saveMainMenuDisplay() {
+  const root = content();
+  const btn = $('#mm-display-save', root);
+  const reply_enabled = $('#mm-reply', root).value === '1';
+  const inline_enabled = $('#mm-inline', root).value === '1';
+  if (!reply_enabled && !inline_enabled) { toast('حداقل یکی از منوی پایین یا شیشه‌ای باید فعال باشد.'); return; }
+  const columns = Number($('#mm-columns', root).value) || 1;
+  btn.disabled = true;
+  const prevTxt = btn.textContent; btn.textContent = 'در حال ذخیره...';
+  try {
+    await apiPost('/settings/main-menu-display', { reply_enabled, inline_enabled, columns });
+    toast('ذخیره شد.');
+  } catch (e) {
+    handleErr(e);
+  } finally {
+    btn.disabled = false; btn.textContent = prevTxt;
+  }
+}
+
 async function saveMenuOrder() {
   const btn = $('#menu-order-save', content());
   btn.disabled = true;
@@ -5387,17 +5437,19 @@ async function renderGateways() {
 }
 
 async function renderSettings() {
-  const [settings, rate, menuOrder] = await Promise.all([
+  const [settings, rate, menuOrder, mainMenuDisplay] = await Promise.all([
     apiGet('/settings'),
     apiGet('/exchange-rate').catch(e => ({ ok: false, rate: null, source: null, updated_at: null, error: e.message })),
     apiGet('/settings/menu-order').catch(() => []),
+    apiGet('/settings/main-menu-display').catch(() => ({ reply_enabled: true, inline_enabled: false, columns: 1 })),
   ]);
-  if (loadTheme().theme === 'brutalist') return renderSettingsBrutalist(settings, rate, menuOrder);
-  if (loadTheme().theme === 'bento') return renderSettingsBento(settings, rate, menuOrder);
+  if (loadTheme().theme === 'brutalist') return renderSettingsBrutalist(settings, rate, menuOrder, mainMenuDisplay);
+  if (loadTheme().theme === 'bento') return renderSettingsBento(settings, rate, menuOrder, mainMenuDisplay);
   setContent(`
     ${settingsTabsHtml()}
 
     <div data-settings-tab="content" style="${settingsActiveTab === 'content' ? '' : 'display:none'}">
+      ${mainMenuDisplayCardHtml(mainMenuDisplay)}
       ${menuOrderCardHtml(menuOrder)}
     </div>
 
@@ -5415,6 +5467,7 @@ async function renderSettings() {
   bindSettingsGroupEvents(content());
   renderMenuOrderList();
   $('#menu-order-save').addEventListener('click', saveMenuOrder);
+  $('#mm-display-save').addEventListener('click', saveMainMenuDisplay);
   $('#settings-save').addEventListener('click', () => collectAndSaveSettings(content(), $('#settings-save')));
   $('#rate-refresh').addEventListener('click', async () => {
     const btn = $('#rate-refresh');
@@ -5433,13 +5486,14 @@ async function renderSettings() {
 /* ----------------------------------------------------- settings: bento -- */
 // تب افقی به سگمنت کپسولی اپلی تبدیل می‌شه؛ بدنه‌ی فرم همون منطق قبلیه،
 // فقط با آکاردئون/سوییچ/سواچ گردتر (از طریق CSS اسکوپ‌شده به تم bento).
-function renderSettingsBento(settings, rate, menuOrder) {
+function renderSettingsBento(settings, rate, menuOrder, mainMenuDisplay) {
   setContent(`
     <div class="bn-hero"><div><h2>تنظیمات</h2><p>پیکربندی محتوا، پرداخت، کمپین و سرویس‌های ربات</p></div></div>
     <div class="bn-seg" id="settings-tabs-nav" style="margin-bottom:16px">
       ${SETTINGS_TABS.map(t => `<button type="button" class="bn-seg-btn ${t.key === settingsActiveTab ? 'active' : ''}" data-tab="${t.key}">${t.label}</button>`).join('')}
     </div>
     <div data-settings-tab="content" style="${settingsActiveTab === 'content' ? '' : 'display:none'}">
+      ${mainMenuDisplayCardHtml(mainMenuDisplay)}
       ${menuOrderCardHtml(menuOrder)}
     </div>
     <div data-settings-tab="payment" style="${settingsActiveTab === 'payment' ? '' : 'display:none'}">
@@ -5454,6 +5508,7 @@ function renderSettingsBento(settings, rate, menuOrder) {
   bindSettingsGroupEvents(content());
   renderMenuOrderList();
   $('#menu-order-save').addEventListener('click', saveMenuOrder);
+  $('#mm-display-save').addEventListener('click', saveMainMenuDisplay);
   $('#settings-save').addEventListener('click', () => collectAndSaveSettings(content(), $('#settings-save')));
   $('#rate-refresh').addEventListener('click', async () => {
     const btn = $('#rate-refresh');
@@ -5483,7 +5538,7 @@ function renderSettingsBento(settings, rate, menuOrder) {
 /* ------------------------------------------------- settings: brutalist -- */
 // ناوبری از تب افقی به سایدبار عمودی تبدیل می‌شه (مثل داشبورد ادمین‌های
 // واقعی) — بدنه‌ی فرم‌ها با همون منطق قبلی، فقط قاب/سوییچ/سواچ برutalist.
-function renderSettingsBrutalist(settings, rate, menuOrder) {
+function renderSettingsBrutalist(settings, rate, menuOrder, mainMenuDisplay) {
   setContent(`
     <div class="bru-hero"><h2>تنظیمات</h2><p>پیکربندی محتوا، پرداخت، کمپین و سرویس‌های ربات</p></div>
     <div class="bru-settings-layout">
@@ -5492,6 +5547,7 @@ function renderSettingsBrutalist(settings, rate, menuOrder) {
       </nav>
       <div class="bru-settings-content">
         <div data-settings-tab="content" style="${settingsActiveTab === 'content' ? '' : 'display:none'}">
+          ${mainMenuDisplayCardHtml(mainMenuDisplay)}
           ${menuOrderCardHtml(menuOrder)}
         </div>
         <div data-settings-tab="payment" style="${settingsActiveTab === 'payment' ? '' : 'display:none'}">
@@ -5508,6 +5564,7 @@ function renderSettingsBrutalist(settings, rate, menuOrder) {
   bindSettingsGroupEvents(content());
   renderMenuOrderList();
   $('#menu-order-save').addEventListener('click', saveMenuOrder);
+  $('#mm-display-save').addEventListener('click', saveMainMenuDisplay);
   $('#settings-save').addEventListener('click', () => collectAndSaveSettings(content(), $('#settings-save')));
   $('#rate-refresh').addEventListener('click', async () => {
     const btn = $('#rate-refresh');
@@ -5540,6 +5597,7 @@ const ACTION_LABEL = {
   custom_config_toggle: 'فعال/غیرفعال کردن کانفیگ سفارشی', discount_add: 'افزودن کد تخفیف',
   discount_delete: 'حذف کد تخفیف', discount_toggle: 'فعال/غیرفعال کردن کد تخفیف',
   exchange_rate_refresh: 'بروزرسانی نرخ ارز', menu_order_change: 'تغییر ترتیب منو',
+  main_menu_display_change: 'تغییر نمایش منوی اصلی',
   order_approve: 'تایید سفارش', order_reject: 'رد سفارش', orphan_db_file_delete: 'حذف فایل بلااستفاده',
   panel_add: 'افزودن پنل VPN', panel_delete: 'حذف پنل VPN', panel_server_add: 'افزودن سرور پنل',
   panel_server_delete: 'حذف سرور پنل', panel_server_template_update: 'ویرایش قالب سرور پنل',
