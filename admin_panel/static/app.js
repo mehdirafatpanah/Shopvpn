@@ -5197,6 +5197,8 @@ function _gwFormHtml(gw) {
       <label class="field field-row"><span>فعال</span>${_swSpan('gw-enabled', gw ? gw.enabled : false)}</label>
       <label class="field"><span>حداقل مبلغ مجاز با این درگاه (تومان - ۰ یعنی بدون محدودیت)</span>
         <input class="input" id="gw-min-amount" type="number" min="0" value="${gw ? (gw.min_amount || 0) : 0}"></label>
+      <label class="field"><span>تحمل اختلاف مبلغ پرداختی (٪) — اگر پایین‌تر «مسیر مبلغ» را در بخش استعلام/وب‌هوک پر کنی</span>
+        <input class="input" id="gw-amount-tolerance" type="number" min="0" step="0.1" value="${c.amount_tolerance_percent != null ? c.amount_tolerance_percent : 1}"></label>
     </div>
 
     <div class="card-sub" style="margin:16px 0 6px"><b>🔑 اعتبارنامه (API Key و مشابه)</b></div>
@@ -5228,7 +5230,9 @@ function _gwFormHtml(gw) {
     <div class="form-grid">
       <input class="input" id="gw-v-resp-status" placeholder="مسیر وضعیت در پاسخ (data.code)" style="direction:ltr;text-align:left" value="${esc(vResp.status_path || '')}">
       <input class="input" id="gw-v-resp-success" placeholder="مقادیر موفق (با کاما، مثل 100,101)" style="direction:ltr;text-align:left" value="${esc((vResp.success_values || []).join(','))}">
+      <input class="input" id="gw-v-resp-amount" placeholder="مسیر مبلغ پرداختی در پاسخ (اختیاری، مثلاً data.amount)" style="direction:ltr;text-align:left" value="${esc(vResp.amount_path || '')}">
     </div>
+    <div class="card-sub" style="margin:6px 0 0;color:var(--muted,#9ca3af);font-size:12px">اگر پر شود، مبلغِ برگشتی از درگاه با مبلغ واقعیِ فاکتور مقایسه می‌شود تا از تایید سفارش با پرداخت کمتر جلوگیری شود.</div>
 
     <div class="card-sub" style="margin:16px 0 6px"><b>📡 وب‌هوک (Webhook) — برای درگاه‌هایی که سرور به سرور خبر می‌دهند</b></div>
     <label class="field field-row"><span>فعال باشد</span>${_swSpan('gw-w-enabled', !!c.webhook_enabled)}</label>
@@ -5247,7 +5251,9 @@ function _gwFormHtml(gw) {
       <input class="input" id="gw-w-map-txn" placeholder="مسیر شناسه‌ی تراکنش در بدنه" style="direction:ltr;text-align:left" value="${esc(wm.txn_id_path || '')}">
       <input class="input" id="gw-w-map-status" placeholder="مسیر وضعیت در بدنه" style="direction:ltr;text-align:left" value="${esc(wm.status_path || '')}">
       <input class="input" id="gw-w-map-success" placeholder="مقادیر موفق (با کاما)" style="direction:ltr;text-align:left" value="${esc((wm.success_values || []).join(','))}">
+      <input class="input" id="gw-w-map-amount" placeholder="مسیر مبلغ در بدنه (اختیاری)" style="direction:ltr;text-align:left" value="${esc(wm.amount_path || '')}">
     </div>
+    ${(wa.mode || 'none') === 'none' ? '<div class="card-sub" style="margin:6px 0 0;color:var(--danger,#ef4444);font-size:12px">⚠️ بدون احراز هویت وب‌هوک، پیشنهاد می‌شود حتماً «مسیر مبلغ در بدنه» را پر کنی؛ در غیر این صورت هر کسی که txn را حدس بزند می‌تواند سفارش خودش را جعلاً پرداخت‌شده اعلام کند.</div>' : ''}
 
     <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
       <button class="btn btn-primary" id="gw-save">💾 ذخیره</button>
@@ -5300,6 +5306,7 @@ function _gwCollectConfig(body) {
     verify_response: {
       status_path: $('#gw-v-resp-status', body).value.trim(),
       success_values: $('#gw-v-resp-success', body).value.split(',').map(s => s.trim()).filter(Boolean),
+      amount_path: $('#gw-v-resp-amount', body).value.trim(),
     },
     webhook_enabled: _swOn(body, 'gw-w-enabled'),
     webhook_auth: {
@@ -5309,7 +5316,9 @@ function _gwCollectConfig(body) {
     webhook_mapping: {
       txn_id_path: $('#gw-w-map-txn', body).value.trim(), status_path: $('#gw-w-map-status', body).value.trim(),
       success_values: $('#gw-w-map-success', body).value.split(',').map(s => s.trim()).filter(Boolean),
+      amount_path: $('#gw-w-map-amount', body).value.trim(),
     },
+    amount_tolerance_percent: parseFloat($('#gw-amount-tolerance', body).value) || 0,
   };
 }
 
@@ -5320,6 +5329,24 @@ function _gwOpenForm(gw) {
     (((gw && gw.config) || {}).credential_fields || []).forEach(f => _gwAddCredRow(credWrap, f.name, f.label, f.secret, ((gw.config.credentials) || {})[f.name] || ''));
     if (!gw) _gwAddCredRow(credWrap);
     $('#gw-add-cred', body).addEventListener('click', () => _gwAddCredRow(credWrap));
+    const wModeSel = $('#gw-w-mode', body);
+    if (wModeSel) {
+      wModeSel.addEventListener('change', () => {
+        let warn = $('#gw-w-none-warn', body);
+        if (wModeSel.value === 'none') {
+          if (!warn) {
+            warn = document.createElement('div');
+            warn.id = 'gw-w-none-warn';
+            warn.className = 'card-sub';
+            warn.style.cssText = 'margin:6px 0 0;color:var(--danger,#ef4444);font-size:12px';
+            warn.textContent = '⚠️ بدون احراز هویت وب‌هوک، پیشنهاد می‌شود حتماً «مسیر مبلغ در بدنه» را پر کنی؛ در غیر این صورت هر کسی که txn را حدس بزند می‌تواند سفارش خودش را جعلاً پرداخت‌شده اعلام کند.';
+            wModeSel.parentElement.appendChild(warn);
+          }
+        } else if (warn) {
+          warn.remove();
+        }
+      });
+    }
 
     $('#gw-save', body).addEventListener('click', async () => {
       const errBox = $('#gw-form-err', body);
