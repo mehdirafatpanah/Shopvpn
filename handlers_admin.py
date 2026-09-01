@@ -629,7 +629,10 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         (await asyncio.to_thread(db.toggle_product, product_id))
         product = (await asyncio.to_thread(db.get_product, product_id))
-        (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "product_toggle", f"محصول «{product['name'] if product else product_id}»"))
+        if product is None:
+            await call.answer("⚠️ این محصول دیگر وجود ندارد.", show_alert=True)
+            return
+        (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "product_toggle", f"محصول «{product['name']}»"))
         products = (await asyncio.to_thread(db.get_products, product["category_id"], active_only=False))
         await safe_edit(call, "لیست محصولات این دسته‌بندی:", reply_markup=kb.admin_products_list_kb(db, products))
         await call.answer("وضعیت تغییر کرد.")
