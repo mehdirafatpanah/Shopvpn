@@ -1546,6 +1546,19 @@ def _load_gateway(db: Database, gateway_id: int = None, gateway_key: str = None)
     return row, config
 
 
+def _gateway_amount_ok(config: dict, invoice, paid_amount) -> bool:
+    """اگر amount_path تنظیم شده و مبلغ برگشتی از درگاه به‌اندازه‌ی کافی کمتر
+    از مبلغ واقعی فاکتور باشد => False (یعنی نباید تکمیل شود). اگر amount_path
+    خالی باشد یا مقدار قابل‌تشخیص نباشد => True (سازگار با درگاه‌هایی که مبلغ
+    را در پاسخ برنمی‌گردانند، تا اتصال هر نوع درگاهی همچنان ممکن بماند)."""
+    tolerance = config.get("amount_tolerance_percent")
+    try:
+        tolerance = float(tolerance) if tolerance is not None else 1.0
+    except (TypeError, ValueError):
+        tolerance = 1.0
+    return payment_engine.amounts_match(paid_amount, invoice["amount_toman"], tolerance)
+
+
 def _mask_gateway_row(row, config: dict) -> dict:
     """برای پاسخ به ادمین: مقادیر محرمانه (credentials با secret=true) ماسک می‌شوند."""
     creds = dict(config.get("credentials") or {})
@@ -1804,7 +1817,10 @@ async def _create_custom_gateway_invoice_for(db: Database, tenant: "Tenant", tg_
         return {"invoice_url": existing["invoice_url"], "txn_id": existing["txn_id"]}
 
     tenant_slug = tenant.tenant_id or "main"
-    our_ref = f"{kind}-{tenant_slug}-{ref_id}-{int(datetime.now(timezone.utc).timestamp())}"
+    # نکته‌ی امنیتی: یک قطعه‌ی تصادفی به txn_id داخلی اضافه می‌شود تا وقتی
+    # webhook_auth یک درگاه روی "none" تنظیم شده، کاربر نتواند با حدس‌زدن txn
+    # خودش (که ref_id و زمان تقریبی ساختش را می‌داند) وب‌هوک را دستی صدا بزند.
+    our_ref = f"{kind}-{tenant_slug}-{ref_id}-{int(datetime.now(timezone.utc).timestamp())}-{secrets.token_hex(6)}"
     # برخی درگاه‌ها (مثل TonPays) سقف طول کاراکتر برای order_id دارند (مثلاً حداکثر
     # ۲۰ کاراکتر). ردیابی واقعی از طریق gateway_ref/our_ref داخلی انجام می‌شود، پس
     # اینجا هم - مثل custom_gateway_payment.create_invoice_for در بات اصلی - یک
@@ -1921,6 +1937,25 @@ async def api_custom_gateway_webhook(gateway_key: str, request: Request, tenant:
         db.update_custom_gateway_invoice_status(invoice["id"], "pending")
         return {"status": "ok"}
 
+    if not _gateway_amount_ok(config, invoice, parsed.get("amount")):
+        db.log_webhook_event(gateway=gw_log_name, txn_id=ref_val, verified=True, status="amount_mismatch",
+                              error=f"مبلغ پرداختی ({parsed.get('amount')}) با مبلغ فاکتور "
+                                    f"({invoice['amount_toman']}) هم‌خوانی ندارد.",
+                              raw_body=json.dumps(body, ensure_ascii=False))
+        db.update_custom_gateway_invoice_status(invoice["id"], "failed")
+        for admin_id in db.list_admins():
+            try:
+                async with aiohttp.ClientSession() as session:
+                    await session.post(
+                        f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+                        json={"chat_id": admin_id,
+                              "text": f"⚠️ درگاه «{row['name']}»: مبلغ پرداختی وب‌هوک با مبلغ فاکتور "
+                                      f"#{invoice['id']} هم‌خوانی نداشت و سفارش تکمیل نشد. لطفاً بررسی کنید."},
+                    )
+            except Exception:
+                pass
+        return {"status": "ok"}
+
     await _complete_custom_gateway_payment(db, tenant, invoice)
     return {"status": "ok"}
 
@@ -1949,6 +1984,20 @@ async def api_custom_gateway_return(gateway_key: str, request: Request, txn: str
                 query=query, tenant_id=tenant.tenant_id or "main",
             )
             ok = bool(result.get("success"))
+            if ok and not _gateway_amount_ok(config, invoice, result.get("amount")):
+                ok = False
+                success_text = "مبلغ پرداختی با مبلغ فاکتور هم‌خوانی ندارد ❌ (اگر مبلغ از حساب شما کسر شده، با پشتیبانی تماس بگیرید)"
+                for admin_id in db.list_admins():
+                    try:
+                        async with aiohttp.ClientSession() as session:
+                            await session.post(
+                                f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+                                json={"chat_id": admin_id,
+                                      "text": f"⚠️ درگاه «{row['name']}»: مبلغ پرداختی استعلام‌شده با مبلغ فاکتور "
+                                              f"#{invoice['id']} هم‌خوانی نداشت و سفارش تکمیل نشد. لطفاً بررسی کنید."},
+                            )
+                    except Exception:
+                        pass
         else:
             # بدون verify_request: صرفاً به وب‌هوکی که قبلاً رسیده (اگر رسیده) تکیه می‌کنیم
             ok = invoice["status"] == "completed"
