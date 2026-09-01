@@ -2299,23 +2299,27 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await message.answer("❌ این نام قبلاً استفاده شده. نام دیگری بفرست.")
             return
         server = (await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])) if cc["panel_server_id"] else None
-        panel_username = None
-        note = "(فقط نام نمایشی داخل بات تغییر کرد؛ لینک/کانفیگ فعلی روی پنل بدون تغییر کار می‌کند)"
-        if server and server["is_active"]:
-            try:
-                provider = get_provider(server)
-                await provider.rename_user(cc["username"], new_label)
-                panel_username = new_label
-                note = "(روی خودِ پنل هم اعمال شد)"
-            except PanelError:
-                pass
+        if not server or not server["is_active"]:
+            await message.answer("⛔️ سرور پنل این کانفیگ یافت نشد یا غیرفعال است؛ تغییر نام ممکن نیست.")
+            return
+        await message.answer("⏳ در حال اعمال تغییر نام روی خودِ پنل...")
+        try:
+            provider = get_provider(server)
+            new_sub_url = await provider.rename_user(cc["username"], new_label)
+        except PanelError as e:
+            await message.answer(f"⛔️ تغییر نام روی پنل ناموفق بود: {e}\nنام قبلی «{current_label}» بدون تغییر باقی ماند.")
+            return
+        if new_sub_url:
+            (await asyncio.to_thread(db.update_custom_config_subscription_url, cc["id"], new_sub_url))
         old_label = current_label
-        (await asyncio.to_thread(db.rename_custom_config, cc["id"], user_tg_id, new_label, panel_username))
+        (await asyncio.to_thread(db.rename_custom_config, cc["id"], user_tg_id, new_label, new_label))
         (await asyncio.to_thread(
-            db.add_custom_config_history, cc["id"], "rename", f"{old_label} ← {new_label} {note}",
+            db.add_custom_config_history, cc["id"], "rename", f"{old_label} ← {new_label} (روی خودِ پنل هم اعمال شد)",
         ))
         await state.clear()
-        await _refresh_service_card(message, user_tg_id, cb_id, f"✅ نام کانفیگ به «{new_label}» تغییر کرد. {note}")
+        await _refresh_service_card(
+            message, user_tg_id, cb_id, f"✅ نام کانفیگ به «{new_label}» تغییر کرد و روی خودِ پنل هم اعمال شد.",
+        )
 
     @router.callback_query(F.data.startswith("svc_autorenew:"))
     async def cb_service_autorenew_toggle(call: CallbackQuery):
