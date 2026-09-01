@@ -17,6 +17,8 @@
 import sys
 import os
 import json
+import hmac
+import hashlib
 import random
 import secrets
 import base64
@@ -1362,9 +1364,14 @@ async def api_abangateway_webhook(request: Request, tenant: Tenant = Depends(get
     db = tenant.db
     invoice = db.get_abangateway_invoice_by_invoice_id(invoice_id)
     if not invoice:
+        db.log_webhook_event(gateway="abangateway", txn_id=invoice_id, verified=False,
+                              status="ignored", error="فاکتور در دیتابیس پیدا نشد.",
+                              raw_body=json.dumps(body, ensure_ascii=False))
         return {"status": "ignored"}
 
     result = await abangateway_payment.try_verify_and_finalize(db, invoice)
+    db.log_webhook_event(gateway="abangateway", txn_id=invoice_id, verified=(result == "verified_now"),
+                          status=result, raw_body=json.dumps(body, ensure_ascii=False))
     if result != "verified_now":
         # already_delivered / not_paid_yet / expired / cancelled / error:...
         return {"status": result}
@@ -1881,7 +1888,11 @@ async def api_custom_gateway_webhook(gateway_key: str, request: Request, tenant:
     query = dict(request.query_params)
     headers = dict(request.headers)
 
+    gw_log_name = f"custom:{gateway_key}"
     if not gw.check_webhook_auth(headers, query, raw_body):
+        db.log_webhook_event(gateway=gw_log_name, verified=False, status=None,
+                              error="احراز هویت وب‌هوک نامعتبر است.",
+                              raw_body=json.dumps(body, ensure_ascii=False))
         raise HTTPException(status_code=401, detail="احراز هویت وب‌هوک نامعتبر است.")
 
     parsed = gw.parse_webhook(body, query)
@@ -1894,7 +1905,12 @@ async def api_custom_gateway_webhook(gateway_key: str, request: Request, tenant:
     if not invoice and query.get("txn"):
         invoice = db.get_custom_gateway_invoice_by_txn(row["id"], query.get("txn"))
     if not invoice:
+        db.log_webhook_event(gateway=gw_log_name, txn_id=ref_val, verified=True, status="ignored",
+                              error="فاکتور پیدا نشد.", raw_body=json.dumps(body, ensure_ascii=False))
         return {"status": "ignored"}
+
+    db.log_webhook_event(gateway=gw_log_name, txn_id=ref_val, verified=True,
+                          status=str(parsed.get("success")), raw_body=json.dumps(body, ensure_ascii=False))
 
     if parsed.get("success") is False:
         db.update_custom_gateway_invoice_status(invoice["id"], "failed")
@@ -1963,16 +1979,31 @@ async def api_plisio_webhook(request: Request, tenant: Tenant = Depends(get_tena
         form = await request.form()
         body = dict(form)
 
+    body_txn_id = body.get("txn_id")
+    body_status = body.get("status")
+
     if not plisio_client.verify_callback(_resolve_plisio_key(tenant.db), body):
+        tenant.db.log_webhook_event(
+            gateway="plisio", txn_id=body_txn_id, verified=False, status=body_status,
+            error="امضای کال‌بک نامعتبر است (verify_hash mismatch).",
+            raw_body=json.dumps(body, ensure_ascii=False),
+        )
         raise HTTPException(status_code=401, detail="امضای کال‌بک نامعتبر است.")
 
     txn_id = body.get("txn_id")
     status = body.get("status")
     currency = body.get("currency")
     if not txn_id or not status:
+        tenant.db.log_webhook_event(
+            gateway="plisio", txn_id=txn_id, verified=True, status=status,
+            error="داده‌ی کال‌بک ناقص است (txn_id/status خالی).",
+            raw_body=json.dumps(body, ensure_ascii=False),
+        )
         raise HTTPException(status_code=400, detail="داده‌ی کال‌بک ناقص است.")
 
     db = tenant.db
+    db.log_webhook_event(gateway="plisio", txn_id=txn_id, verified=True, status=status,
+                          raw_body=json.dumps(body, ensure_ascii=False))
     invoice = db.get_crypto_invoice_by_txn(txn_id)
     if not invoice:
         return {"status": "ignored"}
@@ -3491,6 +3522,8 @@ class CryptoSettingsUpdate(BaseModel):
     enabled: bool
     usd_to_toman_rate: int
     api_key: Optional[str] = None
+    expire_min: Optional[int] = None
+    allowed_currencies: Optional[str] = None
 
 
 class CardSettingsUpdate(BaseModel):
@@ -3582,6 +3615,8 @@ def api_admin_get_crypto_settings(auth=Depends(require_senior_admin)):
         "masked_key": (f"...{api_key[-4:]}" if api_key else ""),
         "gateway_configured": bool(api_key) and bool(API_BASE_URL),
         "key_source": crypto_payment.resolve_plisio_key_source(db),
+        "expire_min": crypto_payment.resolve_expire_min(db),
+        "allowed_currencies": crypto_payment.resolve_allowed_currencies(db),
     }
 
 
@@ -3590,6 +3625,8 @@ def api_admin_set_crypto_settings(body: CryptoSettingsUpdate, auth=Depends(requi
     admin_id, db, _ = auth
     if body.usd_to_toman_rate < 0:
         raise HTTPException(status_code=400, detail="نرخ تبدیل نمی‌تواند منفی باشد.")
+    if body.expire_min is not None and body.expire_min <= 0:
+        raise HTTPException(status_code=400, detail="مهلت انقضا باید عددی بزرگ‌تر از صفر باشد.")
     if body.api_key is not None:
         new_key = body.api_key.strip()
         db.set_setting("plisio_api_key", new_key)
@@ -3599,7 +3636,52 @@ def api_admin_set_crypto_settings(body: CryptoSettingsUpdate, auth=Depends(requi
         raise HTTPException(status_code=400, detail="ابتدا کلید API درگاه کریپتو را تنظیم کن. (اگر بازم فعال نمی‌شه، یعنی MINIAPP_URL روی سرور تنظیم نشده.)")
     db.set_setting("crypto_payment_enabled", "1" if body.enabled else "0")
     db.set_setting("usd_to_toman_rate", str(body.usd_to_toman_rate))
+    if body.expire_min is not None:
+        db.set_setting("crypto_expire_min", str(body.expire_min))
+    if body.allowed_currencies is not None:
+        cleaned = ",".join(p.strip().upper() for p in body.allowed_currencies.split(",") if p.strip())
+        db.set_setting("crypto_allowed_currencies", cleaned)
     return {"status": "ok"}
+
+
+@app.get("/api/admin/payment-webhook-logs")
+def api_admin_payment_webhook_logs(gateway: str = "", limit: int = 50, auth=Depends(require_senior_admin)):
+    """لاگ آخرین کال‌بک‌های دریافتی از درگاه‌ها؛ برای دیباگ سریع مشکلاتی مثل
+    رد شدن امضا یا برنگشتن تایید پرداخت به بات."""
+    _, db, _ = auth
+    rows = db.get_recent_webhook_logs(limit=limit, gateway=(gateway or None))
+    return {"logs": [dict(r) for r in rows]}
+
+
+@app.get("/api/admin/reports/gateway-revenue")
+def api_admin_gateway_revenue_report(auth=Depends(require_senior_admin)):
+    """جمع تراکنش‌های تکمیل‌شده به تفکیک درگاه پرداخت (کریپتو/آبان/سفارشی).
+    کارت‌به‌کارت دستی چون invoice مجزا ندارد در این گزارش نیست."""
+    _, db, _ = auth
+    return {"gateways": db.get_gateway_revenue_report()}
+
+
+@app.post("/api/admin/settings/crypto/self-test")
+def api_admin_crypto_self_test(auth=Depends(require_senior_admin)):
+    """بدون نیاز به تراکنش واقعی، بررسی می‌کند که الگوریتم محاسبه‌ی verify_hash با
+    یک بدنه‌ی نمونه‌ی حاوی متن فارسی (دقیقاً مثل order_name واقعی) درست کار می‌کند.
+    اگر این false برگرداند یعنی هنوز مشکل escape یونیکد وجود دارد."""
+    _, db, _ = auth
+    api_key = _resolve_plisio_key(db)
+    if not api_key:
+        raise HTTPException(status_code=400, detail="ابتدا کلید API کریپتو را تنظیم کن.")
+    sample = {
+        "txn_id": "self-test-000",
+        "order_number": "self-test-000",
+        "order_name": "سفارش #۰ - تست خودکار امضا",
+        "status": "completed",
+    }
+    payload = json.dumps(sample, separators=(",", ":"), ensure_ascii=False)
+    verify_hash = hmac.new(api_key.encode(), payload.encode("utf-8"), hashlib.sha1).hexdigest()
+    sample_with_hash = dict(sample)
+    sample_with_hash["verify_hash"] = verify_hash
+    ok = plisio_client.verify_callback(api_key, sample_with_hash)
+    return {"ok": ok, "message": "امضا با متن فارسی درست تایید شد ✅" if ok else "امضا رد شد ❌ (این خودش یعنی مشکل باقی مانده)"}
 
 
 @app.get("/api/admin/settings/card")
