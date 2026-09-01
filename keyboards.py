@@ -529,6 +529,113 @@ def contact_reply_kb(user_tg_id) -> InlineKeyboardMarkup:
 
 
 # ---------------------------------------------------------------------------
+# ارتباط با پشتیبانی (پیام مستقیم / تیکت / چت مستقیم با مدیر)
+# ---------------------------------------------------------------------------
+
+TICKET_STATUS_LABELS = {"open": "🟢 باز", "answered": "🟡 پاسخ داده‌شده", "closed": "🔴 بسته‌شده"}
+
+
+def contact_menu_kb(db) -> InlineKeyboardMarkup:
+    """منوی اصلی بخش «ارتباط با پشتیبانی»: پیام مستقیم، تیکت و در صورت تنظیم‌بودن
+    آیدی مدیر، یک دکمه‌ی لینک برای باز شدن مستقیم پی‌وی او."""
+    rows = [
+        [InlineKeyboardButton(text="✉️ پیام مستقیم به پشتیبانی", callback_data="contact_direct")],
+        [InlineKeyboardButton(text="🎫 ثبت تیکت جدید", callback_data="tickets_new")],
+        [InlineKeyboardButton(text="📂 تیکت‌های من", callback_data="tickets_mine")],
+    ]
+    support_admin_id = (db.get_setting("support_admin_id") or "").strip()
+    if support_admin_id.lstrip("-").isdigit():
+        rows.append(
+            [InlineKeyboardButton(text="👤 چت مستقیم با مدیر", url=f"tg://user?id={support_admin_id}")]
+        )
+    rows.append([InlineKeyboardButton(text="❌ انصراف", callback_data="cancel_flow")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def tickets_list_kb(tickets) -> InlineKeyboardMarkup:
+    """tickets: لیستی از ردیف‌های جدول tickets (هرکدام id, subject, status دارند)."""
+    rows = []
+    for t in tickets:
+        status_icon = {"open": "🟢", "answered": "🟡", "closed": "🔴"}.get(t["status"], "⚪️")
+        subject = (t["subject"] or "بدون موضوع").strip()
+        if len(subject) > 30:
+            subject = subject[:30] + "…"
+        rows.append(
+            [InlineKeyboardButton(text=f"{status_icon} #{t['id']} — {subject}", callback_data=f"ticket_view:{t['id']}")]
+        )
+    if not rows:
+        rows.append([InlineKeyboardButton(text="هنوز تیکتی ثبت نکرده‌اید.", callback_data="noop")])
+    rows.append([InlineKeyboardButton(text="🎫 ثبت تیکت جدید", callback_data="tickets_new")])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="contact_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def ticket_thread_kb(ticket_id: int, is_closed: bool, back_callback: str = "tickets_mine") -> InlineKeyboardMarkup:
+    rows = []
+    if not is_closed:
+        rows.append([InlineKeyboardButton(text="✉️ ارسال پیام در این تیکت", callback_data=f"ticket_reply:{ticket_id}")])
+        rows.append([InlineKeyboardButton(text="🔒 بستن تیکت", callback_data=f"ticket_close:{ticket_id}")])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت به لیست تیکت‌ها", callback_data=back_callback)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def ticket_admin_notify_kb(ticket_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="↩️ پاسخ به تیکت", callback_data=f"adm_ticket_reply:{ticket_id}")],
+        [InlineKeyboardButton(text="👁 مشاهده کامل تیکت", callback_data=f"adm_ticket_view:{ticket_id}")],
+    ])
+
+
+def admin_tickets_list_kb(tickets, active_status: str) -> InlineKeyboardMarkup:
+    rows = []
+    for t in tickets:
+        status_icon = {"open": "🟢", "answered": "🟡", "closed": "🔴"}.get(t["status"], "⚪️")
+        subject = (t["subject"] or "بدون موضوع").strip()
+        if len(subject) > 30:
+            subject = subject[:30] + "…"
+        rows.append(
+            [InlineKeyboardButton(
+                text=f"{status_icon} #{t['id']} — {subject}",
+                callback_data=f"adm_ticket_view:{t['id']}:{active_status}",
+            )]
+        )
+    if not rows:
+        rows.append([InlineKeyboardButton(text="موردی یافت نشد.", callback_data="noop")])
+    tabs = [("open", "🟢 باز"), ("answered", "🟡 پاسخ‌داده‌شده"), ("closed", "🔴 بسته‌شده"), ("all", "📋 همه")]
+    tab_row = [
+        InlineKeyboardButton(text=("✅ " if key == active_status else "") + label, callback_data=f"adm_tickets_list:{key}")
+        for key, label in tabs
+    ]
+    rows.append(tab_row[:2])
+    rows.append(tab_row[2:])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت به پنل مدیریت", callback_data="adm_back_panel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_ticket_view_kb(ticket_id: int, status: str, active_status: str) -> InlineKeyboardMarkup:
+    rows = []
+    if status != "closed":
+        rows.append([InlineKeyboardButton(text="↩️ پاسخ به تیکت", callback_data=f"adm_ticket_reply:{ticket_id}")])
+        rows.append([InlineKeyboardButton(text="🔒 بستن تیکت", callback_data=f"adm_ticket_close:{ticket_id}")])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت به لیست", callback_data=f"adm_tickets_list:{active_status}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def support_contact_settings_kb(db) -> InlineKeyboardMarkup:
+    """منوی پنل مدیریت برای تنظیم آیدی عددی تلگرام مدیر که در بخش ارتباط با
+    پشتیبانی، دکمه‌ی «چت مستقیم با مدیر» به پی‌وی همان آیدی باز می‌شود."""
+    current_id = (db.get_setting("support_admin_id") or "").strip() or "-"
+    rows = [
+        [InlineKeyboardButton(text=f"🆔 آیدی فعلی: {current_id}", callback_data="noop")],
+        [InlineKeyboardButton(text="✏️ تغییر آیدی مدیر", callback_data="adm_set_support_contact_edit")],
+    ]
+    if current_id != "-":
+        rows.append([InlineKeyboardButton(text="🗑 حذف (غیرفعال کردن دکمه)", callback_data="adm_clear_support_contact")])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:access")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ---------------------------------------------------------------------------
 # پنل مدیریت
 # ---------------------------------------------------------------------------
 
@@ -541,6 +648,7 @@ ADMIN_PANEL_ITEMS = [
     ("adm_test_menu", "🧪 مدیریت کانفیگ تست", "adm_test_menu"),
     ("adm_forcejoin_menu", "📢 عضویت اجباری در کانال", "adm_forcejoin_menu"),
     ("adm_pending_orders", "🧾 سفارش‌های در انتظار", "adm_pending_orders"),
+    ("adm_tickets_menu", "🎫 تیکت‌های پشتیبانی", "adm_tickets_menu"),
     ("adm_pending_topups", "👛 درخواست‌های شارژ کیف پول", "adm_pending_topups"),
     ("adm_crypto_payments", "🪙 پرداخت‌های کریپتو", "adm_crypto_payments"),
     ("adm_abangateway_payments", "💳 پرداخت‌های آبان گیت وی", "adm_abangateway_payments"),
@@ -572,6 +680,7 @@ ADMIN_PANEL_ITEMS = [
     ("adm_stats", "📊 آمار فروش", "adm_stats"),
     ("adm_backup_menu", "🗄 بکاپ و بازیابی", "adm_backup_menu"),
     ("adm_temp_message", "⏳ پیام موقت (خودحذف‌شونده)", "adm_temp_message"),
+    ("adm_set_support_contact", "🆔 آیدی مدیر برای چت مستقیم", "adm_set_support_contact"),
 ]
 
 
@@ -588,6 +697,7 @@ def _styled_inline(db, text: str, callback_data: str, style_key: str) -> InlineK
 ADMIN_PANEL_CATEGORIES = [
     ("daily", "📋 کارهای روزانه", [
         "adm_pending_orders",
+        "adm_tickets_menu",
         "adm_pending_topups",
         "adm_crypto_payments",
         "adm_abangateway_payments",
@@ -630,6 +740,7 @@ ADMIN_PANEL_CATEGORIES = [
     ("access", "🔐 دسترسی و امنیت", [
         "adm_forcejoin_menu",
         "adm_admins_menu",
+        "adm_set_support_contact",
     ]),
     ("appearance", "🎨 ظاهر و رنگ‌بندی", [
         "adm_edit_buttons",

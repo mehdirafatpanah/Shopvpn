@@ -19,8 +19,25 @@ class ContactFlow(StatesGroup):
     waiting_message = State()
 
 
+class TicketFlow(StatesGroup):
+    waiting_subject = State()
+    waiting_message = State()
+
+
+class TicketReplyFlow(StatesGroup):
+    waiting_message = State()
+
+
 class AdminReplyFlow(StatesGroup):
     waiting_reply = State()
+
+
+class AdminTicketReplyFlow(StatesGroup):
+    waiting_reply = State()
+
+
+class AdminSetSupportContact(StatesGroup):
+    waiting_id = State()
 
 
 class AdminAddCategory(StatesGroup):

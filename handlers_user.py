@@ -21,7 +21,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError, TelegramBadRequest, TelegramNetworkError
 
 import keyboards as kb
-from states import BuyFlow, ContactFlow, DiscountEntry, WalletTopup, CustomConfigFlow, RenewalFlow, ResellerFlow, ResellerRequestFlow
+from states import BuyFlow, ContactFlow, TicketFlow, TicketReplyFlow, DiscountEntry, WalletTopup, CustomConfigFlow, RenewalFlow, ResellerFlow, ResellerRequestFlow
 from config import MAX_TEST_PER_USER, RESELLER_DBS_DIR, resolve_db_path
 from database import Database
 from config_delivery import deliver_config_to_user, send_individual_configs, build_qr_bytes
@@ -3009,8 +3009,22 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
     @router.message(F.text.func(lambda t: t == db.get_setting("btn_contact")))
     async def contact_start(message: Message, state: FSMContext):
+        await state.clear()
+        await message.answer("چطور می‌خواهید با پشتیبانی در ارتباط باشید؟", reply_markup=kb.contact_menu_kb(db))
+
+    @router.callback_query(F.data == "contact_menu")
+    async def cb_contact_menu(call: CallbackQuery, state: FSMContext):
+        await state.clear()
+        await _safe_edit(call.message, "چطور می‌خواهید با پشتیبانی در ارتباط باشید؟", reply_markup=kb.contact_menu_kb(db))
+        await call.answer()
+
+    @router.callback_query(F.data == "contact_direct")
+    async def cb_contact_direct(call: CallbackQuery, state: FSMContext):
         await state.set_state(ContactFlow.waiting_message)
-        await message.answer((await asyncio.to_thread(db.get_setting, "contact_text")), reply_markup=kb.cancel_kb())
+        await _safe_edit(
+            call.message, (await asyncio.to_thread(db.get_setting, "contact_text")), reply_markup=kb.cancel_kb()
+        )
+        await call.answer()
 
     @router.message(ContactFlow.waiting_message)
     async def contact_receive(message: Message, state: FSMContext, bot: Bot):
@@ -3040,6 +3054,167 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         )
         await _send_inline_main_menu(message, user.id)
         await state.clear()
+
+    # --- سیستم تیکت (موضوع مشخص + پیام، مستقل از چت مستقیم بالا) ---
+
+    @router.callback_query(F.data == "tickets_new")
+    async def cb_tickets_new(call: CallbackQuery, state: FSMContext):
+        await state.set_state(TicketFlow.waiting_subject)
+        await _safe_edit(
+            call.message, (await asyncio.to_thread(db.get_setting, "ticket_intro_text")), reply_markup=kb.cancel_kb()
+        )
+        await call.answer()
+
+    @router.message(TicketFlow.waiting_subject)
+    async def ticket_receive_subject(message: Message, state: FSMContext):
+        subject = (message.text or "").strip()
+        if not subject:
+            await message.answer("لطفاً موضوع تیکت را به‌صورت متن ارسال کنید:")
+            return
+        await state.update_data(ticket_subject=subject[:150])
+        await state.set_state(TicketFlow.waiting_message)
+        await message.answer("متن کامل پیام خود را ارسال کنید:", reply_markup=kb.cancel_kb())
+
+    @router.message(TicketFlow.waiting_message)
+    async def ticket_receive_message(message: Message, state: FSMContext, bot: Bot):
+        if not message.text:
+            await message.answer("لطفاً متن پیام را به‌صورت نوشتاری ارسال کنید:")
+            return
+        data = await state.get_data()
+        subject = data.get("ticket_subject") or "بدون موضوع"
+        user = message.from_user
+        ticket_id = (await asyncio.to_thread(db.create_ticket, user.id, subject, message.text))
+        text = (
+            f"🎫 تیکت جدید #{ticket_id}\n"
+            f"👤 {user.first_name or ''} (@{user.username or '---'})\n"
+            f"🆔 {user.id}\n"
+            f"📌 موضوع: {subject}\n\n"
+            f"✉️ {message.text}"
+        )
+        for admin_id in (await asyncio.to_thread(db.list_admins)):
+            try:
+                await bot.send_message(admin_id, text, reply_markup=kb.ticket_admin_notify_kb(ticket_id))
+            except Exception:
+                logging.getLogger("handlers_user").exception(
+                    "ارسال اطلاع تیکت #%s کاربر %s به ادمین %s ناموفق بود.", ticket_id, user.id, admin_id
+                )
+        await message.answer(
+            f"✅ تیکت شما با شماره #{ticket_id} ثبت شد. به زودی پاسخ داده می‌شود.",
+            reply_markup=kb.menu_for_user(db, user.id, is_main_bot),
+        )
+        await _send_inline_main_menu(message, user.id)
+        await state.clear()
+
+    @router.callback_query(F.data == "tickets_mine")
+    async def cb_tickets_mine(call: CallbackQuery, state: FSMContext):
+        await state.clear()
+        tickets = (await asyncio.to_thread(db.get_user_tickets, call.from_user.id))
+        await _safe_edit(call.message, "📂 تیکت‌های شما:", reply_markup=kb.tickets_list_kb(tickets))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("ticket_view:"))
+    async def cb_ticket_view(call: CallbackQuery):
+        ticket_id_str = call.data.split(":", 1)[1]
+        if not ticket_id_str.isdigit():
+            await call.answer("❌ درخواست نامعتبر است.", show_alert=True)
+            return
+        ticket_id = int(ticket_id_str)
+        ticket = (await asyncio.to_thread(db.get_ticket, ticket_id))
+        if not ticket or ticket["user_id"] != call.from_user.id:
+            await call.answer("تیکت یافت نشد.", show_alert=True)
+            return
+        (await asyncio.to_thread(db.mark_ticket_read_by_user, ticket_id))
+        messages = (await asyncio.to_thread(db.get_ticket_messages, ticket_id))
+        lines = [
+            f"🎫 تیکت #{ticket['id']} — {kb.TICKET_STATUS_LABELS.get(ticket['status'], ticket['status'])}",
+            f"📌 موضوع: {ticket['subject']}",
+            "",
+        ]
+        for m in messages:
+            sender_label = "👤 شما" if m["sender"] == "user" else "🛠 پشتیبانی"
+            lines.append(f"{sender_label}: {m['message']}")
+        await _safe_edit(
+            call.message, "\n".join(lines), reply_markup=kb.ticket_thread_kb(ticket_id, ticket["status"] == "closed")
+        )
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("ticket_reply:"))
+    async def cb_ticket_reply(call: CallbackQuery, state: FSMContext):
+        ticket_id_str = call.data.split(":", 1)[1]
+        if not ticket_id_str.isdigit():
+            await call.answer("❌ درخواست نامعتبر است.", show_alert=True)
+            return
+        ticket_id = int(ticket_id_str)
+        ticket = (await asyncio.to_thread(db.get_ticket, ticket_id))
+        if not ticket or ticket["user_id"] != call.from_user.id:
+            await call.answer("تیکت یافت نشد.", show_alert=True)
+            return
+        if ticket["status"] == "closed":
+            await call.answer("⛔️ این تیکت بسته شده و امکان ارسال پیام جدید در آن نیست.", show_alert=True)
+            return
+        await state.update_data(reply_ticket_id=ticket_id)
+        await state.set_state(TicketReplyFlow.waiting_message)
+        await _safe_edit(
+            call.message, f"متن پیام خود را برای تیکت #{ticket_id} ارسال کنید:", reply_markup=kb.cancel_kb()
+        )
+        await call.answer()
+
+    @router.message(TicketReplyFlow.waiting_message)
+    async def ticket_reply_receive(message: Message, state: FSMContext, bot: Bot):
+        data = await state.get_data()
+        ticket_id = data.get("reply_ticket_id")
+        if not ticket_id:
+            await state.clear()
+            return
+        ticket = (await asyncio.to_thread(db.get_ticket, ticket_id))
+        if not ticket or ticket["user_id"] != message.from_user.id:
+            await state.clear()
+            return
+        if ticket["status"] == "closed":
+            await message.answer(
+                "⛔️ این تیکت بسته شده و امکان ارسال پیام جدید در آن نیست.",
+                reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
+            )
+            await state.clear()
+            return
+        if not message.text:
+            await message.answer("لطفاً متن پیام را به‌صورت نوشتاری ارسال کنید:")
+            return
+        (await asyncio.to_thread(db.add_ticket_message, ticket_id, "user", message.text))
+        user = message.from_user
+        text = (
+            f"🎫 پیام جدید در تیکت #{ticket_id} ({ticket['subject']})\n"
+            f"👤 {user.first_name or ''} (@{user.username or '---'})\n"
+            f"🆔 {user.id}\n\n"
+            f"✉️ {message.text}"
+        )
+        admin_ids = [ticket["claimed_by"]] if ticket["claimed_by"] else (await asyncio.to_thread(db.list_admins))
+        for admin_id in admin_ids:
+            try:
+                await bot.send_message(admin_id, text, reply_markup=kb.ticket_admin_notify_kb(ticket_id))
+            except Exception:
+                logging.getLogger("handlers_user").exception(
+                    "ارسال پیام جدید تیکت #%s به ادمین %s ناموفق بود.", ticket_id, admin_id
+                )
+        await message.answer("✅ پیام شما ثبت شد.", reply_markup=kb.menu_for_user(db, user.id, is_main_bot))
+        await _send_inline_main_menu(message, user.id)
+        await state.clear()
+
+    @router.callback_query(F.data.startswith("ticket_close:"))
+    async def cb_ticket_close(call: CallbackQuery):
+        ticket_id_str = call.data.split(":", 1)[1]
+        if not ticket_id_str.isdigit():
+            await call.answer("❌ درخواست نامعتبر است.", show_alert=True)
+            return
+        ticket_id = int(ticket_id_str)
+        ticket = (await asyncio.to_thread(db.get_ticket, ticket_id))
+        if not ticket or ticket["user_id"] != call.from_user.id:
+            await call.answer("تیکت یافت نشد.", show_alert=True)
+            return
+        (await asyncio.to_thread(db.close_ticket, ticket_id))
+        tickets = (await asyncio.to_thread(db.get_user_tickets, call.from_user.id))
+        await _safe_edit(call.message, f"✅ تیکت #{ticket_id} بسته شد.", reply_markup=kb.tickets_list_kb(tickets))
+        await call.answer()
 
     # -----------------------------------------------------------------------
     # پل بین منوی شیشه‌ای بالا (Inline) و همان هندلرهای منوی پایین (Reply)

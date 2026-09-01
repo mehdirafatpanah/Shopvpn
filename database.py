@@ -100,6 +100,10 @@ DEFAULT_SETTINGS = {
     # اگر ادمین این روش را غیرفعال کند، در لیست روش‌های پرداخت نمایش داده نمی‌شود.
     "card_to_card_enabled": "1",
     "contact_text": "پیام خود را بنویسید تا مستقیم برای پشتیبانی ارسال شود:",
+    # آیدی عددی تلگرام مدیر برای دکمه‌ی «چت مستقیم با مدیر» در بخش ارتباط با
+    # پشتیبانی (از طریق لینک tg://user?id=... بدون نیاز به یوزرنیم عمومی باز می‌شود).
+    "support_admin_id": "",
+    "ticket_intro_text": "لطفاً موضوع تیکت را در یک خط ارسال کنید:",
     "after_buy_text": "برای تکمیل خرید، مبلغ را به شماره کارت زیر واریز کرده و سپس عکس رسید را ارسال کنید:",
     # رنگ دکمه‌ها (ویژگی جدید Bot API 9.4 / فوریه 2026)
     # مقادیر مجاز: "" (پیش‌فرض/خاکستری), "primary" (آبی), "success" (سبز), "danger" (قرمز)
@@ -3667,6 +3671,14 @@ class Database:
                 "UPDATE ticket_messages SET is_read_by_admin=1 WHERE ticket_id=? AND is_read_by_admin=0",
                 (ticket_id,),
             )
+
+    def count_open_tickets(self) -> int:
+        """تعداد تیکت‌هایی که منتظر پاسخ ادمین هستند (برای بج کنار دکمه‌ی پنل مدیریت)."""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM tickets WHERE status='open'"
+            ).fetchone()
+            return row["c"] or 0
 
     def get_expiring_configs_for_user(self, user_tg_id: int, days_before: int = None):
         """کانفیگ‌های فعال کاربر (خریداری‌شده از انبار + ساخته‌شده مستقیم روی پنل) که تا چند روز آینده منقضی می‌شوند."""

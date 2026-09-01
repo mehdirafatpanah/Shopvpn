@@ -57,6 +57,8 @@ from states import (
     AdminChangeRole,
     AdminEditWelcome,
     AdminReplyFlow,
+    AdminTicketReplyFlow,
+    AdminSetSupportContact,
     AdminCreateDiscount,
     AdminReferralPercent,
     AdminReferralCommissionMax,
@@ -5087,6 +5089,197 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         except Exception:
             await message.answer("⛔️ ارسال پیام به کاربر با خطا مواجه شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
         await state.clear()
+
+    # -------------------------------------------------------------------
+    # مدیریت تیکت‌های پشتیبانی
+    # -------------------------------------------------------------------
+
+    async def _render_admin_ticket_thread(ticket_id: int, active_status: str):
+        ticket = (await asyncio.to_thread(db.get_ticket, ticket_id))
+        if not ticket:
+            return None
+        (await asyncio.to_thread(db.mark_ticket_read_by_admin, ticket_id))
+        messages = (await asyncio.to_thread(db.get_ticket_messages, ticket_id))
+        user = (await asyncio.to_thread(db.get_user, ticket["user_id"]))
+        user_label = f"@{user['username']}" if user and user["username"] else str(ticket["user_id"])
+        lines = [
+            f"🎫 تیکت #{ticket['id']} — {kb.TICKET_STATUS_LABELS.get(ticket['status'], ticket['status'])}",
+            f"👤 کاربر: {user_label} ({ticket['user_id']})",
+            f"📌 موضوع: {ticket['subject']}",
+            "",
+        ]
+        for m in messages:
+            sender_label = "👤 کاربر" if m["sender"] == "user" else "🛠 پشتیبانی"
+            lines.append(f"{sender_label}: {m['message']}")
+        text = "\n".join(lines)
+        markup = kb.admin_ticket_view_kb(ticket_id, ticket["status"], active_status)
+        return text, markup
+
+    @router.callback_query(F.data == "adm_tickets_menu")
+    async def cb_admin_tickets_menu(call: CallbackQuery):
+        if not admin_only(call.from_user.id):
+            return await call.answer()
+        tickets = (await asyncio.to_thread(db.get_all_tickets, "open"))
+        await replace_admin_view(call, "🎫 تیکت‌های پشتیبانی:", reply_markup=kb.admin_tickets_list_kb(tickets, "open"))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_tickets_list:"))
+    async def cb_admin_tickets_list(call: CallbackQuery):
+        if not admin_only(call.from_user.id):
+            return await call.answer()
+        status = call.data.split(":", 1)[1]
+        tickets = (await asyncio.to_thread(db.get_all_tickets, None if status == "all" else status))
+        await safe_edit(call, "🎫 تیکت‌های پشتیبانی:", reply_markup=kb.admin_tickets_list_kb(tickets, status))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_ticket_view:"))
+    async def cb_admin_ticket_view(call: CallbackQuery):
+        if not admin_only(call.from_user.id):
+            return await call.answer()
+        parts = call.data.split(":")
+        if len(parts) < 2 or not parts[1].isdigit():
+            await call.answer("❌ درخواست نامعتبر است.", show_alert=True)
+            return
+        ticket_id = int(parts[1])
+        active_status = parts[2] if len(parts) > 2 else "open"
+        rendered = await _render_admin_ticket_thread(ticket_id, active_status)
+        if not rendered:
+            await call.answer("تیکت یافت نشد.", show_alert=True)
+            return
+        text, markup = rendered
+        await replace_admin_view(call, text, reply_markup=markup)
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_ticket_reply:"))
+    async def cb_admin_ticket_reply(call: CallbackQuery, state: FSMContext):
+        if not admin_only(call.from_user.id):
+            return await call.answer()
+        ticket_id = callback_id(call.data, "adm_ticket_reply")
+        if ticket_id is None:
+            await call.answer("❌ درخواست نامعتبر است.", show_alert=True)
+            return
+        ticket = (await asyncio.to_thread(db.get_ticket, ticket_id))
+        if not ticket:
+            await call.answer("تیکت یافت نشد.", show_alert=True)
+            return
+        if ticket["status"] == "closed":
+            await call.answer("⛔️ این تیکت بسته شده است.", show_alert=True)
+            return
+        if ticket["claimed_by"] and ticket["claimed_by"] != call.from_user.id and not owner_only(call.from_user.id):
+            await call.answer("⛔️ این تیکت توسط ادمین دیگری در حال پاسخ است.", show_alert=True)
+            return
+        await state.update_data(reply_ticket_id=ticket_id)
+        await state.set_state(AdminTicketReplyFlow.waiting_reply)
+        await call.message.answer(f"متن پاسخ برای تیکت #{ticket_id} را ارسال کنید:")
+        await call.answer()
+
+    @router.message(AdminTicketReplyFlow.waiting_reply)
+    async def process_admin_ticket_reply(message: Message, state: FSMContext, bot: Bot):
+        data = await state.get_data()
+        ticket_id = data.get("reply_ticket_id")
+        if not ticket_id:
+            await state.clear()
+            return
+        ticket = (await asyncio.to_thread(db.get_ticket, ticket_id))
+        if not ticket:
+            await message.answer("تیکت یافت نشد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
+            await state.clear()
+            return
+        if ticket["claimed_by"] and ticket["claimed_by"] != message.from_user.id and not owner_only(message.from_user.id):
+            await message.answer(
+                "⛔️ این تیکت توسط ادمین دیگری در حال پاسخ است.",
+                reply_markup=kb.admin_panel_kb(db, is_main_bot),
+            )
+            await state.clear()
+            return
+        try:
+            await bot.send_message(
+                ticket["user_id"],
+                f"🎫 پاسخ پشتیبانی به تیکت «{ticket['subject']}» (#{ticket_id}):\n\n{message.text}",
+            )
+            (await asyncio.to_thread(db.claim_ticket_if_open, ticket_id, message.from_user.id))
+            (await asyncio.to_thread(db.add_ticket_message, ticket_id, "admin", message.text))
+            await _notify_user_inline_menu(bot, ticket["user_id"])
+            await message.answer(
+                f"✅ پاسخ به تیکت #{ticket_id} ارسال شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot)
+            )
+        except Exception:
+            await message.answer("⛔️ ارسال پاسخ با خطا مواجه شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
+        await state.clear()
+
+    @router.callback_query(F.data.startswith("adm_ticket_close:"))
+    async def cb_admin_ticket_close(call: CallbackQuery, bot: Bot):
+        if not admin_only(call.from_user.id):
+            return await call.answer()
+        ticket_id = callback_id(call.data, "adm_ticket_close")
+        if ticket_id is None:
+            await call.answer("❌ درخواست نامعتبر است.", show_alert=True)
+            return
+        ticket = (await asyncio.to_thread(db.get_ticket, ticket_id))
+        if not ticket:
+            await call.answer("تیکت یافت نشد.", show_alert=True)
+            return
+        (await asyncio.to_thread(db.close_ticket, ticket_id))
+        try:
+            await bot.send_message(
+                ticket["user_id"], f"🔒 تیکت «{ticket['subject']}» (#{ticket_id}) توسط پشتیبانی بسته شد."
+            )
+        except Exception:
+            pass
+        await safe_edit(call, f"✅ تیکت #{ticket_id} بسته شد.", reply_markup=kb.admin_back_kb("adm_tickets_menu"))
+        await call.answer()
+
+    # -------------------------------------------------------------------
+    # تنظیم آیدی مدیر برای چت مستقیم (بخش ارتباط با پشتیبانی)
+    # -------------------------------------------------------------------
+
+    @router.callback_query(F.data == "adm_set_support_contact")
+    async def cb_admin_set_support_contact(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await replace_admin_view(
+            call,
+            "🆔 تنظیم آیدی مدیر برای دکمه‌ی «چت مستقیم با مدیر» (در بخش ارتباط با پشتیبانی کاربران):",
+            reply_markup=kb.support_contact_settings_kb(db),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_set_support_contact_edit")
+    async def cb_admin_set_support_contact_edit(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await state.set_state(AdminSetSupportContact.waiting_id)
+        await replace_admin_view(
+            call,
+            "آیدی عددی تلگرام مدیر را ارسال کنید (برای دریافت آیدی عددی می‌توانید از بات‌هایی مثل @userinfobot کمک بگیرید):",
+            reply_markup=kb.admin_back_kb("adm_set_support_contact"),
+        )
+        await call.answer()
+
+    @router.message(AdminSetSupportContact.waiting_id)
+    async def process_set_support_contact(message: Message, state: FSMContext):
+        text = (message.text or "").strip()
+        if not text.lstrip("-").isdigit():
+            await message.answer("❌ آیدی نامعتبر است. لطفاً فقط عدد آیدی عددی تلگرام را ارسال کنید.")
+            return
+        (await asyncio.to_thread(db.set_setting, "support_admin_id", text))
+        (await asyncio.to_thread(
+            db.log_admin_action, message.from_user.id, "support_contact_change", f"آیدی مدیر برای چت مستقیم: {text}"
+        ))
+        await state.clear()
+        await message.answer("✅ آیدی مدیر ذخیره شد.", reply_markup=kb.admin_panel_kb(db, is_main_bot))
+
+    @router.callback_query(F.data == "adm_clear_support_contact")
+    async def cb_admin_clear_support_contact(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        (await asyncio.to_thread(db.set_setting, "support_admin_id", ""))
+        await safe_edit(
+            call,
+            "🆔 تنظیم آیدی مدیر برای دکمه‌ی «چت مستقیم با مدیر» (در بخش ارتباط با پشتیبانی کاربران):",
+            reply_markup=kb.support_contact_settings_kb(db),
+        )
+        await call.answer("✅ حذف شد.")
 
     # -------------------------------------------------------------------
     # آمار فروش
