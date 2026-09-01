@@ -244,6 +244,70 @@ class MarzbanProvider(BasePanelProvider):
             except aiohttp.ClientError as e:
                 raise PanelError(f"خطا در اتصال به پنل: {e}") from e
 
+    async def rename_user(self, username: str, new_username: str) -> str:
+        """در Marzban هیچ endpoint رسمی برای «تغییر نام» وجود ندارد (username
+        کلید اصلی/immutable است)، پس به‌جایش: اطلاعات کامل کاربر فعلی (شامل
+        همان proxies/UUID/پسورد پروتکل‌ها) خوانده می‌شود، یک کاربر جدید با
+        نام تازه ولی دقیقاً همان proxies/data_limit/expire/status ساخته
+        می‌شود (بنابراین کانفیگ‌های تکی/UUID دست‌نخورده و معتبر می‌مانند)،
+        و در پایان کاربر قدیمی حذف می‌شود. لینک اشتراک تازه را برمی‌گرداند
+        چون آدرس subscription_url بر اساس username ساخته می‌شود و حتماً
+        عوض می‌شود."""
+        async with aiohttp.ClientSession() as session:
+            token = await self._get_token(session)
+            headers = {"Authorization": f"Bearer {token}", "accept": "application/json", "Content-Type": "application/json"}
+            try:
+                async with session.get(
+                    f"{self._base_url()}/api/user/{username}", headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status == 404:
+                        raise PanelError(f"کاربری با نام «{username}» روی پنل پیدا نشد.")
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise PanelError(f"خطا در دریافت اطلاعات کاربر (کد {resp.status}): {text[:300]}")
+                    current = await resp.json()
+            except aiohttp.ClientError as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+
+            create_payload = {
+                "username": new_username,
+                "proxies": current.get("proxies") or {},
+                "inbounds": current.get("inbounds") or {},
+                "data_limit": current.get("data_limit"),
+                "expire": current.get("expire"),
+                "note": current.get("note") or "",
+                "data_limit_reset_strategy": current.get("data_limit_reset_strategy") or "no_reset",
+                "status": current.get("status") or "active",
+            }
+            try:
+                async with session.post(
+                    f"{self._base_url()}/api/user", json=create_payload, headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status == 409:
+                        raise PanelError(f"نام «{new_username}» از قبل روی پنل استفاده شده است.")
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise PanelError(f"خطا در ساخت کاربر با نام جدید (کد {resp.status}): {text[:300]}")
+                    new_data = await resp.json()
+            except aiohttp.ClientError as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+
+            try:
+                async with session.delete(
+                    f"{self._base_url()}/api/user/{username}", headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ):
+                    pass
+            except aiohttp.ClientError:
+                pass  # کاربر جدید با موفقیت ساخته شده؛ حذف کاربر قدیمی صرفاً نظافت است
+
+        sub_url = new_data.get("subscription_url") or ""
+        if sub_url.startswith("/"):
+            sub_url = self._base_url() + sub_url
+        return sub_url
+
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
                            reset_usage: bool = False) -> PanelUserResult:
         async with aiohttp.ClientSession() as session:

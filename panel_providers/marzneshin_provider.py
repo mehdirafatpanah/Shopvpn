@@ -223,7 +223,7 @@ class MarzneshinProvider(BasePanelProvider):
             payload = {"status": "active" if enabled else "disabled"}
             try:
                 async with session.put(
-                    f"{self._base_url()}/api/user/{username}", json=payload, headers=headers,
+                    f"{self._base_url()}/api/users/{username}", json=payload, headers=headers,
                     timeout=aiohttp.ClientTimeout(total=20),
                 ) as resp:
                     if resp.status == 404:
@@ -233,6 +233,67 @@ class MarzneshinProvider(BasePanelProvider):
                         raise PanelError(f"خطا در تغییر وضعیت کاربر (کد {resp.status}): {text[:300]}")
             except aiohttp.ClientError as e:
                 raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+
+    async def rename_user(self, username: str, new_username: str) -> str:
+        """مرزنشین هم endpoint رسمی برای تغییر username ندارد؛ کاربر با
+        همان service_ids/data_limit/expire ولی نام تازه ساخته می‌شود و کاربر
+        قدیمی حذف می‌شود. لینک اشتراک تازه را برمی‌گرداند."""
+        async with aiohttp.ClientSession() as session:
+            token = await self._get_token(session)
+            headers = {"Authorization": f"Bearer {token}", "accept": "application/json", "Content-Type": "application/json"}
+            try:
+                async with session.get(
+                    f"{self._base_url()}/api/users/{username}", headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status == 404:
+                        raise PanelError(f"کاربری با نام «{username}» روی پنل پیدا نشد.")
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise PanelError(f"خطا در دریافت اطلاعات کاربر (کد {resp.status}): {text[:300]}")
+                    current = await resp.json()
+            except aiohttp.ClientError as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+
+            create_payload = {
+                "username": new_username,
+                "service_ids": current.get("service_ids") or [],
+                "data_limit": current.get("data_limit"),
+                "data_limit_reset_strategy": current.get("data_limit_reset_strategy") or "no_reset",
+                "note": current.get("note") or "",
+            }
+            if current.get("expire_date"):
+                create_payload["expire_strategy"] = current.get("expire_strategy") or "fixed_date"
+                create_payload["expire_date"] = current.get("expire_date")
+            else:
+                create_payload["expire_strategy"] = "never"
+            try:
+                async with session.post(
+                    f"{self._base_url()}/api/users", json=create_payload, headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status == 409:
+                        raise PanelError(f"نام «{new_username}» از قبل روی پنل استفاده شده است.")
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise PanelError(f"خطا در ساخت کاربر با نام جدید (کد {resp.status}): {text[:300]}")
+                    new_data = await resp.json()
+            except aiohttp.ClientError as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+
+            try:
+                async with session.delete(
+                    f"{self._base_url()}/api/users/{username}", headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ):
+                    pass
+            except aiohttp.ClientError:
+                pass
+
+        sub_url = new_data.get("subscription_url") or ""
+        if sub_url.startswith("/"):
+            sub_url = self._base_url() + sub_url
+        return sub_url
 
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
                            reset_usage: bool = False) -> PanelUserResult:
