@@ -143,7 +143,9 @@
       <div class="row">
         <div><label>مسیر وضعیت در پاسخ</label><input type="text" id="v_resp_status" placeholder="data.code"></div>
         <div><label>مقادیر موفق (با کاما)</label><input type="text" id="v_resp_success" placeholder="100,101"></div>
+        <div><label>مسیر مبلغ پرداختی در پاسخ (اختیاری)</label><input type="text" id="v_resp_amount" placeholder="data.amount"></div>
       </div>
+      <p class="hint">اگه «مسیر مبلغ» رو پر کنی، مبلغ برگشتی از درگاه با مبلغ واقعی فاکتور مقایسه می‌شه تا با پرداخت کمتر، سفارش تایید نشه.</p>
     </details>
 
     <details><summary>📡 وب‌هوک (Webhook) — برای درگاه‌هایی که سرور به سرور خبر می‌دهند</summary>
@@ -164,7 +166,12 @@
         <div><label>مسیر شناسه‌ی تراکنش در بدنه‌ی وب‌هوک</label><input type="text" id="w_map_txn" placeholder="txn_id"></div>
         <div><label>مسیر وضعیت در بدنه</label><input type="text" id="w_map_status" placeholder="status"></div>
         <div><label>مقادیر موفق (با کاما)</label><input type="text" id="w_map_success" placeholder="completed,paid"></div>
+        <div><label>مسیر مبلغ در بدنه (اختیاری)</label><input type="text" id="w_map_amount" placeholder="amount"></div>
       </div>
+      <div class="row">
+        <div><label>تحمل اختلاف مبلغ (٪)</label><input type="number" id="amount_tolerance" min="0" step="0.1" value="1"></div>
+      </div>
+      <p class="hint" id="w_none_warn" style="display:none;color:var(--danger)">⚠️ بدون احراز هویت وب‌هوک، حتماً «مسیر مبلغ در بدنه» رو پر کن؛ وگرنه هرکی txn رو حدس بزنه می‌تونه سفارش خودش رو جعلاً پرداخت‌شده اعلام کنه.</p>
     </details>
 
     <div class="actions">
@@ -234,6 +241,7 @@ function resetForm(){
   document.getElementById("formTitle").textContent = "➕ افزودن درگاه جدید";
   document.getElementById("delBtn").style.display = "none";
   document.getElementById("f_key").disabled = false;
+  document.getElementById("w_none_warn").style.display = (document.getElementById("w_auth_mode").value === "none") ? "block" : "none";
 }
 
 function collectConfig(){
@@ -276,6 +284,7 @@ function collectConfig(){
     verify_response: {
       status_path: document.getElementById("v_resp_status").value.trim(),
       success_values: document.getElementById("v_resp_success").value.split(",").map(s => s.trim()).filter(Boolean),
+      amount_path: document.getElementById("v_resp_amount").value.trim(),
     },
     webhook_enabled: document.getElementById("w_enabled").checked,
     webhook_auth: {
@@ -289,9 +298,15 @@ function collectConfig(){
       txn_id_path: document.getElementById("w_map_txn").value.trim(),
       status_path: document.getElementById("w_map_status").value.trim(),
       success_values: document.getElementById("w_map_success").value.split(",").map(s => s.trim()).filter(Boolean),
+      amount_path: document.getElementById("w_map_amount").value.trim(),
     },
+    amount_tolerance_percent: parseFloat(document.getElementById("amount_tolerance").value) || 0,
   };
 }
+
+document.getElementById("w_auth_mode").addEventListener("change", function(){
+  document.getElementById("w_none_warn").style.display = (this.value === "none") ? "block" : "none";
+});
 
 function fillForm(gw){
   document.getElementById("gwId").value = gw.id;
@@ -324,10 +339,12 @@ function fillForm(gw){
   document.getElementById("v_body").value = JSON.stringify(vr.body || {}, null, 2);
   document.getElementById("v_resp_status").value = (c.verify_response || {}).status_path || "";
   document.getElementById("v_resp_success").value = ((c.verify_response || {}).success_values || []).join(",");
+  document.getElementById("v_resp_amount").value = (c.verify_response || {}).amount_path || "";
 
   document.getElementById("w_enabled").checked = !!c.webhook_enabled;
   const wa = c.webhook_auth || {};
   document.getElementById("w_auth_mode").value = wa.mode || "none";
+  document.getElementById("w_none_warn").style.display = ((wa.mode || "none") === "none") ? "block" : "none";
   document.getElementById("w_header_name").value = wa.header_name || "";
   document.getElementById("w_query_param").value = wa.query_param || "";
   document.getElementById("w_secret_field").value = wa.secret_field || "";
@@ -335,6 +352,8 @@ function fillForm(gw){
   document.getElementById("w_map_txn").value = wm.txn_id_path || "";
   document.getElementById("w_map_status").value = wm.status_path || "";
   document.getElementById("w_map_success").value = (wm.success_values || []).join(",");
+  document.getElementById("w_map_amount").value = wm.amount_path || "";
+  document.getElementById("amount_tolerance").value = (c.amount_tolerance_percent != null ? c.amount_tolerance_percent : 1);
 
   window.scrollTo({top: document.getElementById("gwForm").offsetTop - 10, behavior: "smooth"});
 }
