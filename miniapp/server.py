@@ -51,6 +51,7 @@ import crypto_payment
 import abangateway_client
 import abangateway_payment
 import payment_engine
+import card_to_card_payment
 from database import Database, MENU_BUTTON_META, DEFAULT_MENU_ORDER
 from admin_panel.config_delivery_web import deliver_config_to_user_web
 from miniapp.auth import validate_init_data
@@ -1099,6 +1100,8 @@ def _payment_flags(db: Database, amount: int, product_id: int = None) -> dict:
         and bool(_resolve_plisio_key(db)) and bool(API_BASE_URL) and _ok("crypto"),
         "abangateway_enabled": db.get_setting("abangateway_payment_enabled", "0") == "1"
         and bool(_resolve_abangateway_key(db)) and bool(API_BASE_URL) and _ok("abangateway"),
+        "card_to_card_auto_enabled": db.get_setting("card_to_card_auto_enabled", "0") == "1"
+        and bool(db.list_card_to_card_cards(only_active=True)) and _ok("card_auto"),
     }
 
 
@@ -1722,6 +1725,14 @@ async def _complete_custom_gateway_payment(db: Database, tenant: "Tenant", invoi
     if invoice["status"] == "completed":
         return
     db.update_custom_gateway_invoice_status(invoice["id"], "completed")
+    await _complete_generic_gateway_payment(db, tenant, invoice)
+
+
+async def _complete_generic_gateway_payment(db: Database, tenant: "Tenant", invoice) -> None:
+    """اثر مشترکِ «پرداخت تایید شد» (تکمیل سفارش یا شارژ کیف‌پول) که همه‌ی
+    درگاه‌های خودکار (درگاه سفارشی، کارت‌به‌کارت خودکار و ...) بعد از این‌که
+    خودشان وضعیت invoice را در جدول مخصوص خودشان 'completed' کردند، صدا می‌زنند.
+    invoice فقط باید کلیدهای kind/ref_id/user_id/amount_toman را داشته باشد."""
 
     async def _notify(chat_id: int, text: str):
         try:
@@ -1974,6 +1985,105 @@ async def api_custom_gateway_webhook(gateway_key: str, request: Request, tenant:
         return {"status": "ok"}
 
     await _complete_custom_gateway_payment(db, tenant, invoice)
+    return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# کارت‌به‌کارت با تایید خودکار (پیامک بانک از اپ BankSmsForwarder)
+# ---------------------------------------------------------------------------
+
+def _create_card_to_card_invoice_for(db: Database, kind: str, ref_id: int, user_id: int,
+                                      amount_toman: int) -> dict:
+    try:
+        return card_to_card_payment.create_invoice(db, kind, ref_id, user_id, amount_toman)
+    except card_to_card_payment.CardToCardError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/orders/{order_id}/card-auto-invoice")
+async def api_order_card_auto_invoice(order_id: int, auth=Depends(require_joined)):
+    tg_id, db, tenant = auth
+    order = db.get_order(order_id)
+    if not order or order["user_id"] != tg_id:
+        raise HTTPException(status_code=404, detail="سفارش یافت نشد.")
+    if order["status"] != "pending":
+        raise HTTPException(status_code=400, detail="این سفارش قبلاً بررسی شده است.")
+    _require_payment_method_allowed(db, order["final_price"], "card_auto", order["product_id"])
+    return _create_card_to_card_invoice_for(db, "order", order_id, tg_id, order["final_price"])
+
+
+class CardAutoWalletInvoiceRequest(BaseModel):
+    topup_id: int
+
+
+@app.post("/api/wallet/card-auto-invoice")
+async def api_wallet_card_auto_invoice(body: CardAutoWalletInvoiceRequest, auth=Depends(require_joined)):
+    tg_id, db, tenant = auth
+    topup = db.get_topup(body.topup_id)
+    if not topup or topup["user_id"] != tg_id:
+        raise HTTPException(status_code=404, detail="درخواست شارژ یافت نشد.")
+    if topup["status"] != "pending":
+        raise HTTPException(status_code=400, detail="این درخواست شارژ قبلاً بررسی شده است.")
+    _require_payment_method_allowed(db, topup["amount"], "card_auto")
+    result = _create_card_to_card_invoice_for(db, "wallet_topup", body.topup_id, tg_id, topup["amount"])
+    result["topup_id"] = body.topup_id
+    return result
+
+
+@app.get("/api/card-auto-invoice/{invoice_id}/status")
+def api_card_auto_invoice_status(invoice_id: int, auth=Depends(get_verified_user)):
+    tg_id, db, tenant = auth
+    invoice = db.get_card_to_card_invoice(invoice_id)
+    if not invoice or invoice["user_id"] != tg_id:
+        raise HTTPException(status_code=404, detail="فاکتور یافت نشد.")
+    db.expire_stale_card_to_card_invoices()
+    invoice = db.get_card_to_card_invoice(invoice_id)
+    return {"status": invoice["status"], "amount_toman": invoice["amount_toman"]}
+
+
+@app.post("/api/webhooks/sms-forwarder")
+async def api_sms_forwarder_webhook(request: Request, tenant: Tenant = Depends(get_tenant),
+                                     x_webhook_token: str = Header(None)):
+    """اندپوینتی که اپ اندروید BankSmsForwarder بعد از رسیدن هر پیامک بانکِ
+    منطبق با یکی از قالب‌ها، با متد POST و هدر X-Webhook-Token صدا می‌زند."""
+    db = tenant.db
+    raw_body = await request.body()
+    try:
+        body = json.loads(raw_body) if raw_body else {}
+    except Exception:
+        body = {}
+
+    expected_token = db.get_setting("card_to_card_sms_webhook_token", "")
+    if not expected_token or not x_webhook_token or not hmac.compare_digest(x_webhook_token, expected_token):
+        db.log_webhook_event(gateway="card_to_card_sms", verified=False,
+                              error="توکن وب‌هوک نامعتبر یا خالی است.",
+                              raw_body=json.dumps(body, ensure_ascii=False))
+        raise HTTPException(status_code=401, detail="توکن نامعتبر است.")
+
+    raw_amount = body.get("matched_amount")
+    amount_toman = None
+    parsed_amount = card_to_card_payment.normalize_amount(raw_amount)
+    if parsed_amount is not None:
+        unit = db.get_setting("card_to_card_sms_amount_unit", "rial")
+        amount_toman = card_to_card_payment.rial_to_toman(parsed_amount, unit)
+
+    if amount_toman is None:
+        db.log_webhook_event(gateway="card_to_card_sms", verified=True, status="no_amount",
+                              raw_body=json.dumps(body, ensure_ascii=False))
+        return {"status": "ignored"}
+
+    invoice = card_to_card_payment.match_and_complete(
+        db, amount_toman, sender=body.get("sender"), body=body.get("body"),
+        device_id=body.get("device_id"),
+    )
+    if not invoice:
+        db.log_webhook_event(gateway="card_to_card_sms", verified=True, status="no_match",
+                              raw_body=json.dumps(body, ensure_ascii=False))
+        return {"status": "ignored"}
+
+    db.log_webhook_event(gateway="card_to_card_sms", txn_id=str(invoice["id"]), verified=True,
+                          status="matched", raw_body=json.dumps(body, ensure_ascii=False))
+    await _complete_generic_gateway_payment(db, tenant, invoice)
     return {"status": "ok"}
 
 
