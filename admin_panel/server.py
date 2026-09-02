@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import sqlite3
 import time
 import tempfile
@@ -2363,6 +2364,120 @@ async def api_test_gateway(gateway_id: int, body: CustomGatewayTestRequest, admi
     except payment_engine.PaymentEngineError as e:
         return {"success": False, "error": str(e)}
     return {"success": True, "invoice_url": result.get("invoice_url"), "txn_id": result.get("txn_id")}
+
+
+# ------------------------------------- کارت‌به‌کارت با تایید خودکار (پیامک بانک) -----
+# اپ اندروید BankSmsForwarder پیامک بانک را می‌خواند و به وب‌هوک زیر می‌فرستد؛
+# چون مبلغ هر فاکتور یکتاست (مبلغ اصلی + چند رقم آخر تصادفی)، حتی با هزاران
+# پرداخت هم‌زمان هم تشخیص فاکتورِ مربوطه بدون ابهام است.
+
+class CardToCardCardIn(BaseModel):
+    card_number: str
+    holder_name: str = ""
+    bank_name: str = ""
+    sort_order: int = 0
+
+
+def _clean_card_number(raw: str) -> str:
+    number = re.sub(r"\D", "", raw or "")
+    if len(number) != 16:
+        raise HTTPException(status_code=400, detail="شماره کارت باید ۱۶ رقم باشد.")
+    return number
+
+
+@app.get("/api/card-to-card/cards")
+def api_list_c2c_cards(admin=Depends(require_permission("settings"))):
+    return [dict(r) for r in db.list_card_to_card_cards()]
+
+
+@app.post("/api/card-to-card/cards")
+def api_create_c2c_card(body: CardToCardCardIn, admin=Depends(require_permission("settings"))):
+    number = _clean_card_number(body.card_number)
+    card_id = db.create_card_to_card_card(number, body.holder_name.strip(), body.bank_name.strip(), body.sort_order)
+    db.log_admin_action(admin["id"], "card_to_card_card_create",
+                         f"کارت با ۴ رقم آخر {number[-4:]} اضافه شد (پنل وب - {admin['username']}).")
+    return dict(db.get_card_to_card_card(card_id))
+
+
+@app.put("/api/card-to-card/cards/{card_id}")
+def api_update_c2c_card(card_id: int, body: CardToCardCardIn, admin=Depends(require_permission("settings"))):
+    if not db.get_card_to_card_card(card_id):
+        raise HTTPException(status_code=404, detail="این کارت پیدا نشد.")
+    number = _clean_card_number(body.card_number)
+    db.update_card_to_card_card(card_id, card_number=number, holder_name=body.holder_name.strip(),
+                                 bank_name=body.bank_name.strip(), sort_order=body.sort_order)
+    db.log_admin_action(admin["id"], "card_to_card_card_update",
+                         f"کارت #{card_id} ویرایش شد (پنل وب - {admin['username']}).")
+    return dict(db.get_card_to_card_card(card_id))
+
+
+@app.post("/api/card-to-card/cards/{card_id}/toggle")
+def api_toggle_c2c_card(card_id: int, admin=Depends(require_permission("settings"))):
+    if not db.get_card_to_card_card(card_id):
+        raise HTTPException(status_code=404, detail="این کارت پیدا نشد.")
+    db.toggle_card_to_card_card(card_id)
+    return {"ok": True}
+
+
+@app.delete("/api/card-to-card/cards/{card_id}")
+def api_delete_c2c_card(card_id: int, admin=Depends(require_permission("settings"))):
+    if not db.get_card_to_card_card(card_id):
+        raise HTTPException(status_code=404, detail="این کارت پیدا نشد.")
+    db.delete_card_to_card_card(card_id)
+    db.log_admin_action(admin["id"], "card_to_card_card_delete",
+                         f"کارت #{card_id} حذف شد (پنل وب - {admin['username']}).")
+    return {"ok": True}
+
+
+class CardToCardSettingsBody(BaseModel):
+    enabled: bool
+    timeout_minutes: int = 15
+    amount_digits: int = 3
+    amount_unit: str = "rial"
+    min_amount: int = 0
+
+
+@app.get("/api/settings/card-to-card")
+def api_get_c2c_settings(admin=Depends(require_permission("settings"))):
+    tenant = _current_tenant.get()
+    token = db.get_setting("card_to_card_sms_webhook_token", "")
+    return {
+        "enabled": db.get_setting("card_to_card_auto_enabled", "0") == "1",
+        "timeout_minutes": int(db.get_setting("card_to_card_auto_timeout_minutes", "15") or 15),
+        "amount_digits": int(db.get_setting("card_to_card_auto_amount_digits", "3") or 3),
+        "amount_unit": db.get_setting("card_to_card_sms_amount_unit", "rial"),
+        "min_amount": int(db.get_setting("min_amount_card_auto", "0") or 0),
+        "webhook_token_set": bool(token),
+        "webhook_url": (f"{API_BASE_URL}/api/webhooks/sms-forwarder?b={tenant.slug or 'main'}"
+                        if API_BASE_URL else None),
+    }
+
+
+@app.post("/api/settings/card-to-card")
+def api_set_c2c_settings(body: CardToCardSettingsBody, admin=Depends(require_permission("settings"))):
+    db.set_setting("card_to_card_auto_enabled", "1" if body.enabled else "0")
+    db.set_setting("card_to_card_auto_timeout_minutes", str(max(1, body.timeout_minutes or 15)))
+    db.set_setting("card_to_card_auto_amount_digits", str(min(5, max(1, body.amount_digits or 3))))
+    if body.amount_unit in ("rial", "toman"):
+        db.set_setting("card_to_card_sms_amount_unit", body.amount_unit)
+    db.set_setting("min_amount_card_auto", str(max(0, body.min_amount or 0)))
+    db.log_admin_action(admin["id"], "card_to_card_settings",
+                         f"تنظیمات کارت‌به‌کارت خودکار به‌روزرسانی شد (پنل وب - {admin['username']}).")
+    return {"ok": True}
+
+
+@app.post("/api/settings/card-to-card/regenerate-token")
+def api_regen_c2c_token(admin=Depends(require_permission("settings"))):
+    token = secrets.token_hex(24)
+    db.set_setting("card_to_card_sms_webhook_token", token)
+    db.log_admin_action(admin["id"], "card_to_card_token_regen",
+                         f"توکن وب‌هوک کارت‌به‌کارت بازتولید شد (پنل وب - {admin['username']}).")
+    return {"webhook_token": token}
+
+
+@app.get("/api/card-to-card/invoices")
+def api_list_c2c_invoices(status: Optional[str] = None, admin=Depends(require_permission("orders"))):
+    return [dict(r) for r in db.list_card_to_card_invoices(status=status)]
 
 
 # ------------------------------------------------------------- تنظیمات کامل فروش -----
