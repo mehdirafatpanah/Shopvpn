@@ -502,12 +502,14 @@ def reseller_panel_kb() -> InlineKeyboardMarkup:
 
 def payment_choice_kb(crypto_enabled: bool, abangateway_enabled: bool = False,
                        custom_gateways: list = None, card_to_card_enabled: bool = True,
-                       amount: int = None, db=None, allowed_methods=None) -> InlineKeyboardMarkup:
+                       amount: int = None, db=None, allowed_methods=None,
+                       card_auto_enabled: bool = False) -> InlineKeyboardMarkup:
     """کیبورد مرحله‌ی انتخاب روش پرداخت: کاربر ابتدا این لیست را می‌بیند و روش پرداخت را
     انتخاب می‌کند (به‌جای اینکه مستقیم شماره کارت نمایش داده شود). اگر درگاه کریپتو/آبان
-    گیت وی/درگاه‌های سفارشی فعال باشند، دکمه‌ی مربوطه هم نمایش داده می‌شود. کارت‌به‌کارت
-    دستی هم با تنظیم card_to_card_enabled قابل غیرفعال‌سازی است. custom_gateways لیستی
-    از دیکشنری‌های {"id", "key", "name"} است (خروجی custom_gateway_payment.list_enabled_gateways).
+    گیت وی/درگاه‌های سفارشی/کارت‌به‌کارت خودکار فعال باشند، دکمه‌ی مربوطه هم نمایش داده
+    می‌شود. کارت‌به‌کارت دستی هم با تنظیم card_to_card_enabled قابل غیرفعال‌سازی است.
+    custom_gateways لیستی از دیکشنری‌های {"id", "key", "name"} است (خروجی
+    custom_gateway_payment.list_enabled_gateways).
 
     amount + db: در صورت ارسال، دکمه‌ی هر روشی که «حداقل مبلغ» تنظیم‌شده‌اش از amount
     بیشتر باشد حذف می‌شود. allowed_methods: در صورت ارسال (لیست کلیدها یا None برای
@@ -525,6 +527,8 @@ def payment_choice_kb(crypto_enabled: bool, abangateway_enabled: bool = False,
     rows = []
     if card_to_card_enabled and _ok("card"):
         rows.append([InlineKeyboardButton(text="💳 کارت‌به‌کارت (ارسال رسید)", callback_data="pay_card2card")])
+    if card_auto_enabled and _ok("card_auto"):
+        rows.append([InlineKeyboardButton(text="💳 کارت‌به‌کارت (تایید خودکار پیامکی)", callback_data="pay_card_auto")])
     if abangateway_enabled and _ok("abangateway"):
         rows.append([InlineKeyboardButton(text="💳 پرداخت خودکار کارت‌به‌کارت (تایید آنی)", callback_data="pay_abangateway")])
     if crypto_enabled and _ok("crypto"):

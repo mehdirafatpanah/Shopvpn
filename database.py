@@ -211,6 +211,12 @@ DEFAULT_SETTINGS = {
     "min_amount_card": "0",             # حداقل مبلغ برای پرداخت کارت‌به‌کارت دستی
     "min_amount_abangateway": "0",      # حداقل مبلغ برای آبان گیت وی
     "min_amount_crypto": "0",           # حداقل مبلغ برای پرداخت کریپتو
+    "min_amount_card_auto": "0",        # حداقل مبلغ برای کارت‌به‌کارت خودکار
+    "card_to_card_auto_enabled": "0",
+    "card_to_card_auto_timeout_minutes": "15",  # بعد این‌مدت اگر پیامک نرسد، به بررسی دستی می‌رود
+    "card_to_card_auto_amount_digits": "3",     # چند رقم آخر مبلغ برای یکتاسازی تصادفی اضافه شود
+    "card_to_card_sms_amount_unit": "rial",     # واحد مبلغ داخل پیامک بانک: rial یا toman
+    "card_to_card_sms_webhook_token": "",       # توکن احراز هویت وب‌هوک اپ BankSmsForwarder
 }
 
 # روش‌های پرداخت «داخلی» (غیر از درگاه‌های سفارشی) که در همه‌جای پروژه
@@ -221,6 +227,7 @@ BUILTIN_PAYMENT_METHODS = [
     {"key": "card", "label": "💳 کارت‌به‌کارت (ارسال رسید)", "enable_setting": "card_to_card_enabled"},
     {"key": "abangateway", "label": "💳 آبان گیت وی (تایید آنی)", "enable_setting": "abangateway_payment_enabled"},
     {"key": "crypto", "label": "🪙 ارز دیجیتال (تایید آنی)", "enable_setting": "crypto_payment_enabled"},
+    {"key": "card_auto", "label": "💳 کارت‌به‌کارت (تایید خودکار پیامکی)", "enable_setting": "card_to_card_auto_enabled"},
 ]
 
 
@@ -664,6 +671,42 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_custom_gw_invoices_txn ON custom_gateway_invoices(gateway_id, txn_id);
                 CREATE INDEX IF NOT EXISTS idx_custom_gw_invoices_ref ON custom_gateway_invoices(gateway_id, kind, ref_id);
+
+                -- ===== کارت‌به‌کارت با تایید خودکار (پیامک بانک از اپ BankSmsForwarder) =====
+                CREATE TABLE IF NOT EXISTS card_to_card_cards (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    card_number TEXT NOT NULL,
+                    holder_name TEXT,
+                    bank_name TEXT,
+                    is_active INTEGER DEFAULT 1,
+                    sort_order INTEGER DEFAULT 0,
+                    last_used_at TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS card_to_card_invoices (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    card_id INTEGER NOT NULL,
+                    kind TEXT NOT NULL,                 -- 'order' یا 'wallet_topup'
+                    ref_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    base_amount_toman INTEGER NOT NULL, -- مبلغ واقعی فاکتور (بدون رقم یکتاساز)
+                    amount_toman INTEGER NOT NULL,      -- مبلغی که باید کاربر دقیقاً واریز کند (یکتا)
+                    status TEXT DEFAULT 'pending',      -- pending/completed/manual_review
+                    matched_sender TEXT,
+                    matched_body TEXT,
+                    matched_device_id TEXT,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT
+                );
+
+                -- مبلغ فقط در بین فاکتورهای «در انتظار» باید یکتا باشد (پیامک بانک فقط
+                -- مبلغ را گزارش می‌دهد، نه این‌که برای کدام کارت ماست؛ پس یکتایی باید
+                -- سراسری باشد، نه فقط به‌ازای هر کارت).
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_card_to_card_amount_pending
+                    ON card_to_card_invoices(amount_toman) WHERE status = 'pending';
+                CREATE INDEX IF NOT EXISTS idx_card_to_card_ref ON card_to_card_invoices(kind, ref_id);
 
                 CREATE TABLE IF NOT EXISTS panel_servers (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3512,6 +3555,145 @@ class Database:
             conn.execute(
                 "DELETE FROM custom_gateway_invoices WHERE status IN "
                 "('completed','expired','cancelled','failed') "
+                "AND COALESCE(updated_at, created_at) < ?",
+                (cutoff,),
+            )
+
+    # -----------------------------------------------------------------------
+    # کارت‌به‌کارت با تایید خودکار (پیامک بانک)
+    # -----------------------------------------------------------------------
+
+    def create_card_to_card_card(self, card_number: str, holder_name: str = "",
+                                  bank_name: str = "", sort_order: int = 0) -> int:
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO card_to_card_cards (card_number, holder_name, bank_name, sort_order) "
+                "VALUES (?, ?, ?, ?)",
+                (card_number, holder_name, bank_name, sort_order),
+            )
+            return cur.lastrowid
+
+    def get_card_to_card_card(self, card_id: int):
+        with self._get_conn() as conn:
+            return conn.execute("SELECT * FROM card_to_card_cards WHERE id=?", (card_id,)).fetchone()
+
+    def list_card_to_card_cards(self, only_active: bool = False):
+        with self._get_conn() as conn:
+            if only_active:
+                return conn.execute(
+                    "SELECT * FROM card_to_card_cards WHERE is_active=1 ORDER BY sort_order, id"
+                ).fetchall()
+            return conn.execute("SELECT * FROM card_to_card_cards ORDER BY sort_order, id").fetchall()
+
+    def update_card_to_card_card(self, card_id: int, **fields):
+        allowed = {"card_number", "holder_name", "bank_name", "sort_order", "is_active"}
+        cols = {k: v for k, v in fields.items() if k in allowed}
+        if not cols:
+            return
+        set_clause = ", ".join(f"{k}=?" for k in cols)
+        with self._get_conn() as conn:
+            conn.execute(
+                f"UPDATE card_to_card_cards SET {set_clause} WHERE id=?",
+                (*cols.values(), card_id),
+            )
+
+    def toggle_card_to_card_card(self, card_id: int):
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE card_to_card_cards SET is_active = 1 - is_active WHERE id=?", (card_id,)
+            )
+
+    def delete_card_to_card_card(self, card_id: int):
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM card_to_card_cards WHERE id=?", (card_id,))
+
+    def pick_next_card_to_card_card(self):
+        """کارت فعالِ کمترین‌استفاده‌شده (چرخشی) را برمی‌گرداند تا واریزی‌ها بین
+        چند کارت پخش شوند."""
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM card_to_card_cards WHERE is_active=1 "
+                "ORDER BY (last_used_at IS NOT NULL), last_used_at, id LIMIT 1"
+            ).fetchone()
+
+    def touch_card_to_card_card(self, card_id: int):
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE card_to_card_cards SET last_used_at=? WHERE id=?",
+                (datetime.utcnow().isoformat(), card_id),
+            )
+
+    def create_card_to_card_invoice(self, card_id: int, kind: str, ref_id: int, user_id: int,
+                                     base_amount_toman: int, amount_toman: int, expires_at: str) -> int:
+        """می‌تواند sqlite3.IntegrityError بزند اگر amount_toman با فاکتور در انتظار
+        دیگری تداخل داشته باشد؛ فراخوان (card_to_card_payment) باید با مبلغ جدید
+        دوباره تلاش کند."""
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO card_to_card_invoices (card_id, kind, ref_id, user_id, "
+                "base_amount_toman, amount_toman, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (card_id, kind, ref_id, user_id, base_amount_toman, amount_toman, expires_at),
+            )
+            return cur.lastrowid
+
+    def get_card_to_card_invoice(self, invoice_id: int):
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM card_to_card_invoices WHERE id=?", (invoice_id,)
+            ).fetchone()
+
+    def get_pending_card_to_card_invoice_for_ref(self, kind: str, ref_id: int):
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM card_to_card_invoices WHERE kind=? AND ref_id=? AND status='pending' "
+                "ORDER BY id DESC LIMIT 1",
+                (kind, ref_id),
+            ).fetchone()
+
+    def get_pending_card_to_card_invoice_by_amount(self, amount_toman: int):
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM card_to_card_invoices WHERE amount_toman=? AND status='pending' "
+                "ORDER BY created_at ASC LIMIT 1",
+                (amount_toman,),
+            ).fetchone()
+
+    def complete_card_to_card_invoice(self, invoice_id: int, sender: str = None,
+                                       body: str = None, device_id: str = None):
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE card_to_card_invoices SET status='completed', matched_sender=?, "
+                "matched_body=?, matched_device_id=?, updated_at=? WHERE id=?",
+                (sender, (body or "")[:1000], device_id, datetime.utcnow().isoformat(), invoice_id),
+            )
+
+    def expire_stale_card_to_card_invoices(self):
+        """فاکتورهای در انتظاری که مهلت‌شان گذشته را به 'manual_review' می‌برد تا هم
+        مبلغ رزروشده آزاد شود و هم ادمین در لیست سفارش‌های در انتظار آن‌ها را ببیند."""
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE card_to_card_invoices SET status='manual_review', updated_at=? "
+                "WHERE status='pending' AND expires_at < ?",
+                (datetime.utcnow().isoformat(), datetime.utcnow().isoformat()),
+            )
+
+    def list_card_to_card_invoices(self, status: str = None, limit: int = 50):
+        limit = max(1, min(int(limit or 50), 200))
+        with self._get_conn() as conn:
+            if status:
+                return conn.execute(
+                    "SELECT * FROM card_to_card_invoices WHERE status=? ORDER BY id DESC LIMIT ?",
+                    (status, limit),
+                ).fetchall()
+            return conn.execute(
+                "SELECT * FROM card_to_card_invoices ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+
+    def purge_old_card_to_card_invoices(self, days: int = 7):
+        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        with self._get_conn() as conn:
+            conn.execute(
+                "DELETE FROM card_to_card_invoices WHERE status IN ('completed','manual_review') "
                 "AND COALESCE(updated_at, created_at) < ?",
                 (cutoff,),
             )
