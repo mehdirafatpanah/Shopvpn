@@ -3529,9 +3529,10 @@ function _val(root, key) { return $(`[data-fkey="${key}"]`, root)?.value; }
 function _num(root, key) { return Number(_val(root, key)) || 0; }
 
 async function renderSalesSettings() {
-  const [referral, wheel, renewal, volumeReminder, testConfig, forceJoin, stockAlert, products] = await Promise.all([
+  const [referral, wheel, renewal, volumeReminder, testConfig, testPlans, panelServers, forceJoin, stockAlert, products] = await Promise.all([
     apiGet('/settings/referral'), apiGet('/settings/wheel'),
     apiGet('/settings/renewal'), apiGet('/settings/volume-reminder'), apiGet('/settings/test-config'),
+    apiGet('/test-config/plans'), apiGet('/test-config/panel-servers-lite'),
     apiGet('/settings/force-join'), apiGet('/settings/stock-alert'), apiGet('/products'),
   ]);
 
@@ -3606,16 +3607,20 @@ async function renderSalesSettings() {
     <div class="card">
       <h3>🧪 کانفیگ تست</h3>
       <div class="card-sub" style="margin-bottom:8px">
-        موجودی بانک کانفیگ تست دستی: <b>${fmt(testConfig.bank_stock)}</b>
-        ${testConfig.panel_server ? ` | سرور خودکار: <b>${esc(testConfig.panel_server.name)}</b>` : ' | سرور خودکار تنظیم نشده (از بانک دستی استفاده می‌شود)'}
+        موجودی بانک لینک دستی (قدیمی): <b>${fmt(testConfig.bank_stock)}</b>
       </div>
       <label class="field field-row"><span>فعال</span>${_swSpan('test_enabled', testConfig.enabled)}</label>
-      <label class="field"><span>حجم کانفیگ تست خودکار (گیگ)</span><input class="input" data-fkey="test_volume_gb" type="number" value="${testConfig.panel_volume_gb}"></label>
-      <label class="field"><span>مدت کانفیگ تست خودکار (روز)</span><input class="input" data-fkey="test_duration_days" type="number" value="${testConfig.panel_duration_days}"></label>
-      <div style="display:flex;gap:8px;margin-top:8px">
+      <div style="display:flex;gap:8px;margin:8px 0 16px">
         <button class="btn btn-primary btn-sm" id="save-test">ذخیره</button>
         <button class="btn btn-sm btn-danger" id="reset-test-all">بازنشانی کانفیگ تست برای همه‌ی کاربران</button>
       </div>
+      <div class="card-sub" style="margin-bottom:6px">
+        هر کاربر مستقل از تعداد پلن‌های زیر، در کل فقط یک بار مجاز به دریافت کانفیگ تست است
+        (مگر با «بازنشانی برای همه» بالا). هر پلن پنل/حجم/مدت/پیشوند نام کاربری خودش را دارد؛
+        اگر بیش از یک پلن فعال باشد، کاربر هنگام درخواست کانفیگ تست از بین آن‌ها انتخاب می‌کند.
+      </div>
+      <div id="test-plans-list"></div>
+      <button class="btn btn-sm" id="add-test-plan" style="margin-top:8px">➕ افزودن پلن کانفیگ تست</button>
     </div>
 
     <div class="card">
@@ -3688,10 +3693,8 @@ async function renderSalesSettings() {
 
   $('#save-test').addEventListener('click', async () => {
     try {
-      await apiPost('/settings/test-config', {
-        enabled: _swOn(root, 'test_enabled'), panel_volume_gb: _num(root, 'test_volume_gb'), panel_duration_days: _num(root, 'test_duration_days'),
-      });
-      toast('تنظیمات کانفیگ تست ذخیره شد.');
+      await apiPost('/settings/test-config', { enabled: _swOn(root, 'test_enabled') });
+      toast('وضعیت کانفیگ تست ذخیره شد.');
     } catch (e) { handleErr(e); }
   });
   $('#reset-test-all').addEventListener('click', async () => {
@@ -3701,6 +3704,81 @@ async function renderSalesSettings() {
       toast(`برای ${res.count} کاربر بازنشانی شد.`);
     } catch (e) { handleErr(e); }
   });
+
+  function _tpVol(mb) { return mb >= 1024 ? `${(mb / 1024).toFixed(2).replace(/\.?0+$/, '')} گیگ` : `${mb} مگابایت`; }
+  function _tpDur(h) { return (h >= 24 && h % 24 === 0) ? `${h / 24} روز` : `${h} ساعت`; }
+
+  function renderTestPlansList(plans) {
+    const box = $('#test-plans-list', root);
+    if (!plans.length) {
+      box.innerHTML = `<div class="card-sub">هنوز هیچ پلنی تعریف نشده.</div>`;
+      return;
+    }
+    box.innerHTML = plans.map(p => `
+      <div class="row-item" data-plan-id="${p.id}" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border,#333)">
+        <div>
+          <b>${p.is_active ? '🟢' : '🔴'} ${esc(p.name)}</b>
+          <div class="card-sub">پیشوند: ${esc(p.name_prefix)} · پنل: ${esc(p.panel_server_name || '—')} · ${_tpVol(p.volume_mb)} / ${_tpDur(p.duration_hours)}</div>
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-sm" data-tp-edit="${p.id}">ویرایش</button>
+          <button class="btn btn-sm" data-tp-toggle="${p.id}">${p.is_active ? 'غیرفعال کن' : 'فعال کن'}</button>
+          <button class="btn btn-sm btn-danger" data-tp-del="${p.id}">حذف</button>
+        </div>
+      </div>
+    `).join('');
+
+    $$('[data-tp-toggle]', box).forEach(b => b.addEventListener('click', async () => {
+      try { await apiPost(`/test-config/plans/${b.dataset.tpToggle}/toggle`); await reloadTestPlans(); } catch (e) { handleErr(e); }
+    }));
+    $$('[data-tp-del]', box).forEach(b => b.addEventListener('click', async () => {
+      if (!confirm('این پلن حذف شود؟ کانفیگ‌های تست ساخته‌شده قبلی دست‌نخورده می‌مانند.')) return;
+      try { await apiDelete(`/test-config/plans/${b.dataset.tpDel}`); await reloadTestPlans(); } catch (e) { handleErr(e); }
+    }));
+    $$('[data-tp-edit]', box).forEach(b => b.addEventListener('click', () => {
+      const plan = plans.find(p => p.id === Number(b.dataset.tpEdit));
+      openTestPlanForm(plan);
+    }));
+  }
+
+  async function reloadTestPlans() {
+    const plans = await apiGet('/test-config/plans');
+    renderTestPlansList(plans);
+  }
+
+  function openTestPlanForm(plan) {
+    if (!panelServers.length) { toast('اول باید حداقل یک سرور پنل فعال ثبت کنی.'); return; }
+    const isEdit = !!plan;
+    const serverOptions = panelServers.map(s => `<option value="${s.id}" ${plan && plan.panel_server_id === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('');
+    openModal(isEdit ? 'ویرایش پلن کانفیگ تست' : 'افزودن پلن کانفیگ تست', `
+      <label class="field"><span>نام پلن</span><input class="input" id="tpf-name" value="${plan ? esc(plan.name) : ''}"></label>
+      <label class="field"><span>پیشوند نام کاربری (فقط حروف/عدد انگلیسی)</span><input class="input" id="tpf-prefix" style="direction:ltr;text-align:left" value="${plan ? esc(plan.name_prefix) : 'test'}"></label>
+      <label class="field"><span>پنل</span><select class="input" id="tpf-server">${serverOptions}</select></label>
+      <label class="field"><span>حجم (مگابایت - برای ۱ گیگ عدد 1024 بزن)</span><input class="input" id="tpf-volume" type="number" value="${plan ? plan.volume_mb : 1024}"></label>
+      <label class="field"><span>مدت (ساعت - برای ۱ روز عدد 24 بزن)</span><input class="input" id="tpf-duration" type="number" value="${plan ? plan.duration_hours : 24}"></label>
+      <button class="btn btn-primary btn-sm" id="tpf-save">ذخیره</button>
+    `, (body, close) => {
+      body.querySelector('#tpf-save').addEventListener('click', async () => {
+        const body_ = {
+          name: body.querySelector('#tpf-name').value.trim(),
+          name_prefix: body.querySelector('#tpf-prefix').value.trim(),
+          panel_server_id: Number(body.querySelector('#tpf-server').value),
+          volume_mb: Number(body.querySelector('#tpf-volume').value) || 0,
+          duration_hours: Number(body.querySelector('#tpf-duration').value) || 0,
+        };
+        try {
+          if (isEdit) await apiPut(`/test-config/plans/${plan.id}`, body_);
+          else await apiPost('/test-config/plans', body_);
+          close();
+          toast('پلن ذخیره شد.');
+          await reloadTestPlans();
+        } catch (e) { handleErr(e); }
+      });
+    });
+  }
+
+  renderTestPlansList(testPlans);
+  $('#add-test-plan').addEventListener('click', () => openTestPlanForm(null));
 
   $('#save-forcejoin').addEventListener('click', async () => {
     try {
