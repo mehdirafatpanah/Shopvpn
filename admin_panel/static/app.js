@@ -351,6 +351,7 @@ const NAV = [
   // تنظیمات و سیستم — نگهداری، دسترسی و پیکربندی
   { key: 'settings', label: 'تنظیمات و برندینگ', icon: 'settings', role: 'settings', section: 'تنظیمات و سیستم' },
   { key: 'gateways', label: 'درگاه‌های پرداخت سفارشی', icon: 'settings', role: 'settings', section: 'تنظیمات و سیستم' },
+  { key: 'cardauto', label: 'کارت‌به‌کارت خودکار (پیامک)', icon: 'settings', role: 'settings', section: 'تنظیمات و سیستم' },
   { key: 'salessettings', label: 'تنظیمات فروش', icon: 'settings', role: 'settings', section: 'تنظیمات و سیستم' },
   { key: 'webadmins', label: 'کاربران پنل', icon: 'webadmins', role: 'owner', section: 'تنظیمات و سیستم' },
   { key: 'tgadmins', label: 'ادمین‌های ربات', icon: 'webadmins', role: 'owner', section: 'تنظیمات و سیستم' },
@@ -792,6 +793,7 @@ async function renderPage(tab) {
       case 'system': return renderSystem();
       case 'settings': return renderSettings();
       case 'gateways': return renderGateways();
+      case 'cardauto': return renderCardAuto();
       case 'salessettings': return renderSalesSettings();
       case 'banners': return renderBanners();
       case 'logs': return renderLogs();
@@ -5540,6 +5542,181 @@ async function renderGateways() {
     try { _gwOpenForm(await apiGet(`/gateways/${b.dataset.edit}`)); } catch (e) { handleErr(e); }
   }));
 }
+
+/* ==================================================== card-to-card auto === */
+function _c2cCardFormHtml(card) {
+  return `
+    <input type="hidden" id="c2c-id" value="${card ? card.id : ''}">
+    <label class="field"><span>شماره کارت (۱۶ رقم)</span>
+      <input class="input" id="c2c-number" maxlength="19" style="direction:ltr;text-align:left"
+        placeholder="6037-9917-xxxx-xxxx" value="${card ? esc(card.card_number) : ''}"></label>
+    <div class="form-grid">
+      <input class="input" id="c2c-holder" placeholder="به نام (صاحب حساب)" value="${card ? esc(card.holder_name || '') : ''}">
+      <input class="input" id="c2c-bank" placeholder="نام بانک (اختیاری)" value="${card ? esc(card.bank_name || '') : ''}">
+    </div>
+    <label class="field"><span>اولویت نمایش (عدد کوچیک‌تر زودتر)</span>
+      <input class="input" id="c2c-sort" type="number" value="${card ? (card.sort_order || 0) : 0}"></label>
+    <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
+      <button class="btn btn-primary" id="c2c-save">💾 ذخیره</button>
+      ${card ? `<button class="btn" id="c2c-toggle">${card.is_active ? '🔴 غیرفعال کردن' : '🟢 فعال کردن'}</button>` : ''}
+      ${card ? '<button class="btn btn-danger" id="c2c-del">🗑 حذف</button>' : ''}
+    </div>
+    <div class="card-sub" id="c2c-form-err" style="color:var(--danger,#ef4444)"></div>
+  `;
+}
+
+function _c2cOpenCardForm(card) {
+  openModal(card ? 'ویرایش کارت' : 'کارت جدید', _c2cCardFormHtml(card), (body, close) => {
+    const errBox = $('#c2c-form-err', body);
+    $('#c2c-save', body).addEventListener('click', async () => {
+      errBox.textContent = '';
+      const payload = {
+        card_number: $('#c2c-number', body).value.trim(),
+        holder_name: $('#c2c-holder', body).value.trim(),
+        bank_name: $('#c2c-bank', body).value.trim(),
+        sort_order: Number($('#c2c-sort', body).value) || 0,
+      };
+      try {
+        if (card) await apiPut(`/card-to-card/cards/${card.id}`, payload);
+        else await apiPost('/card-to-card/cards', payload);
+        toast('ذخیره شد.'); close(); renderCardAuto();
+      } catch (e) { errBox.textContent = e.message; }
+    });
+    if (card) {
+      $('#c2c-toggle', body).addEventListener('click', async () => {
+        try { await apiPost(`/card-to-card/cards/${card.id}/toggle`); toast('انجام شد.'); close(); renderCardAuto(); }
+        catch (e) { handleErr(e); }
+      });
+      $('#c2c-del', body).addEventListener('click', async () => {
+        if (!confirm('این کارت حذف شود؟')) return;
+        try { await apiDelete(`/card-to-card/cards/${card.id}`); toast('حذف شد.'); close(); renderCardAuto(); }
+        catch (e) { handleErr(e); }
+      });
+    }
+  });
+}
+
+const C2C_STATUS_LABEL = {
+  pending: '<span class="badge">در انتظار پیامک</span>',
+  completed: '<span class="badge badge-approved">تایید شد</span>',
+  manual_review: '<span class="badge badge-rejected">منقضی - بررسی دستی</span>',
+};
+
+async function renderCardAuto() {
+  const [settings, cards, invoices] = await Promise.all([
+    apiGet('/settings/card-to-card'),
+    apiGet('/card-to-card/cards'),
+    apiGet('/card-to-card/invoices?status=pending').catch(() => []),
+  ]);
+  setContent(`
+    <div class="card">
+      <div class="card-sub" style="margin-bottom:10px">
+        <b>💳 کارت‌به‌کارت با تایید خودکار</b> — هر فاکتور یک مبلغ یکتا (مبلغ اصلی + چند رقم آخر
+        تصادفی) می‌گیرد؛ اپ اندروید <b>BankSmsForwarder</b> پیامک بانک را می‌خواند و به آدرس وب‌هوک
+        زیر می‌فرستد تا پرداخت بدون دخالت ادمین تایید شود.
+      </div>
+      <label class="field field-row"><span>فعال باشد</span>${_swSpan('c2c-enabled', settings.enabled)}</label>
+      <div class="form-grid">
+        <label class="field"><span>مهلت هر مبلغ (دقیقه) - بعدش می‌ره صف بررسی دستی</span>
+          <input class="input" data-fkey="c2c-timeout" type="number" min="1" value="${settings.timeout_minutes}"></label>
+        <label class="field"><span>تعداد رقم آخر برای یکتاسازی (پیشنهاد: ۳)</span>
+          <input class="input" data-fkey="c2c-digits" type="number" min="1" max="5" value="${settings.amount_digits}"></label>
+        <label class="field"><span>واحد مبلغ داخل پیامک بانک</span>
+          <select class="input" id="c2c-unit">
+            <option value="rial" ${settings.amount_unit === 'rial' ? 'selected' : ''}>ریال (اکثر بانک‌ها)</option>
+            <option value="toman" ${settings.amount_unit === 'toman' ? 'selected' : ''}>تومان</option>
+          </select></label>
+        <label class="field"><span>حداقل مبلغ مجاز با این روش (تومان - ۰ یعنی بدون محدودیت)</span>
+          <input class="input" data-fkey="c2c-min" type="number" min="0" value="${settings.min_amount}"></label>
+      </div>
+      <button class="btn btn-primary btn-sm" id="c2c-save-settings" style="margin-top:8px">💾 ذخیره تنظیمات</button>
+
+      <div class="card-sub" style="margin:16px 0 6px"><b>📡 اتصال اپ BankSmsForwarder</b></div>
+      ${settings.webhook_url ? `<div class="form-grid">
+        <input class="input" readonly value="${esc(settings.webhook_url)}" style="direction:ltr;text-align:left">
+        <button class="btn btn-sm" id="c2c-copy-url">📋 کپی آدرس</button>
+      </div>` : '<div class="card-sub" style="color:var(--danger,#ef4444)">آدرس مینی‌اپ (MINIAPP_URL/API_BASE_URL) روی سرور تنظیم نشده.</div>'}
+      <div class="form-grid" style="margin-top:8px">
+        <input class="input" id="c2c-token-box" readonly value="${settings.webhook_token_set ? '•••••••••••••••••••••• (تنظیم شده)' : 'هنوز توکنی ساخته نشده'}" style="direction:ltr;text-align:left">
+        <button class="btn btn-sm" id="c2c-regen-token">🔁 ساخت/بازتولید توکن</button>
+      </div>
+      <div class="card-sub" style="margin-top:6px;color:var(--muted,#9ca3af);font-size:12px">
+        آدرس بالا و توکن رو داخل تنظیمات اپ اندروید BankSmsForwarder (بخش Webhook URL / Token) وارد کن.
+        هر بار «بازتولید توکن» بزنی، توکن قبلی از کار می‌افته و باید توی اپ هم آپدیتش کنی.
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <button class="btn btn-primary btn-sm" id="c2c-add-card">+ کارت جدید</button>
+    </div>
+    <div class="card">
+      <div class="card-sub" style="margin-bottom:10px">واریزی‌ها بین کارت‌های فعال به‌صورت چرخشی پخش می‌شوند.</div>
+      ${cards.length ? `<div class="table-wrap"><table>
+        <thead><tr><th>شماره کارت</th><th>به نام</th><th>بانک</th><th>وضعیت</th><th>عملیات</th></tr></thead>
+        <tbody>${cards.map(c => `<tr>
+          <td class="mono">${esc(c.card_number)}</td>
+          <td>${esc(c.holder_name || '—')}</td>
+          <td>${esc(c.bank_name || '—')}</td>
+          <td>${c.is_active ? '<span class="badge badge-approved">فعال</span>' : '<span class="badge badge-rejected">غیرفعال</span>'}</td>
+          <td><button class="btn btn-sm" data-edit-card="${c.id}">ویرایش</button></td>
+        </tr>`).join('')}</tbody>
+      </table></div>` : '<div class="card-sub">هنوز کارتی اضافه نشده — بدون حداقل یک کارت فعال، این روش پرداخت به کاربر نمایش داده نمی‌شود.</div>'}
+    </div>
+
+    <div class="card">
+      <div class="card-sub" style="margin-bottom:10px"><b>⏳ فاکتورهای در انتظار پیامک</b></div>
+      ${invoices.length ? `<div class="table-wrap"><table>
+        <thead><tr><th>#</th><th>نوع</th><th>مبلغ یکتا</th><th>ساخته‌شده</th><th>مهلت تا</th><th>وضعیت</th></tr></thead>
+        <tbody>${invoices.map(i => `<tr>
+          <td>${i.id}</td>
+          <td>${i.kind === 'wallet_topup' ? 'شارژ کیف پول' : 'سفارش'} #${i.ref_id}</td>
+          <td class="mono">${fmt(i.amount_toman)} ت</td>
+          <td>${fmtDate(i.created_at)}</td>
+          <td>${fmtDate(i.expires_at)}</td>
+          <td>${C2C_STATUS_LABEL[i.status] || esc(i.status)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>` : '<div class="card-sub">در حال حاضر فاکتور در انتظاری وجود ندارد.</div>'}
+    </div>
+  `);
+  _bindSwitches(content());
+
+  $('#c2c-save-settings').addEventListener('click', async () => {
+    try {
+      await apiPost('/settings/card-to-card', {
+        enabled: _swOn(content(), 'c2c-enabled'),
+        timeout_minutes: _num(content(), 'c2c-timeout'),
+        amount_digits: _num(content(), 'c2c-digits'),
+        amount_unit: $('#c2c-unit').value,
+        min_amount: _num(content(), 'c2c-min'),
+      });
+      toast('تنظیمات ذخیره شد.');
+    } catch (e) { handleErr(e); }
+  });
+
+  const copyBtn = $('#c2c-copy-url');
+  if (copyBtn) copyBtn.addEventListener('click', () => {
+    navigator.clipboard.writeText(settings.webhook_url).then(() => toast('آدرس کپی شد.'));
+  });
+
+  $('#c2c-regen-token').addEventListener('click', async () => {
+    if (settings.webhook_token_set && !confirm('توکن قبلی از کار می‌افتد و باید توی اپ هم آپدیتش کنی. ادامه بدم؟')) return;
+    try {
+      const r = await apiPost('/settings/card-to-card/regenerate-token');
+      openModal('توکن جدید وب‌هوک', `
+        <div class="card-sub">این توکن رو کپی کن و توی تنظیمات اپ BankSmsForwarder وارد کن (فقط همین یک‌بار کامل نشون داده می‌شه):</div>
+        <input class="input" readonly value="${esc(r.webhook_token)}" style="direction:ltr;text-align:left;margin-top:8px">
+      `, null);
+      renderCardAuto();
+    } catch (e) { handleErr(e); }
+  });
+
+  $('#c2c-add-card').addEventListener('click', () => _c2cOpenCardForm(null));
+  $$('[data-edit-card]', content()).forEach(b => b.addEventListener('click', async () => {
+    const card = cards.find(c => String(c.id) === b.dataset.editCard);
+    if (card) _c2cOpenCardForm(card);
+  }));
+}
+
 
 async function renderSettings() {
   const [settings, rate, menuOrder, mainMenuDisplay] = await Promise.all([
