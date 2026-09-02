@@ -18,10 +18,6 @@ INSTALL_DIR="$HOME/v2ray_bot"
 SERVICE_NAME="v2raybot"
 BRAND_NAME="SHOP VPN"
 
-# جلوگیری از هنگ کردن git پشت پرامپت یوزرنیم/پسورد وقتی ریپو پرایوت یا آدرسش اشتباه است.
-# به‌جای منتظر ماندن بی‌نهایت برای ورودی، فوراً با خطای واضح خارج می‌شود.
-export GIT_TERMINAL_PROMPT=0
-
 # Version is computed automatically from git (commit count + short hash)
 # so that every update (git pull) shows the correct running version.
 # It's read from the VERSION file (bumped only for real, notable changes,
@@ -113,10 +109,6 @@ MSG_EN[already_installed_pulling]="⚠️ Project is already installed. Fetching
 MSG_FA[already_installed_pulling]="⚠️ پروژه از قبل نصب شده است. در حال دریافت آخرین نسخه..."
 MSG_EN[cloning_project]="📥 Cloning the project from GitHub..."
 MSG_FA[cloning_project]="📥 دریافت پروژه از گیت‌هاب..."
-MSG_EN[clone_failed]="❌ Failed to fetch the project from GitHub."
-MSG_FA[clone_failed]="❌ دریافت پروژه از گیت‌هاب شکست خورد."
-MSG_EN[clone_failed_hint]="   The usual cause: the repo above is not public, or the branch/path in REPO_URL is wrong. Make sure the repo is set to Public on GitHub and matches this URL exactly."
-MSG_FA[clone_failed_hint]="   دلیل معمول: ریپوی بالا پابلیک نیست یا آدرس/برنچ داخل REPO_URL اشتباه است. مطمئن شوید ریپو روی گیت‌هاب Public است و دقیقاً با همین آدرس مطابقت دارد."
 MSG_EN[preparing_python]="🐍 Preparing the Python environment..."
 MSG_FA[preparing_python]="🐍 آماده‌سازی محیط پایتون..."
 MSG_EN[enter_bot_info]="🔑 Enter the bot info:"
@@ -430,13 +422,7 @@ install_bot() {
         git pull
     else
         echo -e "${CYAN}$(t cloning_project)${RESET}"
-        if ! git clone "$REPO_URL" "$INSTALL_DIR"; then
-            echo ""
-            echo -e "${RED}${BOLD}$(t clone_failed)${RESET}"
-            echo "   $REPO_URL"
-            echo -e "${YELLOW}$(t clone_failed_hint)${RESET}"
-            exit 1
-        fi
+        git clone "$REPO_URL" "$INSTALL_DIR"
         cd "$INSTALL_DIR"
     fi
 
