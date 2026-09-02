@@ -381,7 +381,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn/main
 
 ## 👤 سازنده
 
-ساخته‌شده با ❤️ توسط **مهدی رفعت‌پناه**
+ساخته‌شده توسط **مهدی رفعت‌پناه**
 آی دی تلگرام: @celenor
 [![GitHub](https://img.shields.io/badge/GitHub-mehdirafatpanah-181717?style=for-the-badge&logo=github)](https://github.com/mehdirafatpanah)
 
