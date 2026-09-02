@@ -14,6 +14,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 import tempfile
@@ -2528,31 +2529,30 @@ def api_set_volume_reminder_settings(body: VolumeReminderSettingsBody, admin=Dep
     return {"ok": True}
 
 
-class TestConfigSettingsBody(BaseModel):
+class TestConfigToggleBody(BaseModel):
     enabled: bool
-    panel_volume_gb: int
-    panel_duration_days: int
+
+
+class TestPlanBody(BaseModel):
+    name: str
+    name_prefix: str
+    panel_server_id: int
+    volume_mb: int
+    duration_hours: int
 
 
 @app.get("/api/settings/test-config")
 def api_get_test_config_settings(admin=Depends(require_permission("settings"))):
     return {
         "enabled": db.get_setting("test_enabled", "1") == "1",
-        "panel_volume_gb": int(db.get_setting("test_config_panel_volume_gb", "1") or 1),
-        "panel_duration_days": int(db.get_setting("test_config_panel_duration_days", "1") or 1),
         "bank_stock": db.count_available_test_configs(),
-        "panel_server": (lambda s: {"id": s["id"], "name": s["name"]} if s else None)(db.get_panel_server_for_usage("test_config")),
     }
 
 
 @app.post("/api/settings/test-config")
-def api_set_test_config_settings(body: TestConfigSettingsBody, admin=Depends(require_permission("settings"))):
-    if body.panel_volume_gb <= 0 or body.panel_duration_days <= 0:
-        raise HTTPException(400, "حجم و مدت باید بزرگ‌تر از صفر باشند.")
+def api_set_test_config_settings(body: TestConfigToggleBody, admin=Depends(require_permission("settings"))):
     db.set_setting("test_enabled", "1" if body.enabled else "0")
-    db.set_setting("test_config_panel_volume_gb", str(body.panel_volume_gb))
-    db.set_setting("test_config_panel_duration_days", str(body.panel_duration_days))
-    db.log_admin_action(admin["id"], "setting_change", "test config settings updated (پنل وب)", "setting", "test_config")
+    db.log_admin_action(admin["id"], "setting_change", "test config enabled/disabled (پنل وب)", "setting", "test_config")
     return {"ok": True}
 
 
@@ -2562,6 +2562,94 @@ def api_reset_all_test_configs(admin=Depends(require_permission("settings"))):
     count = db.reset_all_test_usage()
     db.log_admin_action(admin["id"], "test_config_reset_all", f"{count} کاربر (پنل وب - {admin['username']})", "setting", "test_config")
     return {"ok": True, "count": count}
+
+
+# --- پلن‌های کانفیگ تست (چندمدلی، مثل محصولات) ---
+
+def _serialize_test_plan(p) -> dict:
+    server = db.get_panel_server(p["panel_server_id"])
+    return {
+        "id": p["id"],
+        "name": p["name"],
+        "name_prefix": p["name_prefix"],
+        "panel_server_id": p["panel_server_id"],
+        "panel_server_name": server["name"] if server else None,
+        "volume_mb": p["volume_mb"],
+        "duration_hours": p["duration_hours"],
+        "is_active": bool(p["is_active"]),
+        "sort_order": p["sort_order"],
+    }
+
+
+@app.get("/api/test-config/panel-servers-lite")
+def api_test_config_panel_servers_lite(admin=Depends(require_permission("settings"))):
+    """نسخه‌ی مخصوص تنظیمات کانفیگ تست از لیست سبک پنل‌ها، تا نیازی به
+    دسترسی «کاتالوگ» برای مدیریت پلن‌های تست نباشد."""
+    return [{"id": s["id"], "name": s["name"]} for s in db.get_panel_servers(active_only=True)]
+
+
+@app.get("/api/test-config/plans")
+def api_list_test_plans(admin=Depends(require_permission("settings"))):
+    return [_serialize_test_plan(p) for p in db.get_test_config_plans()]
+
+
+@app.post("/api/test-config/plans")
+def api_create_test_plan(body: TestPlanBody, admin=Depends(require_permission("settings"))):
+    if not body.name.strip():
+        raise HTTPException(400, "نام پلن الزامی است.")
+    if not re.fullmatch(r"[A-Za-z0-9_]+", body.name_prefix.strip()):
+        raise HTTPException(400, "پیشوند نام کاربری فقط باید شامل حروف/عدد انگلیسی و آندرلاین باشد.")
+    if body.volume_mb <= 0 or body.duration_hours <= 0:
+        raise HTTPException(400, "حجم و مدت باید بزرگ‌تر از صفر باشند.")
+    server = db.get_panel_server(body.panel_server_id)
+    if not server or not server["is_active"]:
+        raise HTTPException(400, "پنل انتخاب‌شده یافت نشد یا غیرفعال است.")
+    plan_id = db.create_test_config_plan(
+        body.name.strip(), body.name_prefix.strip(), body.panel_server_id, body.volume_mb, body.duration_hours,
+    )
+    db.log_admin_action(admin["id"], "test_plan_create", f"پلن «{body.name}» (پنل وب)", "test_config_plan", str(plan_id))
+    return _serialize_test_plan(db.get_test_config_plan(plan_id))
+
+
+@app.put("/api/test-config/plans/{plan_id}")
+def api_update_test_plan(plan_id: int, body: TestPlanBody, admin=Depends(require_permission("settings"))):
+    if not db.get_test_config_plan(plan_id):
+        raise HTTPException(404, "این پلن یافت نشد.")
+    if not body.name.strip():
+        raise HTTPException(400, "نام پلن الزامی است.")
+    if not re.fullmatch(r"[A-Za-z0-9_]+", body.name_prefix.strip()):
+        raise HTTPException(400, "پیشوند نام کاربری فقط باید شامل حروف/عدد انگلیسی و آندرلاین باشد.")
+    if body.volume_mb <= 0 or body.duration_hours <= 0:
+        raise HTTPException(400, "حجم و مدت باید بزرگ‌تر از صفر باشند.")
+    server = db.get_panel_server(body.panel_server_id)
+    if not server or not server["is_active"]:
+        raise HTTPException(400, "پنل انتخاب‌شده یافت نشد یا غیرفعال است.")
+    db.update_test_config_plan(
+        plan_id, name=body.name.strip(), name_prefix=body.name_prefix.strip(),
+        panel_server_id=body.panel_server_id, volume_mb=body.volume_mb, duration_hours=body.duration_hours,
+    )
+    db.log_admin_action(admin["id"], "test_plan_update", f"پلن #{plan_id} (پنل وب)", "test_config_plan", str(plan_id))
+    return _serialize_test_plan(db.get_test_config_plan(plan_id))
+
+
+@app.post("/api/test-config/plans/{plan_id}/toggle")
+def api_toggle_test_plan(plan_id: int, admin=Depends(require_permission("settings"))):
+    if not db.get_test_config_plan(plan_id):
+        raise HTTPException(404, "این پلن یافت نشد.")
+    db.toggle_test_config_plan(plan_id)
+    db.log_admin_action(admin["id"], "test_plan_toggle", f"پلن #{plan_id} (پنل وب)", "test_config_plan", str(plan_id))
+    return _serialize_test_plan(db.get_test_config_plan(plan_id))
+
+
+@app.delete("/api/test-config/plans/{plan_id}")
+def api_delete_test_plan(plan_id: int, admin=Depends(require_permission("settings"))):
+    if not db.get_test_config_plan(plan_id):
+        raise HTTPException(404, "این پلن یافت نشد.")
+    db.delete_test_config_plan(plan_id)
+    db.log_admin_action(admin["id"], "test_plan_delete", f"پلن #{plan_id} (پنل وب)", "test_config_plan", str(plan_id))
+    return {"ok": True}
+
+
 
 
 class ForceJoinSettingsBody(BaseModel):
