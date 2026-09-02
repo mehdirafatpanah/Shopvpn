@@ -20,6 +20,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError, TelegramBadRequest, TelegramNetworkError
 
+from md_utils import escape_md, escape_html
 import keyboards as kb
 from states import BuyFlow, ContactFlow, TicketFlow, TicketReplyFlow, DiscountEntry, WalletTopup, CustomConfigFlow, RenewalFlow, ResellerFlow, ResellerRequestFlow, ServiceRenameFlow, ServiceTransferFlow
 from config import MAX_TEST_PER_USER, RESELLER_DBS_DIR, resolve_db_path
@@ -185,7 +186,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         card_holder = (await asyncio.to_thread(db.get_setting, "card_holder"))
         text = "\n".join(intro_lines) + "\n" if intro_lines else ""
         text += f"💳 شماره کارت: `{card_number}`\n"
-        text += f"👤 به نام: {card_holder}\n"
+        text += f"👤 به نام: {escape_md(card_holder)}\n"
         text += f"💰 مبلغ نهایی قابل پرداخت: {final_price:,} تومان\n\n"
         text += "لطفاً عکس رسید پرداخت را همینجا ارسال کنید."
         sent = await target.answer(text, parse_mode="Markdown")
@@ -575,7 +576,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             first_name = user_row["first_name"] if user_row else ""
             caption = (
                 f"🧾 سفارش کانفیگ شخصی #{order_id}\n"
-                f"👤 کاربر: {first_name or ''} (@{username or '---'})\n"
+                f"👤 کاربر: {escape_html(first_name)} (@{escape_html(username) or '---'})\n"
                 f"🆔 آیدی عددی: {order['user_id']}\n"
                 f"🛠 نام کاربری: {order['custom_username']}\n"
                 f"📶 حجم: {order['custom_volume_gb']} گیگابایت\n"
@@ -615,7 +616,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             target_label = "کانفیگ شخصی" if order["renewal_target_kind"] == "custom" else "کانفیگ بانک (استخر)"
             caption = (
                 f"🧾 سفارش تمدید سرویس #{order_id}\n"
-                f"👤 کاربر: {first_name or ''} (@{username or '---'})\n"
+                f"👤 کاربر: {escape_html(first_name)} (@{escape_html(username) or '---'})\n"
                 f"🆔 آیدی عددی: {order['user_id']}\n"
                 f"🔄 نوع: {mode_label}\n"
                 f"🎯 هدف: {target_label} #{order['renewal_target_id']}\n"
@@ -656,7 +657,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         quantity = order["quantity"] or 1
         caption = (
             f"🧾 سفارش #{order_id}\n"
-            f"👤 کاربر: {first_name or ''} (@{username or '---'})\n"
+            f"👤 کاربر: {escape_html(first_name)} (@{escape_html(username) or '---'})\n"
             f"🆔 آیدی عددی: {order['user_id']}\n"
             f"📦 محصول: {product['name']}"
             + (f" × {quantity}\n" if quantity > 1 else "\n")
@@ -1356,7 +1357,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
         await state.set_state(CustomConfigFlow.waiting_receipt)
         text = (
-            f"🛠 نام کاربری: {username}\n"
+            f"🛠 نام کاربری: {escape_md(username)}\n"
             f"📶 حجم: {volume_gb} گیگابایت\n"
             f"⏳ مدت: {duration_days} روز\n\n"
         )
@@ -1392,7 +1393,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if duration_days is None:
             duration_days = (await asyncio.to_thread(db.get_custom_config_settings))["duration_days"]
         intro_lines = [
-            f"🛠 نام کاربری: {order['custom_username']}",
+            f"🛠 نام کاربری: {escape_md(order['custom_username'])}",
             f"📶 حجم: {order['custom_volume_gb']} گیگابایت",
             f"⏳ مدت: {duration_days} روز",
         ]
@@ -1738,7 +1739,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await state.clear()
         await message.answer(
             f"✅ کانفیگ ساخته شد!\n\n"
-            f"🛠 نام کاربری: {result.username}\n"
+            f"🛠 نام کاربری: {escape_md(result.username)}\n"
             f"📶 حجم: {volume_gb} گیگ | ⏳ مدت: {duration_days} روز\n\n"
             f"`{result.subscription_url}`\n\n"
             f"📦 اعتبار باقی‌مانده: {new_credit:,} گیگابایت",
@@ -1749,7 +1750,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
     async def _account_hub_text(user_tg_id: int) -> str:
         user = (await asyncio.to_thread(db.get_user, user_tg_id))
-        username = f"@{user['username']}" if (user and user["username"]) else "—"
+        username = f"@{escape_md(user['username'])}" if (user and user["username"]) else "—"
         orders = (await asyncio.to_thread(db.get_user_orders, user_tg_id))
         balance = (await asyncio.to_thread(db.get_wallet_credit, user_tg_id))
         return (
@@ -1906,7 +1907,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         kind = item["kind"]
         if kind == "config":
             cfg, o, pname = item["config"], item["order"], item["product_name"]
-            text = f"📦 محصول: {pname} (سفارش #{o['id']})\n"
+            text = f"📦 محصول: {escape_md(pname)} (سفارش #{o['id']})\n"
             text += f"🗓 تاریخ خرید: {to_jalali_str(o['created_at'], with_time=True)}\n"
             if cfg["expires_at"]:
                 text += f"⏳ انقضا: {to_jalali_str(cfg['expires_at'], with_time=True)}\n"
@@ -1939,7 +1940,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                         cc["username"],
                     )
             text = (
-                f"🛠 کانفیگ شخصی «{cc['display_name'] or cc['username']}»\n"
+                f"🛠 کانفیگ شخصی «{escape_md(cc['display_name'] or cc['username'])}»\n"
                 f"📶 حجم: {cc['volume_gb']} گیگ | ⏳ مدت: {cc['duration_days']} روز\n"
                 f"وضعیت: {'🟢 فعال' if (cc['enabled'] if 'enabled' in cc.keys() else 1) == 1 else '🔴 غیرفعال'} | "
                 f"تمدید خودکار: {'🟢 فعال' if (cc['auto_renew'] if 'auto_renew' in cc.keys() else 0) == 1 else '🔴 غیرفعال'}\n"
@@ -1957,7 +1958,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         # kind == "order": سفارشی بدون کانفیگ فعلی (در انتظار بررسی/رد‌شده)
         o = item["order"]
         pname = item.get("product_name") or f"کانفیگ شخصی «{o['custom_username']}» ({o['custom_volume_gb']} گیگ)"
-        return f"📦 سفارش #{o['id']} | {pname}\nوضعیت: {_MO_STATUS_MAP.get(o['status'], o['status'])}"
+        return f"📦 سفارش #{o['id']} | {escape_md(pname)}\nوضعیت: {_MO_STATUS_MAP.get(o['status'], o['status'])}"
 
     async def _show_my_orders_list(target, user_tg_id: int, edit: bool):
         items = _my_orders_items(user_tg_id)
@@ -3231,7 +3232,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         text = (
             f"مبلغ {req['price_toman']:,} تومان را به شماره کارت زیر واریز کرده و سپس عکس رسید را ارسال کنید:\n\n"
             f"💳 شماره کارت: `{card_number}`\n"
-            f"👤 به نام: {card_holder}\n"
+            f"👤 به نام: {escape_md(card_holder)}\n"
         )
         sent = await call.message.answer(text, parse_mode="Markdown")
         await _schedule_card_msg_autodelete(sent.chat.id, sent.message_id)
