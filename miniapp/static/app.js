@@ -242,6 +242,9 @@ async function renderTestConfig() {
     `;
     const btn = document.getElementById("test-config-btn");
     if (btn) btn.onclick = () => claimTestConfig(btn);
+    document.querySelectorAll(".test-config-plan-btn").forEach((b) => {
+      b.onclick = () => claimTestConfig(b);
+    });
   } catch (e) {
     content.innerHTML = errorState(e.message);
   }
@@ -260,6 +263,18 @@ function testConfigBody(status) {
       </div>
     `;
   }
+  if (status.plans && status.plans.length) {
+    if (status.plans.length === 1) {
+      const p = status.plans[0];
+      return `<button class="btn" id="test-config-btn" data-plan-id="${p.id}">دریافت کانفیگ تست رایگان (${p.amount_label})</button>`;
+    }
+    return `
+      <div class="hint-text" style="margin-bottom:8px">یکی از مدل‌های زیر را انتخاب کنید:</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${status.plans.map((p) => `<button class="btn outline test-config-plan-btn" data-plan-id="${p.id}">${p.name} (${p.amount_label})</button>`).join("")}
+      </div>
+    `;
+  }
   if (status.available <= 0) return `<div class="state-msg"><span class="ic">◌</span>موجودی کانفیگ تست تمام شده است.</div>`;
   return `<button class="btn" id="test-config-btn">دریافت کانفیگ تست رایگان</button>`;
 }
@@ -268,7 +283,8 @@ async function claimTestConfig(btn) {
   btn.disabled = true;
   btn.textContent = "در حال دریافت...";
   try {
-    const r = await api("/api/test-config/claim", { method: "POST" });
+    const body = btn.dataset.planId ? { plan_id: Number(btn.dataset.planId) } : {};
+    const r = await api("/api/test-config/claim", { method: "POST", body: JSON.stringify(body) });
     const card = document.getElementById("test-config-card");
     card.innerHTML = `
       <h3><span class="ic">🧪</span>کانفیگ تست رایگان</h3>
@@ -812,6 +828,16 @@ function testConfigCard(status) {
   let body;
   if (status.used) {
     body = `<div class="state-msg"><span class="ic">✅</span>شما کانفیگ تست خود را دریافت کرده‌اید.</div>`;
+  } else if (status.plans && status.plans.length) {
+    if (status.plans.length === 1) {
+      body = `<button class="btn" id="test-config-btn" data-plan-id="${status.plans[0].id}">دریافت کانفیگ تست رایگان</button>`;
+    } else {
+      body = `
+        <div style="display:flex;flex-direction:column;gap:8px">
+          ${status.plans.map((p) => `<button class="btn outline test-config-plan-btn" data-plan-id="${p.id}">${p.name} (${p.amount_label})</button>`).join("")}
+        </div>
+      `;
+    }
   } else if (status.available <= 0) {
     body = `<div class="state-msg"><span class="ic">◌</span>موجودی کانفیگ تست تمام شده است.</div>`;
   } else {
@@ -830,7 +856,8 @@ async function claimTestConfig(btn) {
   btn.disabled = true;
   btn.textContent = "در حال دریافت...";
   try {
-    const r = await api("/api/test-config/claim", { method: "POST" });
+    const body = btn.dataset.planId ? { plan_id: Number(btn.dataset.planId) } : {};
+    const r = await api("/api/test-config/claim", { method: "POST", body: JSON.stringify(body) });
     const card = document.getElementById("test-config-card");
     card.innerHTML = `
       <h3><span class="ic">🧪</span>کانفیگ تست رایگان</h3>
@@ -3282,19 +3309,10 @@ async function renderAdminPanelsSection() {
         <div class="field-error" id="cc-error"></div>
         <p class="hint-text" style="margin-top:8px">⏳ مدت اعتبار خرید شخصی فعلاً ثابت روی ${settings.duration_days} روز است.</p>
         <hr style="border-color:var(--glass-brd);margin:14px 0" />
-        <div class="eyebrow" style="margin-top:0">🧪 کانفیگ تست (در صورت اتصال به پنل)</div>
-        <p class="hint-text" style="margin-top:0">اگر یکی از سرورها برای «کانفیگ تست» فعال باشد، به‌جای انبار ثابت، یک کاربر واقعی با این حجم/مدت روی همان سرور ساخته می‌شود.</p>
-        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
-          <div>
-            <label class="field-label">حجم تست (گیگ)</label>
-            <input class="input" id="cc-test-vol" type="number" min="1" value="${settings.test_volume_gb}" style="width:110px" />
-          </div>
-          <div>
-            <label class="field-label">مدت تست (روز)</label>
-            <input class="input" id="cc-test-dur" type="number" min="1" value="${settings.test_duration_days}" style="width:110px" />
-          </div>
-          <button class="btn outline" id="cc-save-test" style="padding:8px 14px">💾 ذخیره</button>
-        </div>
+        <div class="eyebrow" style="margin-top:0">🧪 پلن‌های کانفیگ تست</div>
+        <p class="hint-text" style="margin-top:0">هر پلن پنل/حجم/مدت/پیشوند نام کاربری خودش را دارد. هر کاربر مستقل از تعداد پلن‌ها، در کل فقط یک بار مجاز به دریافت کانفیگ تست است.</p>
+        <div id="tp-list"></div>
+        <button class="btn outline" id="tp-add-btn" style="margin-top:8px">➕ افزودن پلن کانفیگ تست</button>
       </div>
 
       <div class="card">
@@ -3362,22 +3380,96 @@ async function renderAdminPanelsSection() {
     };
     document.getElementById("ps-add-btn").onclick = () => { adminPanelsView = { level: "add-server" }; renderAdminPanelsSection(); };
     document.getElementById("pt-goto-btn").onclick = () => { adminPanelsView = { level: "pricing" }; renderAdminPanelsSection(); };
-    document.getElementById("cc-save-test").onclick = async () => {
-      const errBox = document.getElementById("cc-error");
-      errBox.textContent = "";
-      const test_volume_gb = parseInt(document.getElementById("cc-test-vol").value, 10);
-      const test_duration_days = parseInt(document.getElementById("cc-test-dur").value, 10);
-      if (!test_volume_gb || !test_duration_days || test_volume_gb <= 0 || test_duration_days <= 0) {
-        errBox.textContent = "مقادیر باید عدد صحیح مثبت باشند."; return;
-      }
-      try {
-        await api("/api/admin/custom-config/settings", {
-          method: "POST", body: JSON.stringify({ test_volume_gb, test_duration_days }),
+
+    function tpVol(mb) { return mb >= 1024 ? `${(mb / 1024).toFixed(2).replace(/\.?0+$/, "")} گیگ` : `${mb} مگابایت`; }
+    function tpDur(h) { return (h >= 24 && h % 24 === 0) ? `${h / 24} روز` : `${h} ساعت`; }
+
+    async function loadTestPlans() {
+      const plans = await api("/api/admin/test-config/plans");
+      const box = document.getElementById("tp-list");
+      if (!plans.length) {
+        box.innerHTML = `<p class="hint-text">هنوز هیچ پلنی تعریف نشده.</p>`;
+      } else {
+        box.innerHTML = plans.map((p) => `
+          <div style="background:var(--glass-bg);border:1px solid var(--glass-brd);border-radius:10px;padding:10px 12px;margin-bottom:8px">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span>${p.is_active ? "🟢" : "🔴"} <b>${p.name}</b></span>
+            </div>
+            <div class="hint-text" style="margin:4px 0">پیشوند: ${p.name_prefix} · پنل: ${p.panel_server_name || "—"} · ${tpVol(p.volume_mb)} / ${tpDur(p.duration_hours)}</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button class="btn outline" data-tp-edit="${p.id}" style="padding:4px 10px;font-size:12px">ویرایش</button>
+              <button class="btn outline" data-tp-toggle="${p.id}" style="padding:4px 10px;font-size:12px">${p.is_active ? "غیرفعال کن" : "فعال کن"}</button>
+              <button class="btn outline danger" data-tp-del="${p.id}" style="padding:4px 10px;font-size:12px">🗑 حذف</button>
+            </div>
+          </div>
+        `).join("");
+        box.querySelectorAll("[data-tp-toggle]").forEach((btn) => {
+          btn.onclick = async () => {
+            await api(`/api/admin/test-config/plans/${btn.dataset.tpToggle}/toggle`, { method: "POST" });
+            loadTestPlans();
+          };
         });
-        tg.HapticFeedback.notificationOccurred("success");
-        notify("تنظیمات کانفیگ تست ذخیره شد.");
-      } catch (e) { errBox.textContent = e.message; }
-    };
+        box.querySelectorAll("[data-tp-del]").forEach((btn) => {
+          btn.onclick = async () => {
+            if (!confirm("این پلن حذف شود؟ کانفیگ‌های تست ساخته‌شده قبلی دست‌نخورده می‌مانند.")) return;
+            await api(`/api/admin/test-config/plans/${btn.dataset.tpDel}`, { method: "DELETE" });
+            loadTestPlans();
+          };
+        });
+        box.querySelectorAll("[data-tp-edit]").forEach((btn) => {
+          btn.onclick = () => openTestPlanForm(plans.find((p) => p.id === Number(btn.dataset.tpEdit)));
+        });
+      }
+    }
+
+    function openTestPlanForm(plan) {
+      if (!servers.length) { notify("اول باید حداقل یک سرور پنل اضافه کنی."); return; }
+      const isEdit = !!plan;
+      const serverOptions = servers.map((s) => `<option value="${s.id}" ${plan && plan.panel_server_id === s.id ? "selected" : ""}>${s.name}</option>`).join("");
+      const box = document.getElementById("tp-list");
+      const form = document.createElement("div");
+      form.style.cssText = "background:var(--glass-bg);border:1px solid var(--glass-brd);border-radius:10px;padding:10px 12px;margin-bottom:8px";
+      form.innerHTML = `
+        <div class="eyebrow" style="margin-top:0">${isEdit ? "ویرایش پلن" : "افزودن پلن جدید"}</div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <input class="input" id="tpf-name" placeholder="نام پلن" value="${isEdit ? plan.name : ""}" />
+          <input class="input" id="tpf-prefix" placeholder="پیشوند نام کاربری" style="direction:ltr;text-align:left" value="${isEdit ? plan.name_prefix : "test"}" />
+          <select class="input" id="tpf-server">${serverOptions}</select>
+          <div style="display:flex;gap:8px">
+            <input class="input" id="tpf-volume" type="number" placeholder="حجم (مگابایت)" value="${isEdit ? plan.volume_mb : 1024}" style="width:50%" />
+            <input class="input" id="tpf-duration" type="number" placeholder="مدت (ساعت)" value="${isEdit ? plan.duration_hours : 24}" style="width:50%" />
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn" id="tpf-save" style="flex:1">💾 ذخیره</button>
+            <button class="btn outline" id="tpf-cancel" style="flex:1">انصراف</button>
+          </div>
+          <div class="field-error" id="tpf-error"></div>
+        </div>
+      `;
+      box.prepend(form);
+      form.querySelector("#tpf-cancel").onclick = () => form.remove();
+      form.querySelector("#tpf-save").onclick = async () => {
+        const errBox = form.querySelector("#tpf-error");
+        errBox.textContent = "";
+        const body = {
+          name: form.querySelector("#tpf-name").value.trim(),
+          name_prefix: form.querySelector("#tpf-prefix").value.trim(),
+          panel_server_id: Number(form.querySelector("#tpf-server").value),
+          volume_mb: parseInt(form.querySelector("#tpf-volume").value, 10) || 0,
+          duration_hours: parseInt(form.querySelector("#tpf-duration").value, 10) || 0,
+        };
+        try {
+          if (isEdit) await api(`/api/admin/test-config/plans/${plan.id}`, { method: "PUT", body: JSON.stringify(body) });
+          else await api("/api/admin/test-config/plans", { method: "POST", body: JSON.stringify(body) });
+          tg.HapticFeedback.notificationOccurred("success");
+          loadTestPlans();
+        } catch (e) { errBox.textContent = e.message; }
+      };
+    }
+
+    document.getElementById("tp-add-btn").onclick = () => openTestPlanForm(null);
+    loadTestPlans();
+
     document.querySelectorAll("[data-test]").forEach((btn) => {
       btn.onclick = async () => {
         btn.textContent = "در حال تست...";
