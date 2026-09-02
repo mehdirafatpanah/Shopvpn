@@ -34,16 +34,56 @@ timeout 120 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTA
 
 # ----------------------------------------------------------------------------
 # ۲. دریافت یا آپدیت کد از گیت‌هاب
+#    نکته: بعضی سرورها (خصوصاً VPSهای ارزان) با پروتکل git-over-https توسط
+#    گیت‌هاب مسدود/محدود می‌شوند و به‌جای کلون عادی، درخواست یوزرنیم/پسورد
+#    نشان داده می‌شود. برای جلوگیری از گیر کردن اسکریپت روی این پرامپت،
+#    اول با گیت (بدون امکان پرامپت تعاملی) تلاش می‌کنیم و در صورت شکست،
+#    به دانلود مستقیم آرشیو (tar.gz) که این محدودیت را ندارد سوییچ می‌کنیم.
 # ----------------------------------------------------------------------------
-if [ -d "$INSTALL_DIR/.git" ]; then
-    echo "🔄 مخزن از قبل موجود است، در حال دریافت آخرین تغییرات..."
-    cd "$INSTALL_DIR"
-    git pull
-else
-    echo "📥 دریافت پروژه از گیت‌هاب..."
-    git clone "$REPO_URL" "$INSTALL_DIR"
-    cd "$INSTALL_DIR"
-fi
+GITHUB_OWNER="mehdirafatpanah"
+GITHUB_REPO="Shopvpn"
+GITHUB_BRANCH="main"
+export GIT_TERMINAL_PROMPT=0
+
+fetch_project_code() {
+    local ok=0
+    if [ -d "$INSTALL_DIR/.git" ]; then
+        echo "🔄 مخزن از قبل موجود است، در حال دریافت آخرین تغییرات..."
+        if git -C "$INSTALL_DIR" pull --quiet; then ok=1; fi
+    else
+        echo "📥 دریافت پروژه از گیت‌هاب..."
+        if git clone --quiet "$REPO_URL" "$INSTALL_DIR"; then ok=1; fi
+    fi
+
+    if [ "$ok" = "1" ]; then
+        return 0
+    fi
+
+    echo "⚠️ دسترسی git مسدود شد، در حال دریافت از طریق آرشیو مستقیم..."
+    local tmp_tar tmp_dir
+    tmp_tar=$(mktemp)
+    tmp_dir=$(mktemp -d)
+    if ! curl -fsSL "https://codeload.github.com/${GITHUB_OWNER}/${GITHUB_REPO}/tar.gz/refs/heads/${GITHUB_BRANCH}" -o "$tmp_tar"; then
+        echo "❌ دانلود آرشیو پروژه هم ناموفق بود. اتصال اینترنت سرور را بررسی کن."
+        rm -f "$tmp_tar"; rm -rf "$tmp_dir"
+        return 1
+    fi
+    tar -xzf "$tmp_tar" -C "$tmp_dir" --strip-components=1
+    rm -f "$tmp_tar"
+    mkdir -p "$INSTALL_DIR"
+    if ! command -v rsync > /dev/null 2>&1; then
+        sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq rsync > /dev/null
+    fi
+    rsync -a --exclude='.env' --exclude='*.db' --exclude='*.db-journal' \
+        --exclude='*.sqlite3' --exclude='venv' --exclude='.git' --exclude='backups' \
+        "$tmp_dir"/ "$INSTALL_DIR"/
+    rm -rf "$INSTALL_DIR/.git" 2>/dev/null
+    rm -rf "$tmp_dir"
+    return 0
+}
+
+fetch_project_code
+cd "$INSTALL_DIR"
 
 # ----------------------------------------------------------------------------
 # ۳. ساخت virtual environment و نصب پکیج‌ها

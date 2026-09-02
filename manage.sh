@@ -17,6 +17,58 @@ REPO_URL="https://github.com/mehdirafatpanah/Shopvpn.git"
 INSTALL_DIR="$HOME/v2ray_bot"
 SERVICE_NAME="v2raybot"
 BRAND_NAME="SHOP VPN"
+GITHUB_OWNER="mehdirafatpanah"
+GITHUB_REPO="Shopvpn"
+GITHUB_BRANCH="main"
+export GIT_TERMINAL_PROMPT=0
+
+# ---------------------------------------------------------------------------
+# Fetch/update project code without ever hanging on a git username/password
+# prompt. Some server IPs (common on cheap VPS providers) get blocked or
+# rate-limited by GitHub for the git-over-https protocol, even for public
+# repos, and git falls back to an interactive credential prompt that just
+# hangs a headless install. We try git first (fast, incremental); if it
+# fails for any reason we fall back to downloading the plain tarball, which
+# uses a different endpoint (codeload.github.com) and is not subject to
+# that block.
+# دریافت/آپدیت کد پروژه بدون گیر کردن روی پرامپت یوزرنیم/پسورد گیت.
+# ---------------------------------------------------------------------------
+fetch_project_code() {
+    local target_dir="$1"
+    local ok=0
+
+    if [ -d "$target_dir/.git" ]; then
+        if git -C "$target_dir" pull --quiet 2>/dev/null; then ok=1; fi
+    elif [ ! -f "$target_dir/main.py" ]; then
+        if git clone --quiet "$REPO_URL" "$target_dir" 2>/dev/null; then ok=1; fi
+    fi
+
+    if [ "$ok" = "1" ]; then
+        return 0
+    fi
+
+    echo -e "${YELLOW}⚠️  دسترسی git مسدود شد، در حال دریافت از طریق آرشیو مستقیم...${RESET}"
+    local tmp_tar tmp_dir
+    tmp_tar=$(mktemp)
+    tmp_dir=$(mktemp -d)
+    if ! curl -fsSL "https://codeload.github.com/${GITHUB_OWNER}/${GITHUB_REPO}/tar.gz/refs/heads/${GITHUB_BRANCH}" -o "$tmp_tar"; then
+        echo -e "${RED}❌ دانلود آرشیو پروژه هم ناموفق بود. اتصال اینترنت سرور را بررسی کن.${RESET}"
+        rm -f "$tmp_tar"; rm -rf "$tmp_dir"
+        return 1
+    fi
+    tar -xzf "$tmp_tar" -C "$tmp_dir" --strip-components=1
+    rm -f "$tmp_tar"
+    mkdir -p "$target_dir"
+    if ! command -v rsync > /dev/null 2>&1; then
+        sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq rsync > /dev/null
+    fi
+    rsync -a --exclude='.env' --exclude='*.db' --exclude='*.db-journal' \
+        --exclude='*.sqlite3' --exclude='venv' --exclude='.git' --exclude='backups' \
+        "$tmp_dir"/ "$target_dir"/
+    rm -rf "$target_dir/.git" 2>/dev/null
+    rm -rf "$tmp_dir"
+    return 0
+}
 
 # Version is computed automatically from git (commit count + short hash)
 # so that every update (git pull) shows the correct running version.
@@ -416,15 +468,13 @@ install_bot() {
     sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get update -qq
     timeout 120 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get install -y -qq git python3 python3-pip python3-venv figlet > /dev/null
 
-    if [ -d "$INSTALL_DIR/.git" ]; then
+    if [ -f "$INSTALL_DIR/main.py" ]; then
         echo -e "${YELLOW}$(t already_installed_pulling)${RESET}"
-        cd "$INSTALL_DIR"
-        git pull
     else
         echo -e "${CYAN}$(t cloning_project)${RESET}"
-        git clone "$REPO_URL" "$INSTALL_DIR"
-        cd "$INSTALL_DIR"
     fi
+    fetch_project_code "$INSTALL_DIR"
+    cd "$INSTALL_DIR"
 
     echo -e "${CYAN}$(t preparing_python)${RESET}"
     if [ ! -d "venv" ]; then
@@ -482,13 +532,13 @@ EOF
 # Action: update / عملیات: آپدیت
 # ---------------------------------------------------------------------------
 update_bot() {
-    if [ ! -d "$INSTALL_DIR/.git" ]; then
+    if [ ! -f "$INSTALL_DIR/main.py" ]; then
         echo -e "${RED}$(t bot_not_installed)${RESET}"
         return
     fi
     cd "$INSTALL_DIR"
     echo -e "${CYAN}$(t fetching_latest)${RESET}"
-    git pull
+    fetch_project_code "$INSTALL_DIR"
     echo -e "${CYAN}$(t updating_packages)${RESET}"
     source venv/bin/activate
     pip install -r requirements.txt --quiet
@@ -523,13 +573,13 @@ update_miniapp() {
         echo -e "${RED}$(t miniapp_not_installed)${RESET}"
         return
     fi
-    if [ ! -d "$INSTALL_DIR/.git" ]; then
+    if [ ! -f "$INSTALL_DIR/main.py" ]; then
         echo -e "${RED}$(t bot_not_installed)${RESET}"
         return
     fi
     cd "$INSTALL_DIR"
     echo -e "${CYAN}$(t fetching_latest)${RESET}"
-    git pull
+    fetch_project_code "$INSTALL_DIR"
     echo -e "${CYAN}$(t updating_packages)${RESET}"
     source venv/bin/activate
     pip install -r requirements.txt --quiet
@@ -898,13 +948,13 @@ update_admin_panel() {
         echo -e "${RED}$(t panel_not_installed_yet)${RESET}"
         return
     fi
-    if [ ! -d "$INSTALL_DIR/.git" ]; then
+    if [ ! -f "$INSTALL_DIR/main.py" ]; then
         echo -e "${RED}$(t bot_not_installed)${RESET}"
         return
     fi
     cd "$INSTALL_DIR"
     echo -e "${CYAN}$(t fetching_latest)${RESET}"
-    git pull
+    fetch_project_code "$INSTALL_DIR"
     echo -e "${CYAN}$(t updating_packages)${RESET}"
     source venv/bin/activate
     pip install -r requirements.txt --quiet
