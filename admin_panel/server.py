@@ -2448,7 +2448,7 @@ def api_get_c2c_settings(admin=Depends(require_permission("settings"))):
         "amount_unit": db.get_setting("card_to_card_sms_amount_unit", "rial"),
         "min_amount": int(db.get_setting("min_amount_card_auto", "0") or 0),
         "webhook_token_set": bool(token),
-        "webhook_url": (f"{API_BASE_URL}/api/webhooks/sms-forwarder?b={tenant.slug or 'main'}"
+        "webhook_url": (f"{API_BASE_URL}/api/webhooks/sms-forwarder?b={tenant.slug}"
                         if API_BASE_URL else None),
     }
 
