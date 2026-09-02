@@ -446,6 +446,23 @@ class Database:
                     assigned_at TEXT
                 );
 
+                -- «کانفیگ تست» چندمدلی: هر ردیف مثل یک محصول است (نام، پیشوند نام
+                -- کاربری، پنل مقصد، حجم به مگابایت و مدت به ساعت - برای پشتیبانی از
+                -- مقادیر زیر ۱ گیگ/۱ روز). قانون «هر کاربر فقط یک بار تست» سراسری است
+                -- (users.test_used) و مستقل از تعداد پلن‌هاست.
+                CREATE TABLE IF NOT EXISTS test_config_plans (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    name_prefix TEXT NOT NULL DEFAULT 'test',
+                    panel_server_id INTEGER NOT NULL REFERENCES panel_servers(id),
+                    volume_mb INTEGER NOT NULL DEFAULT 1024,
+                    duration_hours INTEGER NOT NULL DEFAULT 24,
+                    is_active INTEGER DEFAULT 1,
+                    sort_order INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_test_plans_active ON test_config_plans(is_active);
+
                 CREATE TABLE IF NOT EXISTS orders (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
@@ -821,6 +838,7 @@ class Database:
 
             self._migrate_columns(conn)
             self._seed_default_custom_config_product(conn)
+            self._seed_default_test_config_plan(conn)
             # اطمینان از این‌که همیشه مالک اصلی (از env) نقش «owner» را داشته باشد،
             # چه در نصب تازه و چه در ارتقای نصب‌های قدیمی‌تر که این ستون را نداشتند.
             conn.execute("UPDATE admins SET role='owner' WHERE telegram_id=?", (owner_id,))
@@ -1043,6 +1061,31 @@ class Database:
                 "VALUES (?, ?, ?, ?, ?)",
                 (product_id, t["from_gb"], t["to_gb"], t["price_per_gb"], t["sort_order"]),
             )
+
+    def _seed_default_test_config_plan(self, conn):
+        """مهاجرت یک‌باره: اگر نصب قدیمی‌تر یک پنل برای «کانفیگ تست» فعال داشته
+        و هنوز هیچ ردیفی در test_config_plans ندارد، یک پلن پیش‌فرض از روی همان
+        تنظیمات سراسری قدیمی (test_config_panel_volume_gb/duration_days) ساخته
+        می‌شود تا نصب‌های موجود بدون تغییر رفتار کنند."""
+        if conn.execute("SELECT 1 FROM test_config_plans LIMIT 1").fetchone() is not None:
+            return
+        server = conn.execute(
+            "SELECT * FROM panel_servers WHERE is_active=1 AND used_for_test_config=1 ORDER BY id LIMIT 1"
+        ).fetchone()
+        if not server:
+            return
+
+        def _setting(key, default):
+            row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+            return row["value"] if row and row["value"] is not None else default
+
+        volume_gb = float(_setting("test_config_panel_volume_gb", "1") or 1)
+        duration_days = float(_setting("test_config_panel_duration_days", "1") or 1)
+        conn.execute(
+            "INSERT INTO test_config_plans (name, name_prefix, panel_server_id, volume_mb, duration_hours, "
+            "is_active, sort_order) VALUES ('کانفیگ تست', 'test', ?, ?, ?, 1, 0)",
+            (server["id"], int(round(volume_gb * 1024)), int(round(duration_days * 24))),
+        )
 
     # -----------------------------------------------------------------------
     # تنظیمات (settings)
@@ -2004,6 +2047,66 @@ class Database:
                 "SELECT id, link FROM test_configs WHERE assigned_user_id=? ORDER BY id DESC LIMIT 1",
                 (user_tg_id,),
             ).fetchone()
+
+    # -----------------------------------------------------------------------
+    # پلن‌های کانفیگ تست (مثل محصولات: چند مدل، هرکدام با پنل/حجم/مدت خودشان)
+    # -----------------------------------------------------------------------
+
+    def get_test_config_plans(self, active_only: bool = False):
+        q = "SELECT * FROM test_config_plans"
+        if active_only:
+            q += " WHERE is_active=1"
+        q += " ORDER BY sort_order, id"
+        with self._get_conn() as conn:
+            return conn.execute(q).fetchall()
+
+    def count_active_test_config_plans(self) -> int:
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT COUNT(*) c FROM test_config_plans WHERE is_active=1").fetchone()
+            return row["c"]
+
+    def get_test_config_plan(self, plan_id: int):
+        with self._get_conn() as conn:
+            return conn.execute("SELECT * FROM test_config_plans WHERE id=?", (plan_id,)).fetchone()
+
+    def create_test_config_plan(self, name: str, name_prefix: str, panel_server_id: int,
+                                 volume_mb: int, duration_hours: int) -> int:
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT COALESCE(MAX(sort_order), -1) AS m FROM test_config_plans").fetchone()
+            cur = conn.execute(
+                "INSERT INTO test_config_plans (name, name_prefix, panel_server_id, volume_mb, "
+                "duration_hours, is_active, sort_order) VALUES (?, ?, ?, ?, ?, 1, ?)",
+                (name, name_prefix, panel_server_id, volume_mb, duration_hours, row["m"] + 1),
+            )
+            return cur.lastrowid
+
+    def update_test_config_plan(self, plan_id: int, **fields) -> None:
+        """fields می‌تواند شامل هرکدام از ستون‌های test_config_plans باشد،
+        مثلاً update_test_config_plan(3, name=\"پلن یک‌ساعته\", is_active=0)."""
+        if not fields:
+            return
+        allowed = {"name", "name_prefix", "panel_server_id", "volume_mb", "duration_hours",
+                   "is_active", "sort_order"}
+        sets, values = [], []
+        for k, v in fields.items():
+            if k in allowed:
+                sets.append(f"{k}=?")
+                values.append(v)
+        if not sets:
+            return
+        values.append(plan_id)
+        with self._get_conn() as conn:
+            conn.execute(f"UPDATE test_config_plans SET {', '.join(sets)} WHERE id=?", values)
+
+    def delete_test_config_plan(self, plan_id: int) -> None:
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM test_config_plans WHERE id=?", (plan_id,))
+
+    def toggle_test_config_plan(self, plan_id: int) -> None:
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE test_config_plans SET is_active = 1 - is_active WHERE id=?", (plan_id,)
+            )
 
     # -----------------------------------------------------------------------
     # سفارش‌ها

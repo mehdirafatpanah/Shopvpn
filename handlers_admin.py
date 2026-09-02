@@ -43,7 +43,8 @@ from states import (
     AdminAddProduct,
     AdminAddConfigs,
     AdminAddTestConfigs,
-    AdminTestConfigSettings,
+    AdminAddTestPlan,
+    AdminEditTestPlan,
     AdminForceJoin,
     AdminEditButton,
     AdminSetCard,
@@ -1058,13 +1059,27 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await call.answer("کانفیگ دریافت شد ✅")
 
     # -------------------------------------------------------------------
-    # مدیریت کانفیگ تست
+    # مدیریت کانفیگ تست: چندمدلی، مثل محصولات (هر پلن پنل/حجم/مدت/پیشوند
+    # نام کاربری خودش را دارد). editing_plan_id در FSM data افزودن و ویرایش
+    # را از همان state ها رد می‌کند، مثل الگوی محصولات کانفیگ‌ساز (ccp).
     # -------------------------------------------------------------------
 
+    async def _tp_show_view(target, plan_id: int, extra_note: str = ""):
+        plan = (await asyncio.to_thread(db.get_test_config_plan, plan_id))
+        if not plan:
+            return
+        text = f"🧪 پلن کانفیگ تست: {plan['name']}" + (f"\n\n{extra_note}" if extra_note else "")
+        markup = kb.test_plan_view_kb(db, plan)
+        if isinstance(target, CallbackQuery):
+            await replace_admin_view(target, text, reply_markup=markup)
+        else:
+            await target.answer(text, reply_markup=markup)
+
     @router.callback_query(F.data == "adm_test_menu")
-    async def cb_admin_test_menu(call: CallbackQuery):
+    async def cb_admin_test_menu(call: CallbackQuery, state: FSMContext):
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
+        await state.clear()
         await replace_admin_view(call, "🧪 مدیریت کانفیگ تست:", reply_markup=kb.admin_test_menu_kb(db, is_main_bot))
         await call.answer()
 
@@ -1086,7 +1101,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         await state.set_state(AdminAddTestConfigs.waiting_links)
         await safe_edit(call, 
-            "لینک‌های کانفیگ تست را ارسال کنید (هر لینک در یک خط):", reply_markup=kb.admin_back_kb()
+            "لینک‌های بانک تست دستی (قدیمی) را ارسال کنید (هر لینک در یک خط):", reply_markup=kb.admin_back_kb()
         )
         await call.answer()
 
@@ -1097,43 +1112,225 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.clear()
         await message.answer(f"✅ {len(links)} لینک تست اضافه شد.", reply_markup=kb.admin_test_menu_kb(db, is_main_bot))
 
-    @router.callback_query(F.data == "adm_test_set_volume")
-    async def cb_admin_test_set_volume(call: CallbackQuery, state: FSMContext):
+    # ---- افزودن پلن جدید ----
+
+    @router.callback_query(F.data == "adm_tp_add")
+    async def cb_tp_add(call: CallbackQuery, state: FSMContext):
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
-        if (await asyncio.to_thread(db.is_full_access_bot, is_main_bot)) and not (
-            await asyncio.to_thread(db.get_panel_server_for_usage, "test_config")
-        ):
-            await call.answer("این بخش فقط وقتی یک پنل برای کانفیگ تست فعال باشد در دسترس است.", show_alert=True)
+        if not (await asyncio.to_thread(db.get_panel_servers, True)):
+            await call.answer("⛔️ اول باید حداقل یک سرور پنل فعال ثبت کنی.", show_alert=True)
             return
-        await state.set_state(AdminTestConfigSettings.waiting_volume)
-        await safe_edit(call, "کانفیگ تست چند گیگابایت باشد؟ فقط عدد وارد کنید (مثال: 1):", reply_markup=kb.admin_back_kb())
+        await state.clear()
+        await state.set_state(AdminAddTestPlan.waiting_name)
+        await safe_edit(call, "نام این پلن کانفیگ تست چیست؟ (مثلاً «تست یک‌ساعته»):", reply_markup=kb.admin_back_kb())
         await call.answer()
 
-    @router.message(AdminTestConfigSettings.waiting_volume)
-    async def process_test_volume(message: Message, state: FSMContext):
-        text = message.text.strip()
-        if not text.isdigit() or int(text) <= 0:
-            await message.answer("لطفاً فقط عدد صحیح و بزرگ‌تر از صفر وارد کنید. مثال: 1")
+    @router.message(AdminAddTestPlan.waiting_name)
+    async def process_tp_name(message: Message, state: FSMContext):
+        name = (message.text or "").strip()
+        if not name:
+            await message.answer("لطفاً یک نام معتبر ارسال کن.")
             return
-        await state.update_data(volume_gb=int(text))
-        await state.set_state(AdminTestConfigSettings.waiting_duration)
-        await message.answer("کانفیگ تست چند روز اعتبار داشته باشد؟ فقط عدد وارد کنید (مثال: 1):")
+        await state.update_data(name=name)
+        await state.set_state(AdminAddTestPlan.waiting_prefix)
+        await message.answer("پیشوند نام کاربری کانفیگ‌های این پلن چه باشد؟ (مثلاً «test»؛ فقط حروف/عدد انگلیسی):")
 
-    @router.message(AdminTestConfigSettings.waiting_duration)
-    async def process_test_duration(message: Message, state: FSMContext):
+    @router.message(AdminAddTestPlan.waiting_prefix)
+    async def process_tp_prefix(message: Message, state: FSMContext):
+        prefix = (message.text or "").strip()
+        if not prefix or not prefix.isascii() or not prefix.replace("_", "").isalnum():
+            await message.answer("پیشوند باید فقط شامل حروف/عدد انگلیسی باشد. دوباره ارسال کن:")
+            return
+        await state.update_data(name_prefix=prefix)
+        servers = (await asyncio.to_thread(db.get_panel_servers, True))
+        rows = [
+            [InlineKeyboardButton(
+                text=f"{s['name']} ({kb.PANEL_TYPE_LABELS.get(s['panel_type'], s['panel_type'])})",
+                callback_data=f"adm_tp_new_panel:{s['id']}",
+            )]
+            for s in servers
+        ]
+        rows.append([InlineKeyboardButton(text="❌ انصراف", callback_data="cancel_flow")])
+        await state.set_state(AdminAddTestPlan.waiting_panel)
+        await message.answer("این پلن روی کدام سرور پنل ساخته شود؟", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+    @router.callback_query(F.data.startswith("adm_tp_new_panel:"), AdminAddTestPlan.waiting_panel)
+    async def cb_tp_new_panel_pick(call: CallbackQuery, state: FSMContext):
+        server_id = int(call.data.split(":", 1)[1])
+        await state.update_data(panel_server_id=server_id)
+        await state.set_state(AdminAddTestPlan.waiting_volume_mb)
+        await safe_edit(call, "حجم این پلن چند مگابایت باشد؟ فقط عدد صحیح (مثال: 100 برای ۱۰۰ مگ، یا 1024 برای ۱ گیگ):",
+                         reply_markup=kb.admin_back_kb())
+        await call.answer()
+
+    @router.message(AdminAddTestPlan.waiting_volume_mb)
+    async def process_tp_volume_mb(message: Message, state: FSMContext):
         text = message.text.strip()
         if not text.isdigit() or int(text) <= 0:
-            await message.answer("لطفاً فقط عدد صحیح و بزرگ‌تر از صفر وارد کنید. مثال: 1")
+            await message.answer("لطفاً یک عدد صحیح مثبت (به مگابایت) ارسال کن.")
+            return
+        await state.update_data(volume_mb=int(text))
+        await state.set_state(AdminAddTestPlan.waiting_duration_hours)
+        await message.answer("مدت اعتبار این پلن چند ساعت باشد؟ فقط عدد صحیح (مثال: 1 برای ۱ ساعت، یا 24 برای ۱ روز):")
+
+    @router.message(AdminAddTestPlan.waiting_duration_hours)
+    async def process_tp_duration_hours(message: Message, state: FSMContext):
+        text = message.text.strip()
+        if not text.isdigit() or int(text) <= 0:
+            await message.answer("لطفاً یک عدد صحیح مثبت (به ساعت) ارسال کن.")
             return
         data = await state.get_data()
-        (await asyncio.to_thread(db.set_setting, "test_config_panel_volume_gb", str(data["volume_gb"])))
-        (await asyncio.to_thread(db.set_setting, "test_config_panel_duration_days", text))
+        plan_id = (await asyncio.to_thread(
+            db.create_test_config_plan, data["name"], data["name_prefix"],
+            data["panel_server_id"], data["volume_mb"], int(text),
+        ))
         await state.clear()
-        await message.answer(
-            f"✅ کانفیگ تست تنظیم شد: {data['volume_gb']} گیگ / {text} روز.",
-            reply_markup=kb.admin_test_menu_kb(db, is_main_bot),
-        )
+        await _tp_show_view(message, plan_id, "✅ پلن ساخته شد.")
+
+    # ---- ویرایش/حذف پلن ----
+
+    @router.callback_query(F.data.startswith("adm_tp_view:"))
+    async def cb_tp_view(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        await state.clear()
+        await _tp_show_view(call, callback_id(call.data, "adm_tp_view"))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_tp_edit_name:"))
+    async def cb_tp_edit_name(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        plan_id = callback_id(call.data, "adm_tp_edit_name")
+        await state.update_data(editing_plan_id=plan_id)
+        await state.set_state(AdminEditTestPlan.waiting_name)
+        await safe_edit(call, "نام جدید پلن را ارسال کن:", reply_markup=kb.admin_back_kb())
+        await call.answer()
+
+    @router.message(AdminEditTestPlan.waiting_name)
+    async def process_tp_edit_name(message: Message, state: FSMContext):
+        name = (message.text or "").strip()
+        if not name:
+            await message.answer("لطفاً یک نام معتبر ارسال کن.")
+            return
+        data = await state.get_data()
+        plan_id = data.get("editing_plan_id")
+        (await asyncio.to_thread(db.update_test_config_plan, plan_id, name=name))
+        await state.clear()
+        await _tp_show_view(message, plan_id, "✅ نام به‌روزرسانی شد.")
+
+    @router.callback_query(F.data.startswith("adm_tp_edit_prefix:"))
+    async def cb_tp_edit_prefix(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        plan_id = callback_id(call.data, "adm_tp_edit_prefix")
+        await state.update_data(editing_plan_id=plan_id)
+        await state.set_state(AdminEditTestPlan.waiting_prefix)
+        await safe_edit(call, "پیشوند جدید نام کاربری را ارسال کن (فقط حروف/عدد انگلیسی):", reply_markup=kb.admin_back_kb())
+        await call.answer()
+
+    @router.message(AdminEditTestPlan.waiting_prefix)
+    async def process_tp_edit_prefix(message: Message, state: FSMContext):
+        prefix = (message.text or "").strip()
+        if not prefix or not prefix.isascii() or not prefix.replace("_", "").isalnum():
+            await message.answer("پیشوند باید فقط شامل حروف/عدد انگلیسی باشد. دوباره ارسال کن:")
+            return
+        data = await state.get_data()
+        plan_id = data.get("editing_plan_id")
+        (await asyncio.to_thread(db.update_test_config_plan, plan_id, name_prefix=prefix))
+        await state.clear()
+        await _tp_show_view(message, plan_id, "✅ پیشوند به‌روزرسانی شد.")
+
+    @router.callback_query(F.data.startswith("adm_tp_edit_panel:"))
+    async def cb_tp_edit_panel(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        plan_id = callback_id(call.data, "adm_tp_edit_panel")
+        await safe_edit(call, "پنل جدید این پلن را انتخاب کن:",
+                         reply_markup=kb.test_plan_panel_select_kb(db, plan_id))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_tp_set_panel:"))
+    async def cb_tp_set_panel(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        _, plan_id, server_id = call.data.split(":")
+        (await asyncio.to_thread(db.update_test_config_plan, int(plan_id), panel_server_id=int(server_id)))
+        await _tp_show_view(call, int(plan_id), "✅ پنل پلن به‌روزرسانی شد.")
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_tp_edit_volume:"))
+    async def cb_tp_edit_volume(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        plan_id = callback_id(call.data, "adm_tp_edit_volume")
+        await state.update_data(editing_plan_id=plan_id)
+        await state.set_state(AdminEditTestPlan.waiting_volume_mb)
+        await safe_edit(call, "حجم جدید این پلن چند مگابایت باشد؟ فقط عدد صحیح:", reply_markup=kb.admin_back_kb())
+        await call.answer()
+
+    @router.message(AdminEditTestPlan.waiting_volume_mb)
+    async def process_tp_edit_volume(message: Message, state: FSMContext):
+        text = message.text.strip()
+        if not text.isdigit() or int(text) <= 0:
+            await message.answer("لطفاً یک عدد صحیح مثبت (به مگابایت) ارسال کن.")
+            return
+        data = await state.get_data()
+        plan_id = data.get("editing_plan_id")
+        (await asyncio.to_thread(db.update_test_config_plan, plan_id, volume_mb=int(text)))
+        await state.clear()
+        await _tp_show_view(message, plan_id, "✅ حجم به‌روزرسانی شد.")
+
+    @router.callback_query(F.data.startswith("adm_tp_edit_duration:"))
+    async def cb_tp_edit_duration(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        plan_id = callback_id(call.data, "adm_tp_edit_duration")
+        await state.update_data(editing_plan_id=plan_id)
+        await state.set_state(AdminEditTestPlan.waiting_duration_hours)
+        await safe_edit(call, "مدت جدید این پلن چند ساعت باشد؟ فقط عدد صحیح:", reply_markup=kb.admin_back_kb())
+        await call.answer()
+
+    @router.message(AdminEditTestPlan.waiting_duration_hours)
+    async def process_tp_edit_duration(message: Message, state: FSMContext):
+        text = message.text.strip()
+        if not text.isdigit() or int(text) <= 0:
+            await message.answer("لطفاً یک عدد صحیح مثبت (به ساعت) ارسال کن.")
+            return
+        data = await state.get_data()
+        plan_id = data.get("editing_plan_id")
+        (await asyncio.to_thread(db.update_test_config_plan, plan_id, duration_hours=int(text)))
+        await state.clear()
+        await _tp_show_view(message, plan_id, "✅ مدت به‌روزرسانی شد.")
+
+    @router.callback_query(F.data.startswith("adm_tp_toggle:"))
+    async def cb_tp_toggle(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        plan_id = callback_id(call.data, "adm_tp_toggle")
+        (await asyncio.to_thread(db.toggle_test_config_plan, plan_id))
+        await _tp_show_view(call, plan_id)
+        await call.answer("وضعیت تغییر کرد.")
+
+    @router.callback_query(F.data.startswith("adm_tp_delete:"))
+    async def cb_tp_delete_confirm(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        plan_id = callback_id(call.data, "adm_tp_delete")
+        await safe_edit(call, "⚠️ با حذف این پلن، کانفیگ‌های تست ساخته‌شده قبلی دست‌نخورده می‌مانند ولی دیگر قابل انتخاب نیست. مطمئنی؟",
+                         reply_markup=kb.test_plan_delete_confirm_kb(plan_id))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_tp_delete_force:"))
+    async def cb_tp_delete_force(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        plan_id = callback_id(call.data, "adm_tp_delete_force")
+        (await asyncio.to_thread(db.delete_test_config_plan, plan_id))
+        (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "test_plan_delete", f"پلن #{plan_id}"))
+        await replace_admin_view(call, "🧪 مدیریت کانفیگ تست:", reply_markup=kb.admin_test_menu_kb(db, is_main_bot))
+        await call.answer("پلن حذف شد.")
 
     # -------------------------------------------------------------------
     # عضویت اجباری در کانال

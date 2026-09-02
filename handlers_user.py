@@ -37,6 +37,7 @@ import custom_gateway_payment
 from panel_providers import get_provider, PanelError, PanelUsernameTakenError
 from reseller_auto_provision import provision_auto_config, provision_test_config, ProvisionError
 from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
+from test_config_provision import provision_test_plan, format_plan_amount, ProvisionError as TestPlanProvisionError
 
 
 async def _send_admin_notification(bot, admin_id, send_coro_factory, context_label: str, ref_id: int):
@@ -1551,45 +1552,21 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await message.answer("شما قبلاً کانفیگ تست خود را دریافت کرده‌اید. هر کاربر فقط یک بار مجاز به دریافت کانفیگ تست است.")
             return
 
+        plans = (await asyncio.to_thread(db.get_test_config_plans, True))
+        if plans:
+            if len(plans) == 1:
+                await _deliver_test_plan(message, plans[0])
+            else:
+                await message.answer(
+                    "🧪 کدام مدل کانفیگ تست را می‌خواهید؟", reply_markup=kb.test_plan_pick_kb(plans)
+                )
+            return
+
         if not (await asyncio.to_thread(db.is_full_access_bot, is_main_bot)):
-            # نماینده سطح ۲: کانفیگ تست هم خودکار و از اعتبار حجمی نماینده ساخته می‌شود
-            try:
-                result = await provision_test_config(db, user_id=message.from_user.id)
-            except ProvisionError as e:
-                await message.answer(f"⛔️ {e}")
-                return
-            (await asyncio.to_thread(db.mark_test_used, message.from_user.id))
-            await _send_test_config_link(
-                message, result['subscription_url'],
-                f"🧪 کانفیگ تست شما ({result['volume_gb']} گیگ، {result['duration_days']} روز):",
-            )
+            await message.answer("در حال حاضر هیچ پلن کانفیگ تستی تعریف نشده است؛ با پشتیبانی تماس بگیرید.")
             return
 
-        panel_server = (await asyncio.to_thread(db.get_panel_server_for_usage, "test_config"))
-        if panel_server:
-            volume_gb = int((await asyncio.to_thread(db.get_setting, "test_config_panel_volume_gb", "1")) or 1)
-            duration_days = int((await asyncio.to_thread(db.get_setting, "test_config_panel_duration_days", "1")) or 1)
-            for _ in range(10):
-                username = "test" + "".join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8))
-                if not (await asyncio.to_thread(db.is_custom_username_taken, username)):
-                    break
-            try:
-                provider = get_provider(panel_server)
-                result = await provider.create_user(username, volume_gb, duration_days)
-            except PanelError as e:
-                await message.answer(f"⛔️ خطا در ساخت کانفیگ تست: {e}\nلطفاً بعداً تلاش کنید.")
-                return
-            (await asyncio.to_thread(db.add_custom_config, 
-                message.from_user.id, panel_server["id"], result.username,
-                volume_gb, duration_days, result.subscription_url, source="test",
-            ))
-            (await asyncio.to_thread(db.mark_test_used, message.from_user.id))
-            await _send_test_config_link(
-                message, result.subscription_url,
-                f"🧪 کانفیگ تست شما ({volume_gb} گیگ، {duration_days} روز):",
-            )
-            return
-
+        # هیچ پلنی تعریف نشده: سازگاری با نصب‌های خیلی قدیمی که هنوز فقط بانک لینک دستی دارند
         result = (await asyncio.to_thread(db.take_unused_test_config, message.from_user.id))
         if not result:
             await message.answer("متاسفانه موجودی کانفیگ تست تمام شده است. لطفاً بعداً مراجعه کنید.")
@@ -1597,6 +1574,46 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
         (await asyncio.to_thread(db.mark_test_used, message.from_user.id))
         await _send_test_config_link(message, result['link'], "🧪 کانفیگ تست شما:")
+
+    async def _deliver_test_plan(message: Message, plan) -> None:
+        user = (await asyncio.to_thread(db.get_user, message.from_user.id))
+        if user and user["test_used"] >= MAX_TEST_PER_USER:
+            await message.answer("شما قبلاً کانفیگ تست خود را دریافت کرده‌اید. هر کاربر فقط یک بار مجاز به دریافت کانفیگ تست است.")
+            return
+
+        if not (await asyncio.to_thread(db.is_full_access_bot, is_main_bot)):
+            # نماینده سطح ۲: همیشه از پنل اعتباری خودش و اعتبار حجمی‌اش ساخته می‌شود
+            try:
+                result = await provision_test_config(db, plan, user_id=message.from_user.id)
+            except ProvisionError as e:
+                await message.answer(f"⛔️ {e}")
+                return
+        else:
+            try:
+                result = await provision_test_plan(db, plan, user_id=message.from_user.id)
+            except TestPlanProvisionError as e:
+                await message.answer(f"⛔️ {e}")
+                return
+
+        (await asyncio.to_thread(db.mark_test_used, message.from_user.id))
+        await _send_test_config_link(
+            message, result['subscription_url'],
+            f"🧪 کانفیگ تست شما ({plan['name']} - {format_plan_amount(plan)}):",
+        )
+
+    @router.callback_query(F.data.startswith("user_test_plan:"))
+    async def cb_user_test_plan_pick(call: CallbackQuery):
+        if (await asyncio.to_thread(db.get_setting, "test_enabled", "1")) != "1":
+            await call.answer("در حال حاضر امکان دریافت کانفیگ تست غیرفعال است.", show_alert=True)
+            return
+        plan_id = int(call.data.split(":", 1)[1])
+        plan = (await asyncio.to_thread(db.get_test_config_plan, plan_id))
+        if not plan or not plan["is_active"]:
+            await call.answer("این پلن دیگر در دسترس نیست.", show_alert=True)
+            return
+        await call.message.delete()
+        await _deliver_test_plan(call.message, plan)
+        await call.answer()
 
     # -----------------------------------------------------------------------
     # پنل نمایندگی (ساخت کانفیگ از استخر حجم بدون پرداخت جداگانه)
@@ -1843,10 +1860,11 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             })
 
         for cc in db.get_custom_configs_for_user(user_tg_id):
-            if cc["source"] == "test":
-                continue
             label_name = cc["display_name"] or cc["username"]
-            label = f"🛠 «{label_name}» ({cc['volume_gb']} گیگ / {cc['duration_days']} روز)"
+            if cc["source"] == "test":
+                label = f"🧪 «{label_name}» (تست، {cc['volume_gb']:g} گیگ / {cc['duration_days']:g} روز)"
+            else:
+                label = f"🛠 «{label_name}» ({cc['volume_gb']} گیگ / {cc['duration_days']} روز)"
             items.append({"cb_id": f"x{cc['id']}", "kind": "custom", "label": label, "custom": cc, "_ts": cc["created_at"] or ""})
 
         items.sort(key=lambda it: it["_ts"], reverse=True)
@@ -1865,7 +1883,11 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         return {
             "enabled": (cc["enabled"] if "enabled" in cc.keys() else 1) == 1,
             "auto_renew": (cc["auto_renew"] if "auto_renew" in cc.keys() else 0) == 1,
+            "is_test": cc["source"] == "test",
         }
+
+    def _is_test_item(item) -> bool:
+        return item["kind"] == "custom" and item["custom"]["source"] == "test"
 
     def _item_sub_link(item) -> str:
         """لینک ساب یک آیتم (برای QR/بروزرسانی/کانفیگ‌های تکی) - یا رشته‌ی
@@ -2141,6 +2163,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if not item or item["kind"] != "custom":
             await call.answer("این مورد یافت نشد.", show_alert=True)
             return
+        if _is_test_item(item):
+            await call.answer("این قابلیت برای کانفیگ تست در دسترس نیست.", show_alert=True)
+            return
         await call.answer()
         await _safe_edit(
             call.message,
@@ -2163,6 +2188,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if not item or item["kind"] != "custom":
             await call.answer("این مورد یافت نشد (شاید قبلاً حذف شده).", show_alert=True)
             await _show_my_orders_list(call.message, user_tg_id, edit=True)
+            return
+        if _is_test_item(item):
+            await call.answer("این قابلیت برای کانفیگ تست در دسترس نیست.", show_alert=True)
             return
         cc = item["custom"]
         server = (await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])) if cc["panel_server_id"] else None
@@ -2225,6 +2253,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if not item or item["kind"] != "custom":
             await call.answer("این مورد یافت نشد.", show_alert=True)
             return
+        if _is_test_item(item):
+            await call.answer("این قابلیت برای کانفیگ تست در دسترس نیست.", show_alert=True)
+            return
         cc = item["custom"]
         new_enabled = not ((cc["enabled"] if "enabled" in cc.keys() else 1) == 1)
         server = (await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])) if cc["panel_server_id"] else None
@@ -2253,6 +2284,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         item = _find_my_orders_item(call.from_user.id, cb_id)
         if not item or item["kind"] != "custom":
             await call.answer("این مورد یافت نشد.", show_alert=True)
+            return
+        if _is_test_item(item):
+            await call.answer("این قابلیت برای کانفیگ تست در دسترس نیست.", show_alert=True)
             return
         cc = item["custom"]
         await state.set_state(ServiceRenameFlow.waiting_suffix)
@@ -2299,27 +2333,23 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await message.answer("❌ این نام قبلاً استفاده شده. نام دیگری بفرست.")
             return
         server = (await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])) if cc["panel_server_id"] else None
-        if not server or not server["is_active"]:
-            await message.answer("⛔️ سرور پنل این کانفیگ یافت نشد یا غیرفعال است؛ تغییر نام ممکن نیست.")
-            return
-        await message.answer("⏳ در حال اعمال تغییر نام روی خودِ پنل...")
-        try:
-            provider = get_provider(server)
-            new_sub_url = await provider.rename_user(cc["username"], new_label)
-        except PanelError as e:
-            await message.answer(f"⛔️ تغییر نام روی پنل ناموفق بود: {e}\nنام قبلی «{current_label}» بدون تغییر باقی ماند.")
-            return
-        if new_sub_url:
-            (await asyncio.to_thread(db.update_custom_config_subscription_url, cc["id"], new_sub_url))
+        panel_username = None
+        note = "(فقط نام نمایشی داخل بات تغییر کرد؛ لینک/کانفیگ فعلی روی پنل بدون تغییر کار می‌کند)"
+        if server and server["is_active"]:
+            try:
+                provider = get_provider(server)
+                await provider.rename_user(cc["username"], new_label)
+                panel_username = new_label
+                note = "(روی خودِ پنل هم اعمال شد)"
+            except PanelError:
+                pass
         old_label = current_label
-        (await asyncio.to_thread(db.rename_custom_config, cc["id"], user_tg_id, new_label, new_label))
+        (await asyncio.to_thread(db.rename_custom_config, cc["id"], user_tg_id, new_label, panel_username))
         (await asyncio.to_thread(
-            db.add_custom_config_history, cc["id"], "rename", f"{old_label} ← {new_label} (روی خودِ پنل هم اعمال شد)",
+            db.add_custom_config_history, cc["id"], "rename", f"{old_label} ← {new_label} {note}",
         ))
         await state.clear()
-        await _refresh_service_card(
-            message, user_tg_id, cb_id, f"✅ نام کانفیگ به «{new_label}» تغییر کرد و روی خودِ پنل هم اعمال شد.",
-        )
+        await _refresh_service_card(message, user_tg_id, cb_id, f"✅ نام کانفیگ به «{new_label}» تغییر کرد. {note}")
 
     @router.callback_query(F.data.startswith("svc_autorenew:"))
     async def cb_service_autorenew_toggle(call: CallbackQuery):
@@ -2331,6 +2361,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         item = _find_my_orders_item(user_tg_id, cb_id)
         if not item or item["kind"] != "custom":
             await call.answer("این مورد یافت نشد.", show_alert=True)
+            return
+        if _is_test_item(item):
+            await call.answer("این قابلیت برای کانفیگ تست در دسترس نیست.", show_alert=True)
             return
         cc = item["custom"]
         if (cc["duration_days"] or 0) <= 0:
@@ -2356,6 +2389,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         item = _find_my_orders_item(call.from_user.id, cb_id)
         if not item or item["kind"] != "custom":
             await call.answer("این مورد یافت نشد.", show_alert=True)
+            return
+        if _is_test_item(item):
+            await call.answer("این قابلیت برای کانفیگ تست در دسترس نیست.", show_alert=True)
             return
         await state.set_state(ServiceTransferFlow.waiting_target_id)
         await state.update_data(cb_id=cb_id)
@@ -2408,6 +2444,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if not item or item["kind"] != "custom":
             await call.answer("این مورد یافت نشد (شاید قبلاً حذف/منتقل شده).", show_alert=True)
             await _show_my_orders_list(call.message, user_tg_id, edit=True)
+            return
+        if _is_test_item(item):
+            await call.answer("این قابلیت برای کانفیگ تست در دسترس نیست.", show_alert=True)
             return
         cc = item["custom"]
         ok = (await asyncio.to_thread(db.transfer_custom_config, cc["id"], user_tg_id, target_id))
@@ -2535,6 +2574,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         item = _find_my_orders_item(call.from_user.id, cb_id)
         if not item or item["kind"] not in ("config", "custom"):
             await call.answer("این مورد یافت نشد.", show_alert=True)
+            return
+        if _is_test_item(item):
+            await call.answer("این قابلیت برای کانفیگ تست در دسترس نیست.", show_alert=True)
             return
         if item["kind"] == "config" and mode != "time":
             await call.answer("برای این کانفیگ فقط «تمدید زمان» ممکن است.", show_alert=True)

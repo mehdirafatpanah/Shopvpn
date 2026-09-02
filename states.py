@@ -66,9 +66,20 @@ class AdminAddTestConfigs(StatesGroup):
     waiting_links = State()
 
 
-class AdminTestConfigSettings(StatesGroup):
-    waiting_volume = State()
-    waiting_duration = State()
+class AdminAddTestPlan(StatesGroup):
+    waiting_name = State()
+    waiting_prefix = State()
+    waiting_panel = State()
+    waiting_volume_mb = State()
+    waiting_duration_hours = State()
+
+
+class AdminEditTestPlan(StatesGroup):
+    waiting_name = State()
+    waiting_prefix = State()
+    waiting_panel = State()
+    waiting_volume_mb = State()
+    waiting_duration_hours = State()
 
 
 class AdminForceJoin(StatesGroup):

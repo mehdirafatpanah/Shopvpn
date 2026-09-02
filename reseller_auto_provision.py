@@ -25,13 +25,15 @@ class ProvisionError(Exception):
     pass
 
 
-def _random_username() -> str:
-    return "r" + "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+def _random_username(prefix: str = "r") -> str:
+    prefix = (prefix or "r").strip() or "r"
+    return prefix + "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
 
 
 async def provision_auto_config(
     local_db: Database, product, quantity: int = 1,
     user_id: int = None, order_id: int = None, source: str = "direct_product",
+    username_prefix: str = "r", product_id_for_config: int = None,
 ) -> list:
     """محصول باید is_auto_provision=1 داشته باشد. برای هر واحد یک کاربر واقعی روی پنل
     نمایندگی ساخته می‌شود. برمی‌گرداند: لیستی از
@@ -72,7 +74,7 @@ async def provision_auto_config(
             username = None
             result = None
             for _try in range(5):
-                candidate = _random_username()
+                candidate = _random_username(username_prefix)
                 try:
                     result = await provider.create_user(candidate, volume_gb, duration_days)
                     username = candidate
@@ -103,6 +105,7 @@ async def provision_auto_config(
                 local_db.add_custom_config(
                     user_id, server["id"], item["username"], item["volume_gb"], item["duration_days"],
                     item["subscription_url"], order_id=order_id, source=source,
+                    product_id=product_id_for_config,
                 )
             except Exception:
                 pass
@@ -110,12 +113,17 @@ async def provision_auto_config(
     return built
 
 
-async def provision_test_config(local_db: Database, user_id: int = None) -> dict:
-    """کانفیگ تست برای نماینده‌ی سطح ۲: مثل provision_auto_config ولی حجم/مدت را از
-    تنظیمات محلی («test_config_panel_volume_gb»/«test_config_panel_duration_days») می‌خواند
-    و همان‌طور از اعتبار حجمی نماینده کم می‌کند (کانفیگ تست هم مصرف واقعی روی پنل دارد)."""
-    volume_gb = int(local_db.get_setting("test_config_panel_volume_gb", "1") or 1)
-    duration_days = int(local_db.get_setting("test_config_panel_duration_days", "1") or 1)
-    fake_product = {"name": "کانفیگ تست", "auto_provision_volume_gb": volume_gb, "duration_days": duration_days}
-    built = await provision_auto_config(local_db, fake_product, quantity=1, user_id=user_id, source="test")
+async def provision_test_config(local_db: Database, plan, user_id: int = None) -> dict:
+    """کانفیگ تست برای نماینده‌ی سطح ۲: حجم/مدت/پیشوند نام از پلن انتخاب‌شده
+    (test_config_plans محلی همان بات نمایندگی) خوانده می‌شود؛ پنل همیشه همان
+    پنل اعتبار حجمی نماینده است (فیلد panel_server_id خود پلن نادیده گرفته
+    می‌شود چون نماینده فقط به یک پنل اعتباری دسترسی دارد). این هم مثل بقیه‌ی
+    محصولات auto-provision، مصرف واقعی روی پنل دارد و از اعتبار کم می‌شود."""
+    volume_gb = plan["volume_mb"] / 1024.0
+    duration_days = plan["duration_hours"] / 24.0
+    fake_product = {"name": plan["name"], "auto_provision_volume_gb": volume_gb, "duration_days": duration_days}
+    built = await provision_auto_config(
+        local_db, fake_product, quantity=1, user_id=user_id, source="test",
+        username_prefix=plan["name_prefix"], product_id_for_config=plan["id"],
+    )
     return built[0]

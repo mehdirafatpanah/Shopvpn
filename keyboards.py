@@ -331,11 +331,14 @@ def my_order_error_back_kb() -> InlineKeyboardMarkup:
 
 
 def service_detail_kb(db, cb_id: str, kind: str, deletable: bool, show_links: bool = False,
-                       enabled: bool = True, auto_renew: bool = False) -> InlineKeyboardMarkup:
+                       enabled: bool = True, auto_renew: bool = False, is_test: bool = False) -> InlineKeyboardMarkup:
     """دکمه‌های صفحه‌ی جزئیات یک سرویس.
     kind == 'custom' (کاربر واقعی روی پنل): هر سه نوع تمدید + قطع دسترسی +
     بروزرسانی + کیوآر + فعال/غیرفعال + تغییر نام + تمدید خودکار + انتقال +
     تاریخچه در دسترس است.
+    is_test=True (کانفیگ تست، حتی اگر kind='custom' باشد): فقط بروزرسانی/کیوآر/
+    حذف نمایش داده می‌شود؛ نباید قابلیت‌های کامل یک سرویس خریداری‌شده (تمدید،
+    قطع دسترسی، تغییر نام، تمدید خودکار، انتقال، تاریخچه) را داشته باشد.
     kind == 'config' (لینک استخری بانک کانفیگ، بدون پنل/یوزرنیم واقعی):
     این نوع کنترلی روی خودِ حجم/زمان سرویس ندارد (نه تمدید، نه قطع دسترسی)
     ولی چون خودِ لینک/QR واقعی و قابل‌استفاده است، «بروزرسانی کانفیگ» و
@@ -345,7 +348,7 @@ def service_detail_kb(db, cb_id: str, kind: str, deletable: bool, show_links: bo
         return db.get_setting(key, "1") == "1"
 
     rows = []
-    if kind == "custom":
+    if kind == "custom" and not is_test:
         if on("svc_show_renew_full"):
             rows.append([InlineKeyboardButton(text="🛠 تمدید کامل سرویس", callback_data=f"svc_renew:full:{cb_id}")])
         row2 = []
@@ -1259,34 +1262,69 @@ def admin_test_menu_kb(db, is_main_bot: bool = True) -> InlineKeyboardMarkup:
     enabled = db.get_setting("test_enabled", "1") == "1"
     toggle_text = "🔴 غیرفعال کردن کانفیگ تست" if enabled else "🟢 فعال کردن کانفیگ تست"
 
-    if not db.is_full_access_bot(is_main_bot):
-        # نماینده سطح ۲: بانک لینک دستی ندارد، کانفیگ تست هم خودکار از اعتبار حجمی ساخته می‌شود
-        volume_gb = db.get_setting("test_config_panel_volume_gb", "1")
-        duration_days = db.get_setting("test_config_panel_duration_days", "1")
-        rows = [
-            [InlineKeyboardButton(text=f"⚡️ خودکار: {volume_gb} گیگ / {duration_days} روز", callback_data="noop")],
-            [InlineKeyboardButton(text=toggle_text, callback_data="adm_test_toggle")],
-            [InlineKeyboardButton(text="⚙️ تنظیم حجم و مدت کانفیگ تست", callback_data="adm_test_set_volume")],
-            [InlineKeyboardButton(text="🔁 بازنشانی کانفیگ تست برای همه", callback_data="adm_reset_test_configs")],
-            [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:products")],
-        ]
-        return InlineKeyboardMarkup(inline_keyboard=rows)
+    rows = [[InlineKeyboardButton(text=toggle_text, callback_data="adm_test_toggle")]]
 
-    remaining = db.count_available_test_configs()
-    rows = [
-        [InlineKeyboardButton(text=f"موجودی فعلی: {remaining} عدد", callback_data="noop")],
-        [InlineKeyboardButton(text=toggle_text, callback_data="adm_test_toggle")],
-        [InlineKeyboardButton(text="➕ افزودن لینک تست", callback_data="adm_test_add")],
-    ]
-    if db.get_panel_server_for_usage("test_config"):
-        volume_gb = db.get_setting("test_config_panel_volume_gb", "1")
-        duration_days = db.get_setting("test_config_panel_duration_days", "1")
+    plans = db.get_test_config_plans()
+    for p in plans:
+        icon = "🟢" if p["is_active"] else "🔴"
         rows.append([InlineKeyboardButton(
-            text=f"⚙️ حجم/مدت کانفیگ تست پنل: {volume_gb} گیگ / {duration_days} روز",
-            callback_data="adm_test_set_volume",
+            text=f"{icon} 🧪 {p['name']}", callback_data=f"adm_tp_view:{p['id']}",
         )])
+    if db.is_full_access_bot(is_main_bot) or not plans:
+        rows.append([InlineKeyboardButton(text="➕ افزودن پلن کانفیگ تست جدید", callback_data="adm_tp_add")])
+
+    if db.is_full_access_bot(is_main_bot):
+        remaining = db.count_available_test_configs()
+        rows.append([InlineKeyboardButton(
+            text=f"🗄 بانک لینک دستی (قدیمی) - موجودی: {remaining}", callback_data="adm_test_add",
+        )])
+
     rows.append([InlineKeyboardButton(text="🔁 بازنشانی کانفیگ تست برای همه", callback_data="adm_reset_test_configs")])
     rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:products")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def test_plan_view_kb(db, plan) -> InlineKeyboardMarkup:
+    pid = plan["id"]
+    server = db.get_panel_server(plan["panel_server_id"])
+    toggle_text = "🔴 غیرفعال‌سازی" if plan["is_active"] else "🟢 فعال‌سازی"
+    vol_text = f"{plan['volume_mb']} مگابایت" if plan["volume_mb"] < 1024 else f"{plan['volume_mb'] / 1024:g} گیگ"
+    dur_text = f"{plan['duration_hours']} ساعت" if plan["duration_hours"] < 24 else f"{plan['duration_hours'] / 24:g} روز"
+    rows = [
+        [InlineKeyboardButton(text=f"✏️ نام: {plan['name']}", callback_data=f"adm_tp_edit_name:{pid}")],
+        [InlineKeyboardButton(text=f"✏️ پیشوند نام کاربری: {plan['name_prefix']}", callback_data=f"adm_tp_edit_prefix:{pid}")],
+        [InlineKeyboardButton(
+            text=f"🖥 پنل: {server['name'] if server else '—'}", callback_data=f"adm_tp_edit_panel:{pid}",
+        )],
+        [InlineKeyboardButton(text=f"📶 حجم: {vol_text}", callback_data=f"adm_tp_edit_volume:{pid}")],
+        [InlineKeyboardButton(text=f"⏳ مدت: {dur_text}", callback_data=f"adm_tp_edit_duration:{pid}")],
+        [InlineKeyboardButton(text=toggle_text, callback_data=f"adm_tp_toggle:{pid}")],
+        [InlineKeyboardButton(text="🗑 حذف پلن", callback_data=f"adm_tp_delete:{pid}")],
+        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_test_menu")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def test_plan_delete_confirm_kb(plan_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚠️ بله، این پلن حذف شود", callback_data=f"adm_tp_delete_force:{plan_id}")],
+        [InlineKeyboardButton(text="⬅️ انصراف", callback_data=f"adm_tp_view:{plan_id}")],
+    ])
+
+
+def test_plan_panel_select_kb(db, plan_id) -> InlineKeyboardMarkup:
+    servers = db.get_panel_servers(active_only=True)
+    suffix = plan_id if plan_id is not None else "new"
+    rows = [
+        [InlineKeyboardButton(
+            text=f"{s['name']} ({PANEL_TYPE_LABELS.get(s['panel_type'], s['panel_type'])})",
+            callback_data=f"adm_tp_set_panel:{suffix}:{s['id']}",
+        )]
+        for s in servers
+    ]
+    rows.append([InlineKeyboardButton(text="➕ افزودن سرور جدید", callback_data="adm_panel_server_add")])
+    back_cb = f"adm_tp_view:{plan_id}" if plan_id is not None else "adm_test_menu"
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data=back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1807,6 +1845,18 @@ def custom_config_product_panel_select_kb(db, product_id: int) -> InlineKeyboard
     ]
     rows.append([InlineKeyboardButton(text="➕ افزودن سرور جدید", callback_data="adm_panel_server_add")])
     rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data=f"adm_ccp_view:{product_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def test_plan_pick_kb(plans) -> InlineKeyboardMarkup:
+    """برای کاربر نهایی: وقتی چند پلن کانفیگ تست فعال باشد، انتخاب یکی از آن‌ها."""
+    from test_config_provision import format_plan_amount
+    rows = [
+        [InlineKeyboardButton(
+            text=f"🧪 {p['name']} ({format_plan_amount(p)})", callback_data=f"user_test_plan:{p['id']}",
+        )]
+        for p in plans
+    ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
