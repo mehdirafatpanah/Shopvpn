@@ -102,7 +102,7 @@ class PasarguardProvider(BasePanelProvider):
             "proxy_settings": json.loads(proxy_settings) if isinstance(proxy_settings, str) else proxy_settings,
             "group_ids": json.loads(group_ids) if isinstance(group_ids, str) else group_ids,
             "data_limit": int(volume_gb * (1024 ** 3)),  # 0 = نامحدود
-            "expire": (int(time.time()) + duration_days * 86400) if duration_days else 0,  # 0 = بدون انقضا
+            "expire": (int(time.time() + duration_days * 86400)) if duration_days else 0,  # 0 = بدون انقضا
             "note": "ساخته‌شده توسط ShopVPN (کانفیگ شخصی)",
             "data_limit_reset_strategy": "no_reset",
         }
@@ -236,66 +236,6 @@ class PasarguardProvider(BasePanelProvider):
                         raise PanelError(f"خطا در تغییر وضعیت کاربر (کد {resp.status}): {text[:300]}")
             except aiohttp.ClientError as e:
                 raise PanelError(f"خطا در اتصال به پنل: {e}") from e
-
-    async def rename_user(self, username: str, new_username: str) -> str:
-        """PasarGuard هم مثل Marzban endpoint رسمی برای تغییر username ندارد؛
-        همان روش «بخوان، با نام جدید و همان group_ids/proxy_settings بساز،
-        قدیمی را حذف کن» استفاده می‌شود تا کانفیگ‌های تکی/UUID دست‌نخورده
-        بمانند. لینک اشتراک تازه را برمی‌گرداند (چون بر اساس username است)."""
-        async with aiohttp.ClientSession() as session:
-            token = await self._get_token(session)
-            headers = {"Authorization": f"Bearer {token}", "accept": "application/json", "Content-Type": "application/json"}
-            try:
-                async with session.get(
-                    f"{self._base_url()}/api/user/{username}", headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=20),
-                ) as resp:
-                    if resp.status == 404:
-                        raise PanelError(f"کاربری با نام «{username}» روی پنل پیدا نشد.")
-                    if resp.status >= 400:
-                        text = await resp.text()
-                        raise PanelError(f"خطا در دریافت اطلاعات کاربر (کد {resp.status}): {text[:300]}")
-                    current = await resp.json()
-            except aiohttp.ClientError as e:
-                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
-
-            create_payload = {
-                "username": new_username,
-                "proxy_settings": current.get("proxy_settings") or {},
-                "group_ids": current.get("group_ids") or [],
-                "data_limit": current.get("data_limit"),
-                "expire": current.get("expire"),
-                "note": current.get("note") or "",
-                "data_limit_reset_strategy": current.get("data_limit_reset_strategy") or "no_reset",
-                "status": current.get("status") or "active",
-            }
-            try:
-                async with session.post(
-                    f"{self._base_url()}/api/user", json=create_payload, headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=20),
-                ) as resp:
-                    if resp.status == 409:
-                        raise PanelError(f"نام «{new_username}» از قبل روی پنل استفاده شده است.")
-                    if resp.status >= 400:
-                        text = await resp.text()
-                        raise PanelError(f"خطا در ساخت کاربر با نام جدید (کد {resp.status}): {text[:300]}")
-                    new_data = await resp.json()
-            except aiohttp.ClientError as e:
-                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
-
-            try:
-                async with session.delete(
-                    f"{self._base_url()}/api/user/{username}", headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=20),
-                ):
-                    pass
-            except aiohttp.ClientError:
-                pass
-
-        sub_url = new_data.get("subscription_url") or ""
-        if sub_url.startswith("/"):
-            sub_url = self._base_url() + sub_url
-        return sub_url
 
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
                            reset_usage: bool = False) -> PanelUserResult:
