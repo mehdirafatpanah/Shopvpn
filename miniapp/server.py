@@ -20,6 +20,7 @@ import json
 import hmac
 import hashlib
 import random
+import re
 import secrets
 import base64
 import html as html_lib
@@ -62,6 +63,7 @@ from panel_providers import (
     SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES, parse_xui_inbound_ids,
 )
 from reseller_auto_provision import provision_auto_config, provision_test_config, ProvisionError
+from test_config_provision import provision_test_plan, format_plan_amount, ProvisionError as TestPlanProvisionError
 from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
 from renewal_engine import execute_renewal, RenewalError
 from admin_panel.telegram_notify import send_message as _tg_notify, fetch_telegram_file as _tg_fetch_file
@@ -447,7 +449,10 @@ def api_delete_order_config(config_id: int, auth=Depends(get_verified_user)):
 
 @app.get("/api/custom-configs")
 def api_custom_configs(auth=Depends(get_verified_user)):
-    """کانفیگ‌های ساخته‌شده مستقیم روی پنل VPN (خرید شخصی/کانفیگ تست پنلی)."""
+    """کانفیگ‌های ساخته‌شده مستقیم روی پنل VPN (خرید شخصی/کانفیگ تست پنلی).
+    کانفیگ‌های تست هم اینجا برمی‌گردند (is_test=True) تا در «سرویس‌های من» دیده
+    شوند، ولی فرانت باید برایشان اکشن‌های سرویس خریداری‌شده (تمدید و مشابه) را
+    نمایش ندهد."""
     tg_id, db, _ = auth
     configs = db.get_custom_configs_for_user(tg_id)
     return [
@@ -459,9 +464,9 @@ def api_custom_configs(auth=Depends(get_verified_user)):
             "subscription_url": c["subscription_url"],
             "created_at": c["created_at"],
             "expires_at": c["expires_at"],
+            "is_test": c["source"] == "test",
         }
         for c in configs
-        if c["source"] != "test"
     ]
 
 
@@ -660,6 +665,10 @@ def api_catalog(auth=Depends(get_verified_user)):
 # کانفیگ تست
 # ---------------------------------------------------------------------------
 
+class TestConfigClaim(BaseModel):
+    plan_id: Optional[int] = None
+
+
 @app.get("/api/test-config")
 def api_test_config_status(auth=Depends(get_verified_user)):
     tg_id, db, _ = auth
@@ -667,23 +676,34 @@ def api_test_config_status(auth=Depends(get_verified_user)):
     used = bool(user and user["test_used"] >= MAX_TEST_PER_USER)
     link = None
     if used:
-        panel_server = db.get_panel_server_for_usage("test_config")
-        if panel_server:
-            row = db.get_test_custom_config_for_user(tg_id)
-            link = row["subscription_url"] if row else None
+        row = db.get_test_custom_config_for_user(tg_id)
+        if row:
+            link = row["subscription_url"]
         else:
-            row = db.get_assigned_test_config(tg_id)
-            link = row["link"] if row else None
+            legacy = db.get_assigned_test_config(tg_id)
+            link = legacy["link"] if legacy else None
+
+    plans = db.get_test_config_plans(active_only=True)
     return {
         "enabled": db.get_setting("test_enabled", "1") == "1",
         "used": used,
         "available": db.count_available_test_configs(),
         "link": link,
+        "plans": [
+            {
+                "id": p["id"],
+                "name": p["name"],
+                "volume_mb": p["volume_mb"],
+                "duration_hours": p["duration_hours"],
+                "amount_label": format_plan_amount(p),
+            }
+            for p in plans
+        ],
     }
 
 
 @app.post("/api/test-config/claim")
-async def api_test_config_claim(auth=Depends(require_joined)):
+async def api_test_config_claim(payload: TestConfigClaim, auth=Depends(require_joined)):
     tg_id, db, tenant = auth
     if db.get_setting("test_enabled", "1") != "1":
         raise HTTPException(status_code=400, detail="در حال حاضر امکان دریافت کانفیگ تست غیرفعال است.")
@@ -691,37 +711,34 @@ async def api_test_config_claim(auth=Depends(require_joined)):
     if user and user["test_used"] >= MAX_TEST_PER_USER:
         raise HTTPException(status_code=400, detail="شما قبلاً کانفیگ تست خود را دریافت کرده‌اید.")
 
-    if not db.is_full_access_bot(not tenant.tenant_id):
-        try:
-            result = await provision_test_config(db, user_id=tg_id)
-        except ProvisionError as e:
-            raise HTTPException(status_code=409, detail=str(e))
+    is_full_access = db.is_full_access_bot(not tenant.tenant_id)
+    plans = db.get_test_config_plans(active_only=True)
+    if plans:
+        plan = None
+        if payload.plan_id is not None:
+            plan = next((p for p in plans if p["id"] == payload.plan_id), None)
+            if not plan:
+                raise HTTPException(status_code=400, detail="این پلن دیگر در دسترس نیست.")
+        elif len(plans) == 1:
+            plan = plans[0]
+        else:
+            raise HTTPException(status_code=400, detail="لطفاً یک مدل کانفیگ تست انتخاب کنید.")
+
+        if is_full_access:
+            try:
+                result = await provision_test_plan(db, plan, user_id=tg_id)
+            except TestPlanProvisionError as e:
+                raise HTTPException(status_code=409, detail=str(e))
+        else:
+            try:
+                result = await provision_test_config(db, plan, user_id=tg_id)
+            except ProvisionError as e:
+                raise HTTPException(status_code=409, detail=str(e))
         db.mark_test_used(tg_id)
         return {"link": result["subscription_url"]}
 
-    panel_server = db.get_panel_server_for_usage("test_config")
-    if panel_server:
-        volume_gb = int(db.get_setting("test_config_panel_volume_gb", "1") or 1)
-        duration_days = int(db.get_setting("test_config_panel_duration_days", "1") or 1)
-        username = None
-        for _ in range(10):
-            candidate = "test" + "".join(secrets.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(8))
-            if not db.is_custom_username_taken(candidate):
-                username = candidate
-                break
-        if not username:
-            raise HTTPException(status_code=500, detail="خطا در تولید نام کاربری. دوباره تلاش کنید.")
-        try:
-            provider = get_provider(panel_server)
-            result = await provider.create_user(username, volume_gb, duration_days)
-        except PanelError as e:
-            raise HTTPException(status_code=400, detail=f"خطا در ساخت کانفیگ تست: {e}")
-        db.add_custom_config(
-            tg_id, panel_server["id"], result.username, volume_gb, duration_days,
-            result.subscription_url, source="test",
-        )
-        db.mark_test_used(tg_id)
-        return {"link": result.subscription_url}
+    if not is_full_access:
+        raise HTTPException(status_code=400, detail="در حال حاضر هیچ پلن کانفیگ تستی تعریف نشده است.")
 
     result = db.take_unused_test_config(tg_id)
     if not result:
@@ -2687,8 +2704,6 @@ class CustomConfigSettingsUpdate(BaseModel):
     enabled: Optional[bool] = None
     min_gb: Optional[int] = None
     max_gb: Optional[int] = None
-    test_volume_gb: Optional[int] = None
-    test_duration_days: Optional[int] = None
 
 
 def _panel_server_public(s) -> dict:
@@ -2895,10 +2910,7 @@ def api_admin_delete_panel_server(server_id: int, auth=Depends(require_full_acce
 @app.get("/api/admin/custom-config/settings")
 def api_admin_get_custom_config_settings(auth=Depends(require_full_access_admin)):
     _, db, _ = auth
-    settings = db.get_custom_config_settings()
-    settings["test_volume_gb"] = int(db.get_setting("test_config_panel_volume_gb", "1") or 1)
-    settings["test_duration_days"] = int(db.get_setting("test_config_panel_duration_days", "1") or 1)
-    return settings
+    return db.get_custom_config_settings()
 
 
 @app.post("/api/admin/custom-config/settings")
@@ -2915,14 +2927,87 @@ def api_admin_update_custom_config_settings(body: CustomConfigSettingsUpdate, au
         if body.max_gb <= min_gb:
             raise HTTPException(status_code=400, detail="حداکثر حجم باید بزرگ‌تر از حداقل باشد.")
         db.set_setting("custom_config_max_gb", str(body.max_gb))
-    if body.test_volume_gb is not None:
-        if body.test_volume_gb <= 0:
-            raise HTTPException(status_code=400, detail="حجم کانفیگ تست باید بزرگ‌تر از صفر باشد.")
-        db.set_setting("test_config_panel_volume_gb", str(body.test_volume_gb))
-    if body.test_duration_days is not None:
-        if body.test_duration_days <= 0:
-            raise HTTPException(status_code=400, detail="مدت کانفیگ تست باید بزرگ‌تر از صفر باشد.")
-        db.set_setting("test_config_panel_duration_days", str(body.test_duration_days))
+    return {"status": "ok"}
+
+
+def _serialize_test_plan(db, p) -> dict:
+    server = db.get_panel_server(p["panel_server_id"])
+    return {
+        "id": p["id"], "name": p["name"], "name_prefix": p["name_prefix"],
+        "panel_server_id": p["panel_server_id"], "panel_server_name": server["name"] if server else None,
+        "volume_mb": p["volume_mb"], "duration_hours": p["duration_hours"],
+        "is_active": bool(p["is_active"]), "sort_order": p["sort_order"],
+    }
+
+
+class TestPlanBody(BaseModel):
+    name: str
+    name_prefix: str
+    panel_server_id: int
+    volume_mb: int
+    duration_hours: int
+
+
+@app.get("/api/admin/test-config/plans")
+def api_admin_list_test_plans(auth=Depends(require_full_access_admin)):
+    _, db, _ = auth
+    return [_serialize_test_plan(db, p) for p in db.get_test_config_plans()]
+
+
+@app.post("/api/admin/test-config/plans")
+def api_admin_create_test_plan(body: TestPlanBody, auth=Depends(require_full_access_admin)):
+    _, db, _ = auth
+    if not body.name.strip():
+        raise HTTPException(status_code=400, detail="نام پلن الزامی است.")
+    if not re.fullmatch(r"[A-Za-z0-9_]+", body.name_prefix.strip()):
+        raise HTTPException(status_code=400, detail="پیشوند نام کاربری فقط باید شامل حروف/عدد انگلیسی و آندرلاین باشد.")
+    if body.volume_mb <= 0 or body.duration_hours <= 0:
+        raise HTTPException(status_code=400, detail="حجم و مدت باید بزرگ‌تر از صفر باشند.")
+    server = db.get_panel_server(body.panel_server_id)
+    if not server or not server["is_active"]:
+        raise HTTPException(status_code=400, detail="پنل انتخاب‌شده یافت نشد یا غیرفعال است.")
+    plan_id = db.create_test_config_plan(
+        body.name.strip(), body.name_prefix.strip(), body.panel_server_id, body.volume_mb, body.duration_hours,
+    )
+    return _serialize_test_plan(db, db.get_test_config_plan(plan_id))
+
+
+@app.put("/api/admin/test-config/plans/{plan_id}")
+def api_admin_update_test_plan(plan_id: int, body: TestPlanBody, auth=Depends(require_full_access_admin)):
+    _, db, _ = auth
+    if not db.get_test_config_plan(plan_id):
+        raise HTTPException(status_code=404, detail="این پلن یافت نشد.")
+    if not body.name.strip():
+        raise HTTPException(status_code=400, detail="نام پلن الزامی است.")
+    if not re.fullmatch(r"[A-Za-z0-9_]+", body.name_prefix.strip()):
+        raise HTTPException(status_code=400, detail="پیشوند نام کاربری فقط باید شامل حروف/عدد انگلیسی و آندرلاین باشد.")
+    if body.volume_mb <= 0 or body.duration_hours <= 0:
+        raise HTTPException(status_code=400, detail="حجم و مدت باید بزرگ‌تر از صفر باشند.")
+    server = db.get_panel_server(body.panel_server_id)
+    if not server or not server["is_active"]:
+        raise HTTPException(status_code=400, detail="پنل انتخاب‌شده یافت نشد یا غیرفعال است.")
+    db.update_test_config_plan(
+        plan_id, name=body.name.strip(), name_prefix=body.name_prefix.strip(),
+        panel_server_id=body.panel_server_id, volume_mb=body.volume_mb, duration_hours=body.duration_hours,
+    )
+    return _serialize_test_plan(db, db.get_test_config_plan(plan_id))
+
+
+@app.post("/api/admin/test-config/plans/{plan_id}/toggle")
+def api_admin_toggle_test_plan(plan_id: int, auth=Depends(require_full_access_admin)):
+    _, db, _ = auth
+    if not db.get_test_config_plan(plan_id):
+        raise HTTPException(status_code=404, detail="این پلن یافت نشد.")
+    db.toggle_test_config_plan(plan_id)
+    return _serialize_test_plan(db, db.get_test_config_plan(plan_id))
+
+
+@app.delete("/api/admin/test-config/plans/{plan_id}")
+def api_admin_delete_test_plan(plan_id: int, auth=Depends(require_full_access_admin)):
+    _, db, _ = auth
+    if not db.get_test_config_plan(plan_id):
+        raise HTTPException(status_code=404, detail="این پلن یافت نشد.")
+    db.delete_test_config_plan(plan_id)
     return {"status": "ok"}
 
 
