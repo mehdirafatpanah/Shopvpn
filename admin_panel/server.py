@@ -2429,41 +2429,18 @@ def api_delete_c2c_card(card_id: int, admin=Depends(require_permission("settings
     return {"ok": True}
 
 
-class CardToCardSettingsBody(BaseModel):
-    enabled: bool
-    timeout_minutes: int = 15
-    amount_digits: int = 3
-    amount_unit: str = "rial"
-    min_amount: int = 0
-
-
 @app.get("/api/settings/card-to-card")
-def api_get_c2c_settings(admin=Depends(require_permission("settings"))):
+def api_get_c2c_webhook_info(admin=Depends(require_permission("settings"))):
+    """فقط اطلاعات وب‌هوک (که فیلد ساده‌ی تنظیمات نیست) را برمی‌گرداند؛ فعال‌بودن/مهلت/
+    تعداد رقم/واحد مبلغ/حداقل مبلغ مثل بقیه‌ی تنظیمات پرداخت از همان اندپوینت عمومی
+    /api/settings ذخیره و خوانده می‌شوند (تا همه‌ی روش‌های پرداخت یک‌جا مدیریت شوند)."""
     tenant = _current_tenant.get()
     token = db.get_setting("card_to_card_sms_webhook_token", "")
     return {
-        "enabled": db.get_setting("card_to_card_auto_enabled", "0") == "1",
-        "timeout_minutes": int(db.get_setting("card_to_card_auto_timeout_minutes", "15") or 15),
-        "amount_digits": int(db.get_setting("card_to_card_auto_amount_digits", "3") or 3),
-        "amount_unit": db.get_setting("card_to_card_sms_amount_unit", "rial"),
-        "min_amount": int(db.get_setting("min_amount_card_auto", "0") or 0),
         "webhook_token_set": bool(token),
         "webhook_url": (f"{API_BASE_URL}/api/webhooks/sms-forwarder?b={tenant.slug}"
                         if API_BASE_URL else None),
     }
-
-
-@app.post("/api/settings/card-to-card")
-def api_set_c2c_settings(body: CardToCardSettingsBody, admin=Depends(require_permission("settings"))):
-    db.set_setting("card_to_card_auto_enabled", "1" if body.enabled else "0")
-    db.set_setting("card_to_card_auto_timeout_minutes", str(max(1, body.timeout_minutes or 15)))
-    db.set_setting("card_to_card_auto_amount_digits", str(min(5, max(1, body.amount_digits or 3))))
-    if body.amount_unit in ("rial", "toman"):
-        db.set_setting("card_to_card_sms_amount_unit", body.amount_unit)
-    db.set_setting("min_amount_card_auto", str(max(0, body.min_amount or 0)))
-    db.log_admin_action(admin["id"], "card_to_card_settings",
-                         f"تنظیمات کارت‌به‌کارت خودکار به‌روزرسانی شد (پنل وب - {admin['username']}).")
-    return {"ok": True}
 
 
 @app.post("/api/settings/card-to-card/regenerate-token")
