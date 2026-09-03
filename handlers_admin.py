@@ -8,6 +8,7 @@
 
 import os
 import re
+import secrets
 import asyncio
 from datetime import date, timedelta
 import tempfile
@@ -50,6 +51,8 @@ from states import (
     AdminSetCard,
     AdminSetPlisio,
     AdminSetAbanGateway,
+    AdminC2CCard,
+    AdminC2CSettings,
     AdminBroadcast,
     AdminDeepLinkTools,
     AdminChannelButton,
@@ -1964,6 +1967,266 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             "برای غیرفعال‌کردن، دوباره وارد همین بخش شو و «حذف» را بفرست.",
             reply_markup=kb.admin_panel_kb(db, is_main_bot),
         )
+
+    # -------------------------------------------------------------------
+    # کارت‌به‌کارت با تایید خودکار (پیامک بانک) — همان چیزی که در پنل وب
+    # مستقل و مینی‌اپ هست، این‌جا هم برای مدیریت از داخل بات در دسترس است.
+    # -------------------------------------------------------------------
+
+    @router.callback_query(F.data == "adm_card_auto")
+    async def cb_admin_card_auto(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await replace_admin_view(call, "📶 کارت‌به‌کارت با تایید خودکار (پیامک بانک):",
+                                  reply_markup=kb.card_auto_settings_kb(db))
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_card_auto_toggle")
+    async def cb_admin_card_auto_toggle(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        current = (await asyncio.to_thread(db.get_setting, "card_to_card_auto_enabled", "0"))
+        (await asyncio.to_thread(db.set_setting, "card_to_card_auto_enabled", "0" if current == "1" else "1"))
+        await safe_edit(call, "📶 کارت‌به‌کارت با تایید خودکار (پیامک بانک):",
+                         reply_markup=kb.card_auto_settings_kb(db))
+        await call.answer("وضعیت تغییر کرد.")
+
+    @router.callback_query(F.data == "adm_card_auto_timeout")
+    async def cb_admin_card_auto_timeout(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await state.set_state(AdminC2CSettings.waiting_timeout)
+        current = (await asyncio.to_thread(db.get_setting, "card_to_card_auto_timeout_minutes", "15"))
+        await safe_edit(call, 
+            f"⏱ مهلت فعلی: {current} دقیقه\n"
+            "بعد از این مهلت، اگر پیامک بانک نرسیده باشد، فاکتور به صف بررسی دستی می‌رود.\n"
+            "مهلت جدید را به دقیقه (فقط عدد) ارسال کن:",
+            reply_markup=kb.admin_back_kb(),
+        )
+        await call.answer()
+
+    @router.message(AdminC2CSettings.waiting_timeout)
+    async def process_card_auto_timeout(message: Message, state: FSMContext):
+        text = (message.text or "").strip()
+        if not text.isdigit() or int(text) < 1:
+            await message.answer("لطفاً یک عدد صحیح حداقل ۱ ارسال کنید.")
+            return
+        await state.clear()
+        (await asyncio.to_thread(db.set_setting, "card_to_card_auto_timeout_minutes", text))
+        (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "card_to_card_auto_timeout_change",
+                                  f"مهلت کارت‌به‌کارت خودکار: {text} دقیقه"))
+        await message.answer("✅ مهلت به‌روزرسانی شد.", reply_markup=kb.card_auto_settings_kb(db))
+
+    @router.callback_query(F.data == "adm_card_auto_digits")
+    async def cb_admin_card_auto_digits(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await state.set_state(AdminC2CSettings.waiting_digits)
+        current = (await asyncio.to_thread(db.get_setting, "card_to_card_auto_amount_digits", "3"))
+        await safe_edit(call, 
+            f"🔢 تعداد رقم فعلی: {current}\n"
+            "این تعداد رقم آخر مبلغ به‌صورت تصادفی اضافه می‌شود تا مبلغ هر فاکتور یکتا شود.\n"
+            "عددی بین ۱ تا ۵ ارسال کن (پیشنهاد: ۳):",
+            reply_markup=kb.admin_back_kb(),
+        )
+        await call.answer()
+
+    @router.message(AdminC2CSettings.waiting_digits)
+    async def process_card_auto_digits(message: Message, state: FSMContext):
+        text = (message.text or "").strip()
+        if not text.isdigit() or not (1 <= int(text) <= 5):
+            await message.answer("لطفاً عددی بین ۱ تا ۵ ارسال کنید.")
+            return
+        await state.clear()
+        (await asyncio.to_thread(db.set_setting, "card_to_card_auto_amount_digits", text))
+        (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "card_to_card_auto_digits_change",
+                                  f"رقم یکتاساز کارت‌به‌کارت خودکار: {text}"))
+        await message.answer("✅ تعداد رقم به‌روزرسانی شد.", reply_markup=kb.card_auto_settings_kb(db))
+
+    @router.callback_query(F.data == "adm_card_auto_unit_toggle")
+    async def cb_admin_card_auto_unit_toggle(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        current = (await asyncio.to_thread(db.get_setting, "card_to_card_sms_amount_unit", "rial"))
+        (await asyncio.to_thread(db.set_setting, "card_to_card_sms_amount_unit",
+                                  "toman" if current == "rial" else "rial"))
+        await safe_edit(call, "📶 کارت‌به‌کارت با تایید خودکار (پیامک بانک):",
+                         reply_markup=kb.card_auto_settings_kb(db))
+        await call.answer("واحد مبلغ تغییر کرد.")
+
+    @router.callback_query(F.data == "adm_card_auto_webhook")
+    async def cb_admin_card_auto_webhook(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        token = (await asyncio.to_thread(db.get_setting, "card_to_card_sms_webhook_token", ""))
+        base_url = os.environ.get("MINIAPP_URL") or os.environ.get("API_BASE_URL") or ""
+        webhook_url = f"{base_url}/api/webhooks/sms-forwarder" if base_url else None
+        text = (
+            "📡 اتصال اپ BankSmsForwarder:\n\n"
+            f"آدرس وب‌هوک: {webhook_url or '⚠️ آدرس مینی‌اپ روی سرور تنظیم نشده.'}\n"
+            f"توکن: {'✅ تنظیم شده (برای دیدن مجدد، بازتولید کن)' if token else '❌ هنوز ساخته نشده'}\n\n"
+            "آدرس و توکن را داخل تنظیمات اپ اندروید BankSmsForwarder وارد کن."
+        )
+        rows = [
+            [InlineKeyboardButton(text="🔁 ساخت/بازتولید توکن", callback_data="adm_card_auto_webhook_regen")],
+            [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_card_auto")],
+        ]
+        await safe_edit(call, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_card_auto_webhook_regen")
+    async def cb_admin_card_auto_webhook_regen(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        token = secrets.token_hex(24)
+        (await asyncio.to_thread(db.set_setting, "card_to_card_sms_webhook_token", token))
+        (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "card_to_card_token_regen",
+                                  "توکن وب‌هوک کارت‌به‌کارت بازتولید شد (بات)."))
+        rows = [[InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_card_auto")]]
+        await safe_edit(call, 
+            "✅ توکن جدید (فقط همین یک‌بار کامل نشان داده می‌شود، کپی کن و توی اپ BankSmsForwarder وارد کن):\n\n"
+            f"`{token}`",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+            parse_mode="Markdown",
+        )
+        await call.answer("توکن بازتولید شد.")
+
+    @router.callback_query(F.data == "adm_card_auto_cards")
+    async def cb_admin_card_auto_cards(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        cards = (await asyncio.to_thread(db.list_card_to_card_cards))
+        await safe_edit(call, "💳 کارت‌های کارت‌به‌کارت خودکار:", kb.card_auto_cards_kb(cards))
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_card_auto_card_add")
+    async def cb_admin_card_auto_card_add(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await state.update_data(c2c_edit_id=None)
+        await state.set_state(AdminC2CCard.waiting_number)
+        await safe_edit(call, "شماره کارت جدید (۱۶ رقم) را ارسال کن:", reply_markup=kb.admin_back_kb())
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_card_auto_card_edit:"))
+    async def cb_admin_card_auto_card_edit(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        card_id = callback_id(call.data, "adm_card_auto_card_edit")
+        if card_id is None:
+            return await call.answer("⚠️ درخواست نامعتبر است.", show_alert=True)
+        card = (await asyncio.to_thread(db.get_card_to_card_card, card_id))
+        if card is None:
+            return await call.answer("⚠️ این کارت دیگر وجود ندارد.", show_alert=True)
+        await state.update_data(c2c_edit_id=card_id)
+        await state.set_state(AdminC2CCard.waiting_number)
+        await safe_edit(call, 
+            f"شماره کارت فعلی: {card['card_number']}\n"
+            "شماره کارت جدید (۱۶ رقم) را ارسال کن:",
+            reply_markup=kb.admin_back_kb(),
+        )
+        await call.answer()
+
+    @router.message(AdminC2CCard.waiting_number)
+    async def process_c2c_card_number(message: Message, state: FSMContext):
+        number = re.sub(r"\D", "", message.text or "")
+        if len(number) != 16:
+            await message.answer("شماره کارت باید دقیقاً ۱۶ رقم باشد. دوباره ارسال کن:")
+            return
+        await state.update_data(c2c_number=number)
+        await state.set_state(AdminC2CCard.waiting_holder)
+        await message.answer("نام صاحب حساب را ارسال کن (برای رد شدن، «-» بفرست):")
+
+    @router.message(AdminC2CCard.waiting_holder)
+    async def process_c2c_card_holder(message: Message, state: FSMContext):
+        holder = (message.text or "").strip()
+        await state.update_data(c2c_holder="" if holder == "-" else holder)
+        await state.set_state(AdminC2CCard.waiting_bank)
+        await message.answer("نام بانک را ارسال کن (اختیاری، برای رد شدن «-» بفرست):")
+
+    @router.message(AdminC2CCard.waiting_bank)
+    async def process_c2c_card_bank(message: Message, state: FSMContext):
+        bank = (message.text or "").strip()
+        bank = "" if bank == "-" else bank
+        data = await state.get_data()
+        await state.clear()
+        number = data.get("c2c_number", "")
+        holder = data.get("c2c_holder", "")
+        edit_id = data.get("c2c_edit_id")
+        if edit_id:
+            if not (await asyncio.to_thread(db.get_card_to_card_card, edit_id)):
+                await message.answer("⚠️ این کارت دیگر وجود ندارد.", reply_markup=kb.card_auto_settings_kb(db))
+                return
+            (await asyncio.to_thread(db.update_card_to_card_card, edit_id,
+                                      card_number=number, holder_name=holder, bank_name=bank))
+            (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "card_to_card_card_update",
+                                      f"کارت #{edit_id} ویرایش شد (بات)."))
+            await message.answer("✅ کارت به‌روزرسانی شد.")
+        else:
+            card_id = (await asyncio.to_thread(db.create_card_to_card_card, number, holder, bank, 0))
+            (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "card_to_card_card_create",
+                                      f"کارت با ۴ رقم آخر {number[-4:]} اضافه شد (بات)."))
+            await message.answer("✅ کارت اضافه شد.")
+        cards = (await asyncio.to_thread(db.list_card_to_card_cards))
+        await message.answer("💳 کارت‌های کارت‌به‌کارت خودکار:", reply_markup=kb.card_auto_cards_kb(cards))
+
+    @router.callback_query(F.data.startswith("adm_card_auto_card:"))
+    async def cb_admin_card_auto_card_detail(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        card_id = callback_id(call.data, "adm_card_auto_card")
+        if card_id is None:
+            return await call.answer("⚠️ درخواست نامعتبر است.", show_alert=True)
+        card = (await asyncio.to_thread(db.get_card_to_card_card, card_id))
+        if card is None:
+            return await call.answer("⚠️ این کارت دیگر وجود ندارد.", show_alert=True)
+        text = (
+            f"💳 شماره: {card['card_number']}\n"
+            f"👤 به نام: {card['holder_name'] or '-'}\n"
+            f"🏦 بانک: {card['bank_name'] or '-'}\n"
+            f"وضعیت: {'🟢 فعال' if card['is_active'] else '🔴 غیرفعال'}"
+        )
+        await safe_edit(call, text, kb.card_auto_card_detail_kb(card))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_card_auto_card_toggle:"))
+    async def cb_admin_card_auto_card_toggle(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        card_id = callback_id(call.data, "adm_card_auto_card_toggle")
+        if card_id is None:
+            return await call.answer("⚠️ درخواست نامعتبر است.", show_alert=True)
+        card = (await asyncio.to_thread(db.get_card_to_card_card, card_id))
+        if card is None:
+            return await call.answer("⚠️ این کارت دیگر وجود ندارد.", show_alert=True)
+        (await asyncio.to_thread(db.toggle_card_to_card_card, card_id))
+        (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "card_to_card_card_toggle",
+                                  f"کارت #{card_id} (بات)."))
+        card = (await asyncio.to_thread(db.get_card_to_card_card, card_id))
+        await safe_edit(call, 
+            f"💳 شماره: {card['card_number']}\n"
+            f"👤 به نام: {card['holder_name'] or '-'}\n"
+            f"🏦 بانک: {card['bank_name'] or '-'}\n"
+            f"وضعیت: {'🟢 فعال' if card['is_active'] else '🔴 غیرفعال'}",
+            kb.card_auto_card_detail_kb(card),
+        )
+        await call.answer("وضعیت تغییر کرد.")
+
+    @router.callback_query(F.data.startswith("adm_card_auto_card_del:"))
+    async def cb_admin_card_auto_card_del(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        card_id = callback_id(call.data, "adm_card_auto_card_del")
+        if card_id is None:
+            return await call.answer("⚠️ درخواست نامعتبر است.", show_alert=True)
+        if not (await asyncio.to_thread(db.get_card_to_card_card, card_id)):
+            return await call.answer("⚠️ این کارت قبلاً حذف شده است.", show_alert=True)
+        (await asyncio.to_thread(db.delete_card_to_card_card, card_id))
+        (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "card_to_card_card_delete",
+                                  f"کارت #{card_id} حذف شد (بات)."))
+        cards = (await asyncio.to_thread(db.list_card_to_card_cards))
+        await safe_edit(call, "💳 کارت‌های کارت‌به‌کارت خودکار:", kb.card_auto_cards_kb(cards))
+        await call.answer("کارت حذف شد.")
 
     @router.callback_query(F.data.startswith("view_topup:"))
     async def cb_view_topup(call: CallbackQuery, bot: Bot):

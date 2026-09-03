@@ -558,6 +558,57 @@ def card_settings_kb(db) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def card_auto_settings_kb(db) -> InlineKeyboardMarkup:
+    """منوی تنظیمات کارت‌به‌کارت با تایید خودکار (پیامک بانک): وضعیت، مهلت،
+    تعداد رقم یکتاساز، واحد مبلغ، لیست کارت‌ها و اتصال وب‌هوک."""
+    enabled = db.get_setting("card_to_card_auto_enabled", "0") == "1"
+    timeout = db.get_setting("card_to_card_auto_timeout_minutes", "15")
+    digits = db.get_setting("card_to_card_auto_amount_digits", "3")
+    unit = db.get_setting("card_to_card_sms_amount_unit", "rial")
+    unit_label = "ریال" if unit == "rial" else "تومان"
+    toggle_text = "🔴 غیرفعال کردن" if enabled else "🟢 فعال کردن"
+    rows = [
+        [InlineKeyboardButton(text=f"وضعیت: {'🟢 فعال' if enabled else '🔴 غیرفعال'}", callback_data="noop")],
+        [InlineKeyboardButton(text=toggle_text, callback_data="adm_card_auto_toggle")],
+        [InlineKeyboardButton(text=f"⏱ مهلت هر مبلغ: {timeout} دقیقه", callback_data="adm_card_auto_timeout")],
+        [InlineKeyboardButton(text=f"🔢 رقم یکتاساز مبلغ: {digits}", callback_data="adm_card_auto_digits")],
+        [InlineKeyboardButton(text=f"💰 واحد مبلغ پیامک: {unit_label} (تغییر)", callback_data="adm_card_auto_unit_toggle")],
+        [InlineKeyboardButton(text="💳 مدیریت کارت‌ها", callback_data="adm_card_auto_cards")],
+        [InlineKeyboardButton(text="📡 اتصال اپ BankSmsForwarder", callback_data="adm_card_auto_webhook")],
+        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:finance")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def card_auto_cards_kb(cards) -> InlineKeyboardMarkup:
+    """لیست کارت‌های کارت‌به‌کارت خودکار با امکان ورود به جزئیات هرکدام."""
+    rows = []
+    for c in cards:
+        icon = "🟢" if c["is_active"] else "🔴"
+        last4 = (c["card_number"] or "")[-4:]
+        holder = c["holder_name"] or "-"
+        rows.append([InlineKeyboardButton(
+            text=f"{icon} ...{last4} — {holder}", callback_data=f"adm_card_auto_card:{c['id']}",
+        )])
+    if not cards:
+        rows.append([InlineKeyboardButton(text="هنوز کارتی اضافه نشده", callback_data="noop")])
+    rows.append([InlineKeyboardButton(text="➕ افزودن کارت جدید", callback_data="adm_card_auto_card_add")])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_card_auto")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def card_auto_card_detail_kb(card) -> InlineKeyboardMarkup:
+    """عملیات یک کارت مشخص: فعال/غیرفعال، ویرایش، حذف."""
+    toggle_text = "🔴 غیرفعال کردن" if card["is_active"] else "🟢 فعال کردن"
+    rows = [
+        [InlineKeyboardButton(text=toggle_text, callback_data=f"adm_card_auto_card_toggle:{card['id']}")],
+        [InlineKeyboardButton(text="✏️ ویرایش", callback_data=f"adm_card_auto_card_edit:{card['id']}")],
+        [InlineKeyboardButton(text="🗑 حذف", callback_data=f"adm_card_auto_card_del:{card['id']}")],
+        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_card_auto_cards")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 # ---------------------------------------------------------------------------
 # سفارش برای ادمین (تایید/رد)
 # ---------------------------------------------------------------------------
@@ -721,6 +772,7 @@ ADMIN_PANEL_ITEMS = [
     ("adm_card_autodelete", "⏱ حذف خودکار پیام شماره کارت", "adm_card_autodelete"),
     ("adm_set_plisio", "🪙 تنظیم درگاه کریپتو (Plisio)", "adm_set_plisio"),
     ("adm_set_abangateway", "💳 تنظیم درگاه آبان گیت وی", "adm_set_abangateway"),
+    ("adm_card_auto", "📶 کارت‌به‌کارت با تایید خودکار (پیامک بانک)", "adm_card_auto"),
     ("adm_custom_gateways", "💠 درگاه‌های پرداخت سفارشی (فعال/غیرفعال)", "adm_custom_gateways"),
     ("adm_min_amount_settings", "🧮 حداقل مبلغ پرداخت‌ها", "adm_min_amount_settings"),
     ("adm_edit_welcome", "📝 ویرایش پیام خوش‌آمد", "adm_edit_welcome"),
@@ -778,6 +830,7 @@ ADMIN_PANEL_CATEGORIES = [
         "adm_card_autodelete",
         "adm_set_plisio",
         "adm_set_abangateway",
+        "adm_card_auto",
         "adm_custom_gateways",
         "adm_min_amount_settings",
         "adm_renewal_pricing",

@@ -104,6 +104,17 @@ class AdminSetAbanGateway(StatesGroup):
     waiting_key = State()
 
 
+class AdminC2CCard(StatesGroup):
+    waiting_number = State()
+    waiting_holder = State()
+    waiting_bank = State()
+
+
+class AdminC2CSettings(StatesGroup):
+    waiting_timeout = State()
+    waiting_digits = State()
+
+
 class AdminBroadcast(StatesGroup):
     waiting_message = State()
     waiting_duration = State()
