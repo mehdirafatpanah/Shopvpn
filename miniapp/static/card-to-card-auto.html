@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>کارت‌به‌کارت با تایید خودکار</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root{
+    --bg:#0a0e17; --card:#131a29; --border:#1f2937; --text:#e5e7eb; --muted:#9ca3af;
+    --accent:#3b82f6; --danger:#ef4444; --ok:#22c55e; --input:#0f1522;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--text);font-family:Tahoma,sans-serif;margin:0;padding:16px;font-size:14px}
+  h2{font-size:18px;margin:4px 0 16px}
+  h3{font-size:15px;margin:0 0 10px;color:var(--accent)}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:14px}
+  .row{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+  .row > *{flex:1;min-width:110px}
+  label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
+  input[type=text],input[type=number],select{
+    width:100%;background:var(--input);border:1px solid var(--border);color:var(--text);
+    border-radius:8px;padding:8px;font-family:inherit;font-size:13px;direction:ltr;text-align:left
+  }
+  button{
+    background:var(--accent);color:#fff;border:none;border-radius:8px;padding:8px 14px;
+    cursor:pointer;font-size:13px;font-family:inherit
+  }
+  button.secondary{background:#374151}
+  button.danger{background:var(--danger)}
+  button.small{padding:5px 9px;font-size:12px}
+  .toggle{display:flex;align-items:center;gap:6px}
+  .card-item{display:flex;justify-content:space-between;align-items:center;padding:10px;border:1px solid var(--border);border-radius:10px;margin-bottom:8px;gap:8px;flex-wrap:wrap}
+  .badge{font-size:11px;padding:2px 8px;border-radius:20px;white-space:nowrap}
+  .badge.on{background:rgba(34,197,94,.15);color:var(--ok)}
+  .badge.off{background:rgba(239,68,68,.15);color:var(--danger)}
+  .muted{color:var(--muted);font-size:12px}
+  .msg{padding:10px;border-radius:8px;margin-bottom:10px;font-size:13px}
+  .msg.ok{background:rgba(34,197,94,.12);color:var(--ok)}
+  .msg.err{background:rgba(239,68,68,.12);color:var(--danger)}
+  .actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+  .hint{font-size:11px;color:var(--muted);margin-top:2px}
+  code{background:var(--input);padding:1px 5px;border-radius:4px;font-size:11px}
+</style>
+</head>
+<body>
+<a href="#" onclick="history.back();return false;" style="color:var(--accent);text-decoration:none;font-size:13px">← بازگشت</a>
+<h2>📶 کارت‌به‌کارت با تایید خودکار (پیامک بانک)</h2>
+<p class="muted">اپ اندروید <b>BankSmsForwarder</b> پیامک بانک را می‌خواند و به وب‌هوک زیر می‌فرستد؛ چون مبلغ
+هر فاکتور یکتاست (مبلغ اصلی + چند رقم آخر تصادفی)، حتی با هزاران پرداخت هم‌زمان هم فاکتور مربوطه بدون ابهام
+تشخیص داده می‌شود. واریزی‌ها بین کارت‌های فعال به‌صورت چرخشی پخش می‌شوند.</p>
+
+<div id="msgBox"></div>
+
+<div class="card">
+  <h3>⚙️ تنظیمات</h3>
+  <div class="toggle" style="margin-bottom:10px">
+    <input type="checkbox" id="s_enabled"><label style="margin:0" for="s_enabled">فعال بودن این روش پرداخت (نیازمند حداقل یک کارت فعال)</label>
+  </div>
+  <div class="row">
+    <div><label>مهلت هر مبلغ (دقیقه)</label><input type="number" id="s_timeout" min="1" value="15"></div>
+    <div><label>تعداد رقم آخر برای یکتاساز مبلغ</label><input type="number" id="s_digits" min="1" max="5" value="3"></div>
+    <div><label>واحد مبلغ داخل پیامک بانک</label>
+      <select id="s_unit"><option value="rial">ریال (اکثر بانک‌ها)</option><option value="toman">تومان</option></select>
+    </div>
+  </div>
+  <p class="hint">اگر مهلت تمام شود و پیامکی نرسد، فاکتور به صف بررسی دستی می‌رود.</p>
+  <div class="actions"><button id="s_save">💾 ذخیره تنظیمات</button></div>
+</div>
+
+<div class="card">
+  <h3>📡 اتصال اپ BankSmsForwarder</h3>
+  <div id="webhookBox"><div class="muted">در حال بارگذاری...</div></div>
+  <div class="actions" style="margin-top:8px">
+    <button class="secondary" id="w_copy">📋 کپی آدرس وب‌هوک</button>
+    <button class="secondary" id="w_regen">🔁 ساخت/بازتولید توکن</button>
+  </div>
+  <p class="hint">آدرس و توکن را داخل تنظیمات اپ اندروید BankSmsForwarder (بخش Webhook URL / Token) وارد کن.
+  هر بار «بازتولید توکن» بزنی، توکن قبلی از کار می‌افتد و باید توی اپ هم آپدیتش کنی.</p>
+</div>
+
+<div id="list" class="card"><div class="muted">در حال بارگذاری کارت‌ها...</div></div>
+
+<div class="card">
+  <h3 id="formTitle">➕ افزودن کارت جدید</h3>
+  <form id="cardForm">
+    <input type="hidden" id="c_id">
+    <label>شماره کارت (۱۶ رقم)</label>
+    <input type="text" id="c_number" maxlength="19" placeholder="6037XXXXXXXXXXXX" required style="margin-bottom:8px">
+    <div class="row">
+      <div><label>به نام (صاحب حساب)</label><input type="text" id="c_holder" placeholder="نام و نام خانوادگی" style="direction:rtl;text-align:right"></div>
+      <div><label>نام بانک (اختیاری)</label><input type="text" id="c_bank" placeholder="مثلاً ملت" style="direction:rtl;text-align:right"></div>
+      <div><label>ترتیب نمایش</label><input type="number" id="c_sort" value="0"></div>
+    </div>
+    <div class="actions">
+      <button type="submit">💾 ذخیره</button>
+      <button type="button" class="secondary" id="c_toggle" style="display:none">تغییر وضعیت</button>
+      <button type="button" class="secondary" id="c_reset">پاک کردن فرم</button>
+      <button type="button" class="danger" id="c_del" style="display:none">🗑 حذف</button>
+    </div>
+  </form>
+</div>
+
+<script>
+const tg = window.Telegram.WebApp;
+try { tg.ready(); tg.expand(); } catch(e) {}
+const initData = tg.initData || "";
+const TENANT_ID = new URLSearchParams(window.location.search).get("b") || "";
+function withTenant(path){
+  if (!TENANT_ID) return path;
+  const sep = path.includes("?") ? "&" : "?";
+  return `${path}${sep}b=${encodeURIComponent(TENANT_ID)}`;
+}
+async function api(path, method, body){
+  const res = await fetch(withTenant(path), {
+    method: method || "GET",
+    headers: { "Content-Type": "application/json", "X-Init-Data": initData },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "خطای ناشناخته");
+  return data;
+}
+function showMsg(text, ok){
+  document.getElementById("msgBox").innerHTML = `<div class="msg ${ok ? "ok" : "err"}">${text}</div>`;
+  setTimeout(() => { document.getElementById("msgBox").innerHTML = ""; }, 6000);
+}
+function fmtCard(n){ return String(n || "").replace(/(.{4})/g, "$1 ").trim(); }
+
+let lastWebhook = {};
+
+async function loadSettings(){
+  const s = await api("/api/admin/settings/card-to-card-auto");
+  document.getElementById("s_enabled").checked = !!s.enabled;
+  document.getElementById("s_timeout").value = s.timeout_minutes;
+  document.getElementById("s_digits").value = s.amount_digits;
+  document.getElementById("s_unit").value = s.amount_unit;
+  lastWebhook = s;
+  document.getElementById("webhookBox").innerHTML = s.webhook_url ? `
+    <label>آدرس وب‌هوک</label>
+    <input type="text" readonly value="${s.webhook_url}" style="margin-bottom:8px">
+    <label>توکن</label>
+    <input type="text" readonly value="${s.webhook_token_set ? "•••••••••••••••••••••• (تنظیم شده)" : "هنوز توکنی ساخته نشده"}">
+  ` : `<div class="msg err">آدرس مینی‌اپ (MINIAPP_URL/API_BASE_URL) روی سرور تنظیم نشده.</div>`;
+}
+
+document.getElementById("s_save").onclick = async () => {
+  try {
+    await api("/api/admin/settings/card-to-card-auto", "POST", {
+      enabled: document.getElementById("s_enabled").checked,
+      timeout_minutes: parseInt(document.getElementById("s_timeout").value, 10) || 15,
+      amount_digits: parseInt(document.getElementById("s_digits").value, 10) || 3,
+      amount_unit: document.getElementById("s_unit").value,
+    });
+    showMsg("تنظیمات ذخیره شد ✅", true);
+  } catch(e) { showMsg(e.message, false); }
+};
+
+document.getElementById("w_copy").onclick = () => {
+  if (!lastWebhook.webhook_url) { showMsg("هنوز آدرسی موجود نیست.", false); return; }
+  navigator.clipboard.writeText(lastWebhook.webhook_url).then(() => showMsg("آدرس کپی شد.", true));
+};
+
+document.getElementById("w_regen").onclick = async () => {
+  if (lastWebhook.webhook_token_set && !confirm("توکن قبلی از کار می‌افتد و باید توی اپ هم آپدیتش کنی. ادامه بدم؟")) return;
+  try {
+    const r = await api("/api/admin/card-to-card/regenerate-token", "POST");
+    showMsg(`توکن جدید (فقط همین یک‌بار کامل نشون داده می‌شه، کپی کن): ${r.webhook_token}`, true);
+    loadSettings();
+  } catch(e) { showMsg(e.message, false); }
+};
+
+function resetForm(){
+  document.getElementById("cardForm").reset();
+  document.getElementById("c_id").value = "";
+  document.getElementById("formTitle").textContent = "➕ افزودن کارت جدید";
+  document.getElementById("c_toggle").style.display = "none";
+  document.getElementById("c_del").style.display = "none";
+}
+document.getElementById("c_reset").onclick = resetForm;
+
+function fillForm(card){
+  document.getElementById("c_id").value = card.id;
+  document.getElementById("c_number").value = card.card_number;
+  document.getElementById("c_holder").value = card.holder_name || "";
+  document.getElementById("c_bank").value = card.bank_name || "";
+  document.getElementById("c_sort").value = card.sort_order || 0;
+  document.getElementById("formTitle").textContent = `✏️ ویرایش کارت`;
+  document.getElementById("c_toggle").style.display = "inline-block";
+  document.getElementById("c_toggle").textContent = card.is_active ? "🔴 غیرفعال کردن" : "🟢 فعال کردن";
+  document.getElementById("c_del").style.display = "inline-block";
+  window.scrollTo({top: document.getElementById("cardForm").offsetTop - 10, behavior: "smooth"});
+}
+
+let cardsCache = [];
+async function loadCards(){
+  const list = document.getElementById("list");
+  try {
+    cardsCache = await api("/api/admin/card-to-card/cards");
+    if (!cardsCache.length){
+      list.innerHTML = '<h3>💳 کارت‌ها</h3><div class="muted">هنوز کارتی اضافه نشده — بدون حداقل یک کارت فعال، این روش پرداخت به کاربر نمایش داده نمی‌شود.</div>';
+      return;
+    }
+    list.innerHTML = '<h3>💳 کارت‌ها</h3>';
+    cardsCache.forEach(c => {
+      const div = document.createElement("div");
+      div.className = "card-item";
+      div.innerHTML = `
+        <div>
+          <div style="direction:ltr;text-align:left">${fmtCard(c.card_number)}</div>
+          <div class="muted">${c.holder_name || "—"}${c.bank_name ? " · " + c.bank_name : ""}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="badge ${c.is_active ? "on" : "off"}">${c.is_active ? "فعال" : "غیرفعال"}</span>
+          <button class="small secondary">ویرایش</button>
+        </div>
+      `;
+      div.querySelector("button").onclick = () => fillForm(c);
+      list.appendChild(div);
+    });
+  } catch(e) { list.innerHTML = `<div class="msg err">${e.message}</div>`; }
+}
+
+document.getElementById("cardForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    const id = document.getElementById("c_id").value;
+    const payload = {
+      card_number: document.getElementById("c_number").value.trim(),
+      holder_name: document.getElementById("c_holder").value.trim(),
+      bank_name: document.getElementById("c_bank").value.trim(),
+      sort_order: parseInt(document.getElementById("c_sort").value, 10) || 0,
+    };
+    if (id) await api(`/api/admin/card-to-card/cards/${id}`, "PUT", payload);
+    else await api("/api/admin/card-to-card/cards", "POST", payload);
+    showMsg("ذخیره شد ✅", true);
+    resetForm();
+    loadCards();
+  } catch(e) { showMsg(e.message, false); }
+});
+
+document.getElementById("c_toggle").onclick = async () => {
+  const id = document.getElementById("c_id").value;
+  if (!id) return;
+  try {
+    await api(`/api/admin/card-to-card/cards/${id}/toggle`, "POST");
+    showMsg("وضعیت تغییر کرد.", true);
+    resetForm();
+    loadCards();
+  } catch(e) { showMsg(e.message, false); }
+};
+
+document.getElementById("c_del").onclick = async () => {
+  const id = document.getElementById("c_id").value;
+  if (!id) return;
+  if (!confirm("این کارت حذف شود؟")) return;
+  try {
+    await api(`/api/admin/card-to-card/cards/${id}`, "DELETE");
+    showMsg("حذف شد.", true);
+    resetForm();
+    loadCards();
+  } catch(e) { showMsg(e.message, false); }
+};
+
+loadSettings();
+loadCards();
+</script>
+</body>
+</html>

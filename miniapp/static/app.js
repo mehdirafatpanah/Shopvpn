@@ -4945,11 +4945,21 @@ async function renderAdminFinanceSection() {
       </div>
 
       <div class="card">
+        <div class="eyebrow" style="margin-top:0">📶 کارت‌به‌کارت با تایید خودکار (پیامک بانک)</div>
+        <p class="hint-text">با فعال شدن، پرداخت کارت‌به‌کارت با خواندن پیامک بانک (اپ BankSmsForwarder) بدون بررسی دستی رسید تایید می‌شه. کارت‌ها، مهلت/رقم یکتاساز و اتصال وب‌هوک از همین‌جا مدیریت می‌شه.</p>
+        <button class="btn" id="fin-open-card-auto">📶 مدیریت کارت‌به‌کارت خودکار</button>
+      </div>
+
+      <div class="card">
         <div class="eyebrow" style="margin-top:0">🔌 درگاه‌های پرداخت سفارشی</div>
         <p class="hint-text">هر درگاه دیگری غیر از موارد بالا (داخلی، خارجی، هرچی) رو با وصل‌کردن API خودش، بدون نوشتن کد اضافه کن.</p>
         <button class="btn" id="fin-open-custom-gateways">🧩 مدیریت درگاه‌های سفارشی</button>
       </div>
     `;
+
+    document.getElementById("fin-open-card-auto").onclick = () => {
+      window.location.href = withTenant("card-to-card-auto.html");
+    };
 
     document.getElementById("fin-open-custom-gateways").onclick = () => {
       window.location.href = withTenant("gateways.html");
