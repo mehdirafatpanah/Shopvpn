@@ -259,9 +259,16 @@ class ThreeXUIProvider(BasePanelProvider):
                     return PanelUserResult(username=username, subscription_url=sub_url, raw=client)
         raise PanelError(f"کاربری با نام «{username}» روی پنل پیدا نشد.")
 
-    async def _find_client_with_inbound(self, session: aiohttp.ClientSession, username: str) -> tuple:
-        """کلاینت با email==username و id همان inbound که در آن قرار دارد را
-        برمی‌گرداند: (client_dict, inbound_id)."""
+    async def _find_client_all_inbounds(self, session: aiohttp.ClientSession, username: str) -> list:
+        """همه‌ی نسخه‌های کلاینت با email==username را در تمام inbound هایی
+        که کلاینت در آن‌ها ثبت شده برمی‌گرداند: [(client_dict, inbound_id), ...].
+
+        نکته‌ی مهم (رفع باگ): چون از پنل می‌شود یک کانفیگ را همزمان روی چند
+        inbound ساخت (به همان قابلیت «چند inbound» که در create_user هست)،
+        نباید فقط به اولین match بسنده کرد؛ وگرنه در توابعی مثل
+        revoke_credentials/update_user/set_enabled/rename_user فقط یکی از
+        inbound ها به‌روزرسانی می‌شد و در بقیه، مقدار/UUID قدیمی همچنان معتبر
+        می‌ماند (مثلاً «قطع دسترسی» واقعاً کامل انجام نمی‌شد)."""
         try:
             async with session.get(f"{self._base_url()}/panel/api/inbounds/list") as resp:
                 if resp.status in (401, 403):
@@ -274,6 +281,7 @@ class ThreeXUIProvider(BasePanelProvider):
             raise PanelError(f"خطا در اتصال به پنل: {e}") from e
         if data.get("success") is False:
             raise PanelError(data.get("msg") or "دریافت اطلاعات کاربر ناموفق بود.")
+        matches = []
         for ib in (data.get("obj") or []):
             settings_raw = ib.get("settings")
             try:
@@ -282,47 +290,60 @@ class ThreeXUIProvider(BasePanelProvider):
                 continue
             for client in (settings.get("clients") or []):
                 if client.get("email") == username:
-                    return client, ib["id"]
-        raise PanelError(f"کاربری با نام «{username}» روی پنل پیدا نشد.")
+                    matches.append((client, ib["id"]))
+        if not matches:
+            raise PanelError(f"کاربری با نام «{username}» روی پنل پیدا نشد.")
+        return matches
+
+    async def _post_client_update(self, session: aiohttp.ClientSession, url_client_id: str,
+                                   inbound_id, updated_client: dict, action_label: str) -> dict:
+        """یک درخواست update به ازای یک (client, inbound) می‌فرستد؛ برای
+        استفاده‌ی مشترک در حلقه‌ی روی چند inbound."""
+        payload = {"id": inbound_id, "client": updated_client}
+        try:
+            async with session.post(
+                f"{self._base_url()}/panel/api/clients/update/{url_client_id}", json=payload,
+            ) as resp:
+                if resp.status in (401, 403):
+                    raise PanelError(f"خطا در احراز هویت (کد {resp.status}): API Token را بررسی کن.")
+                if resp.status >= 400:
+                    text = await resp.text()
+                    raise PanelError(f"خطا در {action_label} (inbound {inbound_id}, کد {resp.status}): {text[:300]}")
+                data = await resp.json()
+                if data.get("success") is False:
+                    raise PanelError(f"{action_label} ناموفق بود (inbound {inbound_id}): {data.get('msg') or ''}")
+                return data
+        except aiohttp.ClientError as e:
+            raise PanelError(f"خطا در اتصال به پنل (inbound {inbound_id}): {e}") from e
 
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
                            reset_usage: bool = False) -> PanelUserResult:
         sub_base_url = self.server["xui_sub_base_url"]
         async with self._session() as session:
-            client, inbound_id = await self._find_client_with_inbound(session, username)
+            matches = await self._find_client_all_inbounds(session, username)
 
             now_ms = int(time.time() * 1000)
-            current_expiry = client.get("expiryTime") or 0
-            base_ms = current_expiry if current_expiry > now_ms else now_ms
-            new_expiry = base_ms + add_days * 86400000 if add_days else current_expiry
-            new_total = int(client.get("totalGB") or 0) + int(add_volume_gb * (1024 ** 3)) if add_volume_gb else client.get("totalGB")
+            updated_client = None
+            for client, inbound_id in matches:
+                current_expiry = client.get("expiryTime") or 0
+                base_ms = current_expiry if current_expiry > now_ms else now_ms
+                new_expiry = base_ms + add_days * 86400000 if add_days else current_expiry
+                new_total = int(client.get("totalGB") or 0) + int(add_volume_gb * (1024 ** 3)) if add_volume_gb else client.get("totalGB")
 
-            updated_client = dict(client)
-            updated_client["expiryTime"] = new_expiry
-            updated_client["totalGB"] = new_total
-            updated_client["enable"] = True
+                updated_client = dict(client)
+                updated_client["expiryTime"] = new_expiry
+                updated_client["totalGB"] = new_total
+                updated_client["enable"] = True
 
-            payload = {"id": inbound_id, "client": updated_client}
-            try:
-                async with session.post(
-                    f"{self._base_url()}/panel/api/clients/update/{updated_client['id']}", json=payload,
-                ) as resp:
-                    if resp.status in (401, 403):
-                        raise PanelError(f"خطا در احراز هویت (کد {resp.status}): API Token را بررسی کن.")
-                    if resp.status >= 400:
-                        text = await resp.text()
-                        raise PanelError(f"خطا در بروزرسانی کاربر (کد {resp.status}): {text[:300]}")
-                    data = await resp.json()
-                    if data.get("success") is False:
-                        raise PanelError(data.get("msg") or "بروزرسانی کاربر روی پنل ناموفق بود.")
-            except aiohttp.ClientError as e:
-                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+                await self._post_client_update(
+                    session, client["id"], inbound_id, updated_client, "بروزرسانی کاربر",
+                )
 
-            if reset_usage:
-                try:
-                    await session.post(f"{self._base_url()}/panel/api/inbounds/{inbound_id}/resetClientTraffic/{username}")
-                except aiohttp.ClientError:
-                    pass
+                if reset_usage:
+                    try:
+                        await session.post(f"{self._base_url()}/panel/api/inbounds/{inbound_id}/resetClientTraffic/{username}")
+                    except aiohttp.ClientError:
+                        pass
 
         sub_id = updated_client.get("subId")
         sub_url = f"{sub_base_url.rstrip('/')}/{sub_id}" if (sub_id and sub_base_url) else ""
@@ -336,54 +357,41 @@ class ThreeXUIProvider(BasePanelProvider):
         می‌شود، نه UUID، پس با عوض‌شدن UUID مصرف قبلی هم از بین نمی‌رود."""
         sub_base_url = self.server["xui_sub_base_url"]
         async with self._session() as session:
-            client, inbound_id = await self._find_client_with_inbound(session, username)
+            matches = await self._find_client_all_inbounds(session, username)
 
+            # یک UUID/subId مشترک برای همه‌ی inbound ها می‌سازیم (نه جدا-جدا)،
+            # چون subId پایه‌ی لینک subscription تجمیعی است و اگر هر inbound
+            # subId متفاوتی می‌گرفت، یک لینک واحد دیگر همه‌ی کانفیگ‌ها را
+            # پوشش نمی‌داد.
             new_uuid = str(uuid.uuid4())
             new_sub_id = secrets.token_hex(8)
-            updated_client = dict(client)
-            updated_client["id"] = new_uuid
-            updated_client["password"] = new_uuid
-            updated_client["subId"] = new_sub_id
 
-            payload = {"id": inbound_id, "client": updated_client}
-            try:
-                async with session.post(
-                    f"{self._base_url()}/panel/api/clients/update/{client['id']}", json=payload,
-                ) as resp:
-                    if resp.status in (401, 403):
-                        raise PanelError(f"خطا در احراز هویت (کد {resp.status}): API Token را بررسی کن.")
-                    if resp.status >= 400:
-                        text = await resp.text()
-                        raise PanelError(f"خطا در قطع دسترسی/تولید لینک جدید (کد {resp.status}): {text[:300]}")
-                    data = await resp.json()
-                    if data.get("success") is False:
-                        raise PanelError(data.get("msg") or "قطع دسترسی/تولید لینک جدید ناموفق بود.")
-            except aiohttp.ClientError as e:
-                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+            updated_client = None
+            for client, inbound_id in matches:
+                updated_client = dict(client)
+                updated_client["id"] = new_uuid
+                updated_client["password"] = new_uuid
+                updated_client["subId"] = new_sub_id
+
+                # مهم: باید روی *همه‌ی* inbound هایی که این کانفیگ در آن‌ها ثبت
+                # شده UUID عوض شود، وگرنه در inbound های دیگر لینک/UUID قدیمی
+                # همچنان معتبر می‌ماند و دسترسی واقعاً قطع نمی‌شود.
+                await self._post_client_update(
+                    session, client["id"], inbound_id, updated_client, "قطع دسترسی/تولید لینک جدید",
+                )
 
         sub_url = f"{sub_base_url.rstrip('/')}/{new_sub_id}" if sub_base_url else ""
         return PanelUserResult(username=username, subscription_url=sub_url, raw=updated_client)
 
     async def set_enabled(self, username: str, enabled: bool) -> None:
         async with self._session() as session:
-            client, inbound_id = await self._find_client_with_inbound(session, username)
-            updated_client = dict(client)
-            updated_client["enable"] = bool(enabled)
-            payload = {"id": inbound_id, "client": updated_client}
-            try:
-                async with session.post(
-                    f"{self._base_url()}/panel/api/clients/update/{updated_client['id']}", json=payload,
-                ) as resp:
-                    if resp.status in (401, 403):
-                        raise PanelError(f"خطا در احراز هویت (کد {resp.status}): API Token را بررسی کن.")
-                    if resp.status >= 400:
-                        text = await resp.text()
-                        raise PanelError(f"خطا در تغییر وضعیت کاربر (کد {resp.status}): {text[:300]}")
-                    data = await resp.json()
-                    if data.get("success") is False:
-                        raise PanelError(data.get("msg") or "تغییر وضعیت کاربر روی پنل ناموفق بود.")
-            except aiohttp.ClientError as e:
-                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+            matches = await self._find_client_all_inbounds(session, username)
+            for client, inbound_id in matches:
+                updated_client = dict(client)
+                updated_client["enable"] = bool(enabled)
+                await self._post_client_update(
+                    session, client["id"], inbound_id, updated_client, "تغییر وضعیت کاربر",
+                )
 
     async def rename_user(self, username: str, new_username: str) -> None:
         """چون traffic روی 3X-UI بر اساس فیلد email شمرده می‌شود، تغییر آن
@@ -391,24 +399,13 @@ class ThreeXUIProvider(BasePanelProvider):
         کلاینت دست‌نخورده می‌ماند، فقط شمارنده‌ی مصرف روی پنل صفر به‌نظر
         می‌رسد)."""
         async with self._session() as session:
-            client, inbound_id = await self._find_client_with_inbound(session, username)
-            updated_client = dict(client)
-            updated_client["email"] = new_username
-            payload = {"id": inbound_id, "client": updated_client}
-            try:
-                async with session.post(
-                    f"{self._base_url()}/panel/api/clients/update/{updated_client['id']}", json=payload,
-                ) as resp:
-                    if resp.status in (401, 403):
-                        raise PanelError(f"خطا در احراز هویت (کد {resp.status}): API Token را بررسی کن.")
-                    if resp.status >= 400:
-                        text = await resp.text()
-                        raise PanelError(f"خطا در تغییر نام کاربر (کد {resp.status}): {text[:300]}")
-                    data = await resp.json()
-                    if data.get("success") is False:
-                        raise PanelError(data.get("msg") or "تغییر نام کاربر روی پنل ناموفق بود.")
-            except aiohttp.ClientError as e:
-                raise PanelError(f"خطا در اتصال به پنل: {e}") from e
+            matches = await self._find_client_all_inbounds(session, username)
+            for client, inbound_id in matches:
+                updated_client = dict(client)
+                updated_client["email"] = new_username
+                await self._post_client_update(
+                    session, client["id"], inbound_id, updated_client, "تغییر نام کاربر",
+                )
 
     async def test_connection(self) -> bool:
         try:
