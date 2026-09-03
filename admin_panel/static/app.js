@@ -5623,7 +5623,7 @@ async function renderCardAuto() {
           <input class="input" data-fkey="c2c-digits" type="number" min="1" max="5" value="${settings.amount_digits}"></label>
         <label class="field"><span>واحد مبلغ داخل پیامک بانک</span>
           <select class="input" id="c2c-unit">
-            <option value="rial" ${settings.amount_unit === 'rial' ? 'selected' : ''}>ریال (اکثر بانک‌ها)</option>
+            <option value="rial" ${settings.amount_unit === 'rial' ? 'selected' : ''}>ریال (پیش‌فرض - اکثر بانک‌ها)</option>
             <option value="toman" ${settings.amount_unit === 'toman' ? 'selected' : ''}>تومان</option>
           </select></label>
         <label class="field"><span>حداقل مبلغ مجاز با این روش (تومان - ۰ یعنی بدون محدودیت)</span>
