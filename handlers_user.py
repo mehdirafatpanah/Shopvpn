@@ -214,7 +214,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if invoice.get("bank_name"):
             text += f"🏦 بانک: {escape_md(invoice['bank_name'])}\n"
         text += f"\n⚠️ لطفاً دقیقاً همین مبلغ را واریز کنید (نه یک ریال بیشتر یا کمتر):\n"
-        text += f"💰 {invoice['amount_toman']:,} تومان\n\n"
+        text += f"💰 {invoice['amount_toman']:,} تومان  (={invoice['amount_rial']:,} ریال)\n\n"
         text += (
             f"✅ به‌محض دریافت پیامک بانک، پرداخت به‌صورت خودکار تایید و تحویل داده "
             f"می‌شود (بدون نیاز به ارسال رسید).\n"

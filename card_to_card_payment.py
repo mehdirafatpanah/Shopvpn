@@ -106,6 +106,7 @@ def _invoice_dict(invoice, card) -> dict:
     return {
         "invoice_id": invoice["id"],
         "amount_toman": invoice["amount_toman"],
+        "amount_rial": invoice["amount_toman"] * 10,
         "base_amount_toman": invoice["base_amount_toman"],
         "card_number": card["card_number"] if card else None,
         "card_holder": card["holder_name"] if card else None,
