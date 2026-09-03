@@ -182,14 +182,16 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     async def _send_card2card_details(target, intro_lines: list, final_price: int):
         """بعد از اینکه کاربر از لیست روش‌های پرداخت گزینه‌ی «کارت‌به‌کارت» را انتخاب کرد،
         شماره کارت را نشان می‌دهد و از او می‌خواهد رسید را ارسال کند. target هر شیء‌ای
-        است که متد answer async دارد (معمولاً call.message)."""
+        است که متد answer async دارد (معمولاً call.message). مبلغ هم به تومان هم به ریال،
+        به‌صورت جدا از عدد ویرگول‌دار، در قالب کد (قابل کپی با یک لمس) نمایش داده می‌شود."""
         card_number = (await asyncio.to_thread(db.get_setting, "card_number"))
         card_holder = (await asyncio.to_thread(db.get_setting, "card_holder"))
         text = "\n".join(intro_lines) + "\n" if intro_lines else ""
         text += f"💳 شماره کارت: `{card_number}`\n"
         text += f"👤 به نام: {escape_md(card_holder)}\n"
-        text += f"💰 مبلغ نهایی قابل پرداخت: {final_price:,} تومان\n\n"
-        text += "لطفاً عکس رسید پرداخت را همینجا ارسال کنید."
+        text += f"💰 مبلغ (تومان): `{final_price}` ({final_price:,} تومان)\n"
+        text += f"💰 مبلغ (ریال): `{final_price * 10}` ({final_price * 10:,} ریال)\n\n"
+        text += "لطفاً عدد بالا رو لمس کن تا کپی بشه، مبلغ رو واریز کن و عکس رسید رو همینجا ارسال کن."
         sent = await target.answer(text, parse_mode="Markdown")
         await _schedule_card_msg_autodelete(sent.chat.id, sent.message_id)
 
@@ -198,7 +200,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         """نسخه‌ی خودکار کارت‌به‌کارت: یک مبلغ یکتا (با چند رقم آخر تصادفی) رزرو
         می‌کند و از کاربر می‌خواهد دقیقاً همان مبلغ را واریز کند؛ به‌محض رسیدن
         پیامک بانک (از اپ BankSmsForwarder) به وب‌هوک سرور، بدون دخالت ادمین
-        تایید و تحویل داده می‌شود."""
+        تایید و تحویل داده می‌شود. مبلغ هم به تومان هم به ریال به‌صورت کد
+        (قابل کپی با یک لمس، بدون ویرگول) نمایش داده می‌شود."""
         try:
             invoice = await asyncio.to_thread(
                 card_to_card_payment.create_invoice, db, kind, ref_id, user_id, base_amount,
@@ -208,13 +211,15 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
         timeout_minutes = int((await asyncio.to_thread(
             db.get_setting, "card_to_card_auto_timeout_minutes", "15")) or 15)
+        amount_rial = invoice.get("amount_rial") or invoice["amount_toman"] * 10
         text = "\n".join(intro_lines) + "\n" if intro_lines else ""
         text += f"💳 شماره کارت: `{invoice['card_number']}`\n"
         text += f"👤 به نام: {escape_md(invoice['card_holder'] or '')}\n"
         if invoice.get("bank_name"):
             text += f"🏦 بانک: {escape_md(invoice['bank_name'])}\n"
-        text += f"\n⚠️ لطفاً دقیقاً همین مبلغ را واریز کنید (نه یک ریال بیشتر یا کمتر):\n"
-        text += f"💰 {invoice['amount_toman']:,} تومان  (={invoice['amount_rial']:,} ریال)\n\n"
+        text += f"\n⚠️ لطفاً دقیقاً یکی از این دو مبلغ رو (بسته به واحد اپ بانکت) واریز کن:\n"
+        text += f"💰 تومان: `{invoice['amount_toman']}` ({invoice['amount_toman']:,} تومان)\n"
+        text += f"💰 ریال: `{amount_rial}` ({amount_rial:,} ریال)\n\n"
         text += (
             f"✅ به‌محض دریافت پیامک بانک، پرداخت به‌صورت خودکار تایید و تحویل داده "
             f"می‌شود (بدون نیاز به ارسال رسید).\n"
