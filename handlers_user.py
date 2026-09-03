@@ -1011,6 +1011,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await _send_card_auto_details(
             call.message, intro_lines, "order", order_id, call.from_user.id, order["final_price"],
         )
+    @router.callback_query(F.data == "cancel_flow")
     async def cb_cancel_flow(call: CallbackQuery, state: FSMContext):
         data = await state.get_data()
         order_id = data.get("order_id")
