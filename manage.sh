@@ -341,6 +341,8 @@ MSG_EN[backend_address_empty]="⛔️ Address:port cannot be empty."
 MSG_FA[backend_address_empty]="⛔️ آدرس:پورت نمی‌تواند خالی باشد."
 MSG_EN[prompt_backend_https]="Does the panel serve HTTPS itself on that port (usually with a self-signed certificate)? (yes/no): "
 MSG_FA[prompt_backend_https]="آیا خود پنل روی همان پورت HTTPS (معمولا با گواهی خودامضا) سرو می‌کند؟ (yes/no): "
+MSG_EN[prompt_backend_path]="URL path to proxy on this domain (press Enter for / , e.g. /dashboard or /a1b2c3): "
+MSG_FA[prompt_backend_path]="مسیر (path) روی این دامنه که پروکسی شود (برای / فقط Enter بزن، مثلا /dashboard یا /a1b2c3): "
 MSG_EN[panel_proxy_note]="⚠️ Make sure the VPN panel's own installer is NOT bound to ports 80/443 anymore (disable its own nginx/haproxy, or set it to listen only on the address:port you entered), otherwise it will still conflict with this server's nginx."
 MSG_FA[panel_proxy_note]="⚠️ مطمئن شو نصب‌کننده خود پنل VPN دیگر روی پورت 80/443 گوش نمی‌دهد (nginx/haproxy داخلی خودش را غیرفعال کن یا فقط روی همان آدرس:پورتی که وارد کردی محدودش کن)، وگرنه باز هم با nginx این سرور تصادم می‌کند."
 MSG_EN[panel_proxy_ready]="✅ Reverse-proxy is ready. The VPN panel is now reachable at: %s"
@@ -351,6 +353,18 @@ MSG_EN[prompt_domain_used_panel_proxy]="Which domain did you use for this VPN pa
 MSG_FA[prompt_domain_used_panel_proxy]="برای این پروکسی پنل VPN چه دامنه‌ای استفاده کرده بودی؟ (برای حذف کانفیگ nginx): "
 MSG_EN[panel_proxy_removed]="✅ VPN panel proxy removed."
 MSG_FA[panel_proxy_removed]="✅ پروکسی پنل VPN حذف شد."
+MSG_EN[panel_proxy_list_header]="📋 Panel/config proxies set up with this menu:"
+MSG_FA[panel_proxy_list_header]="📋 پروکسی‌های پنل/کانفیگی که با این منو ساخته شده‌اند:"
+MSG_EN[panel_proxy_list_empty]="No panel proxy has been set up with option 17 yet."
+MSG_FA[panel_proxy_list_empty]="هنوز هیچ پروکسی پنلی با گزینه ۱۷ ساخته نشده."
+MSG_EN[panel_proxy_list_enabled]="enabled"
+MSG_FA[panel_proxy_list_enabled]="فعال"
+MSG_EN[panel_proxy_list_disabled]="disabled"
+MSG_FA[panel_proxy_list_disabled]="غیرفعال"
+MSG_EN[panel_proxy_list_ssl_ok]="valid until %s"
+MSG_FA[panel_proxy_list_ssl_ok]="معتبر تا %s"
+MSG_EN[panel_proxy_list_ssl_missing]="no certificate found"
+MSG_FA[panel_proxy_list_ssl_missing]="گواهی SSL پیدا نشد"
 
 # Main menu / منوی اصلی
 MSG_EN[menu_1]="Full bot install (first time)"
@@ -387,14 +401,16 @@ MSG_EN[menu_16]="Auto-generate VAPID key (admin panel push notifications)"
 MSG_FA[menu_16]="ساخت خودکار کلید VAPID (اعلان Push پنل مدیریت)"
 MSG_EN[menu_17]="Add domain proxy for VPN panel (share port 443)"
 MSG_FA[menu_17]="افزودن دامنه پروکسی برای پنل VPN (اشتراک پورت 443)"
-MSG_EN[menu_18]="Remove VPN panel domain proxy"
-MSG_FA[menu_18]="حذف دامنه پروکسی پنل VPN"
+MSG_EN[menu_18]="List panel/config domain proxies (info on existing ones)"
+MSG_FA[menu_18]="نمایش لیست پروکسی‌های دامنه پنل/کانفیگ (اطلاعات کانفیگ‌های موجود)"
+MSG_EN[menu_19]="Remove VPN panel domain proxy"
+MSG_FA[menu_19]="حذف دامنه پروکسی پنل VPN"
 MSG_EN[menu_lang]="Language / زبان (English ⇄ فارسی)"
 MSG_FA[menu_lang]="Language / زبان (English ⇄ فارسی)"
 MSG_EN[menu_0]="Exit"
 MSG_FA[menu_0]="خروج"
-MSG_EN[enter_choice_prompt]="Enter choice [0-18, L]: "
-MSG_FA[enter_choice_prompt]="یک گزینه انتخاب کن [0-18, L]: "
+MSG_EN[enter_choice_prompt]="Enter choice [0-19, L]: "
+MSG_FA[enter_choice_prompt]="یک گزینه انتخاب کن [0-19, L]: "
 MSG_EN[invalid_choice]="Invalid option."
 MSG_FA[invalid_choice]="گزینه نامعتبر است."
 MSG_EN[goodbye]="Goodbye 👋"
@@ -1040,6 +1056,16 @@ setup_panel_proxy() {
         BACKEND_SCHEME="http"
     fi
 
+    read -rp "$(t prompt_backend_path)" BACKEND_PATH
+    if [ -z "$BACKEND_PATH" ]; then
+        BACKEND_PATH="/"
+    fi
+    # normalize: must start with / and must NOT end with / (unless it's root "/")
+    [[ "$BACKEND_PATH" != /* ]] && BACKEND_PATH="/$BACKEND_PATH"
+    if [ "$BACKEND_PATH" != "/" ]; then
+        BACKEND_PATH="${BACKEND_PATH%/}"
+    fi
+
     echo -e "${CYAN}$(t checking_dns)${RESET}"
     SERVER_IP=$(curl -fsSL ifconfig.me || echo "")
     DOMAIN_IP=$(getent ahosts "$DOMAIN" 2>/dev/null | awk '{print $1}' | head -1)
@@ -1062,16 +1088,21 @@ setup_panel_proxy() {
         SSL_PROXY_LINES=""
     fi
     sudo bash -c "cat > /etc/nginx/sites-available/${DOMAIN}.conf" <<EOF
+# managed-by-shopvpn-panel-proxy
+# backend: ${BACKEND_SCHEME}://${BACKEND}${BACKEND_PATH}
 server {
     listen 80;
     server_name $DOMAIN;
 
-    location / {
+    location ${BACKEND_PATH} {
         proxy_pass ${BACKEND_SCHEME}://${BACKEND};
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
 ${SSL_PROXY_LINES}
     }
 }
@@ -1092,7 +1123,7 @@ EOF
     fi
 
     echo -e "${YELLOW}$(t panel_proxy_note)${RESET}"
-    echo -e "${GREEN}${BOLD}$(t panel_proxy_ready "https://$DOMAIN")${RESET}"
+    echo -e "${GREEN}${BOLD}$(t panel_proxy_ready "https://${DOMAIN}${BACKEND_PATH}")${RESET}"
 }
 
 # ---------------------------------------------------------------------------
@@ -1110,6 +1141,53 @@ remove_panel_proxy() {
         sudo systemctl reload nginx 2>/dev/null || true
     fi
     echo -e "${GREEN}$(t panel_proxy_removed)${RESET}"
+}
+
+# ---------------------------------------------------------------------------
+# Action: list all panel/config domain proxies set up via option 17
+# عملیات: نمایش لیست پروکسی‌های دامنه‌ای که با گزینه ۱۷ ساخته شده‌اند
+# ---------------------------------------------------------------------------
+list_panel_proxies() {
+    local found=0
+
+    echo -e "${CYAN}${BOLD}$(t panel_proxy_list_header)${RESET}"
+    echo ""
+
+    for conf in /etc/nginx/sites-available/*.conf; do
+        [ -e "$conf" ] || continue
+        grep -q "^# managed-by-shopvpn-panel-proxy$" "$conf" 2>/dev/null || continue
+        found=1
+
+        local domain backend path enabled_state ssl_state cert_file expiry
+        domain=$(basename "$conf" .conf)
+        backend=$(grep -m1 "^# backend:" "$conf" | sed 's/^# backend: *//')
+        path=$(grep -m1 "location " "$conf" | awk '{print $2}')
+
+        if [ -L "/etc/nginx/sites-enabled/$(basename "$conf")" ]; then
+            enabled_state="$(t panel_proxy_list_enabled)"
+        else
+            enabled_state="$(t panel_proxy_list_disabled)"
+        fi
+
+        cert_file="/etc/letsencrypt/live/${domain}/fullchain.pem"
+        if [ -f "$cert_file" ]; then
+            expiry=$(sudo openssl x509 -enddate -noout -in "$cert_file" 2>/dev/null | cut -d= -f2)
+            ssl_state="$(t panel_proxy_list_ssl_ok "$expiry")"
+        else
+            ssl_state="$(t panel_proxy_list_ssl_missing)"
+        fi
+
+        echo -e "  ${GREEN}${BOLD}${domain}${RESET}"
+        echo -e "    → backend: ${backend:-?}"
+        echo -e "    → path:    ${path:-/}"
+        echo -e "    → nginx:   ${enabled_state}"
+        echo -e "    → SSL:     ${ssl_state}"
+        echo ""
+    done
+
+    if [ "$found" -eq 0 ]; then
+        echo -e "${YELLOW}$(t panel_proxy_list_empty)${RESET}"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1202,6 +1280,7 @@ while true; do
     echo -e "${CYAN}──────────────────────────────────────────────────────────────${RESET}"
     echo -e "${YELLOW}[17]${RESET} » ${GREEN}$(t menu_17)${RESET}"
     echo -e "${YELLOW}[18]${RESET} » ${GREEN}$(t menu_18)${RESET}"
+    echo -e "${YELLOW}[19]${RESET} » ${GREEN}$(t menu_19)${RESET}"
     echo -e "${CYAN}──────────────────────────────────────────────────────────────${RESET}"
     echo -e "${MAGENTA}[L]${RESET} » ${GREEN}$(t menu_lang)${RESET}"
     echo -e "${RED}[0]${RESET} » ${GREEN}$(t menu_0)${RESET}"
@@ -1227,7 +1306,8 @@ while true; do
         15) update_admin_panel; pause ;;
         16) setup_vapid_keys; pause ;;
         17) setup_panel_proxy; pause ;;
-        18) remove_panel_proxy; pause ;;
+        18) list_panel_proxies; pause ;;
+        19) remove_panel_proxy; pause ;;
         [Ll]) toggle_lang ;;
         0) echo -e "${CYAN}$(t goodbye)${RESET}"; exit 0 ;;
         *) echo -e "${RED}$(t invalid_choice)${RESET}"; sleep 1 ;;
