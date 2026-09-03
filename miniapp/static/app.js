@@ -1335,12 +1335,12 @@ async function fetchCustomGateways(amount, productId) {
   return _customGatewaysCache[cacheKey];
 }
 
-function renderReceiptCard(box, { amount, cardNumber, cardHolder, sendReceipt, successText, cryptoEnabled, createCryptoInvoice, customGateways, createCustomGatewayInvoice, cardToCardEnabled }) {
+function renderReceiptCard(box, { amount, cardNumber, cardHolder, sendReceipt, successText, cryptoEnabled, createCryptoInvoice, customGateways, createCustomGatewayInvoice, cardToCardEnabled, cardAutoEnabled, createCardAutoInvoice, checkCardAutoStatus }) {
   customGateways = customGateways || [];
   // اگر ادمین کارت‌به‌کارت دستی را غیرفعال کرده باشد (card_to_card_enabled=0)، این بخش
   // باید مثل بات اصلی مخفی شود؛ پیش‌فرض (undefined، برای سازگاری با پاسخ‌های قدیمی) فعال است.
   const cardEnabled = cardToCardEnabled !== false && !!cardNumber;
-  const noPaymentMethod = !cardEnabled && !cryptoEnabled && !customGateways.length;
+  const noPaymentMethod = !cardEnabled && !cryptoEnabled && !cardAutoEnabled && !customGateways.length;
   const customGatewaysHtml = customGateways.length ? `
     <div style="display:flex;align-items:center;gap:8px;margin:16px 0">
       <div style="flex:1;height:1px;background:var(--border,rgba(255,255,255,.1))"></div>
@@ -1375,6 +1375,10 @@ function renderReceiptCard(box, { amount, cardNumber, cardHolder, sendReceipt, s
         <div class="bank-card-amount">${fmt(amount)} تومان</div>
       </div>
     </div>
+    <div class="amount-copy-row" style="display:flex;gap:8px;margin-bottom:8px">
+      <button class="copy-chip" id="copy-toman-btn" style="flex:1">📋 ${fmt(amount)} تومان</button>
+      <button class="copy-chip" id="copy-rial-btn" style="flex:1">📋 ${fmt(amount * 10)} ریال</button>
+    </div>
     <button class="copy-chip" id="copy-card-btn" style="width:100%;margin-bottom:12px">📋 کپی شماره کارت</button>
 
     <label class="receipt-upload" id="receipt-drop">
@@ -1396,6 +1400,16 @@ function renderReceiptCard(box, { amount, cardNumber, cardHolder, sendReceipt, s
       <div id="crypto-pay-error" class="field-error"></div>
     ` : ""}
 
+    ${cardAutoEnabled ? `
+      <div style="display:flex;align-items:center;gap:8px;margin:16px 0">
+        <div style="flex:1;height:1px;background:var(--border,rgba(255,255,255,.1))"></div>
+        <span class="hint-text" style="margin:0">یا</span>
+        <div style="flex:1;height:1px;background:var(--border,rgba(255,255,255,.1))"></div>
+      </div>
+      <button class="btn outline" id="pay-card-auto-btn" style="width:100%">💳 کارت‌به‌کارت (تایید خودکار پیامکی)</button>
+      <div id="card-auto-error" class="field-error"></div>
+    ` : ""}
+
     ${customGatewaysHtml}
   `;
 
@@ -1403,6 +1417,18 @@ function renderReceiptCard(box, { amount, cardNumber, cardHolder, sendReceipt, s
     box.querySelector("#copy-card-btn").onclick = () => {
       navigator.clipboard.writeText(String(cardNumber).replace(/\s/g, ""));
       tg.HapticFeedback.notificationOccurred("success");
+    };
+    box.querySelector("#copy-toman-btn").onclick = (ev) => {
+      navigator.clipboard.writeText(String(amount));
+      tg.HapticFeedback.notificationOccurred("success");
+      const b = ev.currentTarget, t = b.textContent;
+      b.textContent = "✅ کپی شد"; setTimeout(() => { b.textContent = t; }, 1500);
+    };
+    box.querySelector("#copy-rial-btn").onclick = (ev) => {
+      navigator.clipboard.writeText(String(amount * 10));
+      tg.HapticFeedback.notificationOccurred("success");
+      const b = ev.currentTarget, t = b.textContent;
+      b.textContent = "✅ کپی شد"; setTimeout(() => { b.textContent = t; }, 1500);
     };
 
     const fileInput = box.querySelector("#receipt-file");
@@ -1465,6 +1491,25 @@ function renderReceiptCard(box, { amount, cardNumber, cardHolder, sendReceipt, s
     };
   }
 
+  if (cardAutoEnabled) {
+    const c2cBtn = box.querySelector("#pay-card-auto-btn");
+    const c2cErr = box.querySelector("#card-auto-error");
+    c2cBtn.onclick = async () => {
+      c2cErr.textContent = "";
+      c2cBtn.disabled = true;
+      c2cBtn.textContent = "در حال رزرو مبلغ...";
+      try {
+        const res = await createCardAutoInvoice();
+        tg.HapticFeedback.notificationOccurred("success");
+        renderCardAutoPendingState(box, res, successText, checkCardAutoStatus);
+      } catch (e) {
+        c2cErr.textContent = e.message;
+        c2cBtn.disabled = false;
+        c2cBtn.textContent = "💳 کارت‌به‌کارت (تایید خودکار پیامکی)";
+      }
+    };
+  }
+
   if (customGateways.length && createCustomGatewayInvoice) {
     const cgErr = box.querySelector("#custom-gw-error");
     box.querySelectorAll(".custom-gw-btn").forEach((btn) => {
@@ -1498,6 +1543,105 @@ function renderReceiptCard(box, { amount, cardNumber, cardHolder, sendReceipt, s
       };
     });
   }
+}
+
+// نمایش «مبلغ یکتا + شماره کارت» بعد از انتخاب کارت‌به‌کارت خودکار، و بررسی دوره‌ای
+// وضعیت فاکتور تا وقتی که پیامک بانک تطبیق داده شود (بدون نیاز به رفرش دستی کاربر).
+// مبلغ هم به تومان هم به ریال قابل کپی است، چون بعضی اپ‌های بانکی مبلغ واریز را به
+// ریال می‌خواهند و کاربر ممکن است دستی تایپ کند و اشتباه رقم بزند.
+function renderCardAutoPendingState(box, invoice, successText, checkCardAutoStatus) {
+  let remainingSeconds = Math.max(0, Math.round((new Date(invoice.expires_at + "Z") - new Date()) / 1000));
+  let pollTimer = null;
+  let countdownTimer = null;
+  const amountRial = invoice.amount_rial || invoice.amount_toman * 10;
+
+  const stop = () => {
+    if (pollTimer) clearInterval(pollTimer);
+    if (countdownTimer) clearInterval(countdownTimer);
+  };
+
+  const copyValue = (value, btn, label) => {
+    navigator.clipboard.writeText(String(value)).then(() => {
+      tg.HapticFeedback.notificationOccurred("success");
+      const original = btn.textContent;
+      btn.textContent = "✅ کپی شد";
+      setTimeout(() => { btn.textContent = original; }, 1500);
+    });
+  };
+
+  box.innerHTML = `
+    <h3><span class="ic">💳</span>واریز خودکار (تایید با پیامک بانک)</h3>
+    <div class="bank-card">
+      <div class="bank-card-top">
+        <div class="bank-card-chip"></div>
+        <div class="bank-card-brand">${escHtml(invoice.bank_name || "SHOP PAY")}</div>
+      </div>
+      <div class="bank-card-number" id="c2c-card-number">${formatCardNumber(invoice.card_number)}</div>
+      <div class="bank-card-bottom">
+        <div>
+          <div class="bank-card-holder-label">به نام</div>
+          <div class="bank-card-holder">${escHtml(invoice.card_holder || "---")}</div>
+        </div>
+        <div class="bank-card-amount">${fmt(invoice.amount_toman)} تومان</div>
+      </div>
+    </div>
+
+    <div class="hint-text" style="margin-top:10px;margin-bottom:4px">دقیقاً یکی از این دو مبلغ رو (بسته به این‌که اپ بانکت با تومانه یا ریال) کپی و واریز کن:</div>
+    <div class="amount-copy-row" style="display:flex;gap:8px;margin-bottom:6px">
+      <button class="copy-chip" id="copy-c2c-toman-btn" style="flex:1">📋 ${fmt(invoice.amount_toman)} تومان</button>
+      <button class="copy-chip" id="copy-c2c-rial-btn" style="flex:1">📋 ${fmt(amountRial)} ریال</button>
+    </div>
+    <button class="copy-chip" id="copy-c2c-card-btn" style="width:100%;margin-bottom:8px">📋 کپی شماره کارت</button>
+
+    <div class="state-msg" style="margin-top:4px">
+      <span class="ic">⚠️</span>
+      دقیقاً همین مبلغ رو واریز کن (نه یک ریال بیشتر یا کمتر). به‌محض دریافت پیامک بانک، این
+      صفحه خودکار به‌روز می‌شود — نیازی به ارسال رسید نیست.
+    </div>
+    <div class="hint-text" id="c2c-countdown" style="text-align:center;margin-top:10px"></div>
+    <div class="hint-text" id="c2c-poll-status" style="text-align:center;margin-top:4px">⏳ در حال بررسی وضعیت پرداخت...</div>
+  `;
+
+  box.querySelector("#copy-c2c-toman-btn").onclick = (ev) => copyValue(invoice.amount_toman, ev.currentTarget);
+  box.querySelector("#copy-c2c-rial-btn").onclick = (ev) => copyValue(amountRial, ev.currentTarget);
+  box.querySelector("#copy-c2c-card-btn").onclick = (ev) => copyValue(String(invoice.card_number).replace(/\D/g, ""), ev.currentTarget);
+
+  const countdownEl = box.querySelector("#c2c-countdown");
+  const statusEl = box.querySelector("#c2c-poll-status");
+
+  const renderCountdown = () => {
+    if (remainingSeconds <= 0) {
+      countdownEl.textContent = "⏳ مهلت این مبلغ تمام شد.";
+      return;
+    }
+    const m = Math.floor(remainingSeconds / 60);
+    const s = remainingSeconds % 60;
+    countdownEl.textContent = `⏳ اعتبار این مبلغ: ${m}:${String(s).padStart(2, "0")}`;
+  };
+  renderCountdown();
+  countdownTimer = setInterval(() => {
+    remainingSeconds -= 1;
+    renderCountdown();
+    if (remainingSeconds <= 0) clearInterval(countdownTimer);
+  }, 1000);
+
+  const poll = async () => {
+    try {
+      const status = await checkCardAutoStatus(invoice.invoice_id);
+      if (status.status === "completed") {
+        stop();
+        tg.HapticFeedback.notificationOccurred("success");
+        box.innerHTML = `<div class="state-msg"><span class="ic">✅</span>${successText}</div>`;
+      } else if (status.status === "manual_review") {
+        stop();
+        statusEl.textContent = "⏳ مهلت تمام شد و برای بررسی دستی به ادمین ارسال شد.";
+      }
+    } catch (e) {
+      // خطای موقت شبکه؛ در بررسی بعدی دوباره تلاش می‌شود.
+    }
+  };
+  pollTimer = setInterval(poll, 4000);
+  poll();
 }
 
 // ---------------------------------------------------------------------------
@@ -1671,6 +1815,9 @@ async function buyProduct(productId, quantity, code) {
         },
         cryptoEnabled: result.crypto_enabled,
         createCryptoInvoice: async () => api(`/api/orders/${result.order_id}/crypto-invoice`, { method: "POST" }),
+        cardAutoEnabled: result.card_to_card_auto_enabled,
+        createCardAutoInvoice: async () => api(`/api/orders/${result.order_id}/card-auto-invoice`, { method: "POST" }),
+        checkCardAutoStatus: async (invoiceId) => api(`/api/card-auto-invoice/${invoiceId}/status`),
         customGateways,
         createCustomGatewayInvoice: async (key) => api(`/api/orders/${result.order_id}/custom-invoice/${key}`, { method: "POST" }),
       });
@@ -1806,6 +1953,9 @@ async function submitCustomConfig(username, volumeGb, useCredit, info) {
         },
         cryptoEnabled: result.crypto_enabled,
         createCryptoInvoice: async () => api(`/api/orders/${result.order_id}/crypto-invoice`, { method: "POST" }),
+        cardAutoEnabled: result.card_to_card_auto_enabled,
+        createCardAutoInvoice: async () => api(`/api/orders/${result.order_id}/card-auto-invoice`, { method: "POST" }),
+        checkCardAutoStatus: async (invoiceId) => api(`/api/card-auto-invoice/${invoiceId}/status`),
         customGateways: customGateways2,
         createCustomGatewayInvoice: async (key) => api(`/api/orders/${result.order_id}/custom-invoice/${key}`, { method: "POST" }),
       });
@@ -1948,7 +2098,7 @@ async function renderWallet() {
       btn.disabled = true;
       try {
         const r = await api("/api/wallet/topup-request", { method: "POST", body: JSON.stringify({ amount }) });
-        renderTopupPaymentStep(r.topup_id, amount, r.card_number, r.card_holder, r.crypto_enabled, r.card_to_card_enabled);
+        renderTopupPaymentStep(r.topup_id, amount, r.card_number, r.card_holder, r.crypto_enabled, r.card_to_card_enabled, r.card_to_card_auto_enabled);
       } catch (e) {
         notify("خطا: " + e.message);
         btn.disabled = false;
@@ -1959,7 +2109,7 @@ async function renderWallet() {
   }
 }
 
-async function renderTopupPaymentStep(topupId, amount, cardNumber, cardHolder, cryptoEnabled, cardToCardEnabled) {
+async function renderTopupPaymentStep(topupId, amount, cardNumber, cardHolder, cryptoEnabled, cardToCardEnabled, cardAutoEnabled) {
   const box = document.getElementById("topup-card");
   const customGateways = await fetchCustomGateways(amount, null);
   renderReceiptCard(box, {
@@ -1973,6 +2123,9 @@ async function renderTopupPaymentStep(topupId, amount, cardNumber, cardHolder, c
     },
     cryptoEnabled,
     createCryptoInvoice: async () => api("/api/wallet/crypto-invoice", { method: "POST", body: JSON.stringify({ topup_id: topupId }) }),
+    cardAutoEnabled,
+    createCardAutoInvoice: async () => api("/api/wallet/card-auto-invoice", { method: "POST", body: JSON.stringify({ topup_id: topupId }) }),
+    checkCardAutoStatus: async (invoiceId) => api(`/api/card-auto-invoice/${invoiceId}/status`),
     customGateways,
     createCustomGatewayInvoice: async (key) => api(`/api/wallet/custom-invoice/${key}`, { method: "POST", body: JSON.stringify({ topup_id: topupId }) }),
   });
