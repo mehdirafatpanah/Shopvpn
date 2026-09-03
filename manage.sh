@@ -332,6 +332,26 @@ MSG_FA[panel_restarted_hint]="✅ سرویس ری‌استارت شد. حالا 
 MSG_EN[panel_not_installed_vapid_hint]="Admin panel not installed yet. These keys will be used automatically once installed (option 13)."
 MSG_FA[panel_not_installed_vapid_hint]="پنل مدیریت هنوز نصب نشده. بعد از نصب (گزینه ۱۳) این کلیدها خودکار استفاده می‌شوند."
 
+# setup_panel_proxy / remove_panel_proxy
+MSG_EN[prompt_domain_panel_proxy]="Domain for the VPN panel (e.g. panel.example.com): "
+MSG_FA[prompt_domain_panel_proxy]="دامنه‌ای که برای پنل VPN می‌خواهی (مثلا panel.example.com): "
+MSG_EN[prompt_backend_address]="Local address:port the VPN panel is listening on (e.g. 127.0.0.1:8000): "
+MSG_FA[prompt_backend_address]="آدرس:پورت داخلی که پنل VPN رویش گوش می‌دهد (مثلا 127.0.0.1:8000): "
+MSG_EN[backend_address_empty]="⛔️ Address:port cannot be empty."
+MSG_FA[backend_address_empty]="⛔️ آدرس:پورت نمی‌تواند خالی باشد."
+MSG_EN[prompt_backend_https]="Does the panel serve HTTPS itself on that port (usually with a self-signed certificate)? (yes/no): "
+MSG_FA[prompt_backend_https]="آیا خود پنل روی همان پورت HTTPS (معمولا با گواهی خودامضا) سرو می‌کند؟ (yes/no): "
+MSG_EN[panel_proxy_note]="⚠️ Make sure the VPN panel's own installer is NOT bound to ports 80/443 anymore (disable its own nginx/haproxy, or set it to listen only on the address:port you entered), otherwise it will still conflict with this server's nginx."
+MSG_FA[panel_proxy_note]="⚠️ مطمئن شو نصب‌کننده خود پنل VPN دیگر روی پورت 80/443 گوش نمی‌دهد (nginx/haproxy داخلی خودش را غیرفعال کن یا فقط روی همان آدرس:پورتی که وارد کردی محدودش کن)، وگرنه باز هم با nginx این سرور تصادم می‌کند."
+MSG_EN[panel_proxy_ready]="✅ Reverse-proxy is ready. The VPN panel is now reachable at: %s"
+MSG_FA[panel_proxy_ready]="✅ پروکسی آماده است. پنل VPN از این آدرس در دسترس است: %s"
+MSG_EN[remove_panel_proxy_warn]="⚠️ This will remove the nginx config for this VPN panel proxy (the SSL certificate is kept)."
+MSG_FA[remove_panel_proxy_warn]="⚠️ این کار کانفیگ nginx این پروکسی پنل VPN را حذف می‌کند (گواهی SSL نگه داشته می‌شود)."
+MSG_EN[prompt_domain_used_panel_proxy]="Which domain did you use for this VPN panel proxy? (to remove its nginx config): "
+MSG_FA[prompt_domain_used_panel_proxy]="برای این پروکسی پنل VPN چه دامنه‌ای استفاده کرده بودی؟ (برای حذف کانفیگ nginx): "
+MSG_EN[panel_proxy_removed]="✅ VPN panel proxy removed."
+MSG_FA[panel_proxy_removed]="✅ پروکسی پنل VPN حذف شد."
+
 # Main menu / منوی اصلی
 MSG_EN[menu_1]="Full bot install (first time)"
 MSG_FA[menu_1]="نصب کامل بات (اولین بار)"
@@ -365,12 +385,16 @@ MSG_EN[menu_15]="Update admin panel"
 MSG_FA[menu_15]="آپدیت پنل مدیریت وب"
 MSG_EN[menu_16]="Auto-generate VAPID key (admin panel push notifications)"
 MSG_FA[menu_16]="ساخت خودکار کلید VAPID (اعلان Push پنل مدیریت)"
+MSG_EN[menu_17]="Add domain proxy for VPN panel (share port 443)"
+MSG_FA[menu_17]="افزودن دامنه پروکسی برای پنل VPN (اشتراک پورت 443)"
+MSG_EN[menu_18]="Remove VPN panel domain proxy"
+MSG_FA[menu_18]="حذف دامنه پروکسی پنل VPN"
 MSG_EN[menu_lang]="Language / زبان (English ⇄ فارسی)"
 MSG_FA[menu_lang]="Language / زبان (English ⇄ فارسی)"
 MSG_EN[menu_0]="Exit"
 MSG_FA[menu_0]="خروج"
-MSG_EN[enter_choice_prompt]="Enter choice [0-16, L]: "
-MSG_FA[enter_choice_prompt]="یک گزینه انتخاب کن [0-16, L]: "
+MSG_EN[enter_choice_prompt]="Enter choice [0-18, L]: "
+MSG_FA[enter_choice_prompt]="یک گزینه انتخاب کن [0-18, L]: "
 MSG_EN[invalid_choice]="Invalid option."
 MSG_FA[invalid_choice]="گزینه نامعتبر است."
 MSG_EN[goodbye]="Goodbye 👋"
@@ -989,6 +1013,106 @@ remove_admin_panel() {
 }
 
 # ---------------------------------------------------------------------------
+# Action: reverse-proxy a domain (with SSL) to any locally/remotely running
+# VPN panel (Hiddify, Marzban, Marzneshin, 3X-UI, PasarGuard, ...), so it can
+# share port 443 with the mini-app / admin panel via nginx SNI vhosts.
+# عملیات: پروکسی یک دامنه (با SSL) به هر پنل VPN (Hiddify, Marzban,
+# Marzneshin, 3X-UI, PasarGuard و ...) تا پورت 443 را با مینی‌اپ/پنل مدیریت
+# از طریق vhost‌های nginx به اشتراک بگذارد.
+# ---------------------------------------------------------------------------
+setup_panel_proxy() {
+    read -rp "$(t prompt_domain_panel_proxy)" DOMAIN
+    if [ -z "$DOMAIN" ]; then
+        echo -e "${RED}$(t domain_empty)${RESET}"
+        return
+    fi
+
+    read -rp "$(t prompt_backend_address)" BACKEND
+    if [ -z "$BACKEND" ]; then
+        echo -e "${RED}$(t backend_address_empty)${RESET}"
+        return
+    fi
+
+    read -rp "$(t prompt_backend_https)" BACKEND_HTTPS
+    if [[ "$BACKEND_HTTPS" == "yes" ]]; then
+        BACKEND_SCHEME="https"
+    else
+        BACKEND_SCHEME="http"
+    fi
+
+    echo -e "${CYAN}$(t checking_dns)${RESET}"
+    SERVER_IP=$(curl -fsSL ifconfig.me || echo "")
+    DOMAIN_IP=$(getent ahosts "$DOMAIN" 2>/dev/null | awk '{print $1}' | head -1)
+    if [ -n "$SERVER_IP" ] && [ -n "$DOMAIN_IP" ] && [ "$SERVER_IP" != "$DOMAIN_IP" ]; then
+        echo -e "${YELLOW}$(t dns_mismatch_warn "$SERVER_IP" "$DOMAIN_IP")${RESET}"
+        read -rp "$(t continue_prompt)" CONT
+        [ "$CONT" != "yes" ] && return
+    fi
+
+    echo -e "${CYAN}$(t installing_nginx)${RESET}"
+    sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get update -qq
+    timeout 120 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 \
+        apt-get install -y -qq nginx certbot python3-certbot-nginx > /dev/null
+
+    echo -e "${CYAN}$(t configuring_nginx "$DOMAIN")${RESET}"
+    if [ "$BACKEND_SCHEME" == "https" ]; then
+        SSL_PROXY_LINES="        proxy_ssl_verify off;
+        proxy_ssl_server_name on;"
+    else
+        SSL_PROXY_LINES=""
+    fi
+    sudo bash -c "cat > /etc/nginx/sites-available/${DOMAIN}.conf" <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN;
+
+    location / {
+        proxy_pass ${BACKEND_SCHEME}://${BACKEND};
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+${SSL_PROXY_LINES}
+    }
+}
+EOF
+    sudo ln -sf "/etc/nginx/sites-available/${DOMAIN}.conf" "/etc/nginx/sites-enabled/${DOMAIN}.conf"
+    if ! sudo nginx -t > /dev/null 2>&1; then
+        echo -e "${RED}$(t nginx_error "$(sudo nginx -t 2>&1)")${RESET}"
+        return
+    fi
+    sudo systemctl reload nginx
+
+    echo -e "${CYAN}$(t getting_ssl)${RESET}"
+    sudo certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos \
+        --register-unsafely-without-email --redirect
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}$(t ssl_failed)${RESET}"
+        return
+    fi
+
+    echo -e "${YELLOW}$(t panel_proxy_note)${RESET}"
+    echo -e "${GREEN}${BOLD}$(t panel_proxy_ready "https://$DOMAIN")${RESET}"
+}
+
+# ---------------------------------------------------------------------------
+# Action: remove a VPN panel domain proxy
+# عملیات: حذف دامنه پروکسی پنل VPN
+# ---------------------------------------------------------------------------
+remove_panel_proxy() {
+    echo -e "${RED}${BOLD}$(t remove_panel_proxy_warn)${RESET}"
+    read -rp "$(t confirm_prompt)" CONFIRM
+    [ "$CONFIRM" != "yes" ] && { echo -e "${YELLOW}$(t cancelled)${RESET}"; return; }
+
+    read -rp "$(t prompt_domain_used_panel_proxy)" DOMAIN
+    if [ -n "$DOMAIN" ]; then
+        sudo rm -f "/etc/nginx/sites-enabled/${DOMAIN}.conf" "/etc/nginx/sites-available/${DOMAIN}.conf"
+        sudo systemctl reload nginx 2>/dev/null || true
+    fi
+    echo -e "${GREEN}$(t panel_proxy_removed)${RESET}"
+}
+
+# ---------------------------------------------------------------------------
 # Action: auto-generate VAPID keys for admin panel push notifications
 # عملیات: ساخت خودکار کلیدهای VAPID برای اعلان Push پنل مدیریت وب
 # ---------------------------------------------------------------------------
@@ -1076,6 +1200,9 @@ while true; do
     echo -e "${YELLOW}[15]${RESET} » ${GREEN}$(t menu_15)${RESET}"
     echo -e "${YELLOW}[16]${RESET} » ${GREEN}$(t menu_16)${RESET}"
     echo -e "${CYAN}──────────────────────────────────────────────────────────────${RESET}"
+    echo -e "${YELLOW}[17]${RESET} » ${GREEN}$(t menu_17)${RESET}"
+    echo -e "${YELLOW}[18]${RESET} » ${GREEN}$(t menu_18)${RESET}"
+    echo -e "${CYAN}──────────────────────────────────────────────────────────────${RESET}"
     echo -e "${MAGENTA}[L]${RESET} » ${GREEN}$(t menu_lang)${RESET}"
     echo -e "${RED}[0]${RESET} » ${GREEN}$(t menu_0)${RESET}"
     echo -e "${CYAN}──────────────────────────────────────────────────────────────${RESET}"
@@ -1099,6 +1226,8 @@ while true; do
         14) remove_admin_panel; pause ;;
         15) update_admin_panel; pause ;;
         16) setup_vapid_keys; pause ;;
+        17) setup_panel_proxy; pause ;;
+        18) remove_panel_proxy; pause ;;
         [Ll]) toggle_lang ;;
         0) echo -e "${CYAN}$(t goodbye)${RESET}"; exit 0 ;;
         *) echo -e "${RED}$(t invalid_choice)${RESET}"; sleep 1 ;;
