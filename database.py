@@ -4271,6 +4271,11 @@ class Database:
         with self._get_conn() as conn:
             if dependent:
                 conn.execute("DELETE FROM custom_configs WHERE panel_server_id=?", (server_id,))
+            # test_config_plans و custom_config_products هم FK به panel_servers دارند
+            # (بدون CASCADE)؛ بدون پاک‌کردن این‌ها، DELETE پایین با IntegrityError
+            # شکست می‌خورد چون PRAGMA foreign_keys=ON فعال است.
+            conn.execute("DELETE FROM test_config_plans WHERE panel_server_id=?", (server_id,))
+            conn.execute("DELETE FROM custom_config_products WHERE panel_server_id=?", (server_id,))
             conn.execute("DELETE FROM panel_servers WHERE id=?", (server_id,))
         return dependent
 
