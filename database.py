@@ -886,6 +886,58 @@ class Database:
             # چه در نصب تازه و چه در ارتقای نصب‌های قدیمی‌تر که این ستون را نداشتند.
             conn.execute("UPDATE admins SET role='owner' WHERE telegram_id=?", (owner_id,))
 
+    # جدول‌هایی که «داده‌ی فروشگاه» این نمونه‌ی بات محسوب می‌شوند و در factory
+    # reset کامل پاک می‌شوند. reseller_bots و pending_db_purges عمداً اینجا
+    # نیستند: این‌ها ثبت بات‌های زیرمجموعه/صف حذف فایل هستند، نه داده‌ی خودِ
+    # این بات، و factory reset یک بات نباید بات‌های نماینده‌ی دیگرش را قطع کند.
+    FACTORY_RESET_TABLES = (
+        "users", "categories", "products", "configs", "test_configs",
+        "test_config_plans", "orders", "discount_codes", "wallet_topups",
+        "crypto_invoices", "support_messages", "support_conversations",
+        "admin_presence", "tickets", "ticket_messages", "admin_logs",
+        "abangateway_invoices", "custom_gateways", "custom_gateway_invoices",
+        "card_to_card_cards", "card_to_card_invoices", "panel_servers",
+        "custom_config_pricing_tiers", "custom_config_products",
+        "custom_config_product_pricing_tiers", "custom_configs",
+        "custom_config_history", "reseller_credit_log", "reseller_requests",
+        "payment_webhook_logs", "web_push_subscriptions", "temp_messages",
+        "settings",
+    )
+
+    def factory_reset(self, owner_id: int = None):
+        """بازگشت این نمونه از دیتابیس (بات اصلی یا یک بات نمایندگی) به وضعیت
+        روز اول نصب: تمام داده‌ی فروشگاه (کاربران، سفارش‌ها، محصولات، کیف پول،
+        تیکت‌ها، تنظیمات و ...) پاک می‌شود. فقط خودِ صاحب این نمونه در جدول
+        admins/web_admins نگه داشته می‌شود تا بعد از ریست قفل نشود؛ بقیه‌ی
+        ادمین‌ها/کاربران پنل حذف می‌شوند چون در روز اول نصب وجود نداشتند.
+        بات‌های نماینده‌ی این بات (در صورت وجود) دست‌نخورده باقی می‌مانند.
+        اگر owner_id داده نشود، از همان ردیف role='owner' موجود در admins
+        همین دیتابیس خوانده می‌شود (هر نمونه از قبل دقیقاً یک owner دارد)."""
+        with self._get_conn() as conn:
+            c = conn.cursor()
+            if owner_id is None:
+                row = c.execute("SELECT telegram_id FROM admins WHERE role='owner' LIMIT 1").fetchone()
+                if not row:
+                    raise ValueError("این دیتابیس هیچ owner ثبت‌شده‌ای ندارد؛ factory_reset ناممکن است.")
+                owner_id = row["telegram_id"]
+            c.execute("PRAGMA foreign_keys = OFF")
+            for table in self.FACTORY_RESET_TABLES:
+                c.execute(f"DELETE FROM {table}")
+            c.execute("DELETE FROM admins WHERE telegram_id != ?", (owner_id,))
+            c.execute("DELETE FROM web_admins WHERE role != 'owner'")
+            c.execute("PRAGMA foreign_keys = ON")
+
+            c.execute("INSERT OR IGNORE INTO admins (telegram_id) VALUES (?)", (owner_id,))
+            c.execute("UPDATE admins SET role='owner' WHERE telegram_id=?", (owner_id,))
+            for k, v in DEFAULT_SETTINGS.items():
+                c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
+
+            self._seed_default_custom_config_product(conn)
+            self._seed_default_test_config_plan(conn)
+
+        self._settings_cache = None
+        self._admin_cache = None
+
     def _column_exists(self, conn, table: str, column: str) -> bool:
         cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
         return column in cols

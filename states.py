@@ -238,6 +238,10 @@ class AdminRestoreBackup(StatesGroup):
     waiting_confirm = State()
 
 
+class AdminFactoryReset(StatesGroup):
+    waiting_confirm_text = State()
+
+
 class AdminAddPanelServer(StatesGroup):
     waiting_name = State()
     waiting_type = State()

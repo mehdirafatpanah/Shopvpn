@@ -942,7 +942,23 @@ def admin_backup_menu_kb() -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="📥 دریافت بکاپ فوری", callback_data="adm_backup_now")],
         [InlineKeyboardButton(text="♻️ بازیابی از فایل بکاپ", callback_data="adm_restore_start")],
+        [InlineKeyboardButton(text="🏭 بازگشت به حالت کارخانه", callback_data="adm_factory_reset_start")],
         [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:management")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_factory_reset_confirm_kb() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="⚠️ بله، ادامه بده", callback_data="adm_factory_reset_step2")],
+        [InlineKeyboardButton(text="❌ انصراف", callback_data="adm_factory_reset_cancel")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_factory_reset_waiting_kb() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="❌ انصراف", callback_data="adm_factory_reset_cancel")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

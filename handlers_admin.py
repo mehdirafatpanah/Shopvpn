@@ -79,6 +79,7 @@ from states import (
     AdminMinAmountSettings,
     AdminCustomGatewayMinAmount,
     AdminRestoreBackup,
+    AdminFactoryReset,
     AdminAddPanelServer,
     AdminSetPanelTemplate,
     AdminSetPanelSubUrl,
@@ -6423,6 +6424,76 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 pass
         await state.clear()
         await safe_edit(call, "❌ بازیابی لغو شد.", reply_markup=kb.admin_back_kb())
+        await call.answer()
+
+    # -------------------------------------------------------------------
+    # بازگشت به حالت کارخانه (روز اول نصب)
+    # -------------------------------------------------------------------
+    # فقط owner همین بات (اصلی یا نمایندگی) دسترسی دارد؛ همه‌ی داده‌ی این بات
+    # پاک می‌شود و فقط owner باقی می‌ماند. قبل از پاک‌سازی یک بکاپ ایمنی
+    # خودکار گرفته می‌شود.
+
+    @router.callback_query(F.data == "adm_factory_reset_start")
+    async def cb_factory_reset_start(call: CallbackQuery, state: FSMContext):
+        if not owner_only(call.from_user.id):
+            return await deny_support(call)
+        await state.clear()
+        await safe_edit(call, 
+            "🏭 بازگشت به حالت کارخانه\n\n"
+            "با تایید، همه‌ی داده‌ی این بات (کاربرها، سفارش‌ها، محصولات، کیف پول، تیکت‌ها، تنظیمات و ...) "
+            "پاک می‌شود؛ دقیقاً مثل روز اول نصب، هم در بات و مینی‌اپ هم در پنل وب. فقط حساب خودت به‌عنوان "
+            "owner باقی می‌ماند. نماینده‌های زیرمجموعه‌ی این بات (در صورت وجود) دست‌نخورده می‌مانند.\n\n"
+            "⚠️ این کار قابل بازگشت نیست مگر با بکاپ (یک بکاپ ایمنی خودکار قبل از پاک‌سازی گرفته می‌شود). "
+            "مطمئنی؟",
+            reply_markup=kb.admin_factory_reset_confirm_kb(),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_factory_reset_step2")
+    async def cb_factory_reset_step2(call: CallbackQuery, state: FSMContext):
+        if not owner_only(call.from_user.id):
+            return await deny_support(call)
+        await state.set_state(AdminFactoryReset.waiting_confirm_text)
+        await safe_edit(call, 
+            "⚠️ تایید نهایی: برای پاک‌سازی، عبارت RESET را دقیقاً همین‌جا تایپ و ارسال کن.",
+            reply_markup=kb.admin_factory_reset_waiting_kb(),
+        )
+        await call.answer()
+
+    @router.message(AdminFactoryReset.waiting_confirm_text)
+    async def on_factory_reset_confirm_text(message: Message, state: FSMContext):
+        if not owner_only(message.from_user.id):
+            return
+        if (message.text or "").strip().upper() != "RESET":
+            return await message.answer("❌ عبارت را دقیقاً RESET وارد کن، یا برای انصراف دکمه‌ی زیر پیام قبلی را بزن.")
+
+        await state.clear()
+        status_msg = await message.answer("⏳ در حال گرفتن بکاپ ایمنی و پاک‌سازی...")
+        backup_dir = os.path.join(os.path.dirname(os.path.abspath(db.db_path)), "backups")
+        try:
+            safety_backup = await asyncio.to_thread(create_backup, db.db_path, backup_dir, 14)
+        except Exception:
+            safety_backup = None
+        try:
+            await asyncio.to_thread(db.factory_reset)
+        except Exception as e:
+            return await status_msg.edit_text(f"❌ بازگشت به حالت کارخانه ناموفق بود: {e}")
+
+        (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "factory_reset",
+            f"بازگشت کامل به حالت کارخانه از طریق بات؛ بکاپ ایمنی: "
+            f"{os.path.basename(safety_backup) if safety_backup else 'ناموفق'}"))
+        await status_msg.edit_text(
+            "✅ بات به حالت کارخانه بازگشت؛ همه‌ی داده‌ها پاک شدند و فقط حساب owner باقی ماند.\n"
+            f"بکاپ قبل از پاک‌سازی: {os.path.basename(safety_backup) if safety_backup else 'ناموفق'}"
+        )
+        await message.answer("🔧 پنل مدیریت:", reply_markup=kb.admin_panel_kb(db, is_main_bot))
+
+    @router.callback_query(F.data == "adm_factory_reset_cancel")
+    async def cb_factory_reset_cancel(call: CallbackQuery, state: FSMContext):
+        if not owner_only(call.from_user.id):
+            return await deny_support(call)
+        await state.clear()
+        await safe_edit(call, "❌ بازگشت به حالت کارخانه لغو شد.", reply_markup=kb.admin_back_kb())
         await call.answer()
 
     # -------------------------------------------------------------------
