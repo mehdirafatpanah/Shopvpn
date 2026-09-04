@@ -2258,6 +2258,7 @@ function renderUsersBrutalist(res, pages) {
 
 async function showUserDetail(tgId) {
   const d = await apiGet(`/users/${tgId}`);
+  const services = await apiGet(`/users/${tgId}/custom-configs`).catch(() => []);
   const isSenior = hasPerm('users');
   const u = d.user;
   const displayName = u.username ? '@' + u.username : (u.first_name || tgId);
@@ -2292,6 +2293,11 @@ async function showUserDetail(tgId) {
       <button class="btn btn-primary" id="wallet-submit">اعمال</button>
     </div>` : ''}
 
+    ${services.length ? `
+    <h4 class="ud-section-title">سرویس‌های مستقیم-پنل</h4>
+    <div id="ud-services">${renderUserServices(services, isSenior)}</div>
+    ` : ''}
+
     <h4 class="ud-section-title">سفارش‌های اخیر</h4>
     <div class="table-wrap"><table><thead><tr><th>#</th><th>محصول</th><th>مبلغ</th><th>وضعیت</th><th>تاریخ</th></tr></thead>
     <tbody>${d.orders.slice(0, 10).map(o => `<tr><td class="mono">#${o.id}</td><td>${esc(o.product_name || '-')}</td><td class="mono">${fmt(o.final_price)}</td><td>${esc(o.status)}</td><td class="mono">${fmtDate(o.created_at)}</td></tr>`).join('') || `<tr><td colspan="5" class="empty-state"><div class="icon">${svg('empty')}</div>سفارشی نیست</td></tr>`}</tbody></table></div>
@@ -2307,7 +2313,79 @@ async function showUserDetail(tgId) {
       try { await apiPost(`/users/${tgId}/wallet`, { delta }); toast('کیف پول به‌روزرسانی شد.'); close(); }
       catch (e) { handleErr(e); }
     });
+    if (isSenior) wireUserServiceActions(body, tgId, close);
   }, { wide: true });
+}
+
+/* سرویس‌های مستقیم-پنل یک کاربر - معادل «سرویس‌های من» در ربات، ولی از
+   سمت ادمین: فعال/غیرفعال، تغییر نام، تمدید خودکار، انتقال، قطع دسترسی و
+   تاریخچه، دقیقاً روی همان توابع دیتابیس/پروایدر که بات و مینی‌اپ استفاده
+   می‌کنند (پس رفتار و اثر هر سه سطح یکسان است). */
+function renderUserServices(services, isSenior) {
+  return `<div class="table-wrap"><table><thead><tr>
+    <th>نام</th><th>حجم/مدت</th><th>وضعیت</th><th>تمدید خودکار</th>${isSenior ? '<th>اکشن‌ها</th>' : ''}
+  </tr></thead><tbody>
+  ${services.map(c => `
+    <tr data-svc-row="${c.id}">
+      <td>${esc(c.display_name)}${c.is_test ? ' <span class="badge">تست</span>' : ''}</td>
+      <td class="mono">${c.volume_gb} گیگ / ${c.duration_days} روز</td>
+      <td><span class="badge ${c.enabled ? 'badge-approved' : 'badge-rejected'}">${c.enabled ? 'فعال' : 'غیرفعال'}</span></td>
+      <td>${c.duration_days > 0 ? (c.auto_renew ? 'فعال' : 'غیرفعال') : '—'}</td>
+      ${isSenior && !c.is_test ? `<td style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn btn-sm" data-svc-action="toggle" data-svc-id="${c.id}">${c.enabled ? 'غیرفعال کردن' : 'فعال کردن'}</button>
+        <button class="btn btn-sm" data-svc-action="rename" data-svc-id="${c.id}">تغییر نام</button>
+        ${c.duration_days > 0 ? `<button class="btn btn-sm" data-svc-action="autorenew" data-svc-id="${c.id}" data-svc-state="${c.auto_renew ? 1 : 0}">تمدید خودکار</button>` : ''}
+        <button class="btn btn-sm" data-svc-action="transfer" data-svc-id="${c.id}">انتقال</button>
+        <button class="btn btn-sm" data-svc-action="cut" data-svc-id="${c.id}">قطع دسترسی</button>
+        <button class="btn btn-sm" data-svc-action="history" data-svc-id="${c.id}">تاریخچه</button>
+      </td>` : (isSenior ? '<td>—</td>' : '')}
+    </tr>
+  `).join('')}
+  </tbody></table></div>`;
+}
+
+const SVC_EVENT_LABEL = {
+  purchase: 'خرید', renewal: 'تمدید', toggle: 'فعال/غیرفعال',
+  auto_renew_toggle: 'تمدید خودکار', rename: 'تغییر نام', transfer: 'انتقال',
+  cut_access: 'قطع دسترسی', auto_renew: 'تمدید خودکار (خودکار انجام‌شده)',
+};
+
+function wireUserServiceActions(body, tgId, close) {
+  $$('[data-svc-action]', body).forEach(el => {
+    el.addEventListener('click', async () => {
+      const action = el.dataset.svcAction;
+      const id = el.dataset.svcId;
+      try {
+        if (action === 'toggle') {
+          await apiPost(`/custom-configs/${id}/toggle`);
+        } else if (action === 'rename') {
+          const newName = prompt('نام جدید کانفیگ (فقط حروف انگلیسی، عدد و آندرلاین، ۳ تا ۲۰ کاراکتر):');
+          if (!newName) return;
+          await apiPost(`/custom-configs/${id}/rename`, { new_name: newName });
+        } else if (action === 'autorenew') {
+          const enabled = el.dataset.svcState !== '1';
+          await apiPost(`/custom-configs/${id}/auto-renew`, { enabled });
+        } else if (action === 'transfer') {
+          const targetId = prompt('آی‌دی عددی تلگرام کاربر مقصد:');
+          if (!targetId || !/^\d+$/.test(targetId.trim())) { toast('آی‌دی عددی نامعتبر است.', true); return; }
+          if (!confirm('این عملیات غیرقابل بازگشت است. ادامه می‌دهید؟')) return;
+          await apiPost(`/custom-configs/${id}/transfer`, { target_telegram_id: parseInt(targetId.trim(), 10) });
+        } else if (action === 'cut') {
+          if (!confirm('لینک فعلی از کار می‌افتد و لینک جدیدی با همان حجم/زمان باقی‌مانده صادر می‌شود. ادامه می‌دهید؟')) return;
+          await apiPost(`/custom-configs/${id}/cut-access`);
+        } else if (action === 'history') {
+          const rows = await apiGet(`/custom-configs/${id}/history`);
+          openModal('تاریخچه‌ی سرویس', rows.length
+            ? `<div class="table-wrap"><table><thead><tr><th>رویداد</th><th>جزئیات</th><th>تاریخ</th></tr></thead><tbody>${rows.map(r => `<tr><td>${esc(SVC_EVENT_LABEL[r.event_type] || r.event_type)}</td><td>${esc(r.detail || '-')}</td><td class="mono">${fmtDate(r.created_at)}</td></tr>`).join('')}</tbody></table></div>`
+            : `<div class="empty-state">${svg('empty')}<div>تاریخچه‌ای ثبت نشده.</div></div>`);
+          return;
+        }
+        toast('انجام شد.');
+        close();
+        showUserDetail(tgId);
+      } catch (e) { handleErr(e); }
+    });
+  });
 }
 
 /* ============================================================ catalog === */
@@ -4920,6 +4998,11 @@ const SETTINGS_GROUPS = [
     { key: 'svc_show_update_config', label: 'دکمه «بروزرسانی کانفیگ»', type: 'bool' },
     { key: 'svc_show_qr', label: 'دکمه «کیوآر کانفیگ»', type: 'bool' },
     { key: 'svc_show_delete', label: 'دکمه «حذف کامل سرویس»', type: 'bool' },
+    { key: 'svc_show_toggle', label: 'دکمه «فعال/غیرفعال کردن کانفیگ»', type: 'bool' },
+    { key: 'svc_show_rename', label: 'دکمه «تغییر نام کانفیگ»', type: 'bool' },
+    { key: 'svc_show_auto_renew', label: 'دکمه «تمدید خودکار»', type: 'bool' },
+    { key: 'svc_show_transfer', label: 'دکمه «انتقال کانفیگ»', type: 'bool' },
+    { key: 'svc_show_history', label: 'دکمه «تاریخچه سرویس»', type: 'bool' },
   ]},
 ];
 
