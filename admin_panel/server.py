@@ -1112,6 +1112,186 @@ async def api_adjust_wallet(tg_id: int, body: WalletAdjustBody, admin=Depends(re
     return {"ok": True}
 
 
+# ---------------------------------------------------------------- user services --
+# مدیریت سرویس‌های مستقیم-پنل یک کاربر خاص از سمت ادمین؛ معادل دکمه‌های
+# «سرویس‌های من» در ربات (svc_toggle/svc_rename/svc_autorenew/svc_transfer/
+# svc_hist/svc_cut در handlers_user.py) که تا امروز فقط خودِ کاربر در ربات
+# به آن‌ها دسترسی داشت. همان توابع دیتابیس/پروایدر اینجا هم استفاده می‌شوند.
+
+def _admin_get_custom_config_or_404(custom_config_id: int):
+    row = db.get_custom_config_by_id(custom_config_id)
+    if not row:
+        raise HTTPException(404, "کانفیگ یافت نشد.")
+    return row
+
+
+@app.get("/api/users/{tg_id}/custom-configs")
+def api_user_custom_configs(tg_id: int, admin=Depends(get_current_admin)):
+    configs = db.get_custom_configs_for_user(tg_id)
+    return [
+        {
+            "id": c["id"],
+            "username": c["username"],
+            "display_name": c["display_name"] or c["username"],
+            "volume_gb": c["volume_gb"],
+            "duration_days": c["duration_days"],
+            "subscription_url": c["subscription_url"],
+            "created_at": c["created_at"],
+            "expires_at": c["expires_at"],
+            "is_test": c["source"] == "test",
+            "enabled": (c["enabled"] if "enabled" in c.keys() else 1) == 1,
+            "auto_renew": (c["auto_renew"] if "auto_renew" in c.keys() else 0) == 1,
+        }
+        for c in configs
+    ]
+
+
+@app.post("/api/custom-configs/{custom_config_id}/toggle")
+async def api_admin_custom_config_toggle(custom_config_id: int, admin=Depends(require_permission("users"))):
+    cc = _admin_get_custom_config_or_404(custom_config_id)
+    if cc["source"] == "test":
+        raise HTTPException(403, "این قابلیت برای کانفیگ تست در دسترس نیست.")
+    new_enabled = not ((cc["enabled"] if "enabled" in cc.keys() else 1) == 1)
+    server = (await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])) if cc["panel_server_id"] else None
+    if not server or not server["is_active"]:
+        raise HTTPException(409, "سرور پنل مربوط به این سرویس یافت نشد یا غیرفعال است.")
+    try:
+        provider = get_provider(server)
+        await provider.set_enabled(cc["username"], new_enabled)
+    except PanelError as e:
+        raise HTTPException(502, f"ناموفق بود: {e}")
+    (await asyncio.to_thread(db.set_custom_config_enabled, cc["id"], cc["user_id"], new_enabled))
+    (await asyncio.to_thread(db.add_custom_config_history, cc["id"], "toggle",
+        f"{'فعال' if new_enabled else 'غیرفعال'} شد (پنل وب - {admin['username']})"))
+    (await asyncio.to_thread(db.log_admin_action, admin["id"], "custom_config_toggle",
+        f"سرویس «{cc['username']}» کاربر {cc['user_id']} {'فعال' if new_enabled else 'غیرفعال'} شد (پنل وب)",
+        "user", cc["user_id"]))
+    return {"status": "ok", "enabled": new_enabled}
+
+
+class AdminSvcRenameBody(BaseModel):
+    new_name: str
+
+
+@app.post("/api/custom-configs/{custom_config_id}/rename")
+async def api_admin_custom_config_rename(custom_config_id: int, body: AdminSvcRenameBody,
+                                          admin=Depends(require_permission("users"))):
+    cc = _admin_get_custom_config_or_404(custom_config_id)
+    if cc["source"] == "test":
+        raise HTTPException(403, "این قابلیت برای کانفیگ تست در دسترس نیست.")
+    new_label = (body.new_name or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_]{3,20}", new_label):
+        raise HTTPException(400, "نامعتبر است. فقط حروف انگلیسی، عدد و آندرلاین، بین ۳ تا ۲۰ کاراکتر.")
+    current_label = cc["display_name"] or cc["username"]
+    if new_label == current_label:
+        raise HTTPException(400, "این نام همان نام فعلی است.")
+    if (await asyncio.to_thread(db.is_custom_username_taken, new_label)):
+        raise HTTPException(409, "این نام قبلاً استفاده شده. نام دیگری انتخاب کنید.")
+    server = (await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])) if cc["panel_server_id"] else None
+    panel_username = None
+    note = "فقط نام نمایشی داخل بات تغییر کرد؛ لینک/کانفیگ فعلی روی پنل بدون تغییر کار می‌کند."
+    if server and server["is_active"]:
+        try:
+            provider = get_provider(server)
+            await provider.rename_user(cc["username"], new_label)
+            panel_username = new_label
+            note = "روی خودِ پنل هم اعمال شد."
+        except PanelError:
+            pass
+    (await asyncio.to_thread(db.rename_custom_config, cc["id"], cc["user_id"], new_label, panel_username))
+    (await asyncio.to_thread(db.add_custom_config_history, cc["id"], "rename",
+        f"{current_label} ← {new_label} ({note}) (پنل وب - {admin['username']})"))
+    (await asyncio.to_thread(db.log_admin_action, admin["id"], "custom_config_rename",
+        f"سرویس «{current_label}» کاربر {cc['user_id']} به «{new_label}» تغییر نام کرد (پنل وب)",
+        "user", cc["user_id"]))
+    return {"status": "ok", "display_name": new_label, "note": note}
+
+
+class AdminSvcAutoRenewBody(BaseModel):
+    enabled: bool
+
+
+@app.post("/api/custom-configs/{custom_config_id}/auto-renew")
+async def api_admin_custom_config_auto_renew(custom_config_id: int, body: AdminSvcAutoRenewBody,
+                                              admin=Depends(require_permission("users"))):
+    cc = _admin_get_custom_config_or_404(custom_config_id)
+    if cc["source"] == "test":
+        raise HTTPException(403, "این قابلیت برای کانفیگ تست در دسترس نیست.")
+    if (cc["duration_days"] or 0) <= 0:
+        raise HTTPException(400, "این کانفیگ نامحدود است و نیازی به تمدید خودکار ندارد.")
+    (await asyncio.to_thread(db.set_custom_config_auto_renew, cc["id"], cc["user_id"], body.enabled))
+    (await asyncio.to_thread(db.add_custom_config_history, cc["id"], "auto_renew_toggle",
+        f"{'فعال' if body.enabled else 'غیرفعال'} شد (پنل وب - {admin['username']})"))
+    (await asyncio.to_thread(db.log_admin_action, admin["id"], "custom_config_auto_renew",
+        f"تمدید خودکار سرویس «{cc['username']}» کاربر {cc['user_id']} {'فعال' if body.enabled else 'غیرفعال'} شد (پنل وب)",
+        "user", cc["user_id"]))
+    return {"status": "ok", "auto_renew": body.enabled}
+
+
+class AdminSvcTransferBody(BaseModel):
+    target_telegram_id: int
+
+
+@app.post("/api/custom-configs/{custom_config_id}/transfer")
+async def api_admin_custom_config_transfer(custom_config_id: int, body: AdminSvcTransferBody,
+                                            admin=Depends(require_permission("users"))):
+    cc = _admin_get_custom_config_or_404(custom_config_id)
+    if cc["source"] == "test":
+        raise HTTPException(403, "این قابلیت برای کانفیگ تست در دسترس نیست.")
+    target_id = body.target_telegram_id
+    if target_id == cc["user_id"]:
+        raise HTTPException(400, "این کانفیگ همین الان مال همین کاربر است.")
+    target_user = (await asyncio.to_thread(db.get_user, target_id))
+    if not target_user:
+        raise HTTPException(404, "این کاربر بات را استارت نکرده یا آی‌دی نادرست است.")
+    from_user_id = cc["user_id"]
+    ok = (await asyncio.to_thread(db.transfer_custom_config, cc["id"], from_user_id, target_id))
+    if not ok:
+        raise HTTPException(409, "انتقال ناموفق بود.")
+    label = cc["display_name"] or cc["username"]
+    (await asyncio.to_thread(db.add_custom_config_history, cc["id"], "transfer",
+        f"از {from_user_id} به {target_id} (پنل وب - {admin['username']})"))
+    (await asyncio.to_thread(db.log_admin_action, admin["id"], "custom_config_transfer",
+        f"سرویس «{label}» از کاربر {from_user_id} به {target_id} منتقل شد (پنل وب)",
+        "user", from_user_id))
+    await notify_user(target_id, f"📦 یک کانفیگ («{label}») از طرف مدیریت به حساب شما منتقل شد.\n"
+                                  "برای مشاهده، حساب کاربری ← سرویس‌ها و سفارش‌های من را ببینید.")
+    return {"status": "ok"}
+
+
+@app.get("/api/custom-configs/{custom_config_id}/history")
+def api_admin_custom_config_history(custom_config_id: int, admin=Depends(get_current_admin)):
+    cc = _admin_get_custom_config_or_404(custom_config_id)
+    rows = db.get_custom_config_history(cc["id"])
+    return [
+        {"event_type": r["event_type"], "detail": r["detail"], "created_at": r["created_at"]}
+        for r in rows
+    ]
+
+
+@app.post("/api/custom-configs/{custom_config_id}/cut-access")
+async def api_admin_custom_config_cut_access(custom_config_id: int, admin=Depends(require_permission("users"))):
+    cc = _admin_get_custom_config_or_404(custom_config_id)
+    if cc["source"] == "test":
+        raise HTTPException(403, "این قابلیت برای کانفیگ تست در دسترس نیست.")
+    server = (await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])) if cc["panel_server_id"] else None
+    if not server or not server["is_active"]:
+        raise HTTPException(409, "سرور پنل مربوط به این سرویس یافت نشد یا غیرفعال است.")
+    try:
+        provider = get_provider(server)
+        result = await provider.revoke_credentials(cc["username"])
+    except PanelError as e:
+        raise HTTPException(502, f"قطع دسترسی ناموفق بود: {e}")
+    if result.subscription_url:
+        (await asyncio.to_thread(db.update_custom_config_subscription_url, cc["id"], result.subscription_url))
+    (await asyncio.to_thread(db.add_custom_config_history, cc["id"], "cut_access",
+        f"دسترسی قطع و لینک جدید صادر شد (پنل وب - {admin['username']})"))
+    (await asyncio.to_thread(db.log_admin_action, admin["id"], "custom_config_cut_access",
+        f"دسترسی سرویس «{cc['username']}» کاربر {cc['user_id']} قطع و لینک جدید صادر شد (پنل وب)",
+        "user", cc["user_id"]))
+    return {"status": "ok", "subscription_url": result.subscription_url}
+
+
 # ------------------------------------------------------- categories/products --
 
 
