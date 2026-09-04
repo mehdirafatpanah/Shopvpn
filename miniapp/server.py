@@ -460,12 +460,15 @@ def api_custom_configs(auth=Depends(get_verified_user)):
         {
             "id": c["id"],
             "username": c["username"],
+            "display_name": c["display_name"] or c["username"],
             "volume_gb": c["volume_gb"],
             "duration_days": c["duration_days"],
             "subscription_url": c["subscription_url"],
             "created_at": c["created_at"],
             "expires_at": c["expires_at"],
             "is_test": c["source"] == "test",
+            "enabled": (c["enabled"] if "enabled" in c.keys() else 1) == 1,
+            "auto_renew": (c["auto_renew"] if "auto_renew" in c.keys() else 0) == 1,
         }
         for c in configs
     ]
@@ -494,6 +497,166 @@ async def api_delete_custom_config(custom_config_id: int, auth=Depends(get_verif
                 )
     db.delete_owned_custom_config(custom_config_id, tg_id)
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# مدیریت سرویس (فعال/غیرفعال، تغییر نام، تمدید خودکار، انتقال، تاریخچه،
+# قطع دسترسی) - معادل دکمه‌های صفحه‌ی جزئیات سرویس در ربات اصلی
+# (handlers_user.py، بخش svc_toggle/svc_rename/svc_autorenew/svc_transfer/
+# svc_hist/svc_cut) تا این اکشن‌ها از مینی‌اپ هم در دسترس باشند و هر دو
+# رابط از همان توابع دیتابیس/پروایدر استفاده کنند.
+# ---------------------------------------------------------------------------
+
+def _require_svc_feature(db: Database, setting_key: str):
+    if db.get_setting(setting_key, "1") != "1":
+        raise HTTPException(status_code=403, detail="این قابلیت غیرفعال است.")
+
+
+def _owned_custom_config_or_404(db: Database, custom_config_id: int, tg_id: int):
+    cc = db.get_custom_config_owned(custom_config_id, tg_id)
+    if not cc:
+        raise HTTPException(status_code=404, detail="کانفیگ یافت نشد یا متعلق به شما نیست.")
+    if cc["source"] == "test":
+        raise HTTPException(status_code=403, detail="این قابلیت برای کانفیگ تست در دسترس نیست.")
+    return cc
+
+
+class SvcRenameBody(BaseModel):
+    new_name: str
+
+
+class SvcAutoRenewBody(BaseModel):
+    enabled: bool
+
+
+class SvcTransferBody(BaseModel):
+    target_telegram_id: int
+
+
+@app.post("/api/custom-configs/{custom_config_id}/toggle")
+async def api_custom_config_toggle(custom_config_id: int, auth=Depends(get_verified_user)):
+    tg_id, db, _ = auth
+    _require_svc_feature(db, "svc_show_toggle")
+    cc = _owned_custom_config_or_404(db, custom_config_id, tg_id)
+    new_enabled = not ((cc["enabled"] if "enabled" in cc.keys() else 1) == 1)
+    server = db.get_panel_server(cc["panel_server_id"]) if cc["panel_server_id"] else None
+    if not server or not server["is_active"]:
+        raise HTTPException(status_code=409, detail="سرور پنل مربوط به این سرویس یافت نشد یا غیرفعال است.")
+    try:
+        provider = get_provider(server)
+        await provider.set_enabled(cc["username"], new_enabled)
+    except PanelError as e:
+        raise HTTPException(status_code=502, detail=f"ناموفق بود: {e}")
+    db.set_custom_config_enabled(cc["id"], tg_id, new_enabled)
+    db.add_custom_config_history(cc["id"], "toggle", "فعال شد" if new_enabled else "غیرفعال شد")
+    return {"status": "ok", "enabled": new_enabled}
+
+
+@app.post("/api/custom-configs/{custom_config_id}/rename")
+async def api_custom_config_rename(custom_config_id: int, body: SvcRenameBody, auth=Depends(get_verified_user)):
+    tg_id, db, _ = auth
+    _require_svc_feature(db, "svc_show_rename")
+    cc = _owned_custom_config_or_404(db, custom_config_id, tg_id)
+    prefix = db.get_custom_config_prefix()
+    current_label = cc["display_name"] or cc["username"]
+    suffix = (body.new_name or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_]{3,20}", suffix):
+        raise HTTPException(status_code=400, detail="نامعتبر است. فقط حروف انگلیسی، عدد و آندرلاین، بین ۳ تا ۲۰ کاراکتر.")
+    new_label = f"{prefix}-{suffix}" if (prefix and current_label.startswith(prefix + "-")) else suffix
+    if new_label == current_label:
+        raise HTTPException(status_code=400, detail="این نام همان نام فعلی است.")
+    if db.is_custom_username_taken(new_label):
+        raise HTTPException(status_code=409, detail="این نام قبلاً استفاده شده. نام دیگری انتخاب کنید.")
+    server = db.get_panel_server(cc["panel_server_id"]) if cc["panel_server_id"] else None
+    panel_username = None
+    note = "فقط نام نمایشی داخل بات تغییر کرد؛ لینک/کانفیگ فعلی روی پنل بدون تغییر کار می‌کند."
+    if server and server["is_active"]:
+        try:
+            provider = get_provider(server)
+            await provider.rename_user(cc["username"], new_label)
+            panel_username = new_label
+            note = "روی خودِ پنل هم اعمال شد."
+        except PanelError:
+            pass
+    db.rename_custom_config(cc["id"], tg_id, new_label, panel_username)
+    db.add_custom_config_history(cc["id"], "rename", f"{current_label} ← {new_label} ({note})")
+    return {"status": "ok", "display_name": new_label, "note": note}
+
+
+@app.post("/api/custom-configs/{custom_config_id}/auto-renew")
+def api_custom_config_auto_renew(custom_config_id: int, body: SvcAutoRenewBody, auth=Depends(get_verified_user)):
+    tg_id, db, _ = auth
+    _require_svc_feature(db, "svc_show_auto_renew")
+    cc = _owned_custom_config_or_404(db, custom_config_id, tg_id)
+    if (cc["duration_days"] or 0) <= 0:
+        raise HTTPException(status_code=400, detail="این کانفیگ نامحدود است و نیازی به تمدید خودکار ندارد.")
+    db.set_custom_config_auto_renew(cc["id"], tg_id, body.enabled)
+    db.add_custom_config_history(cc["id"], "auto_renew_toggle", "فعال شد" if body.enabled else "غیرفعال شد")
+    return {"status": "ok", "auto_renew": body.enabled}
+
+
+@app.post("/api/custom-configs/{custom_config_id}/transfer")
+async def api_custom_config_transfer(custom_config_id: int, body: SvcTransferBody, auth=Depends(get_verified_user)):
+    tg_id, db, tenant = auth
+    _require_svc_feature(db, "svc_show_transfer")
+    cc = _owned_custom_config_or_404(db, custom_config_id, tg_id)
+    target_id = body.target_telegram_id
+    if target_id == tg_id:
+        raise HTTPException(status_code=400, detail="این کانفیگ همین الان مال شماست.")
+    target_user = db.get_user(target_id)
+    if not target_user:
+        raise HTTPException(status_code=404, detail="این کاربر بات را استارت نکرده یا آی‌دی نادرست است.")
+    ok = db.transfer_custom_config(cc["id"], tg_id, target_id)
+    if not ok:
+        raise HTTPException(status_code=409, detail="انتقال ناموفق بود.")
+    db.add_custom_config_history(cc["id"], "transfer", f"از {tg_id} به {target_id}")
+    label = cc["display_name"] or cc["username"]
+    try:
+        async with aiohttp.ClientSession() as session:
+            await session.post(
+                f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+                json={
+                    "chat_id": target_id,
+                    "text": f"📦 یک کانفیگ («{label}») از طرف کاربر دیگری به حساب شما منتقل شد.\n"
+                             "برای مشاهده، حساب کاربری ← سرویس‌ها و سفارش‌های من را ببینید.",
+                },
+            )
+    except Exception:
+        pass
+    return {"status": "ok"}
+
+
+@app.get("/api/custom-configs/{custom_config_id}/history")
+def api_custom_config_history(custom_config_id: int, auth=Depends(get_verified_user)):
+    tg_id, db, _ = auth
+    _require_svc_feature(db, "svc_show_history")
+    cc = db.get_custom_config_owned(custom_config_id, tg_id)
+    if not cc:
+        raise HTTPException(status_code=404, detail="کانفیگ یافت نشد یا متعلق به شما نیست.")
+    rows = db.get_custom_config_history(cc["id"])
+    return [
+        {"event_type": r["event_type"], "detail": r["detail"], "created_at": r["created_at"]}
+        for r in rows
+    ]
+
+
+@app.post("/api/custom-configs/{custom_config_id}/cut-access")
+async def api_custom_config_cut_access(custom_config_id: int, auth=Depends(get_verified_user)):
+    tg_id, db, _ = auth
+    _require_svc_feature(db, "svc_show_cut_access")
+    cc = _owned_custom_config_or_404(db, custom_config_id, tg_id)
+    server = db.get_panel_server(cc["panel_server_id"]) if cc["panel_server_id"] else None
+    if not server or not server["is_active"]:
+        raise HTTPException(status_code=409, detail="سرور پنل مربوط به این سرویس یافت نشد یا غیرفعال است.")
+    try:
+        provider = get_provider(server)
+        result = await provider.revoke_credentials(cc["username"])
+    except PanelError as e:
+        raise HTTPException(status_code=502, detail=f"قطع دسترسی ناموفق بود: {e}")
+    if result.subscription_url:
+        db.update_custom_config_subscription_url(cc["id"], result.subscription_url)
+    db.add_custom_config_history(cc["id"], "cut_access", "دسترسی قطع و لینک جدید صادر شد")
+    return {"status": "ok", "subscription_url": result.subscription_url}
 
 
 # ---------------------------------------------------------------------------
