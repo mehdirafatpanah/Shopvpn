@@ -850,6 +850,31 @@ async def api_backup_restore(
     return {"ok": True, "pre_restore_backup": os.path.basename(pre_restore_path)}
 
 
+@app.post("/api/system/factory-reset")
+async def api_factory_reset(confirm_phrase: str = Form(""), admin=Depends(require_owner)):
+    """بازگشت این بات (اصلی یا نمایندگی) به وضعیت روز اول نصب: همه‌ی داده‌ی
+    فروشگاه پاک می‌شود، فقط خودِ owner باقی می‌ماند. غیرقابل‌بازگشت به‌جز از
+    روی بکاپ؛ به همین دلیل یک بکاپ ایمنی خودکار قبل از پاک‌سازی گرفته می‌شود
+    و سمت سرور هم عبارت تاییدی الزامی است."""
+    if confirm_phrase.strip().upper() != "RESET":
+        raise HTTPException(400, "برای تایید بازگشت به حالت کارخانه، عبارت RESET را دقیقاً وارد کن.")
+
+    tenant = _current_tenant.get()
+    safety_backup = await asyncio.to_thread(create_backup, tenant.db_path, _backup_dir(), 14)
+
+    await asyncio.to_thread(db.factory_reset)
+
+    (await asyncio.to_thread(db.log_admin_action,
+        admin["id"], "factory_reset",
+        f"بازگشت کامل به حالت کارخانه (روز اول نصب)؛ بکاپ ایمنی قبل از پاک‌سازی: "
+        f"{os.path.basename(safety_backup) if safety_backup else 'ناموفق'} (پنل وب - {admin['username']})",
+    ))
+    return {
+        "ok": True,
+        "safety_backup": os.path.basename(safety_backup) if safety_backup else None,
+    }
+
+
 # ------------------------------------------------------------------ orders --
 
 
