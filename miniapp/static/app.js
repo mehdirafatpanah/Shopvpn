@@ -934,10 +934,14 @@ async function renderServices() {
     const customCards = customConfigs.map((c) => ({
       id: `cc-${c.id}`,
       custom_config_id: c.id,
-      product_name: `🛠 کانفیگ شخصی «${c.username}» (${c.volume_gb} گیگ / ${c.duration_days} روز)`,
+      product_name: `🛠 کانفیگ شخصی «${c.display_name || c.username}» (${c.volume_gb} گیگ / ${c.duration_days} روز)`,
       quantity: 1,
       status: "approved",
       is_custom_config: true,
+      is_test: c.is_test,
+      enabled: c.enabled,
+      auto_renew: c.auto_renew,
+      duration_days: c.duration_days,
       link: c.subscription_url,
       links: c.subscription_url ? [c.subscription_url] : [],
       expires_at: c.expires_at || null,
@@ -983,6 +987,7 @@ async function renderServices() {
     });
     wireAddToAppButtons(content);
     wireDeleteConfigButtons(content, renderServices);
+    wireServiceActionButtons(content, renderServices);
   } catch (e) {
     content.innerHTML = errorState(e.message);
   }
@@ -1030,6 +1035,7 @@ function orderCard(o, opts = {}) {
   const deletable = !!opts.deletable;
   const exp = o.expires_at ? toJalaliStr(o.expires_at) : "نامحدود";
   const links = (o.links && o.links.length) ? o.links : (o.link ? [o.link] : []);
+  const showSvcActions = o.is_custom_config && !o.is_test && o.custom_config_id;
   return `
     <div class="order-block">
       <div class="stat-row"><span>${o.product_name}${o.quantity > 1 ? ` × ${o.quantity}` : ""}</span><span class="badge approved">فعال تا ${exp}</span></div>
@@ -1048,8 +1054,84 @@ function orderCard(o, opts = {}) {
       ${renderAddToAppBlock(`${o.id}-${idx}`, link, o.product_name)}
       `;
       }).join("")}
+      ${showSvcActions ? `
+      <div class="qr-row" style="flex-wrap:wrap;margin-top:6px">
+        <button class="btn small outline" data-svc-action="toggle" data-svc-id="${o.custom_config_id}">${o.enabled ? "🔴 غیرفعال کردن" : "🟢 فعال کردن"}</button>
+        <button class="btn small outline" data-svc-action="rename" data-svc-id="${o.custom_config_id}">✏️ تغییر نام</button>
+        ${o.duration_days > 0 ? `<button class="btn small outline" data-svc-action="autorenew" data-svc-id="${o.custom_config_id}" data-svc-state="${o.auto_renew ? 1 : 0}">${o.auto_renew ? "🔄 تمدید خودکار: فعال" : "🔄 تمدید خودکار: غیرفعال"}</button>` : ""}
+        <button class="btn small outline" data-svc-action="transfer" data-svc-id="${o.custom_config_id}">👤 انتقال</button>
+        <button class="btn small outline" data-svc-action="cut" data-svc-id="${o.custom_config_id}">🚫 قطع دسترسی و لینک جدید</button>
+        <button class="btn small outline" data-svc-action="history" data-svc-id="${o.custom_config_id}">📜 تاریخچه</button>
+      </div>
+      ` : ""}
     </div>
   `;
+}
+
+// اکشن‌های مدیریت سرویس (فعال/غیرفعال، تغییر نام، تمدید خودکار، انتقال،
+// قطع دسترسی، تاریخچه) - معادل دکمه‌های صفحه‌ی جزئیات سرویس در ربات اصلی.
+const SVC_EVENT_LABEL = {
+  purchase: "🛒 خرید", renewal: "🔄 تمدید", toggle: "🟢 فعال/غیرفعال",
+  auto_renew_toggle: "🔁 تمدید خودکار", rename: "✏️ تغییر نام", transfer: "👤 انتقال",
+  cut_access: "🚫 قطع دسترسی", auto_renew: "🔄 تمدید خودکار (خودکار انجام‌شده)",
+};
+
+function showServiceHistoryOverlay(rows) {
+  const overlay = document.createElement("div");
+  overlay.className = "simple-overlay";
+  overlay.innerHTML = `
+    <div class="card">
+      <h3 style="margin-bottom:10px"><span class="ic">📜</span>تاریخچه‌ی سرویس</h3>
+      ${rows.length ? rows.map((r) => `
+        <div class="svc-hist-row">
+          <div class="svc-hist-label">${SVC_EVENT_LABEL[r.event_type] || r.event_type}</div>
+          ${r.detail ? `<div class="svc-hist-detail">${escHtml(r.detail)}</div>` : ""}
+          <div class="svc-hist-date">${toJalaliStr(r.created_at)}</div>
+        </div>
+      `).join("") : `<div class="state-msg"><span class="ic">◌</span>تاریخچه‌ای برای این سرویس ثبت نشده است.</div>`}
+      <button class="btn outline small" id="svc-hist-close-btn" style="width:100%;margin-top:12px">بستن</button>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+  document.getElementById("svc-hist-close-btn").onclick = () => overlay.remove();
+}
+
+function wireServiceActionButtons(root, onChanged) {
+  root.querySelectorAll("[data-svc-action]").forEach((el) => {
+    el.onclick = async () => {
+      const action = el.dataset.svcAction;
+      const id = el.dataset.svcId;
+      try {
+        if (action === "toggle") {
+          await api(`/api/custom-configs/${id}/toggle`, { method: "POST" });
+        } else if (action === "rename") {
+          const newName = prompt("نام جدید کانفیگ را وارد کنید (فقط حروف انگلیسی، عدد و آندرلاین، ۳ تا ۲۰ کاراکتر):");
+          if (!newName) return;
+          await api(`/api/custom-configs/${id}/rename`, { method: "POST", body: JSON.stringify({ new_name: newName }) });
+        } else if (action === "autorenew") {
+          const enabled = el.dataset.svcState !== "1";
+          await api(`/api/custom-configs/${id}/auto-renew`, { method: "POST", body: JSON.stringify({ enabled }) });
+        } else if (action === "transfer") {
+          const targetId = prompt("آی‌دی عددی تلگرام کاربری که می‌خواهید این کانفیگ به او منتقل شود را وارد کنید:");
+          if (!targetId || !/^\d+$/.test(targetId.trim())) { notify("آی‌دی عددی نامعتبر است."); return; }
+          if (!confirm("⚠️ این عملیات غیرقابل بازگشت است. ادامه می‌دهید؟")) return;
+          await api(`/api/custom-configs/${id}/transfer`, { method: "POST", body: JSON.stringify({ target_telegram_id: parseInt(targetId.trim(), 10) }) });
+        } else if (action === "cut") {
+          if (!confirm("⚠️ لینک فعلی از کار می‌افتد و لینک جدیدی با همان حجم/زمان باقی‌مانده صادر می‌شود. این عملیات غیرقابل بازگشت است. ادامه می‌دهید؟")) return;
+          await api(`/api/custom-configs/${id}/cut-access`, { method: "POST" });
+        } else if (action === "history") {
+          const rows = await api(`/api/custom-configs/${id}/history`);
+          showServiceHistoryOverlay(rows);
+          return;
+        }
+        if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+        if (onChanged) onChanged();
+      } catch (e2) {
+        notify(e2.message);
+      }
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
