@@ -4421,6 +4421,14 @@ class Database:
                 "SELECT * FROM custom_configs WHERE id=? AND user_id=?", (custom_config_id, user_tg_id)
             ).fetchone()
 
+    def get_custom_config_by_id(self, custom_config_id: int):
+        """مثل get_custom_config_owned ولی بدون فیلتر مالکیت - فقط برای سمت
+        ادمین (پنل وب) که باید بتواند سرویس هر کاربری را مدیریت کند."""
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM custom_configs WHERE id=?", (custom_config_id,)
+            ).fetchone()
+
     def apply_custom_config_renewal(self, custom_config_id: int, add_volume_gb: int = 0, add_days: int = 0) -> dict:
         """بعد از موفقیت‌آمیز بودن به‌روزرسانی روی خودِ پنل (provider.update_user)،
         رکورد بوکینگ محلی (حجم/مدت/تاریخ انقضا) را هم‌سو با آن به‌روز می‌کند."""
