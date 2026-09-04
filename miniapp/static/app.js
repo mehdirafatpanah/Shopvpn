@@ -4422,6 +4422,7 @@ const ADMIN_ACTION_LABELS = {
   abangateway_key_change: "💳 تغییر کلید آبان گیت‌وی",
   backup_create: "🗄 دریافت بکاپ",
   backup_restore: "♻️ بازیابی بکاپ",
+  factory_reset: "🏭 بازگشت به حالت کارخانه",
   category_add: "📂 افزودن دسته‌بندی",
   category_toggle: "📂 تغییر وضعیت دسته‌بندی",
   category_delete: "🗑 حذف دسته‌بندی",
@@ -4608,11 +4609,68 @@ async function renderAdminBackupSection() {
       <input type="file" id="admin-restore-file" accept=".db,.sqlite,.sqlite3" style="margin-bottom:10px" />
       <div id="admin-restore-status"></div>
     </div>
+    <div class="card" style="border-color:#e11d48">
+      <div class="eyebrow" style="margin-top:0">🏭 بازگشت به حالت کارخانه</div>
+      <p class="hint-text">همه‌ی داده‌ی این بات (کاربرها، سفارش‌ها، محصولات، کیف پول، تیکت‌ها، تنظیمات و ...) پاک می‌شود؛ دقیقاً مثل روز اول نصب. فقط حساب خودت به‌عنوان owner باقی می‌ماند. نماینده‌های زیرمجموعه‌ی این بات دست‌نخورده می‌مانند. قبل از پاک‌سازی یک بکاپ ایمنی خودکار گرفته می‌شود.</p>
+      <button class="btn" id="admin-factory-reset-open-btn" style="background:#e11d48">بازگشت به حالت کارخانه...</button>
+      <div id="admin-factory-reset-status" style="margin-top:10px"></div>
+    </div>
   `;
   document.getElementById("admin-backup-create-btn").onclick = downloadAdminBackup;
   document.getElementById("admin-restore-file").onchange = (e) => {
     const file = e.target.files[0];
     selectAdminRestoreFile(file);
+  };
+  document.getElementById("admin-factory-reset-open-btn").onclick = () => { adminFactoryResetStep = 1; renderAdminFactoryResetUI(); };
+}
+
+let adminFactoryResetStep = 0;
+
+function renderAdminFactoryResetUI() {
+  const status = document.getElementById("admin-factory-reset-status");
+  if (!status) return;
+  if (adminFactoryResetStep === 0) { status.innerHTML = ""; return; }
+  if (adminFactoryResetStep === 1) {
+    status.innerHTML = `
+      <div class="card" style="margin-top:0">
+        <p class="hint-text" style="margin:0 0 10px">⚠️ مرحله ۱: این کار همه‌ی داده‌ی این بات را برای همیشه پاک می‌کند. مطمئنی؟</p>
+        <div style="display:flex;gap:8px">
+          <button class="btn small" id="admin-factory-reset-step1-btn" style="width:auto">بله، ادامه بده</button>
+          <button class="btn small outline" id="admin-factory-reset-cancel-btn" style="width:auto">انصراف</button>
+        </div>
+      </div>`;
+    document.getElementById("admin-factory-reset-step1-btn").onclick = () => { adminFactoryResetStep = 2; renderAdminFactoryResetUI(); };
+    document.getElementById("admin-factory-reset-cancel-btn").onclick = () => { adminFactoryResetStep = 0; renderAdminFactoryResetUI(); };
+    return;
+  }
+  status.innerHTML = `
+    <div class="card" style="margin-top:0">
+      <p class="hint-text" style="margin:0 0 10px">⚠️ مرحله ۲ (نهایی): برای تایید، عبارت <strong>RESET</strong> رو دقیقاً تایپ کن.</p>
+      <input type="text" id="admin-factory-reset-confirm-input" placeholder="RESET" style="margin-bottom:10px" />
+      <div style="display:flex;gap:8px">
+        <button class="btn small" id="admin-factory-reset-final-btn" style="width:auto">✅ تایید نهایی و پاک‌سازی</button>
+        <button class="btn small outline" id="admin-factory-reset-cancel-btn2" style="width:auto">انصراف</button>
+      </div>
+      <div id="admin-factory-reset-final-status" style="margin-top:10px"></div>
+    </div>`;
+  document.getElementById("admin-factory-reset-cancel-btn2").onclick = () => { adminFactoryResetStep = 0; renderAdminFactoryResetUI(); };
+  document.getElementById("admin-factory-reset-final-btn").onclick = async () => {
+    const phrase = document.getElementById("admin-factory-reset-confirm-input").value.trim();
+    const finalStatus = document.getElementById("admin-factory-reset-final-status");
+    if (phrase.toUpperCase() !== "RESET") {
+      finalStatus.innerHTML = errorState("عبارت را دقیقاً RESET وارد کن.");
+      return;
+    }
+    finalStatus.innerHTML = `<span class="hint-text">⏳ در حال پاک‌سازی...</span>`;
+    try {
+      const formData = new FormData();
+      formData.append("confirm_phrase", phrase);
+      const result = await apiUpload("/api/admin/factory-reset", formData);
+      adminFactoryResetStep = 0;
+      finalStatus.innerHTML = `<span class="hint-text">✅ بات به حالت کارخانه بازگشت.${result.safety_backup ? ` بکاپ قبل از پاک‌سازی: «${escHtml(result.safety_backup)}».` : ""} صفحه را رفرش کن.</span>`;
+    } catch (e) {
+      finalStatus.innerHTML = errorState(e.message);
+    }
   };
 }
 
