@@ -5934,7 +5934,7 @@ const RECORD_TYPE_LABEL = {
 };
 const ACTION_LABEL = {
   admin_add: 'افزودن ادمین', admin_remove: 'حذف ادمین', admin_role_change: 'تغییر نقش ادمین',
-  backup_create: 'ساخت بکاپ', backup_restore: 'بازیابی بکاپ', broadcast: 'پیام همگانی',
+  backup_create: 'ساخت بکاپ', backup_restore: 'بازیابی بکاپ', factory_reset: 'بازگشت به حالت کارخانه', broadcast: 'پیام همگانی',
   card_change: 'تغییر شماره کارت', category_add: 'افزودن دسته‌بندی', category_delete: 'حذف دسته‌بندی',
   category_edit: 'ویرایش دسته‌بندی', category_toggle: 'فعال/غیرفعال کردن دسته‌بندی',
   config_delete: 'حذف کانفیگ', configs_add: 'افزودن کانفیگ', custom_config_approve: 'تایید کانفیگ سفارشی',
@@ -6513,6 +6513,15 @@ async function renderSystem() {
       ` : `<p class="card-sub">گرفتن بکاپ فوری و بازیابی فقط برای مالک در دسترس است.</p>`}
     </div>
 
+    ${isOwner ? `
+    <div class="card" style="margin-bottom:18px;border-color:var(--rose)">
+      <div class="card-head"><h3>🏭 بازگشت به حالت کارخانه</h3></div>
+      <p class="card-sub" style="margin-bottom:10px">همه‌ی داده‌ی این بات (کاربرها، سفارش‌ها، محصولات، کیف پول، تیکت‌ها، تنظیمات و ...) پاک می‌شود؛ دقیقاً مثل روز اول نصب، چه در مینی‌اپ چه در همین پنل وب. فقط حساب خودت به‌عنوان مالک باقی می‌ماند. این کار فقط روی همین بات اثر می‌گذارد و به نماینده‌های زیرمجموعه (در صورت وجود) کاری ندارد. قبل از پاک‌سازی یک بکاپ ایمنی خودکار گرفته می‌شود.</p>
+      <button class="btn btn-danger btn-sm" id="factory-reset-open-btn">بازگشت به حالت کارخانه...</button>
+      <div id="factory-reset-area" style="margin-top:12px"></div>
+    </div>
+    ` : ''}
+
     <div class="card" style="margin-bottom:18px">
       <div class="card-head">
         <h3>فایل‌های دیتابیس یتیم</h3>
@@ -6634,6 +6643,67 @@ async function renderSystem() {
     }
     restorePendingFile = file;
     renderRestoreArea();
+  });
+
+  let factoryResetStep = 0;
+
+  function renderFactoryResetArea() {
+    const area = $('#factory-reset-area', content());
+    if (factoryResetStep === 0) { area.innerHTML = ''; return; }
+    if (factoryResetStep === 1) {
+      area.innerHTML = `
+        <div class="card" style="margin-top:0;border-color:var(--rose)">
+          <p class="card-sub" style="margin:0 0 10px">⚠️ مرحله ۱: این کار همه‌ی داده‌ی این بات را برای همیشه پاک می‌کند. مطمئنی؟</p>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-danger btn-sm" id="factory-reset-step1-btn">بله، ادامه بده</button>
+            <button class="btn btn-ghost btn-sm" id="factory-reset-cancel-btn">انصراف</button>
+          </div>
+        </div>`;
+      $('#factory-reset-step1-btn', area).addEventListener('click', () => { factoryResetStep = 2; renderFactoryResetArea(); });
+      $('#factory-reset-cancel-btn', area).addEventListener('click', cancelFactoryReset);
+      return;
+    }
+    area.innerHTML = `
+      <div class="card" style="margin-top:0;border-color:var(--rose)">
+        <p class="card-sub" style="margin:0 0 10px">⚠️ مرحله ۲ (نهایی): برای تایید، عبارت <strong class="mono">RESET</strong> رو دقیقاً تایپ کن.</p>
+        <input class="input" id="factory-reset-confirm-input" placeholder="RESET" style="margin-bottom:10px">
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-danger btn-sm" id="factory-reset-final-btn">✅ تایید نهایی و پاک‌سازی</button>
+          <button class="btn btn-ghost btn-sm" id="factory-reset-cancel-btn2">انصراف</button>
+        </div>
+        <div id="factory-reset-final-status" style="margin-top:10px"></div>
+      </div>`;
+    $('#factory-reset-cancel-btn2', area).addEventListener('click', cancelFactoryReset);
+    $('#factory-reset-final-btn', area).addEventListener('click', async () => {
+      const phrase = $('#factory-reset-confirm-input', area).value.trim();
+      const statusEl = $('#factory-reset-final-status', area);
+      if (phrase.toUpperCase() !== 'RESET') {
+        statusEl.innerHTML = '<span class="card-sub" style="color:var(--rose)">عبارت را دقیقاً RESET وارد کن.</span>';
+        return;
+      }
+      statusEl.innerHTML = '<span class="card-sub">⏳ در حال پاک‌سازی...</span>';
+      try {
+        const formData = new FormData();
+        formData.append('confirm_phrase', phrase);
+        const res = await fetch('/api/system/factory-reset', { method: 'POST', credentials: 'include', body: formData });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || 'خطای ناشناخته');
+        statusEl.innerHTML = `<span class="card-sub">✅ بات به حالت کارخانه بازگشت.${data.safety_backup ? ` بکاپ قبل از پاک‌سازی: «${esc(data.safety_backup)}».` : ''} صفحه را رفرش کن.</span>`;
+        factoryResetStep = 0;
+      } catch (e) {
+        statusEl.innerHTML = `<span class="card-sub" style="color:var(--rose)">${esc(e.message)}</span>`;
+      }
+    });
+  }
+
+  function cancelFactoryReset() {
+    factoryResetStep = 0;
+    renderFactoryResetArea();
+  }
+
+  $('#factory-reset-open-btn', content()).addEventListener('click', () => {
+    factoryResetStep = 1;
+    renderFactoryResetArea();
   });
 }
 
