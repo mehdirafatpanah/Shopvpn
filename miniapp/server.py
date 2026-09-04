@@ -4968,4 +4968,24 @@ async def api_admin_backup_restore(file: UploadFile = File(...), auth=Depends(re
     return {"status": "ok", "pre_restore_backup": os.path.basename(pre_restore_path)}
 
 
+@app.post("/api/admin/factory-reset")
+async def api_admin_factory_reset(confirm_phrase: str = Form(""), auth=Depends(require_owner)):
+    """بازگشت این بات (اصلی یا نمایندگی) به وضعیت روز اول نصب: همه‌ی داده‌ی
+    فروشگاه پاک می‌شود، فقط خودِ owner باقی می‌ماند. قبل از پاک‌سازی یک بکاپ
+    ایمنی خودکار گرفته می‌شود."""
+    tg_id, db, tenant = auth
+    if confirm_phrase.strip().upper() != "RESET":
+        raise HTTPException(status_code=400, detail="برای تایید بازگشت به حالت کارخانه، عبارت RESET را دقیقاً وارد کن.")
+
+    backup_dir = os.path.join(os.path.dirname(os.path.abspath(db.db_path)), "backups")
+    safety_backup = await asyncio.to_thread(create_backup, db.db_path, backup_dir, 14)
+
+    await asyncio.to_thread(db.factory_reset)
+
+    db.log_admin_action(tg_id, "factory_reset",
+        f"بازگشت کامل به حالت کارخانه از طریق میان‌اپ؛ بکاپ ایمنی: "
+        f"{os.path.basename(safety_backup) if safety_backup else 'ناموفق'}")
+    return {"status": "ok", "safety_backup": os.path.basename(safety_backup) if safety_backup else None}
+
+
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
