@@ -3005,6 +3005,8 @@ class ProductUpdate(BaseModel):
     price: Optional[int] = None
     description: Optional[str] = None
     duration_days: Optional[int] = None
+    provision_server_id: Optional[int] = None
+    auto_provision_volume_gb: Optional[int] = None
 
 
 class ConfigsAdd(BaseModel):
@@ -3511,23 +3513,44 @@ def api_admin_payment_methods(auth=Depends(require_senior_admin)):
 
 @app.patch("/api/admin/products/{product_id}")
 def api_admin_edit_product(product_id: int, body: ProductUpdate, auth=Depends(require_senior_admin)):
-    admin_id, db, _ = auth
+    admin_id, db, tenant = auth
     old_product = db.get_product(product_id)
     if not old_product:
         raise HTTPException(status_code=404, detail="محصول یافت نشد.")
     if body.price is not None and body.price < 0:
         raise HTTPException(status_code=400, detail="قیمت نامعتبر است.")
+
+    provision_server_id = None
+    if body.provision_server_id is not None:
+        if not old_product["is_auto_provision"]:
+            raise HTTPException(status_code=400, detail="این محصول به‌صورت خودکار ساخته نمی‌شود.")
+        if not db.is_full_access_bot(not tenant.tenant_id):
+            raise HTTPException(status_code=403, detail="تغییر پنل/اینباند فقط از نمایندگی سطح ۲ ممکن است.")
+        if not db.get_panel_server(body.provision_server_id):
+            raise HTTPException(status_code=404, detail="سرور پنل یافت نشد.")
+        provision_server_id = body.provision_server_id
+
+    if body.auto_provision_volume_gb is not None and body.auto_provision_volume_gb <= 0:
+        raise HTTPException(status_code=400, detail="حجم باید عددی مثبت باشد.")
+
     db.edit_product(
         product_id,
         name=body.name.strip() if body.name else None,
         price=body.price,
         description=body.description,
         duration_days=body.duration_days,
+        provision_server_id=provision_server_id,
+        auto_provision_volume_gb=body.auto_provision_volume_gb,
     )
     if body.price is not None and body.price != old_product["price"]:
         db.log_admin_action(
             admin_id, "product_price_edit",
             f"محصول «{old_product['name']}» (#{product_id}) | قیمت قبلی: {old_product['price']:,} | قیمت جدید: {body.price:,}",
+        )
+    if provision_server_id is not None and provision_server_id != old_product["provision_server_id"]:
+        db.log_admin_action(
+            admin_id, "product_server_edit",
+            f"محصول «{old_product['name']}» (#{product_id}) | سرور/اینباند تغییر کرد به سرور #{provision_server_id}",
         )
     return {"status": "ok"}
 
