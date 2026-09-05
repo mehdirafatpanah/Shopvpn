@@ -4445,7 +4445,7 @@ async function renderAdminUserDetail(body) {
       const id = btn.dataset.bankToggle;
       const disabled = btn.dataset.bankDisabled !== "1";
       try {
-        await api(`/api/admin/configs/${id}/disable`, { method: "POST", body: JSON.stringify({ disabled }) });
+        await api(`/api/admin/user-configs/${id}/disable`, { method: "POST", body: JSON.stringify({ disabled }) });
         tg.HapticFeedback.notificationOccurred("success");
         notify(disabled ? "کانفیگ غیرفعال شد." : "کانفیگ فعال شد.");
         renderAdminUserDetail(body);
@@ -4457,7 +4457,7 @@ async function renderAdminUserDetail(body) {
     btn.onclick = async () => {
       if (!confirm("این کانفیگ برای همیشه حذف می‌شود. ادامه می‌دهید؟")) return;
       try {
-        await api(`/api/admin/configs/${btn.dataset.bankDelete}`, { method: "DELETE" });
+        await api(`/api/admin/user-configs/${btn.dataset.bankDelete}`, { method: "DELETE" });
         tg.HapticFeedback.notificationOccurred("success");
         notify("کانفیگ حذف شد.");
         renderAdminUserDetail(body);
