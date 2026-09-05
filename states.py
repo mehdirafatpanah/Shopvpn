@@ -238,6 +238,23 @@ class AdminRestoreBackup(StatesGroup):
     waiting_confirm = State()
 
 
+class AdminBackupInterval(StatesGroup):
+    waiting_hours = State()
+
+
+class AdminBackupSecondaryChat(StatesGroup):
+    waiting_chat_id = State()
+
+
+class AdminBackupSftp(StatesGroup):
+    waiting_host = State()
+    waiting_port = State()
+    waiting_username = State()
+    waiting_password = State()
+    waiting_key_path = State()
+    waiting_remote_dir = State()
+
+
 class AdminFactoryReset(StatesGroup):
     waiting_confirm_text = State()
 

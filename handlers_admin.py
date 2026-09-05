@@ -29,7 +29,7 @@ from config import RESELLER_DBS_DIR, resolve_db_path, ADMIN_PANEL_URL
 from config_delivery import deliver_config_to_user
 from jalali import to_jalali_str
 from stock_alerts import check_and_notify_low_stock
-from backup import create_backup, restore_backup, is_valid_sqlite_db
+from backup import create_backup, restore_backup, is_valid_sqlite_db, push_backup_sftp, test_sftp_connection, backup_and_notify
 import crypto_payment
 import abangateway_payment
 from panel_providers import (
@@ -80,6 +80,9 @@ from states import (
     AdminMinAmountSettings,
     AdminCustomGatewayMinAmount,
     AdminRestoreBackup,
+    AdminBackupInterval,
+    AdminBackupSecondaryChat,
+    AdminBackupSftp,
     AdminFactoryReset,
     AdminAddPanelServer,
     AdminSetPanelTemplate,
@@ -6409,6 +6412,300 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await call.message.answer_document(
             FSInputFile(backup_path), caption="🗄 بکاپ فوری دیتابیس"
         )
+
+    # -------------------------------------------------------------------
+    # زمان‌بندی بکاپ خودکار + جابجایی بین دو سرور
+    # -------------------------------------------------------------------
+
+    @router.callback_query(F.data == "adm_backup_sync_menu")
+    async def cb_backup_sync_menu(call: CallbackQuery, state: FSMContext):
+        if not owner_only(call.from_user.id):
+            return await deny_support(call)
+        await state.clear()
+        await safe_edit(call, 
+            "🔁 زمان‌بندی و جابجایی بکاپ بین سرورها\n\n"
+            "• فاصله‌ی بکاپ خودکار را می‌تونی تغییر بدی.\n"
+            "• برای نگه‌داشتن یک کپی جانبی روی سرور دیگر، دو راه هست:\n"
+            "  ۱) ارسال خودکار فایل بکاپ به یک چت تلگرام روی سرور دوم (ساده، نیاز به SSH ندارد).\n"
+            "  ۲) ارسال مستقیم فایل بکاپ به سرور دوم با SFTP (نیاز به آی‌پی/یوزر/پسورد یا کلید سرور دوم).\n"
+            "هر دو را می‌تونی هم‌زمان فعال کنی.",
+            reply_markup=kb.admin_backup_sync_menu_kb(db),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_backup_sync_test")
+    async def cb_backup_sync_test(call: CallbackQuery):
+        if not owner_only(call.from_user.id):
+            return await deny_support(call)
+        await call.answer("⏳ در حال گرفتن بکاپ و ارسال به همه‌ی مقصدها...")
+        backup_dir = os.path.join(os.path.dirname(os.path.abspath(db.db_path)), "backups")
+        try:
+            await backup_and_notify(call.bot, db, db.db_path, backup_dir, keep=14)
+        except Exception as e:
+            return await call.message.answer(f"❌ تست ناموفق بود: {e}")
+        await call.message.answer(
+            "✅ بکاپ گرفته و به همه‌ی ادمین‌ها + مقصدهای جانبیِ فعال (چت دوم / SFTP در صورت تنظیم) ارسال شد.\n"
+            "اگر ارسال به یکی از مقصدهای جانبی ناموفق بوده، در لاگ سرور ثبت شده - می‌تونی چک کنی."
+        )
+
+    # --- فاصله‌ی زمانی بکاپ خودکار ---
+
+    @router.callback_query(F.data == "adm_backup_interval_menu")
+    async def cb_backup_interval_menu(call: CallbackQuery, state: FSMContext):
+        if not owner_only(call.from_user.id):
+            return await deny_support(call)
+        await state.clear()
+        current = (db.get_setting("backup_interval_hours", "") or "24").strip() or "24"
+        await safe_edit(call, 
+            f"⏱ فاصله‌ی فعلی بکاپ خودکار: هر {current} ساعت\n\n"
+            "یکی از گزینه‌های زیر رو انتخاب کن یا عدد دلخواه بفرست:",
+            reply_markup=kb.admin_backup_interval_kb(),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_backup_interval_set:"))
+    async def cb_backup_interval_set(call: CallbackQuery):
+        if not owner_only(call.from_user.id):
+            return await deny_support(call)
+        hours = call.data.split(":")[1]
+        (await asyncio.to_thread(db.set_setting, "backup_interval_hours", hours))
+        (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "backup_interval_set", f"فاصله بکاپ: {hours} ساعت"))
+        await safe_edit(call, 
+            f"✅ فاصله‌ی بکاپ خودکار روی هر {hours} ساعت تنظیم شد.\n"
+            "این تغییر از چرخه‌ی بعدی بکاپ‌گیری اعمال می‌شود (نیازی به ری‌استارت بات نیست).",
+            reply_markup=kb.admin_backup_sync_menu_kb(db),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_backup_interval_custom")
+    async def cb_backup_interval_custom(call: CallbackQuery, state: FSMContext):
+        if not owner_only(call.from_user.id):
+            return await deny_support(call)
+        await state.set_state(AdminBackupInterval.waiting_hours)
+        await safe_edit(call, "عدد فاصله‌ی زمانی بکاپ خودکار را به «ساعت» بفرست (مثلاً 8):", reply_markup=kb.admin_back_kb("adm_backup_sync_menu"))
+        await call.answer()
+
+    @router.message(AdminBackupInterval.waiting_hours)
+    async def process_backup_interval_hours(message: Message, state: FSMContext):
+        text = (message.text or "").strip()
+        try:
+            hours = int(float(text))
+        except ValueError:
+            await message.answer("❌ لطفاً فقط عدد بفرست (مثلاً 8).")
+            return
+        if hours < 1 or hours > 720:
+            await message.answer("❌ عدد باید بین 1 تا 720 ساعت باشد.")
+            return
+        await state.clear()
+        (await asyncio.to_thread(db.set_setting, "backup_interval_hours", str(hours)))
+        (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "backup_interval_set", f"فاصله بکاپ: {hours} ساعت"))
+        await message.answer(
+            f"✅ فاصله‌ی بکاپ خودکار روی هر {hours} ساعت تنظیم شد.",
+            reply_markup=kb.admin_backup_sync_menu_kb(db),
+        )
+
+    # --- چت دوم تلگرام ---
+
+    @router.callback_query(F.data == "adm_backup_chat2_menu")
+    async def cb_backup_chat2_menu(call: CallbackQuery, state: FSMContext):
+        if not owner_only(call.from_user.id):
+            return await deny_support(call)
+        await state.clear()
+        chat2 = (db.get_setting("backup_secondary_chat_id", "") or "").strip()
+        status = f"فعال (آیدی: {chat2})" if chat2 else "غیرفعال"
+        await safe_edit(call, 
+            f"📨 چت دوم تلگرام برای دریافت کپی خودکار بکاپ\n\nوضعیت فعلی: {status}\n\n"
+            "نکته: بات باید عضو آن چت باشد یا آیدی عددی یک کاربر (که استارت بات را زده) باشد.",
+            reply_markup=kb.admin_backup_chat2_menu_kb(bool(chat2)),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_backup_chat2_set")
+    async def cb_backup_chat2_set(call: CallbackQuery, state: FSMContext):
+        if not owner_only(call.from_user.id):
+            return await deny_support(call)
+        await state.set_state(AdminBackupSecondaryChat.waiting_chat_id)
+        await safe_edit(call, 
+            "آیدی عددی چت مقصد را بفرست (مثلاً 123456789 برای یک کاربر، یا -100123456789 برای یک گروه/کانال):",
+            reply_markup=kb.admin_back_kb("adm_backup_sync_menu"),
+        )
+        await call.answer()
+
+    @router.message(AdminBackupSecondaryChat.waiting_chat_id)
+    async def process_backup_chat2_id(message: Message, state: FSMContext):
+        text = (message.text or "").strip()
+        try:
+            chat_id = int(text)
+        except ValueError:
+            await message.answer("❌ آیدی باید یک عدد صحیح باشد (می‌تواند منفی هم باشد).")
+            return
+        await state.clear()
+        (await asyncio.to_thread(db.set_setting, "backup_secondary_chat_id", str(chat_id)))
+        (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "backup_chat2_set", f"چت دوم بکاپ: {chat_id}"))
+        await message.answer(
+            f"✅ چت دوم روی آیدی {chat_id} تنظیم شد. از بکاپ خودکار بعدی، یک کپی هم اینجا فرستاده می‌شود.",
+            reply_markup=kb.admin_backup_sync_menu_kb(db),
+        )
+
+    @router.callback_query(F.data == "adm_backup_chat2_disable")
+    async def cb_backup_chat2_disable(call: CallbackQuery):
+        if not owner_only(call.from_user.id):
+            return await deny_support(call)
+        (await asyncio.to_thread(db.set_setting, "backup_secondary_chat_id", ""))
+        (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "backup_chat2_disable", "غیرفعال‌سازی چت دوم بکاپ"))
+        await safe_edit(call, "🚫 ارسال به چت دوم غیرفعال شد.", reply_markup=kb.admin_backup_sync_menu_kb(db))
+        await call.answer()
+
+    # --- SFTP سرور دوم ---
+
+    @router.callback_query(F.data == "adm_backup_sftp_menu")
+    async def cb_backup_sftp_menu(call: CallbackQuery, state: FSMContext):
+        if not owner_only(call.from_user.id):
+            return await deny_support(call)
+        await state.clear()
+        host = (db.get_setting("backup_sftp_host", "") or "").strip()
+        enabled = (db.get_setting("backup_sftp_enabled", "0") or "0") == "1"
+        if host:
+            port = db.get_setting("backup_sftp_port", "22") or "22"
+            user = db.get_setting("backup_sftp_username", "") or "-"
+            remote_dir = db.get_setting("backup_sftp_remote_dir", "/root/vpn_backups") or "/root/vpn_backups"
+            status = (
+                f"{'فعال' if enabled else 'غیرفعال (تنظیمات ذخیره شده ولی خاموش)'}\n"
+                f"سرور: {user}@{host}:{port}\nمسیر مقصد: {remote_dir}"
+            )
+        else:
+            status = "تنظیم نشده"
+        await safe_edit(call, 
+            f"🔐 اتصال SFTP به سرور دوم\n\nوضعیت فعلی: {status}",
+            reply_markup=kb.admin_backup_sftp_menu_kb(bool(host), enabled),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_backup_sftp_start")
+    async def cb_backup_sftp_start(call: CallbackQuery, state: FSMContext):
+        if not owner_only(call.from_user.id):
+            return await deny_support(call)
+        await state.set_state(AdminBackupSftp.waiting_host)
+        await safe_edit(call, "آی‌پی یا دامنه‌ی سرور دوم را بفرست:", reply_markup=kb.admin_back_kb("adm_backup_sync_menu"))
+        await call.answer()
+
+    @router.message(AdminBackupSftp.waiting_host)
+    async def process_backup_sftp_host(message: Message, state: FSMContext):
+        host = (message.text or "").strip()
+        if not host:
+            await message.answer("❌ آدرس نمی‌تواند خالی باشد.")
+            return
+        await state.update_data(sftp_host=host)
+        await state.set_state(AdminBackupSftp.waiting_port)
+        await message.answer("پورت SSH را بفرست (برای پیش‌فرض، عدد 22 را بفرست):")
+
+    @router.message(AdminBackupSftp.waiting_port)
+    async def process_backup_sftp_port(message: Message, state: FSMContext):
+        text = (message.text or "").strip()
+        if not text.isdigit():
+            await message.answer("❌ پورت باید یک عدد باشد (مثلاً 22).")
+            return
+        await state.update_data(sftp_port=int(text))
+        await state.set_state(AdminBackupSftp.waiting_username)
+        await message.answer("یوزرنیم SSH سرور دوم را بفرست (مثلاً root):")
+
+    @router.message(AdminBackupSftp.waiting_username)
+    async def process_backup_sftp_username(message: Message, state: FSMContext):
+        username = (message.text or "").strip()
+        if not username:
+            await message.answer("❌ یوزرنیم نمی‌تواند خالی باشد.")
+            return
+        await state.update_data(sftp_username=username)
+        await message.answer("روش احراز هویت SSH را انتخاب کن:", reply_markup=kb.admin_backup_sftp_auth_choice_kb())
+
+    @router.callback_query(F.data.startswith("adm_backup_sftp_auth:"), AdminBackupSftp.waiting_username)
+    async def cb_backup_sftp_auth_choice(call: CallbackQuery, state: FSMContext):
+        method = call.data.split(":")[1]
+        if method == "password":
+            await state.set_state(AdminBackupSftp.waiting_password)
+            await call.message.answer("پسورد SSH سرور دوم را بفرست:")
+        else:
+            await state.set_state(AdminBackupSftp.waiting_key_path)
+            await call.message.answer(
+                "مسیر فایل کلید خصوصی SSH را بفرست.\n"
+                "⚠️ توجه: این فایل باید از قبل روی همین سرور (جایی که خود بات اجرا می‌شود) موجود باشد، "
+                "مثلاً /root/.ssh/id_rsa - و کلید عمومی متناظرش باید روی سرور دوم authorize شده باشد."
+            )
+        await call.answer()
+
+    @router.message(AdminBackupSftp.waiting_password)
+    async def process_backup_sftp_password(message: Message, state: FSMContext):
+        password = (message.text or "").strip()
+        await state.update_data(sftp_password=password, sftp_key_path=None)
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        await state.set_state(AdminBackupSftp.waiting_remote_dir)
+        await message.answer("پوشه‌ی مقصد روی سرور دوم را بفرست (مثلاً /root/vpn_backups) - یا «-» برای پیش‌فرض:")
+
+    @router.message(AdminBackupSftp.waiting_key_path)
+    async def process_backup_sftp_key_path(message: Message, state: FSMContext):
+        key_path = (message.text or "").strip()
+        if not os.path.exists(key_path):
+            await message.answer(f"❌ فایلی در مسیر «{key_path}» روی این سرور پیدا نشد. دوباره بفرست یا مسیر درست را وارد کن.")
+            return
+        await state.update_data(sftp_key_path=key_path, sftp_password=None)
+        await state.set_state(AdminBackupSftp.waiting_remote_dir)
+        await message.answer("پوشه‌ی مقصد روی سرور دوم را بفرست (مثلاً /root/vpn_backups) - یا «-» برای پیش‌فرض:")
+
+    @router.message(AdminBackupSftp.waiting_remote_dir)
+    async def process_backup_sftp_remote_dir(message: Message, state: FSMContext):
+        remote_dir = (message.text or "").strip()
+        if remote_dir == "-" or not remote_dir:
+            remote_dir = "/root/vpn_backups"
+        data = await state.get_data()
+        await message.answer("⏳ در حال تست اتصال به سرور دوم...")
+        try:
+            await test_sftp_connection(
+                host=data["sftp_host"], port=data.get("sftp_port", 22), username=data["sftp_username"],
+                password=data.get("sftp_password"), key_path=data.get("sftp_key_path"),
+            )
+        except Exception as e:
+            await message.answer(f"❌ اتصال به سرور دوم ناموفق بود: {e}\nتنظیمات ذخیره نشد؛ از منوی بکاپ دوباره تلاش کن.")
+            await state.clear()
+            return
+
+        (await asyncio.to_thread(db.set_setting, "backup_sftp_host", data["sftp_host"]))
+        (await asyncio.to_thread(db.set_setting, "backup_sftp_port", str(data.get("sftp_port", 22))))
+        (await asyncio.to_thread(db.set_setting, "backup_sftp_username", data["sftp_username"]))
+        (await asyncio.to_thread(db.set_setting, "backup_sftp_password", data.get("sftp_password") or ""))
+        (await asyncio.to_thread(db.set_setting, "backup_sftp_key_path", data.get("sftp_key_path") or ""))
+        (await asyncio.to_thread(db.set_setting, "backup_sftp_remote_dir", remote_dir))
+        (await asyncio.to_thread(db.set_setting, "backup_sftp_enabled", "1"))
+        await state.clear()
+        (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "backup_sftp_set", f"اتصال SFTP سرور دوم: {data['sftp_username']}@{data['sftp_host']}"))
+        await message.answer(
+            "✅ اتصال با موفقیت تست شد و تنظیمات SFTP ذخیره شد.\n"
+            "از بکاپ خودکار بعدی، فایل بکاپ مستقیماً روی سرور دوم هم ذخیره می‌شود.",
+            reply_markup=kb.admin_backup_sync_menu_kb(db),
+        )
+
+    @router.callback_query(F.data == "adm_backup_sftp_disable")
+    async def cb_backup_sftp_disable(call: CallbackQuery):
+        if not owner_only(call.from_user.id):
+            return await deny_support(call)
+        (await asyncio.to_thread(db.set_setting, "backup_sftp_enabled", "0"))
+        (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "backup_sftp_disable", "غیرفعال‌سازی موقت SFTP بکاپ"))
+        await safe_edit(call, "🔌 SFTP موقتاً غیرفعال شد (تنظیمات حفظ شد).", reply_markup=kb.admin_backup_sync_menu_kb(db))
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_backup_sftp_clear")
+    async def cb_backup_sftp_clear(call: CallbackQuery):
+        if not owner_only(call.from_user.id):
+            return await deny_support(call)
+        for key in ("backup_sftp_host", "backup_sftp_port", "backup_sftp_username",
+                    "backup_sftp_password", "backup_sftp_key_path", "backup_sftp_remote_dir",
+                    "backup_sftp_enabled"):
+            (await asyncio.to_thread(db.set_setting, key, ""))
+        (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "backup_sftp_clear", "حذف کامل تنظیمات SFTP بکاپ"))
+        await safe_edit(call, "🗑 تنظیمات SFTP سرور دوم کامل حذف شد.", reply_markup=kb.admin_backup_sync_menu_kb(db))
+        await call.answer()
 
     @router.callback_query(F.data == "adm_restore_start")
     async def cb_restore_start(call: CallbackQuery, state: FSMContext):

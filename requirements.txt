@@ -8,4 +8,5 @@ aiohttp>=3.9
 aiodns>=3.2
 psutil>=5.9
 pywebpush>=2.0.0
+asyncssh>=2.14.0
 

@@ -942,8 +942,73 @@ def admin_backup_menu_kb() -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="📥 دریافت بکاپ فوری", callback_data="adm_backup_now")],
         [InlineKeyboardButton(text="♻️ بازیابی از فایل بکاپ", callback_data="adm_restore_start")],
+        [InlineKeyboardButton(text="🔁 زمان‌بندی و جابجایی بین سرورها", callback_data="adm_backup_sync_menu")],
         [InlineKeyboardButton(text="🏭 بازگشت به حالت کارخانه", callback_data="adm_factory_reset_start")],
         [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:management")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_backup_sync_menu_kb(db) -> InlineKeyboardMarkup:
+    interval_hours = (db.get_setting("backup_interval_hours", "") or "24").strip() or "24"
+    chat2 = (db.get_setting("backup_secondary_chat_id", "") or "").strip()
+    sftp_on = (db.get_setting("backup_sftp_enabled", "0") or "0") == "1"
+    sftp_host = (db.get_setting("backup_sftp_host", "") or "").strip()
+    rows = [
+        [InlineKeyboardButton(text=f"⏱ فاصله‌ی بکاپ خودکار: هر {interval_hours} ساعت", callback_data="adm_backup_interval_menu")],
+        [InlineKeyboardButton(
+            text=f"📨 چت دوم تلگرام: {'فعال' if chat2 else 'غیرفعال'}",
+            callback_data="adm_backup_chat2_menu",
+        )],
+        [InlineKeyboardButton(
+            text=f"🔐 SFTP سرور دوم: {('فعال - ' + sftp_host) if sftp_on else 'غیرفعال'}",
+            callback_data="adm_backup_sftp_menu",
+        )],
+        [InlineKeyboardButton(text="🧪 تست ارسال به مقصدهای جانبی", callback_data="adm_backup_sync_test")],
+        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_backup_menu")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_backup_interval_kb() -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(text="۶ ساعت", callback_data="adm_backup_interval_set:6"),
+            InlineKeyboardButton(text="۱۲ ساعت", callback_data="adm_backup_interval_set:12"),
+        ],
+        [
+            InlineKeyboardButton(text="۲۴ ساعت", callback_data="adm_backup_interval_set:24"),
+            InlineKeyboardButton(text="۴۸ ساعت", callback_data="adm_backup_interval_set:48"),
+        ],
+        [InlineKeyboardButton(text="✏️ عدد دلخواه (ساعت)", callback_data="adm_backup_interval_custom")],
+        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_backup_sync_menu")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_backup_chat2_menu_kb(configured: bool) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text="✏️ تنظیم / تغییر چت", callback_data="adm_backup_chat2_set")]]
+    if configured:
+        rows.append([InlineKeyboardButton(text="🚫 غیرفعال‌سازی", callback_data="adm_backup_chat2_disable")])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_backup_sync_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_backup_sftp_menu_kb(configured: bool, enabled: bool) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text="✏️ تنظیم / ویرایش اتصال", callback_data="adm_backup_sftp_start")]]
+    if configured and enabled:
+        rows.append([InlineKeyboardButton(text="🔌 غیرفعال‌سازی موقت", callback_data="adm_backup_sftp_disable")])
+    if configured:
+        rows.append([InlineKeyboardButton(text="🗑 حذف کامل تنظیمات", callback_data="adm_backup_sftp_clear")])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_backup_sync_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_backup_sftp_auth_choice_kb() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="🔑 با پسورد", callback_data="adm_backup_sftp_auth:password")],
+        [InlineKeyboardButton(text="📄 با فایل کلید خصوصی", callback_data="adm_backup_sftp_auth:key")],
+        [InlineKeyboardButton(text="❌ انصراف", callback_data="adm_backup_sync_menu")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
