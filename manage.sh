@@ -365,6 +365,8 @@ MSG_EN[panel_proxy_list_ssl_ok]="valid until %s"
 MSG_FA[panel_proxy_list_ssl_ok]="معتبر تا %s"
 MSG_EN[panel_proxy_list_ssl_missing]="no certificate found"
 MSG_FA[panel_proxy_list_ssl_missing]="گواهی SSL پیدا نشد"
+MSG_EN[panel_proxy_domain_conflict]="⚠️ This domain (%s) already has an nginx config that was NOT created by this menu (likely your Mini App or Admin Panel domain). Using it here would overwrite that config and break the Mini App / Admin Panel. Pick a different domain/subdomain for the panel proxy, or remove the existing config yourself first if you are sure."
+MSG_FA[panel_proxy_domain_conflict]="⚠️ این دامنه (%s) از قبل یک کانفیگ nginx دارد که با این منو ساخته نشده (احتمالاً دامنه مینی‌اپ یا پنل مدیریت توست). اگر همین‌جا ادامه بدهی، آن کانفیگ overwrite می‌شود و مینی‌اپ/پنل مدیریت از دسترس خارج می‌شوند. یک دامنه یا ساب‌دامنه دیگر برای پروکسی پنل انتخاب کن، یا اگر مطمئنی، اول خودت کانفیگ فعلی را حذف کن."
 
 MSG_EN[service_domains_header]="🌐 Domains registered for the Mini App / Admin Panel"
 MSG_FA[service_domains_header]="🌐 دامنه‌های ثبت‌شده برای مینی‌اپ / پنل مدیریت"
@@ -1096,6 +1098,18 @@ setup_panel_proxy() {
     sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get update -qq
     timeout 120 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 \
         apt-get install -y -qq nginx certbot python3-certbot-nginx > /dev/null
+
+    # Guard: never silently overwrite an nginx config that this menu did not
+    # create itself (e.g. the Mini App / Admin Panel domain config), which
+    # would otherwise take down those services.
+    # گارد: هیچ‌وقت کانفیگی که خودِ این منو نساخته (مثلاً کانفیگ دامنه
+    # مینی‌اپ/پنل مدیریت) را بی‌سروصدا overwrite نکن، چون باعث از دسترس خارج
+    # شدن آن سرویس‌ها می‌شود.
+    EXISTING_CONF="/etc/nginx/sites-available/${DOMAIN}.conf"
+    if sudo test -f "$EXISTING_CONF" && ! sudo grep -q "^# managed-by-shopvpn-panel-proxy$" "$EXISTING_CONF" 2>/dev/null; then
+        echo -e "${RED}$(t panel_proxy_domain_conflict "$DOMAIN")${RESET}"
+        return
+    fi
 
     echo -e "${CYAN}$(t configuring_nginx "$DOMAIN")${RESET}"
     if [ "$BACKEND_SCHEME" == "https" ]; then
