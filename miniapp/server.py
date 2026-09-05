@@ -418,8 +418,12 @@ def api_orders(auth=Depends(get_verified_user)):
         product = db.get_product(o["product_id"])
         cfg = db.get_config_by_id(o["config_id"]) if o["config_id"] else None
         configs = db.get_order_configs(o["id"]) if o["status"] == "approved" else []
-        links = [c["link"] for c in configs] if configs else ([cfg["link"]] if cfg else [])
-        config_ids = [c["id"] for c in configs] if configs else ([cfg["id"]] if cfg else [])
+        items = configs if configs else ([cfg] if cfg else [])
+        # کانفیگ‌هایی که ادمین غیرفعال کرده، لینک‌شان به کاربر نمایش داده نمی‌شود
+        # (خودِ ردیف/سفارش همچنان دیده می‌شود تا کاربر گیج نشود که سفارشش کجا رفت).
+        cfg_disabled = bool(cfg["is_disabled"]) if cfg and "is_disabled" in cfg.keys() else False
+        links = [(None if (("is_disabled" in c.keys()) and c["is_disabled"]) else c["link"]) for c in items]
+        config_ids = [c["id"] for c in items]
         result.append({
             "id": o["id"],
             "product_name": product["name"] if product else "نامشخص",
@@ -427,9 +431,12 @@ def api_orders(auth=Depends(get_verified_user)):
             "status": o["status"],
             "final_price": o["final_price"],
             "expires_at": cfg["expires_at"] if cfg else None,
-            "link": cfg["link"] if cfg else None,
+            "link": (None if cfg_disabled else (cfg["link"] if cfg else None)),
             "links": links,
             "config_ids": config_ids,
+            "is_disabled": cfg_disabled or (bool(items) and all(
+                ("is_disabled" in c.keys()) and c["is_disabled"] for c in items
+            )),
             "is_custom_config": False,
         })
     return result
@@ -4798,6 +4805,145 @@ async def api_admin_message_user(telegram_id: int, body: UserMessageSend, tenant
         ) as resp:
             if resp.status != 200:
                 raise HTTPException(status_code=502, detail="ارسال پیام به کاربر ناموفق بود (شاید بات را بلاک کرده).")
+    return {"status": "ok"}
+
+
+@app.get("/api/admin/users/{telegram_id}/configs")
+def api_admin_user_bank_configs(telegram_id: int, auth=Depends(require_full_admin)):
+    """لینک‌های اشتراک «بانک محصول» (کانفیگ‌های ساده، نه سرویس‌های مستقیم-پنل)
+    که تا امروز به این کاربر اختصاص یافته - برای مشاهده/غیرفعال‌سازی/حذف."""
+    _, db, _ = auth
+    user = db.get_user(telegram_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="کاربری با این آیدی عددی پیدا نشد.")
+    rows = db.get_bank_configs_for_user(telegram_id)
+    return [
+        {
+            "id": c["id"],
+            "product_name": c["product_name"] or "نامشخص",
+            "order_id": c["order_display_id"],
+            "link": c["link"],
+            "assigned_at": c["assigned_at"],
+            "expires_at": c["expires_at"] if "expires_at" in c.keys() else None,
+            "is_used": bool(c["is_used"]),
+            "is_disabled": bool(c["is_disabled"]) if "is_disabled" in c.keys() else False,
+        }
+        for c in rows
+    ]
+
+
+class ConfigDisableBody(BaseModel):
+    disabled: bool
+
+
+@app.post("/api/admin/configs/{config_id}/disable")
+def api_admin_config_disable(config_id: int, body: ConfigDisableBody, auth=Depends(require_full_admin)):
+    admin_id, db, _ = auth
+    row = db.get_config_by_id(config_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="کانفیگ یافت نشد.")
+    db.set_config_disabled(config_id, body.disabled)
+    db.log_admin_action(
+        admin_id, "config_disable" if body.disabled else "config_enable",
+        f"کانفیگ #{config_id} کاربر {row['assigned_user_id']} {'غیرفعال' if body.disabled else 'فعال'} شد (مینی‌اپ)",
+        "user", row["assigned_user_id"],
+    )
+    return {"status": "ok", "is_disabled": body.disabled}
+
+
+@app.delete("/api/admin/configs/{config_id}")
+def api_admin_config_delete(config_id: int, auth=Depends(require_full_admin)):
+    admin_id, db, _ = auth
+    row = db.admin_delete_bank_config(config_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="کانفیگ یافت نشد.")
+    db.log_admin_action(
+        admin_id, "config_delete_admin",
+        f"کانفیگ #{config_id} کاربر {row['assigned_user_id']} حذف شد (مینی‌اپ)",
+        "user", row["assigned_user_id"],
+    )
+    return {"status": "ok"}
+
+
+@app.get("/api/admin/users/{telegram_id}/custom-configs")
+def api_admin_user_custom_configs(telegram_id: int, auth=Depends(require_full_admin)):
+    """سرویس‌های مستقیم-پنل (کانفیگ شخصی/خرید مستقیم) این کاربر - معادل چیزی
+    که پیش‌تر فقط از پنل وب مستقل (admin_panel) در دسترس بود."""
+    _, db, _ = auth
+    user = db.get_user(telegram_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="کاربری با این آیدی عددی پیدا نشد.")
+    configs = db.get_custom_configs_for_user(telegram_id)
+    return [
+        {
+            "id": c["id"],
+            "username": c["username"],
+            "display_name": c["display_name"] or c["username"],
+            "volume_gb": c["volume_gb"],
+            "duration_days": c["duration_days"],
+            "subscription_url": c["subscription_url"],
+            "created_at": c["created_at"],
+            "expires_at": c["expires_at"],
+            "is_test": c["source"] == "test",
+            "enabled": (c["enabled"] if "enabled" in c.keys() else 1) == 1,
+        }
+        for c in configs
+    ]
+
+
+def _admin_custom_config_or_404(db: Database, custom_config_id: int):
+    cc = db.get_custom_config_by_id(custom_config_id)
+    if not cc:
+        raise HTTPException(status_code=404, detail="کانفیگ یافت نشد.")
+    return cc
+
+
+@app.post("/api/admin/custom-configs/{custom_config_id}/toggle")
+async def api_admin_custom_config_toggle(custom_config_id: int, auth=Depends(require_full_admin)):
+    admin_id, db, _ = auth
+    cc = _admin_custom_config_or_404(db, custom_config_id)
+    if cc["source"] == "test":
+        raise HTTPException(status_code=403, detail="این قابلیت برای کانفیگ تست در دسترس نیست.")
+    new_enabled = not ((cc["enabled"] if "enabled" in cc.keys() else 1) == 1)
+    server = db.get_panel_server(cc["panel_server_id"]) if cc["panel_server_id"] else None
+    if not server or not server["is_active"]:
+        raise HTTPException(status_code=409, detail="سرور پنل مربوط به این سرویس یافت نشد یا غیرفعال است.")
+    try:
+        provider = get_provider(server)
+        await provider.set_enabled(cc["username"], new_enabled)
+    except PanelError as e:
+        raise HTTPException(status_code=502, detail=f"ناموفق بود: {e}")
+    db.set_custom_config_enabled(cc["id"], cc["user_id"], new_enabled)
+    db.add_custom_config_history(cc["id"], "toggle", f"{'فعال' if new_enabled else 'غیرفعال'} شد (ادمین - مینی‌اپ)")
+    db.log_admin_action(
+        admin_id, "custom_config_toggle",
+        f"سرویس «{cc['username']}» کاربر {cc['user_id']} {'فعال' if new_enabled else 'غیرفعال'} شد (مینی‌اپ)",
+        "user", cc["user_id"],
+    )
+    return {"status": "ok", "enabled": new_enabled}
+
+
+@app.delete("/api/admin/custom-configs/{custom_config_id}")
+async def api_admin_custom_config_delete(custom_config_id: int, auth=Depends(require_full_admin)):
+    admin_id, db, _ = auth
+    cc = _admin_custom_config_or_404(db, custom_config_id)
+    if cc["panel_server_id"]:
+        server = db.get_panel_server(cc["panel_server_id"])
+        if server:
+            try:
+                provider = get_provider(server)
+                await provider.delete_user(cc["username"])
+            except Exception:
+                logging.getLogger("miniapp").exception(
+                    "حذف کاربر «%s» از پنل سرور #%s ناموفق بود؛ در هر صورت از دیتابیس حذف می‌شود.",
+                    cc["username"], cc["panel_server_id"],
+                )
+    db.delete_owned_custom_config(custom_config_id, cc["user_id"])
+    db.log_admin_action(
+        admin_id, "custom_config_delete_admin",
+        f"سرویس «{cc['username']}» کاربر {cc['user_id']} حذف شد (مینی‌اپ)",
+        "user", cc["user_id"],
+    )
     return {"status": "ok"}
 
 
