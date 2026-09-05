@@ -250,6 +250,7 @@ class AdminAddPanelServer(StatesGroup):
     waiting_password = State()
     waiting_template_user = State()
     waiting_inbound_select = State()
+    waiting_sub_base_url = State()
 
 
 class AdminEditProduct(StatesGroup):
