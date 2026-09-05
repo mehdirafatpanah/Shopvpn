@@ -4312,9 +4312,21 @@ async function renderAdminUsersList(body) {
   };
 }
 
+function adminConfigLinkBox(link) {
+  if (!link) return `<div class="hint-text" style="margin:4px 0 0">لینکی ثبت نشده.</div>`;
+  return `
+    <div class="admin-list-row-main" style="direction:ltr;text-align:left;font-family:var(--font-mono);font-size:12px;word-break:break-all;white-space:normal;user-select:all;margin-top:4px">${escHtml(link)}</div>
+    <button class="btn outline small" data-copy-link="${escHtml(link)}" style="width:auto;margin-top:6px">📋 کپی لینک</button>
+  `;
+}
+
 async function renderAdminUserDetail(body) {
   const { telegramId } = adminUserView;
-  const u = await api(`/api/admin/users/${telegramId}`);
+  const [u, bankConfigs, customConfigs] = await Promise.all([
+    api(`/api/admin/users/${telegramId}`),
+    api(`/api/admin/users/${telegramId}/configs`).catch(() => []),
+    api(`/api/admin/users/${telegramId}/custom-configs`).catch(() => []),
+  ]);
 
   const statusLine = `<span class="badge ${USER_STATUS_BADGE_CLASS[u.status]}">${USER_STATUS_LABEL[u.status]}</span>`;
 
@@ -4346,6 +4358,41 @@ async function renderAdminUserDetail(body) {
       </div>
     `).join("");
 
+  const bankConfigsHtml = bankConfigs.length === 0
+    ? `<div class="hint-text" style="margin:0">هیچ کانفیگ بانکی‌ای برای این کاربر ثبت نشده.</div>`
+    : bankConfigs.map((c) => `
+      <div class="admin-list-row" data-bank-config-row="${c.id}" style="flex-direction:column;align-items:stretch;gap:6px">
+        <div class="admin-list-row-main">
+          <span>${escHtml(c.product_name)}${c.order_id ? " · سفارش #" + c.order_id : ""}</span>
+          <span class="hint-text" style="margin:0">${c.assigned_at ? toJalaliStr(c.assigned_at, true) : ""}</span>
+        </div>
+        <span class="badge ${c.is_disabled ? "rejected" : "approved"}" style="width:fit-content">${c.is_disabled ? "غیرفعال" : "فعال"}</span>
+        ${adminConfigLinkBox(c.link)}
+        <div class="admin-list-row-actions" style="margin-top:4px">
+          <button class="btn ${c.is_disabled ? "" : "outline"} small" data-bank-toggle="${c.id}" data-bank-disabled="${c.is_disabled ? 1 : 0}" style="width:auto">${c.is_disabled ? "✅ فعال کردن" : "⛔️ غیرفعال کردن"}</button>
+          <button class="btn outline small" data-bank-delete="${c.id}" style="width:auto">🗑 حذف</button>
+        </div>
+      </div>
+    `).join("");
+
+  const customConfigsHtml = customConfigs.length === 0
+    ? `<div class="hint-text" style="margin:0">هیچ سرویس مستقیم-پنلی برای این کاربر ثبت نشده.</div>`
+    : customConfigs.map((c) => `
+      <div class="admin-list-row" data-custom-config-row="${c.id}" style="flex-direction:column;align-items:stretch;gap:6px">
+        <div class="admin-list-row-main">
+          <span>${escHtml(c.display_name)}${c.is_test ? " (تست)" : ""}</span>
+          <span class="hint-text" style="margin:0">${c.volume_gb} گیگ / ${c.duration_days} روز</span>
+        </div>
+        <span class="badge ${c.enabled ? "approved" : "rejected"}" style="width:fit-content">${c.enabled ? "فعال" : "غیرفعال"}</span>
+        ${adminConfigLinkBox(c.subscription_url)}
+        ${c.is_test ? "" : `
+        <div class="admin-list-row-actions" style="margin-top:4px">
+          <button class="btn ${c.enabled ? "outline" : ""} small" data-custom-toggle="${c.id}" data-custom-enabled="${c.enabled ? 1 : 0}" style="width:auto">${c.enabled ? "⛔️ غیرفعال کردن" : "✅ فعال کردن"}</button>
+          <button class="btn outline small" data-custom-delete="${c.id}" style="width:auto">🗑 حذف</button>
+        </div>`}
+      </div>
+    `).join("");
+
   body.innerHTML = `
     <button class="btn outline small" id="back-to-user-list" style="width:auto;margin-bottom:12px">→ بازگشت به لیست کاربران</button>
 
@@ -4372,12 +4419,74 @@ async function renderAdminUserDetail(body) {
       <button class="btn small" id="detail-message-send" style="width:auto">ارسال پیام</button>
     </div>
 
+    <div class="eyebrow">🔗 لینک‌های اشتراک (بانک محصول)</div>
+    <div class="card">${bankConfigsHtml}</div>
+
+    <div class="eyebrow">🛠 سرویس‌های مستقیم-پنل</div>
+    <div class="card">${customConfigsHtml}</div>
+
     <div class="eyebrow">🧾 تاریخچه سفارش‌ها</div>
     <div class="card">${ordersHtml}</div>
 
     <div class="eyebrow">💳 تاریخچه شارژ کیف‌پول</div>
     <div class="card">${topupsHtml}</div>
   `;
+
+  document.querySelectorAll("[data-copy-link]").forEach((btn) => {
+    btn.onclick = () => {
+      navigator.clipboard.writeText(btn.dataset.copyLink);
+      tg.HapticFeedback.notificationOccurred("success");
+      notify("لینک کپی شد.");
+    };
+  });
+
+  document.querySelectorAll("[data-bank-toggle]").forEach((btn) => {
+    btn.onclick = async () => {
+      const id = btn.dataset.bankToggle;
+      const disabled = btn.dataset.bankDisabled !== "1";
+      try {
+        await api(`/api/admin/configs/${id}/disable`, { method: "POST", body: JSON.stringify({ disabled }) });
+        tg.HapticFeedback.notificationOccurred("success");
+        notify(disabled ? "کانفیگ غیرفعال شد." : "کانفیگ فعال شد.");
+        renderAdminUserDetail(body);
+      } catch (e) { notify("⚠️ " + e.message); }
+    };
+  });
+
+  document.querySelectorAll("[data-bank-delete]").forEach((btn) => {
+    btn.onclick = async () => {
+      if (!confirm("این کانفیگ برای همیشه حذف می‌شود. ادامه می‌دهید؟")) return;
+      try {
+        await api(`/api/admin/configs/${btn.dataset.bankDelete}`, { method: "DELETE" });
+        tg.HapticFeedback.notificationOccurred("success");
+        notify("کانفیگ حذف شد.");
+        renderAdminUserDetail(body);
+      } catch (e) { notify("⚠️ " + e.message); }
+    };
+  });
+
+  document.querySelectorAll("[data-custom-toggle]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        await api(`/api/admin/custom-configs/${btn.dataset.customToggle}/toggle`, { method: "POST" });
+        tg.HapticFeedback.notificationOccurred("success");
+        notify("انجام شد.");
+        renderAdminUserDetail(body);
+      } catch (e) { notify("⚠️ " + e.message); }
+    };
+  });
+
+  document.querySelectorAll("[data-custom-delete]").forEach((btn) => {
+    btn.onclick = async () => {
+      if (!confirm("این سرویس برای همیشه حذف می‌شود (در صورت اتصال به پنل، از پنل هم حذف می‌شود). ادامه می‌دهید؟")) return;
+      try {
+        await api(`/api/admin/custom-configs/${btn.dataset.customDelete}`, { method: "DELETE" });
+        tg.HapticFeedback.notificationOccurred("success");
+        notify("سرویس حذف شد.");
+        renderAdminUserDetail(body);
+      } catch (e) { notify("⚠️ " + e.message); }
+    };
+  });
 
   document.getElementById("back-to-user-list").onclick = () => {
     adminUserView = adminUserView.returnTo || { level: "list", filter: "all", query: "" };
