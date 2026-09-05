@@ -1409,6 +1409,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             try:
                 provider = get_provider(server_row)
                 result = await provider.create_user(username, volume_gb, duration_days)
+            except PanelUsernameTakenError:
+                (await asyncio.to_thread(db.reject_order, order_id))
+                await message.answer("❌ این نام کاربری تکراری است، یک نام دیگر انتخاب کنید.\nمبلغ به کیف پول بازگردانده شد.")
+                return
             except Exception as e:
                 (await asyncio.to_thread(db.reject_order, order_id))
                 await message.answer(f"⛔️ خطا در ساخت کانفیگ روی پنل: {e}\nمبلغ به کیف پول بازگردانده شد.")
