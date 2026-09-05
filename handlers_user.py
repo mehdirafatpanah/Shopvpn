@@ -1968,6 +1968,12 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 if not configs and o["config_id"]:
                     cfg = db.get_config_by_id(o["config_id"])
                     configs = [cfg] if cfg else []
+                had_configs = bool(configs)
+                # کانفیگ‌هایی که ادمین غیرفعال کرده در «سفارش‌های من» نشان داده
+                # نمی‌شوند (لینک دیگر متعلق به کاربر شناخته نمی‌شود).
+                configs = [c for c in configs if not (("is_disabled" in c.keys()) and c["is_disabled"])]
+                if had_configs and not configs:
+                    continue
                 if configs:
                     for i, cfg in enumerate(configs, start=1):
                         label = base_label + (f" ({i}/{len(configs)})" if len(configs) > 1 else "")

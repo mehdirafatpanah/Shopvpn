@@ -1059,6 +1059,9 @@ class Database:
             ("orders", "custom_product_id", "INTEGER"),
             ("orders", "custom_duration_days", "INTEGER"),
             ("custom_configs", "product_id", "INTEGER"),
+            # غیرفعال‌سازی اداری یک کانفیگ بانکی توسط ادمین (بدون حذف کامل)؛ وقتی
+            # فعال باشد، لینک دیگر به کاربر (در بات/مینی‌اپ) نمایش داده نمی‌شود.
+            ("configs", "is_disabled", "INTEGER DEFAULT 0"),
         ]
         for table, col, coltype in migrations:
             if not self._column_exists(conn, table, col):
@@ -2023,6 +2026,61 @@ class Database:
     def delete_config(self, config_id: int):
         with self._get_conn() as conn:
             conn.execute("DELETE FROM configs WHERE id=? AND is_used=0", (config_id,))
+
+    # ------------------------------------------------------- admin: کانفیگ‌های بانکیِ یک کاربر --
+    # مدیریت کانفیگ‌های «بانک محصول» (جدول configs) که به یک کاربر خاص اختصاص
+    # یافته‌اند، از سمت ادمین (مینی‌اپ ← مدیریت کاربران): مشاهده‌ی لینک‌ها،
+    # غیرفعال/فعال کردن نمایش لینک به کاربر، و حذف کامل - معادل قابلیت‌هایی که
+    # پیش‌تر فقط برای «سرویس‌های مستقیم-پنل» (custom_configs) وجود داشت.
+
+    def get_bank_configs_for_user(self, tg_id: int):
+        """همه‌ی کانفیگ‌های بانکی که تا امروز به این کاربر اختصاص یافته (چه هنوز
+        فعال باشند چه قبلاً توسط ادمین غیرفعال/از او گرفته نشده باشند)."""
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT cf.*, p.name AS product_name, o.id AS order_display_id "
+                "FROM configs cf "
+                "LEFT JOIN products p ON p.id = cf.product_id "
+                "LEFT JOIN orders o ON o.id = cf.order_id "
+                "WHERE cf.assigned_user_id = ? "
+                "ORDER BY cf.assigned_at DESC, cf.id DESC",
+                (tg_id,),
+            ).fetchall()
+
+    def set_config_disabled(self, config_id: int, disabled: bool):
+        """غیرفعال/فعال کردن اداری یک کانفیگ بانکی توسط ادمین. این کار خودِ لینک
+        را از کار نمی‌اندازد (کانفیگ‌های بانکی برخلاف سرویس‌های مستقیم-پنل به
+        هیچ پنلی متصل نیستند که بشود رویش API زد)؛ فقط باعث می‌شود لینک دیگر در
+        بات/مینی‌اپ به کاربر نمایش داده نشود."""
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE configs SET is_disabled=? WHERE id=?",
+                (1 if disabled else 0, config_id),
+            )
+
+    def admin_delete_bank_config(self, config_id: int):
+        """حذف کامل و برگشت‌ناپذیر یک کانفیگ بانکی توسط ادمین (برخلاف
+        delete_owned_config نیازی به تطابق مالکیت ندارد و برخلاف delete_config
+        محدود به کانفیگ‌های استفاده‌نشده نیست). اگر سفارش مربوطه بعد از این
+        حذف دیگر هیچ کانفیگی نداشته باشد، از لیست «سفارش‌های من» همان کاربر
+        (نه گزارش‌های ادمین) مخفی می‌شود - دقیقاً مثل delete_owned_config."""
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT * FROM configs WHERE id=?", (config_id,)).fetchone()
+            if not row:
+                return None
+            order_id = row["order_id"]
+            assigned_user_id = row["assigned_user_id"]
+            conn.execute("DELETE FROM configs WHERE id=?", (config_id,))
+            if order_id and assigned_user_id:
+                remaining = conn.execute(
+                    "SELECT COUNT(*) c FROM configs WHERE order_id=?", (order_id,)
+                ).fetchone()["c"]
+                if remaining == 0:
+                    conn.execute(
+                        "UPDATE orders SET user_deleted=1 WHERE id=? AND user_id=?",
+                        (order_id, assigned_user_id),
+                    )
+            return dict(row)
 
     def take_unused_config(self, product_id: int, user_tg_id: int):
         with self._get_conn() as conn:
