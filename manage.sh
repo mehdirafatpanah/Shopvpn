@@ -366,6 +366,21 @@ MSG_FA[panel_proxy_list_ssl_ok]="معتبر تا %s"
 MSG_EN[panel_proxy_list_ssl_missing]="no certificate found"
 MSG_FA[panel_proxy_list_ssl_missing]="گواهی SSL پیدا نشد"
 
+MSG_EN[service_domains_header]="🌐 Domains registered for the Mini App / Admin Panel"
+MSG_FA[service_domains_header]="🌐 دامنه‌های ثبت‌شده برای مینی‌اپ / پنل مدیریت"
+MSG_EN[service_domains_empty]="No domain is registered yet for the Mini App or Admin Panel."
+MSG_FA[service_domains_empty]="هنوز هیچ دامنه‌ای برای مینی‌اپ یا پنل مدیریت ثبت نشده."
+MSG_EN[service_domains_miniapp_label]="Mini App"
+MSG_FA[service_domains_miniapp_label]="مینی‌اپ"
+MSG_EN[service_domains_panel_label]="Admin Panel"
+MSG_FA[service_domains_panel_label]="پنل مدیریت"
+MSG_EN[service_domains_delete_prompt]="Enter the number to delete that domain (removes nginx+SSL only, service stays up), or press Enter to cancel: "
+MSG_FA[service_domains_delete_prompt]="شماره مورد نظر برای حذف آن دامنه را وارد کن (فقط nginx و SSL حذف می‌شود، سرویس خاموش نمی‌شود)، برای لغو فقط Enter بزن: "
+MSG_EN[service_domains_delete_warn]="⚠️ This removes the nginx/SSL config for the %s domain (%s). It will stop working until you set a new one."
+MSG_FA[service_domains_delete_warn]="⚠️ این کار تنظیمات nginx/SSL دامنه %s (%s) را حذف می‌کند. تا دامنه جدید تنظیم نکنی، از کار می‌افتد."
+MSG_EN[service_domains_deleted]="✅ Domain config removed."
+MSG_FA[service_domains_deleted]="✅ تنظیمات دامنه حذف شد."
+
 # Main menu / منوی اصلی
 MSG_EN[menu_1]="Full bot install (first time)"
 MSG_FA[menu_1]="نصب کامل بات (اولین بار)"
@@ -405,12 +420,14 @@ MSG_EN[menu_18]="List panel/config domain proxies (info on existing ones)"
 MSG_FA[menu_18]="نمایش لیست پروکسی‌های دامنه پنل/کانفیگ (اطلاعات کانفیگ‌های موجود)"
 MSG_EN[menu_19]="Remove VPN panel domain proxy"
 MSG_FA[menu_19]="حذف دامنه پروکسی پنل VPN"
+MSG_EN[menu_20]="Mini App / Admin Panel domains (view + delete)"
+MSG_FA[menu_20]="دامنه‌های مینی‌اپ / پنل مدیریت (نمایش + حذف)"
 MSG_EN[menu_lang]="Language / زبان (English ⇄ فارسی)"
 MSG_FA[menu_lang]="Language / زبان (English ⇄ فارسی)"
 MSG_EN[menu_0]="Exit"
 MSG_FA[menu_0]="خروج"
-MSG_EN[enter_choice_prompt]="Enter choice [0-19, L]: "
-MSG_FA[enter_choice_prompt]="یک گزینه انتخاب کن [0-19, L]: "
+MSG_EN[enter_choice_prompt]="Enter choice [0-20, L]: "
+MSG_FA[enter_choice_prompt]="یک گزینه انتخاب کن [0-20, L]: "
 MSG_EN[invalid_choice]="Invalid option."
 MSG_FA[invalid_choice]="گزینه نامعتبر است."
 MSG_EN[goodbye]="Goodbye 👋"
@@ -1191,6 +1208,92 @@ list_panel_proxies() {
 }
 
 # ---------------------------------------------------------------------------
+# Action: list domains currently registered for the Mini App and for the
+# standalone Admin Panel (read from MINIAPP_URL / ADMIN_PANEL_URL in .env),
+# and let the user pick one to delete (removes only its nginx site + SSL
+# cert; the underlying systemd service is left running).
+# عملیات: نمایش دامنه‌های فعلی مینی‌اپ و پنل مدیریت وب (از .env) و امکان
+# حذف یکی از آن‌ها (فقط nginx و SSL، بدون خاموش کردن سرویس).
+# ---------------------------------------------------------------------------
+list_service_domains() {
+    local ENV_FILE="$INSTALL_DIR/.env"
+    local miniapp_domain="" admin_domain=""
+
+    if [ -f "$ENV_FILE" ]; then
+        miniapp_domain=$(grep -m1 "^MINIAPP_URL=" "$ENV_FILE" | cut -d= -f2- | sed -E 's#^https?://##; s#/+$##')
+        admin_domain=$(grep -m1 "^ADMIN_PANEL_URL=" "$ENV_FILE" | cut -d= -f2- | sed -E 's#^https?://##; s#/+$##')
+    fi
+
+    if [ -z "$miniapp_domain" ] && [ -z "$admin_domain" ]; then
+        echo -e "${YELLOW}$(t service_domains_empty)${RESET}"
+        return
+    fi
+
+    echo -e "${CYAN}${BOLD}$(t service_domains_header)${RESET}"
+    echo ""
+
+    local -a ENTRY_LABEL ENTRY_DOMAIN ENTRY_ENVKEY
+    local idx=0
+    if [ -n "$miniapp_domain" ]; then
+        idx=$((idx + 1))
+        ENTRY_LABEL[$idx]="$(t service_domains_miniapp_label)"
+        ENTRY_DOMAIN[$idx]="$miniapp_domain"
+        ENTRY_ENVKEY[$idx]="MINIAPP_URL"
+    fi
+    if [ -n "$admin_domain" ]; then
+        idx=$((idx + 1))
+        ENTRY_LABEL[$idx]="$(t service_domains_panel_label)"
+        ENTRY_DOMAIN[$idx]="$admin_domain"
+        ENTRY_ENVKEY[$idx]="ADMIN_PANEL_URL"
+    fi
+
+    local i
+    for ((i = 1; i <= idx; i++)); do
+        local domain="${ENTRY_DOMAIN[$i]}" enabled_state ssl_state cert_file expiry
+        if [ -L "/etc/nginx/sites-enabled/${domain}.conf" ]; then
+            enabled_state="$(t panel_proxy_list_enabled)"
+        else
+            enabled_state="$(t panel_proxy_list_disabled)"
+        fi
+
+        cert_file="/etc/letsencrypt/live/${domain}/fullchain.pem"
+        if [ -f "$cert_file" ]; then
+            expiry=$(sudo openssl x509 -enddate -noout -in "$cert_file" 2>/dev/null | cut -d= -f2)
+            ssl_state="$(t panel_proxy_list_ssl_ok "$expiry")"
+        else
+            ssl_state="$(t panel_proxy_list_ssl_missing)"
+        fi
+
+        echo -e "  ${YELLOW}[$i]${RESET} ${GREEN}${BOLD}${ENTRY_LABEL[$i]}${RESET}: ${domain}"
+        echo -e "      → nginx: ${enabled_state}"
+        echo -e "      → SSL:   ${ssl_state}"
+        echo ""
+    done
+
+    read -rp "$(t service_domains_delete_prompt)" CHOICE
+    [ -z "$CHOICE" ] && return
+    if ! [[ "$CHOICE" =~ ^[0-9]+$ ]] || [ "$CHOICE" -lt 1 ] || [ "$CHOICE" -gt "$idx" ]; then
+        echo -e "${RED}$(t invalid_choice)${RESET}"
+        return
+    fi
+
+    local sel_domain="${ENTRY_DOMAIN[$CHOICE]}" sel_envkey="${ENTRY_ENVKEY[$CHOICE]}" sel_label="${ENTRY_LABEL[$CHOICE]}"
+    echo -e "${RED}${BOLD}$(t service_domains_delete_warn "$sel_label" "$sel_domain")${RESET}"
+    read -rp "$(t confirm_prompt)" CONFIRM
+    [ "$CONFIRM" != "yes" ] && { echo -e "${YELLOW}$(t cancelled)${RESET}"; return; }
+
+    sudo rm -f "/etc/nginx/sites-enabled/${sel_domain}.conf" "/etc/nginx/sites-available/${sel_domain}.conf"
+    sudo systemctl reload nginx 2>/dev/null || true
+
+    if [ -f "$ENV_FILE" ] && grep -q "^${sel_envkey}=" "$ENV_FILE" 2>/dev/null; then
+        sed -i "/^${sel_envkey}=/d" "$ENV_FILE"
+    fi
+    sudo systemctl restart "$SERVICE_NAME" 2>/dev/null || true
+
+    echo -e "${GREEN}$(t service_domains_deleted)${RESET}"
+}
+
+# ---------------------------------------------------------------------------
 # Action: auto-generate VAPID keys for admin panel push notifications
 # عملیات: ساخت خودکار کلیدهای VAPID برای اعلان Push پنل مدیریت وب
 # ---------------------------------------------------------------------------
@@ -1281,6 +1384,7 @@ while true; do
     echo -e "${YELLOW}[17]${RESET} » ${GREEN}$(t menu_17)${RESET}"
     echo -e "${YELLOW}[18]${RESET} » ${GREEN}$(t menu_18)${RESET}"
     echo -e "${YELLOW}[19]${RESET} » ${GREEN}$(t menu_19)${RESET}"
+    echo -e "${YELLOW}[20]${RESET} » ${GREEN}$(t menu_20)${RESET}"
     echo -e "${CYAN}──────────────────────────────────────────────────────────────${RESET}"
     echo -e "${MAGENTA}[L]${RESET} » ${GREEN}$(t menu_lang)${RESET}"
     echo -e "${RED}[0]${RESET} » ${GREEN}$(t menu_0)${RESET}"
@@ -1308,6 +1412,7 @@ while true; do
         17) setup_panel_proxy; pause ;;
         18) list_panel_proxies; pause ;;
         19) remove_panel_proxy; pause ;;
+        20) list_service_domains; pause ;;
         [Ll]) toggle_lang ;;
         0) echo -e "${CYAN}$(t goodbye)${RESET}"; exit 0 ;;
         *) echo -e "${RED}$(t invalid_choice)${RESET}"; sleep 1 ;;
