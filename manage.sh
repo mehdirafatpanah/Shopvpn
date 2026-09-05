@@ -755,6 +755,56 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Tune nginx for real production traffic. VPN config domains on this box can
+# see thousands of concurrent connections; Ubuntu's stock nginx.conf ships
+# with worker_connections=768, which is nowhere near enough. That limit is
+# shared across ALL vhosts on the same nginx process, so once it's hit,
+# EVERY domain on the box - including the Mini App / Admin Panel domains -
+# starts failing (TLS handshake errors like Cloudflare 525, refused
+# connections, etc), not just the busy one. Idempotent: safe to call every
+# time nginx is installed/updated.
+# تنظیم nginx برای ترافیک واقعی. دامنه‌های کانفیگ VPN روی این سرور می‌تونن
+# هزاران کانکشن همزمان داشته باشن؛ nginx پیش‌فرض اوبونتو با
+# worker_connections=768 میاد که اصلاً کافی نیست. چون این سقف بین همه‌ی
+# دامنه‌های همون nginx مشترکه، وقتی پر بشه همه‌ی دامنه‌ها -از جمله دامنه‌های
+# مینی‌اپ/پنل مدیریت- شروع به خطا دادن می‌کنن (مثل خطای 525 در Cloudflare یا
+# رد اتصال)، نه فقط اون دامنه‌ی پرترافیک. idempotent است؛ هر بار nginx نصب/
+# آپدیت بشه بی‌خطر صدا زده می‌شود.
+# ---------------------------------------------------------------------------
+tune_nginx_for_scale() {
+    [ -f /etc/nginx/nginx.conf ] || return
+
+    if grep -q '^worker_processes' /etc/nginx/nginx.conf; then
+        sudo sed -i 's/^worker_processes.*/worker_processes auto;/' /etc/nginx/nginx.conf
+    else
+        sudo sed -i '1i worker_processes auto;' /etc/nginx/nginx.conf
+    fi
+
+    if grep -q '^worker_rlimit_nofile' /etc/nginx/nginx.conf; then
+        sudo sed -i 's/^worker_rlimit_nofile.*/worker_rlimit_nofile 65535;/' /etc/nginx/nginx.conf
+    else
+        sudo sed -i '/^worker_processes/a worker_rlimit_nofile 65535;' /etc/nginx/nginx.conf
+    fi
+
+    if grep -q 'worker_connections' /etc/nginx/nginx.conf; then
+        sudo sed -i 's/worker_connections[[:space:]]*[0-9]*;/worker_connections 8192;/' /etc/nginx/nginx.conf
+    fi
+
+    # Raise the systemd-level open-file limit too (worker_rlimit_nofile above
+    # is capped by this), so the higher nginx.conf value actually takes effect.
+    sudo mkdir -p /etc/systemd/system/nginx.service.d
+    sudo bash -c 'cat > /etc/systemd/system/nginx.service.d/override.conf' <<'NGINXOVERRIDE'
+[Service]
+LimitNOFILE=65535
+NGINXOVERRIDE
+
+    sudo systemctl daemon-reload
+    if sudo nginx -t > /dev/null 2>&1; then
+        sudo systemctl reload nginx 2>/dev/null || sudo systemctl restart nginx 2>/dev/null || true
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Action: full Mini App setup (domain + SSL + nginx + service, all automatic)
 # عملیات: نصب/تنظیم کامل مینی‌اپ (دامنه + SSL + nginx + سرویس، همه خودکار)
 # ---------------------------------------------------------------------------
@@ -783,6 +833,7 @@ setup_miniapp() {
     sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get update -qq
     timeout 120 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 \
         apt-get install -y -qq nginx certbot python3-certbot-nginx > /dev/null
+    tune_nginx_for_scale
 
     echo -e "${CYAN}$(t installing_miniapp_pkgs)${RESET}"
     cd "$INSTALL_DIR"
@@ -911,6 +962,7 @@ setup_admin_panel() {
     sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get update -qq
     timeout 120 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 \
         apt-get install -y -qq nginx certbot python3-certbot-nginx > /dev/null
+    tune_nginx_for_scale
 
     echo -e "${CYAN}$(t installing_panel_pkgs)${RESET}"
     cd "$INSTALL_DIR"
@@ -1098,6 +1150,7 @@ setup_panel_proxy() {
     sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get update -qq
     timeout 120 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 \
         apt-get install -y -qq nginx certbot python3-certbot-nginx > /dev/null
+    tune_nginx_for_scale
 
     # Guard: never silently overwrite an nginx config that this menu did not
     # create itself (e.g. the Mini App / Admin Panel domain config), which
