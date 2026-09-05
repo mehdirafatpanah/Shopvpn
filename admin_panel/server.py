@@ -1402,11 +1402,28 @@ class ProductEditBody(BaseModel):
     price: Optional[int] = None
     description: Optional[str] = None
     duration_days: Optional[int] = None
+    provision_server_id: Optional[int] = None
+    auto_provision_volume_gb: Optional[int] = None
 
 
 @app.put("/api/products/{product_id}")
 def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(require_permission("catalog"))):
-    db.edit_product(product_id, body.name, body.price, body.description, body.duration_days)
+    old_product = db.get_product(product_id)
+    if not old_product:
+        raise HTTPException(status_code=404, detail="محصول یافت نشد.")
+
+    provision_server_id = None
+    if body.provision_server_id is not None:
+        if not old_product["is_auto_provision"]:
+            raise HTTPException(status_code=400, detail="این محصول به‌صورت خودکار ساخته نمی‌شود.")
+        if not db.get_panel_server(body.provision_server_id):
+            raise HTTPException(status_code=404, detail="سرور پنل یافت نشد.")
+        provision_server_id = body.provision_server_id
+
+    db.edit_product(
+        product_id, body.name, body.price, body.description, body.duration_days,
+        provision_server_id=provision_server_id, auto_provision_volume_gb=body.auto_provision_volume_gb,
+    )
     db.log_admin_action(admin["id"], "product_edit", f"#{product_id} (پنل وب - {admin['username']})", "product", product_id)
     return {"ok": True}
 
