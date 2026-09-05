@@ -4430,6 +4430,7 @@ const ADMIN_ACTION_LABELS = {
   wallet_adjust: "✏️ تغییر موجودی کیف‌پول",
   product_price_edit: "💲 ویرایش قیمت محصول",
   product_server_edit: "🔌 تغییر سرور/اینباند محصول",
+  product_volume_edit: "📶 تغییر حجم محصول",
   order_approve: "✅ تایید سفارش",
   order_reject: "❌ رد سفارش",
   topup_approve: "✅ تایید شارژ کیف‌پول",
