@@ -4836,7 +4836,7 @@ class ConfigDisableBody(BaseModel):
     disabled: bool
 
 
-@app.post("/api/admin/configs/{config_id}/disable")
+@app.post("/api/admin/user-configs/{config_id}/disable")
 def api_admin_config_disable(config_id: int, body: ConfigDisableBody, auth=Depends(require_full_admin)):
     admin_id, db, _ = auth
     row = db.get_config_by_id(config_id)
@@ -4851,7 +4851,7 @@ def api_admin_config_disable(config_id: int, body: ConfigDisableBody, auth=Depen
     return {"status": "ok", "is_disabled": body.disabled}
 
 
-@app.delete("/api/admin/configs/{config_id}")
+@app.delete("/api/admin/user-configs/{config_id}")
 def api_admin_config_delete(config_id: int, auth=Depends(require_full_admin)):
     admin_id, db, _ = auth
     row = db.admin_delete_bank_config(config_id)
