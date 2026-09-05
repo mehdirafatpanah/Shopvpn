@@ -4014,6 +4014,9 @@ async function renderAdminProducts(body) {
 
 async function renderAdminEditProduct(body) {
   const { product: p, categoryId, categoryName } = adminCatalogView;
+  const panelServers = p.is_auto_provision
+    ? await api("/api/admin/panel-servers-lite").catch(() => [])
+    : [];
   body.innerHTML = `
     <button class="btn outline small" id="edit-prod-back" style="width:auto;margin-bottom:12px">→ بازگشت به محصولات «${categoryName}»</button>
     <div class="card">
@@ -4026,7 +4029,14 @@ async function renderAdminEditProduct(body) {
       <input class="input" id="edit-prod-duration" type="number" value="${p.duration_days}" style="margin-bottom:10px" />
       <label class="field-label">توضیحات (اختیاری)</label>
       <input class="input" id="edit-prod-desc" type="text" value="${(p.description || "").replace(/"/g, "&quot;")}" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:10px" />
-      ${p.is_auto_provision ? `<p class="hint-text">🔌 این محصول به‌صورت خودکار (${p.auto_provision_volume_gb || "?"} گیگ) ساخته می‌شود؛ منبع کانفیگ بعد از ساخت محصول قابل تغییر نیست.</p>` : ""}
+      ${p.is_auto_provision ? (panelServers.length ? `
+      <label class="field-label">پنل / اینباند (اتصال مستقیم)</label>
+      <select class="input" id="edit-prod-server" style="margin-bottom:8px">
+        ${panelServers.map((s) => `<option value="${s.id}" ${s.id === p.provision_server_id ? "selected" : ""}>${s.name}</option>`).join("")}
+      </select>
+      <input class="input" id="edit-prod-volume" type="number" placeholder="حجم (گیگابایت)" value="${p.auto_provision_volume_gb || ""}" style="margin-bottom:10px" />
+      <p class="hint-text">🔌 با تغییر پنل، ساخت‌های بعدیِ همین محصول از پنل/اینباند جدید انجام می‌شود؛ سرویس‌های قبلاً ساخته‌شده تغییر نمی‌کنند.</p>
+      ` : `<p class="hint-text">🔌 این محصول به‌صورت خودکار (${p.auto_provision_volume_gb || "?"} گیگ) ساخته می‌شود. برای تغییر پنل/اینباند باید نمایندگی سطح ۲ باشی.</p>`) : ""}
       <div class="field-error" id="edit-prod-error"></div>
       <div style="display:flex;gap:8px;margin-top:8px">
         <button class="btn" id="edit-prod-save">💾 ذخیره تغییرات</button>
@@ -4048,11 +4058,20 @@ async function renderAdminEditProduct(body) {
     const duration = Number(document.getElementById("edit-prod-duration").value);
     const description = document.getElementById("edit-prod-desc").value.trim();
     if (!name || !price || !duration) { errBox.textContent = "نام، قیمت و مدت اعتبار الزامی هستند."; return; }
+    const payload = { name, price, duration_days: duration, description };
+    const serverSel = document.getElementById("edit-prod-server");
+    if (serverSel) {
+      const provision_server_id = Number(serverSel.value);
+      const auto_provision_volume_gb = Number(document.getElementById("edit-prod-volume").value);
+      if (!provision_server_id || !auto_provision_volume_gb) {
+        errBox.textContent = "پنل و حجم (گیگابایت) الزامی هستند.";
+        return;
+      }
+      payload.provision_server_id = provision_server_id;
+      payload.auto_provision_volume_gb = auto_provision_volume_gb;
+    }
     try {
-      await api(`/api/admin/products/${p.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ name, price, duration_days: duration, description }),
-      });
+      await api(`/api/admin/products/${p.id}`, { method: "PATCH", body: JSON.stringify(payload) });
       tg.HapticFeedback.notificationOccurred("success");
       back();
     } catch (e) { errBox.textContent = e.message; }
@@ -4410,6 +4429,7 @@ async function renderAdminUserDetail(body) {
 const ADMIN_ACTION_LABELS = {
   wallet_adjust: "✏️ تغییر موجودی کیف‌پول",
   product_price_edit: "💲 ویرایش قیمت محصول",
+  product_server_edit: "🔌 تغییر سرور/اینباند محصول",
   order_approve: "✅ تایید سفارش",
   order_reject: "❌ رد سفارش",
   topup_approve: "✅ تایید شارژ کیف‌پول",
