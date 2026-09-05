@@ -1235,7 +1235,28 @@ def admin_products_list_kb(db, products) -> InlineKeyboardMarkup:
         rows.append(
             [InlineKeyboardButton(text="💳 روش‌های پرداخت مجاز", callback_data=f"adm_prod_paymethods:{p['id']}")]
         )
+        if p["is_auto_provision"]:
+            edit_row = [InlineKeyboardButton(text="📶 تغییر حجم", callback_data=f"adm_prod_vol:{p['id']}")]
+            if p["provision_server_id"]:
+                edit_row.insert(0, InlineKeyboardButton(text="🔌 تغییر پنل/اینباند", callback_data=f"adm_prod_srv:{p['id']}"))
+            rows.append(edit_row)
     rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_products")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_edit_product_provision_kb(db, product_id) -> InlineKeyboardMarkup:
+    product = db.get_product(product_id)
+    cat_id = product["category_id"] if product else None
+    servers = db.get_panel_servers(active_only=True)
+    rows = [
+        [InlineKeyboardButton(
+            text=f"🖥 {s['name']} ({PANEL_TYPE_LABELS.get(s['panel_type'], s['panel_type'])})",
+            callback_data=f"adm_prod_set_srv:{product_id}:{s['id']}",
+        )]
+        for s in servers
+    ]
+    back_cb = f"adm_prod_cat:{cat_id}" if cat_id is not None else "adm_products"
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data=back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

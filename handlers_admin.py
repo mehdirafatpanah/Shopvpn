@@ -42,6 +42,7 @@ from renewal_engine import execute_renewal, RenewalError
 from states import (
     AdminAddCategory,
     AdminAddProduct,
+    AdminEditProduct,
     AdminAddConfigs,
     AdminAddTestConfigs,
     AdminAddTestPlan,
@@ -660,6 +661,87 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             products = (await asyncio.to_thread(db.get_products, cat_id, active_only=False))
             await safe_edit(call, "لیست محصولات این دسته‌بندی:", reply_markup=kb.admin_products_list_kb(db, products))
         await call.answer("محصول حذف شد.")
+
+    @router.callback_query(F.data.startswith("adm_prod_srv:"))
+    async def cb_admin_prod_srv(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_prod_srv")
+        if product_id is None:
+            return await call.answer("❌ درخواست نامعتبر است.", show_alert=True)
+        product = (await asyncio.to_thread(db.get_product, product_id))
+        if not product or not product["provision_server_id"]:
+            return await call.answer("⚠️ این محصول اتصال مستقیم به پنل ندارد.", show_alert=True)
+        if not (await asyncio.to_thread(db.is_full_access_bot, is_main_bot)):
+            return await call.answer("⛔️ تغییر پنل/اینباند فقط برای نمایندگی سطح ۲ ممکن است.", show_alert=True)
+        await safe_edit(call, 
+            f"🔌 پنل/اینباند جدید برای «{product['name']}» را انتخاب کنید:\n\n"
+            "ساخت‌های بعدیِ همین محصول از پنل/اینباند جدید انجام می‌شود؛ سرویس‌های قبلاً ساخته‌شده تغییر نمی‌کنند.",
+            reply_markup=kb.admin_edit_product_provision_kb(db, product_id),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_prod_set_srv:"))
+    async def cb_admin_prod_set_srv(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        try:
+            _, product_id_s, server_id_s = call.data.split(":")
+            product_id, server_id = int(product_id_s), int(server_id_s)
+        except (ValueError, IndexError):
+            return await call.answer("❌ درخواست نامعتبر است.", show_alert=True)
+        if not (await asyncio.to_thread(db.is_full_access_bot, is_main_bot)):
+            return await call.answer("⛔️ تغییر پنل/اینباند فقط برای نمایندگی سطح ۲ ممکن است.", show_alert=True)
+        product = (await asyncio.to_thread(db.get_product, product_id))
+        if not product or not product["provision_server_id"]:
+            return await call.answer("⚠️ این محصول دیگر وجود ندارد یا اتصال مستقیم به پنل ندارد.", show_alert=True)
+        server = (await asyncio.to_thread(db.get_panel_server, server_id))
+        if not server:
+            return await call.answer("⚠️ این پنل دیگر وجود ندارد.", show_alert=True)
+        (await asyncio.to_thread(db.edit_product, product_id, provision_server_id=server_id))
+        (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "product_server_edit",
+                                  f"محصول «{product['name']}» → پنل «{server['name']}»"))
+        products = (await asyncio.to_thread(db.get_products, product["category_id"], active_only=False))
+        await safe_edit(call, "لیست محصولات این دسته‌بندی:", reply_markup=kb.admin_products_list_kb(db, products))
+        await call.answer("✅ پنل/اینباند به‌روزرسانی شد.")
+
+    @router.callback_query(F.data.startswith("adm_prod_vol:"))
+    async def cb_admin_prod_vol(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_prod_vol")
+        if product_id is None:
+            return await call.answer("❌ درخواست نامعتبر است.", show_alert=True)
+        product = (await asyncio.to_thread(db.get_product, product_id))
+        if not product or not product["is_auto_provision"]:
+            return await call.answer("⚠️ این محصول خودکار نیست.", show_alert=True)
+        await state.update_data(editing_product_id=product_id)
+        await state.set_state(AdminEditProduct.waiting_volume)
+        hint = " (یا 0 برای نامحدود)" if product["provision_server_id"] else ""
+        await safe_edit(call, f"حجم جدید «{product['name']}» چند گیگابایت باشد؟ فقط عدد صحیح{hint}:",
+                         reply_markup=kb.admin_back_kb())
+        await call.answer()
+
+    @router.message(AdminEditProduct.waiting_volume)
+    async def process_prod_edit_volume(message: Message, state: FSMContext):
+        text = message.text.strip()
+        data = await state.get_data()
+        product_id = data.get("editing_product_id")
+        product = (await asyncio.to_thread(db.get_product, product_id))
+        is_unlimited_ok = bool(product and product["provision_server_id"])
+        if not text.isdigit() or (int(text) <= 0 and not is_unlimited_ok):
+            hint = " (یا 0 برای نامحدود)" if is_unlimited_ok else ""
+            await message.answer(f"لطفاً فقط عدد صحیح و بزرگ‌تر از صفر وارد کنید{hint}. مثال: 30")
+            return
+        (await asyncio.to_thread(db.edit_product, product_id, auto_provision_volume_gb=int(text)))
+        (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "product_volume_edit",
+                                  f"محصول «{product['name'] if product else product_id}» → {text} گیگ"))
+        await state.clear()
+        if product:
+            products = (await asyncio.to_thread(db.get_products, product["category_id"], active_only=False))
+            await message.answer("✅ حجم به‌روزرسانی شد.", reply_markup=kb.admin_products_list_kb(db, products))
+        else:
+            await message.answer("✅ حجم به‌روزرسانی شد.")
 
     @router.callback_query(F.data.startswith("adm_prod_paymethods:"))
     async def cb_admin_prod_paymethods(call: CallbackQuery):
