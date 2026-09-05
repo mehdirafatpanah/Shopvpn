@@ -184,7 +184,7 @@ class ThreeXUIProvider(BasePanelProvider):
                 raise PanelError(f"خطا در اتصال به پنل: {e}") from e
             if data.get("success") is False:
                 msg = data.get("msg") or ""
-                if "duplicate" in msg.lower() or "exist" in msg.lower():
+                if "duplicate" in msg.lower() or "exist" in msg.lower() or "already in use" in msg.lower():
                     raise PanelUsernameTakenError(f"نام کاربری «{username}» روی پنل تکراری است")
                 raise PanelError(msg or "ساخت کاربر روی پنل ناموفق بود.")
 
