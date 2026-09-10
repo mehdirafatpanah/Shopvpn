@@ -2354,6 +2354,7 @@ function renderUserServices(services, isSenior) {
         <button class="btn btn-sm" data-svc-action="transfer" data-svc-id="${c.id}">انتقال</button>
         <button class="btn btn-sm" data-svc-action="cut" data-svc-id="${c.id}">قطع دسترسی</button>
         <button class="btn btn-sm" data-svc-action="history" data-svc-id="${c.id}">تاریخچه</button>
+        <button class="btn btn-sm btn-danger" data-svc-action="delete" data-svc-id="${c.id}">حذف</button>
       </td>` : (isSenior ? '<td>—</td>' : '')}
     </tr>
   `).join('')}
@@ -2438,6 +2439,9 @@ function wireUserServiceActions(body, tgId, close) {
             ? `<div class="table-wrap"><table><thead><tr><th>رویداد</th><th>جزئیات</th><th>تاریخ</th></tr></thead><tbody>${rows.map(r => `<tr><td>${esc(SVC_EVENT_LABEL[r.event_type] || r.event_type)}</td><td>${esc(r.detail || '-')}</td><td class="mono">${fmtDate(r.created_at)}</td></tr>`).join('')}</tbody></table></div>`
             : `<div class="empty-state">${svg('empty')}<div>تاریخچه‌ای ثبت نشده.</div></div>`);
           return;
+        } else if (action === 'delete') {
+          if (!confirm('این سرویس برای همیشه از پنل VPN و از این کاربر حذف می‌شود و غیرقابل بازگشت است. ادامه می‌دهید؟')) return;
+          await apiDelete(`/custom-configs/${id}`);
         }
         toast('انجام شد.');
         close();
