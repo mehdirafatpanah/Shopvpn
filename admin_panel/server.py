@@ -795,8 +795,8 @@ def api_app_config(admin=Depends(get_current_admin)):
     # چت زنده هم مثل تب خودش در پنل وب برای هر ادمینی باز است؛ چون ماهیتش
     # زنده/رفت‌وبرگشتی است همان صفحه‌ی وب را در یک وب‌ویوی داخل اپ نشان می‌دهیم
     tabs.append({
-        "id": "support", "title": "چت زنده", "icon": "chat", "screen": "webview",
-        "section": "کاربران و پشتیبانی", "url": "/?tab=support",
+        "id": "support", "title": "چت زنده", "icon": "chat", "screen": "support",
+        "section": "کاربران و پشتیبانی", "source": "/api/support/conversations",
     })
 
     # ------------------------------------------------------- محصولات و بازاریابی
@@ -833,14 +833,14 @@ def api_app_config(admin=Depends(get_current_admin)):
         # فرم پیام همگانی (انتخاب مخاطب، ضمیمه و ...) در پنل وب پیاده شده؛
         # چون ذاتاً یک فرم غنی است همان صفحه را این‌جا هم نشان می‌دهیم
         tabs.append({
-            "id": "broadcast", "title": "پیام همگانی", "icon": "campaign", "screen": "webview",
-            "section": "محصولات و بازاریابی", "url": "/?tab=broadcast",
+            "id": "broadcast", "title": "پیام همگانی", "icon": "campaign", "screen": "broadcast",
+            "section": "محصولات و بازاریابی", "submit_url": "/api/broadcast",
         })
     if allowed("settings"):
         # آپلود تصویر بنر (multipart) در فرم وب پیاده شده؛ همان‌جا نگه می‌داریم
         tabs.append({
-            "id": "banners", "title": "بنرها", "icon": "image", "screen": "webview",
-            "section": "محصولات و بازاریابی", "url": "/?tab=banners",
+            "id": "banners", "title": "بنرها", "icon": "image", "screen": "banners",
+            "section": "محصولات و بازاریابی", "source": "/api/banners", "submit_url": "/api/banners",
         })
 
     # ------------------------------------------------------------ شبکه و همکاران
@@ -869,8 +869,9 @@ def api_app_config(admin=Depends(get_current_admin)):
             ],
         })
     tabs.append({
-        "id": "map", "title": "نقشه سرورها", "icon": "map", "screen": "webview",
-        "section": "شبکه و همکاران", "url": "/?tab=dashboard",
+        "id": "map", "title": "نقشه سرورها", "icon": "map", "screen": "server_map",
+        "section": "شبکه و همکاران", "source": "/api/dashboard/servers-map",
+        "map_source": "/api/dashboard/world-map",
     })
 
     # -------------------------------------------------------------- تنظیمات و سیستم
@@ -880,8 +881,8 @@ def api_app_config(admin=Depends(get_current_admin)):
             "section": "تنظیمات و سیستم", "url": "/?tab=settings",
         })
         tabs.append({
-            "id": "buttons", "title": "دکمه‌های ربات", "icon": "tune", "screen": "webview",
-            "section": "تنظیمات و سیستم", "url": "/?tab=buttons",
+            "id": "buttons", "title": "دکمه‌های ربات", "icon": "tune", "screen": "buttons",
+            "section": "تنظیمات و سیستم", "source": "/api/buttons",
         })
         tabs.append({
             "id": "salessettings", "title": "تنظیمات فروش", "icon": "sell", "screen": "webview",
@@ -908,8 +909,11 @@ def api_app_config(admin=Depends(get_current_admin)):
         })
     if allowed("system"):
         tabs.append({
-            "id": "system", "title": "سیستم و نگهداری", "icon": "memory", "screen": "webview",
-            "section": "تنظیمات و سیستم", "url": "/?tab=system",
+            "id": "system", "title": "سیستم و نگهداری", "icon": "memory", "screen": "system_status",
+            "section": "تنظیمات و سیستم", "source": "/api/system/stats",
+            "jobs_source": "/api/system/jobs",
+            "backup_status_source": "/api/system/backup/status",
+            "backup_create_endpoint": "/api/system/backup/create",
         })
         tabs.append({
             "id": "logs", "title": "لاگ فعالیت ادمین‌ها", "icon": "history", "screen": "list",
@@ -924,8 +928,8 @@ def api_app_config(admin=Depends(get_current_admin)):
 
     # ------------------------------------------------------------------ حساب کاربری
     tabs.append({
-        "id": "account", "title": "حساب من", "icon": "account", "screen": "webview",
-        "section": "حساب کاربری", "url": "/?tab=account",
+        "id": "account", "title": "حساب من", "icon": "account", "screen": "account",
+        "section": "حساب کاربری", "submit_url": "/api/me/password",
     })
     tabs.append({
         "id": "device_settings", "title": "تنظیمات دستگاه", "icon": "settings", "screen": "settings",
