@@ -2851,14 +2851,27 @@ class Database:
     def delete_owned_custom_config(self, custom_config_id: int, user_tg_id: int):
         """حذف کامل و برگشت‌ناپذیر یک کانفیگ شخصی متعلق به همین کاربر. فقط ردیف
         دیتابیس را حذف می‌کند؛ حذف واقعی کاربر از روی پنل VPN (در صورت وجود
-        panel_server_id) باید قبل از فراخوانی این متد و جداگانه انجام شود."""
+        panel_server_id) باید قبل از فراخوانی این متد و جداگانه انجام شود.
+        اگر با این حذف، سفارشی که این کانفیگ از آن بود دیگر هیچ کانفیگ شخصی
+        دیگری نداشته باشد، آن سفارش هم از لیست «سفارش‌های من» کاربر (بات و
+        مینی‌اپ) مخفی می‌شود - دقیقاً مثل delete_owned_config برای کانفیگ‌های
+        بانکی (بدون این‌که از دیتابیس یا گزارش‌های ادمین حذف شود)."""
         with self._get_conn() as conn:
             row = conn.execute(
                 "SELECT * FROM custom_configs WHERE id=? AND user_id=?", (custom_config_id, user_tg_id)
             ).fetchone()
             if not row:
                 return None
+            order_id = row["order_id"]
             conn.execute("DELETE FROM custom_configs WHERE id=?", (custom_config_id,))
+            if order_id:
+                remaining = conn.execute(
+                    "SELECT COUNT(*) c FROM custom_configs WHERE order_id=?", (order_id,)
+                ).fetchone()["c"]
+                if remaining == 0:
+                    conn.execute(
+                        "UPDATE orders SET user_deleted=1 WHERE id=? AND user_id=?", (order_id, user_tg_id)
+                    )
             return dict(row)
 
     # -----------------------------------------------------------------------
