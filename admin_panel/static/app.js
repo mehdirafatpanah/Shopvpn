@@ -2268,6 +2268,7 @@ function renderUsersBrutalist(res, pages) {
 async function showUserDetail(tgId) {
   const d = await apiGet(`/users/${tgId}`);
   const services = await apiGet(`/users/${tgId}/custom-configs`).catch(() => []);
+  const bankConfigs = await apiGet(`/users/${tgId}/configs`).catch(() => []);
   const isSenior = hasPerm('users');
   const u = d.user;
   const displayName = u.username ? '@' + u.username : (u.first_name || tgId);
@@ -2307,6 +2308,11 @@ async function showUserDetail(tgId) {
     <div id="ud-services">${renderUserServices(services, isSenior)}</div>
     ` : ''}
 
+    ${bankConfigs.length ? `
+    <h4 class="ud-section-title">کانفیگ‌های بانک محصول</h4>
+    <div id="ud-bank-configs">${renderUserBankConfigs(bankConfigs, isSenior)}</div>
+    ` : ''}
+
     <h4 class="ud-section-title">سفارش‌های اخیر</h4>
     <div class="table-wrap"><table><thead><tr><th>#</th><th>محصول</th><th>مبلغ</th><th>وضعیت</th><th>تاریخ</th></tr></thead>
     <tbody>${d.orders.slice(0, 10).map(o => `<tr><td class="mono">#${o.id}</td><td>${esc(o.product_name || '-')}</td><td class="mono">${fmt(o.final_price)}</td><td>${esc(o.status)}</td><td class="mono">${fmtDate(o.created_at)}</td></tr>`).join('') || `<tr><td colspan="5" class="empty-state"><div class="icon">${svg('empty')}</div>سفارشی نیست</td></tr>`}</tbody></table></div>
@@ -2323,6 +2329,7 @@ async function showUserDetail(tgId) {
       catch (e) { handleErr(e); }
     });
     if (isSenior) wireUserServiceActions(body, tgId, close);
+    if (isSenior) wireUserBankConfigActions(body, tgId, close);
   }, { wide: true });
 }
 
@@ -2351,6 +2358,49 @@ function renderUserServices(services, isSenior) {
     </tr>
   `).join('')}
   </tbody></table></div>`;
+}
+
+/* کانفیگ‌های بانک محصول (لینک‌های ساده‌ی از پیش‌آماده - نه سرویس مستقیم-پنل
+   بالا) که به این کاربر اختصاص یافته‌اند: مشاهده، غیرفعال/فعال کردن نمایش
+   لینک و حذف کامل. */
+function renderUserBankConfigs(configs, isSenior) {
+  return `<div class="table-wrap"><table><thead><tr>
+    <th>محصول</th><th>سفارش</th><th>لینک</th><th>وضعیت</th>${isSenior ? '<th>اکشن‌ها</th>' : ''}
+  </tr></thead><tbody>
+  ${configs.map(c => `
+    <tr data-cfg-row="${c.id}">
+      <td>${esc(c.product_name)}</td>
+      <td class="mono">${c.order_id ? '#' + c.order_id : '-'}</td>
+      <td class="mono" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.link || '-')}</td>
+      <td><span class="badge ${c.is_disabled ? 'badge-rejected' : 'badge-approved'}">${c.is_disabled ? 'غیرفعال' : 'فعال'}</span></td>
+      ${isSenior ? `<td style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn btn-sm" data-cfg-action="toggle" data-cfg-id="${c.id}" data-cfg-state="${c.is_disabled ? 1 : 0}">${c.is_disabled ? 'فعال کردن' : 'غیرفعال کردن'}</button>
+        <button class="btn btn-sm btn-danger" data-cfg-action="delete" data-cfg-id="${c.id}">حذف</button>
+      </td>` : ''}
+    </tr>
+  `).join('')}
+  </tbody></table></div>`;
+}
+
+function wireUserBankConfigActions(body, tgId, close) {
+  $$('[data-cfg-action]', body).forEach(el => {
+    el.addEventListener('click', async () => {
+      const action = el.dataset.cfgAction;
+      const id = el.dataset.cfgId;
+      try {
+        if (action === 'toggle') {
+          const disabled = el.dataset.cfgState !== '1';
+          await apiPost(`/user-configs/${id}/disable`, { disabled });
+        } else if (action === 'delete') {
+          if (!confirm('این کانفیگ برای همیشه حذف می‌شود و این عملیات غیرقابل بازگشت است. ادامه می‌دهید؟')) return;
+          await apiDelete(`/user-configs/${id}`);
+        }
+        toast('انجام شد.');
+        close();
+        showUserDetail(tgId);
+      } catch (e) { handleErr(e); }
+    });
+  });
 }
 
 const SVC_EVENT_LABEL = {
