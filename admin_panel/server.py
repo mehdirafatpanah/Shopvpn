@@ -779,18 +779,13 @@ def api_app_config(admin=Depends(get_current_admin)):
                  "endpoint": "/api/users/{tg_id}/unblock", "style": "success", "confirm": True},
             ],
         })
-    # تیکت‌ها مثل خودِ نوار پنل وب مجوز خاصی نمی‌خواهد؛ هر ادمین لاگین‌کرده می‌بیند
+    # تیکت‌ها صفحه‌ی اختصاصی native دارند تا جزئیات، پیام‌ها، پاسخ و بستن تیکت
+    # در اپ هم دقیقاً مثل پنل وب کار کند.
     tabs.append({
-        "id": "tickets", "title": "تیکت‌ها", "icon": "ticket", "screen": "list",
+        "id": "tickets", "title": "تیکت‌ها", "icon": "ticket", "screen": "tickets",
         "section": "کاربران و پشتیبانی",
         "source": "/api/tickets", "item_id_field": "id", "search": True,
         "filters": [{"key": "status", "label": "وضعیت", "options": ["open", "answered", "closed"]}],
-        "fields": [
-            {"key": "id", "label": "#", "type": "text"},
-            {"key": "subject", "label": "موضوع", "type": "title"},
-            {"key": "status", "label": "وضعیت", "type": "badge"},
-            {"key": "updated_at", "label": "آخرین بروزرسانی", "type": "date"},
-        ],
     })
     # چت زنده هم مثل تب خودش در پنل وب برای هر ادمینی باز است؛ چون ماهیتش
     # زنده/رفت‌وبرگشتی است همان صفحه‌ی وب را در یک وب‌ویوی داخل اپ نشان می‌دهیم
@@ -846,15 +841,8 @@ def api_app_config(admin=Depends(get_current_admin)):
     # ------------------------------------------------------------ شبکه و همکاران
     if allowed("resellers"):
         tabs.append({
-            "id": "resellers", "title": "نمایندگی‌ها", "icon": "groups", "screen": "list",
-            "section": "شبکه و همکاران",
-            "source": "/api/resellers", "item_id_field": "telegram_id", "search": True,
-            "fields": [
-                {"key": "telegram_id", "label": "شناسه", "type": "text"},
-                {"key": "full_name", "label": "نام", "type": "title"},
-                {"key": "reseller_credit_gb", "label": "اعتبار (گیگ)", "type": "text"},
-                {"key": "sold_configs", "label": "فروش", "type": "text"},
-            ],
+            "id": "resellers", "title": "نمایندگی‌ها", "icon": "groups", "screen": "resellers",
+            "section": "شبکه و همکاران", "source": "/api/resellers", "search": True,
         })
     if allowed("panels"):
         tabs.append({
@@ -876,17 +864,76 @@ def api_app_config(admin=Depends(get_current_admin)):
 
     # -------------------------------------------------------------- تنظیمات و سیستم
     if allowed("settings"):
+        # نسخه‌ی native تنظیمات پایه؛ قبلاً این تب WebView بود و روی بعضی نسخه‌های
+        # Android WebView به صفحه‌ی کاملاً خالی/سیاه می‌رسید.
         tabs.append({
-            "id": "branding", "title": "تنظیمات و برندینگ", "icon": "brush", "screen": "webview",
-            "section": "تنظیمات و سیستم", "url": "/?tab=settings",
+            "id": "branding", "title": "تنظیمات و برندینگ", "icon": "brush", "screen": "form",
+            "section": "تنظیمات و سیستم", "load_url": "/api/settings", "submit_url": "/api/settings",
+            "form_sections": [
+                {"title": "محتوا و برندینگ", "groups": [{"title": "متن‌های پایه", "fields": [
+                    {"key": "store_name", "label": "نام فروشگاه", "type": "text"},
+                    {"key": "welcome_text", "label": "متن خوش‌آمدگویی", "type": "textarea"},
+                    {"key": "contact_text", "label": "متن ارتباط با پشتیبانی", "type": "textarea"},
+                    {"key": "after_buy_text", "label": "متن راهنمای پرداخت", "type": "textarea"},
+                ]}, {"title": "رنگ دکمه‌های خرید", "fields": [
+                    {"key": "btn_cat_select_style", "label": "دکمه انتخاب دسته‌بندی", "type": "text"},
+                    {"key": "btn_product_select_style", "label": "دکمه انتخاب محصول", "type": "text"},
+                    {"key": "btn_buy_continue_style", "label": "دکمه ادامه و ارسال رسید", "type": "text"},
+                    {"key": "btn_enter_code_style", "label": "دکمه کد تخفیف", "type": "text"},
+                    {"key": "btn_buy_back_style", "label": "دکمه‌های بازگشت خرید", "type": "text"},
+                ]}]}
+            ],
         })
         tabs.append({
             "id": "buttons", "title": "دکمه‌های ربات", "icon": "tune", "screen": "buttons",
             "section": "تنظیمات و سیستم", "source": "/api/buttons",
         })
         tabs.append({
-            "id": "salessettings", "title": "تنظیمات فروش", "icon": "sell", "screen": "webview",
-            "section": "تنظیمات و سیستم", "url": "/?tab=salessettings",
+            "id": "salessettings", "title": "تنظیمات فروش", "icon": "sell", "screen": "settings_group",
+            "section": "تنظیمات و سیستم", "cards": [
+                {"title": "رفرال", "load_url": "/api/settings/referral", "submit_url": "/api/settings/referral", "fields": [
+                    {"key": "enabled", "label": "فعال", "type": "bool"},
+                    {"key": "percent", "label": "درصد پورسانت", "type": "number"},
+                    {"key": "commission_max_count", "label": "سقف افراد پورسانت‌دار (۰=نامحدود)", "type": "number"},
+                    {"key": "free_config_enabled", "label": "کانفیگ رایگان فعال", "type": "bool"},
+                    {"key": "free_config_threshold", "label": "تعداد دعوت لازم", "type": "number"},
+                    {"key": "free_config_product_id", "label": "شناسه محصول جایزه (خالی=بدون محصول)", "type": "select_int_nullable"},
+                    {"key": "invite_bonus_enabled", "label": "شارژ ثابت برای دعوت فعال", "type": "bool"},
+                    {"key": "invite_bonus_amount", "label": "مبلغ شارژ هر دعوت", "type": "number"},
+                    {"key": "invite_bonus_max_count", "label": "سقف دعوت مشمول (۰=نامحدود)", "type": "number"},
+                ]},
+                {"title": "گردونه شانس", "load_url": "/api/settings/wheel", "submit_url": "/api/settings/wheel", "fields": [
+                    {"key": "enabled", "label": "فعال", "type": "bool"},
+                    {"key": "win_percent", "label": "درصد برد", "type": "number"},
+                    {"key": "prizes", "label": "جوایز (با کاما جدا شود)", "type": "number_list"},
+                    {"key": "expiry_hours", "label": "اعتبار کد (ساعت)", "type": "number"},
+                    {"key": "cooldown_hours", "label": "فاصله چرخش (ساعت)", "type": "number"},
+                ]},
+                {"title": "یادآوری تمدید", "load_url": "/api/settings/renewal", "submit_url": "/api/settings/renewal", "fields": [
+                    {"key": "enabled", "label": "فعال", "type": "bool"},
+                    {"key": "days_before", "label": "چند روز قبل از انقضا", "type": "number"},
+                    {"key": "discount_percent", "label": "درصد تخفیف", "type": "number"},
+                    {"key": "discount_expiry_hours", "label": "اعتبار کد (ساعت)", "type": "number"},
+                ]},
+                {"title": "یادآوری حجم", "load_url": "/api/settings/volume-reminder", "submit_url": "/api/settings/volume-reminder", "fields": [
+                    {"key": "enabled", "label": "فعال", "type": "bool"},
+                    {"key": "mode", "label": "مبنا: percent یا gb", "type": "text"},
+                    {"key": "percent", "label": "درصد آستانه", "type": "number"},
+                    {"key": "gb_left", "label": "گیگ باقی‌مانده", "type": "number"},
+                    {"key": "discount_percent", "label": "درصد تخفیف", "type": "number"},
+                    {"key": "discount_expiry_hours", "label": "اعتبار کد (ساعت)", "type": "number"},
+                ]},
+                {"title": "عضویت اجباری", "load_url": "/api/settings/force-join", "submit_url": "/api/settings/force-join", "fields": [
+                    {"key": "enabled", "label": "فعال", "type": "bool"},
+                    {"key": "channel", "label": "آیدی کانال", "type": "text"},
+                ]},
+                {"title": "هشدار موجودی", "load_url": "/api/settings/stock-alert", "submit_url": "/api/settings/stock-alert", "fields": [
+                    {"key": "threshold", "label": "آستانه هشدار", "type": "number"},
+                ]},
+                {"title": "کانفیگ تست", "load_url": "/api/settings/test-config", "submit_url": "/api/settings/test-config", "fields": [
+                    {"key": "enabled", "label": "فعال", "type": "bool"},
+                ], "danger_action": {"label": "بازنشانی برای همه کاربران", "endpoint": "/api/settings/test-config/reset-all", "method": "POST", "confirm_text": "امکان دریافت کانفیگ تست برای همه کاربران دوباره فعال شود؟"}},
+            ],
         })
     if is_owner:
         tabs.append({
