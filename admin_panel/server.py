@@ -775,6 +775,9 @@ def api_app_config(admin=Depends(get_current_admin)):
                 {"key": "wallet_balance", "label": "کیف‌پول", "type": "currency"},
             ],
             "detail_source": "/api/users/{tg_id}",
+            "detail_type": "user",
+            "services_source": "/api/users/{tg_id}/custom-configs",
+            "wallet_endpoint": "/api/users/{tg_id}/wallet",
             "actions": [
                 {"id": "block", "label": "مسدود", "method": "POST",
                  "endpoint": "/api/users/{tg_id}/block", "style": "danger", "confirm": True},
@@ -803,6 +806,7 @@ def api_app_config(admin=Depends(get_current_admin)):
             "id": "products", "title": "محصولات", "icon": "box", "screen": "list",
             "section": "محصولات و بازاریابی",
             "source": "/api/products", "item_id_field": "id",
+            "config_bank_source": "/api/products/{id}/configs",
             "fields": [
                 {"key": "name", "label": "نام", "type": "title"},
                 {"key": "price", "label": "قیمت", "type": "currency"},
@@ -1739,7 +1743,16 @@ async def api_reject_topup(topup_id: int, admin=Depends(require_permission("orde
 def api_users(q: str = "", status: str = "all", page: int = 1, admin=Depends(get_current_admin)):
     limit = 25
     rows, total = db.search_users(q, status, limit=limit, offset=(page - 1) * limit)
-    return {"items": rows_to_list(rows), "total": total, "page": page, "limit": limit}
+    items = []
+    for r in rows:
+        row = dict(r)
+        # alias‌های زیر فقط برای فرمت لیست ساده‌ی اپ اندروید (tg_id/full_name/wallet_balance)
+        # هستند؛ ستون واقعی جدول users به همان شکل هم برای صفحه‌ی جزئیات کاربر باقی می‌ماند.
+        row["tg_id"] = row["telegram_id"]
+        row["full_name"] = row.get("first_name") or (f"@{row['username']}" if row.get("username") else str(row["telegram_id"]))
+        row["wallet_balance"] = row.get("referral_credit", 0)
+        items.append(row)
+    return {"items": items, "total": total, "page": page, "limit": limit}
 
 
 @app.get("/api/users/{tg_id}")
