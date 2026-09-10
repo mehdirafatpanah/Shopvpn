@@ -38,7 +38,7 @@ class NoCacheStaticFiles(StaticFiles):
         response.headers["Cache-Control"] = "no-cache"
         return response
 from pydantic import BaseModel
-from admin_panel import settings_schema
+from admin_panel.static import settings_schema
 
 from config import DB_PATH, BOT_TOKEN, OWNER_ID, ADMIN_PANEL_SECRET, VAPID_PUBLIC_KEY, resolve_db_path, API_BASE_URL, RESELLER_DBS_DIR
 from database import Database, WEB_ADMIN_PERMISSIONS, MENU_BUTTON_META
