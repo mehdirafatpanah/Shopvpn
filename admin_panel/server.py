@@ -9,6 +9,7 @@
 """
 
 import asyncio
+import base64
 import contextvars
 import hmac
 import json
@@ -725,6 +726,8 @@ def api_app_config(admin=Depends(get_current_admin)):
             "section": "عملیات مالی",
             "source": "/api/orders", "item_id_field": "id",
             "search": True,
+            "detail_source": "/api/orders/{id}/full",
+            "receipt_source": "/api/orders/{id}/receipt-base64",
             "filters": [{"key": "status", "label": "وضعیت", "options":
                          ["pending", "approved", "rejected"]}],
             "fields": [
@@ -806,6 +809,40 @@ def api_app_config(admin=Depends(get_current_admin)):
                 {"key": "is_active", "label": "فعال", "type": "toggle",
                  "toggle_endpoint": "/api/products/{id}/toggle"},
             ],
+            "create_form": {
+                "title": "افزودن محصول",
+                "submit_url": "/api/products",
+                "method": "POST",
+                "fields": [
+                    {"key": "category_id", "label": "دسته‌بندی", "type": "select_remote",
+                     "options_source": "/api/categories", "option_value_key": "id", "option_label_key": "name"},
+                    {"key": "name", "label": "نام محصول", "type": "text"},
+                    {"key": "price", "label": "قیمت (تومان)", "type": "number"},
+                    {"key": "description", "label": "توضیحات", "type": "textarea"},
+                    {"key": "duration_days", "label": "مدت اعتبار (روز، ۰=نامحدود فقط با اتصال مستقیم)", "type": "number"},
+                    {"key": "is_auto_provision", "label": "اتصال مستقیم به پنل (ساخت خودکار)", "type": "bool"},
+                    {"key": "provision_server_id", "label": "پنل VPN", "type": "select_remote",
+                     "options_source": "/api/panel-servers-lite", "option_value_key": "id", "option_label_key": "name",
+                     "nullable": True, "depends_on": "is_auto_provision"},
+                    {"key": "auto_provision_volume_gb", "label": "حجم (گیگ، ۰=نامحدود)", "type": "number",
+                     "depends_on": "is_auto_provision"},
+                ],
+            },
+            "edit_form": {
+                "title": "ویرایش محصول",
+                "submit_url": "/api/products/{id}",
+                "method": "PUT",
+                "fields": [
+                    {"key": "name", "label": "نام محصول", "type": "text"},
+                    {"key": "price", "label": "قیمت (تومان)", "type": "number"},
+                    {"key": "description", "label": "توضیحات", "type": "textarea"},
+                    {"key": "duration_days", "label": "مدت اعتبار (روز)", "type": "number"},
+                    {"key": "provision_server_id", "label": "پنل VPN (فقط اتصال مستقیم)", "type": "select_remote",
+                     "options_source": "/api/panel-servers-lite", "option_value_key": "id", "option_label_key": "name",
+                     "nullable": True},
+                    {"key": "auto_provision_volume_gb", "label": "حجم (گیگ، فقط اتصال مستقیم)", "type": "number"},
+                ],
+            },
         })
     if allowed("discounts"):
         tabs.append({
@@ -823,6 +860,24 @@ def api_app_config(admin=Depends(get_current_admin)):
                 {"id": "delete", "label": "حذف", "method": "DELETE",
                  "endpoint": "/api/discounts/{id}", "style": "danger", "confirm": True},
             ],
+            "create_form": {
+                "title": "افزودن کد تخفیف",
+                "submit_url": "/api/discounts",
+                "method": "POST",
+                "fields": [
+                    {"key": "code", "label": "کد تخفیف", "type": "text"},
+                    {"key": "percent", "label": "درصد تخفیف (خالی=استفاده از مبلغ ثابت)", "type": "number", "nullable": True},
+                    {"key": "fixed_amount", "label": "مبلغ ثابت تخفیف (تومان، خالی=استفاده از درصد)", "type": "number", "nullable": True},
+                    {"key": "max_uses", "label": "حداکثر تعداد استفاده (۰=نامحدود)", "type": "number"},
+                    {"key": "expires_at", "label": "تاریخ انقضا (خالی=بدون انقضا، فرمت: 2026-12-31T23:59:00)", "type": "text"},
+                    {"key": "min_purchase", "label": "حداقل مبلغ خرید (تومان)", "type": "number", "nullable": True},
+                    {"key": "max_purchase", "label": "حداکثر مبلغ خرید (تومان)", "type": "number", "nullable": True},
+                    {"key": "product_id", "label": "محدود به محصول (خالی=همه)", "type": "select_remote",
+                     "options_source": "/api/products", "option_value_key": "id", "option_label_key": "name", "nullable": True},
+                    {"key": "category_id", "label": "محدود به دسته‌بندی (خالی=همه)", "type": "select_remote",
+                     "options_source": "/api/categories", "option_value_key": "id", "option_label_key": "name", "nullable": True},
+                ],
+            },
         })
     if allowed("broadcast"):
         # فرم پیام همگانی (انتخاب مخاطب، ضمیمه و ...) در پنل وب پیاده شده؛
@@ -855,6 +910,25 @@ def api_app_config(admin=Depends(get_current_admin)):
                 {"key": "is_active", "label": "فعال", "type": "toggle",
                  "toggle_endpoint": "/api/panel-servers/{id}/toggle"},
             ],
+            # فقط پنل‌های خانواده‌ی PasarGuard/Marzban/Marzneshin (ساخت تک‌مرحله‌ای
+            # با «کاربر نمونه»). افزودن 3X-UI/Hiddify از اپ پشتیبانی نمی‌شود چون
+            # نیاز به انتخاب inbound یا تکمیل بعدی دارند - فعلاً فقط از پنل وب.
+            "create_form": {
+                "title": "افزودن پنل (PasarGuard/Marzban/Marzneshin)",
+                "submit_url": "/api/panel-servers",
+                "method": "POST",
+                "fields": [
+                    {"key": "name", "label": "نام سرور", "type": "text"},
+                    {"key": "panel_type", "label": "نوع پنل", "type": "select", "options": [
+                        ["pasarguard", "PasarGuard"], ["marzban", "Marzban"], ["marzneshin", "Marzneshin"],
+                    ]},
+                    {"key": "api_url", "label": "آدرس پنل (API URL)", "type": "text"},
+                    {"key": "api_username", "label": "نام کاربری ادمین پنل", "type": "text"},
+                    {"key": "api_password", "label": "پسورد ادمین پنل", "type": "password"},
+                    {"key": "template_username", "label": "نام کاربری نمونه (برای دریافت قالب)", "type": "text"},
+                    {"key": "default_group", "label": "گروه پیش‌فرض (اختیاری)", "type": "text", "nullable": True},
+                ],
+            },
         })
     tabs.append({
         "id": "map", "title": "نقشه سرورها", "icon": "map", "screen": "server_map",
@@ -936,6 +1010,13 @@ def api_app_config(admin=Depends(get_current_admin)):
             ],
         })
     if is_owner:
+        _perm_labels = {
+            "orders": "سفارش‌ها و شارژ کیف‌پول", "users": "کاربران", "catalog": "محصولات و بانک کانفیگ",
+            "discounts": "کدهای تخفیف", "tickets": "تیکت و پشتیبانی", "broadcast": "پیام همگانی",
+            "resellers": "نمایندگی‌ها", "panels": "پنل‌های VPN", "system": "سیستم و لاگ‌ها",
+            "settings": "تنظیمات و برندینگ", "backup": "بکاپ فوری",
+        }
+        _assignable_perms = [p for p in WEB_ADMIN_PERMISSIONS if p not in MAIN_TENANT_ONLY_PERMISSIONS or not admin["tenant"]]
         tabs.append({
             "id": "webadmins", "title": "کاربران پنل", "icon": "admin", "screen": "list",
             "section": "تنظیمات و سیستم",
@@ -944,6 +1025,20 @@ def api_app_config(admin=Depends(get_current_admin)):
                 {"key": "username", "label": "نام کاربری", "type": "title"},
                 {"key": "role", "label": "نقش", "type": "badge"},
             ],
+            "create_form": {
+                "title": "افزودن ادمین پنل",
+                "submit_url": "/api/web-admins",
+                "method": "POST",
+                "fields": [
+                    {"key": "username", "label": "نام کاربری", "type": "text"},
+                    {"key": "password", "label": "پسورد (حداقل ۸ کاراکتر)", "type": "password"},
+                    {"key": "role", "label": "نقش", "type": "select", "options": [
+                        ["admin", "ادمین کامل"], ["mid", "ادمین میانی"], ["support", "پشتیبان"],
+                    ]},
+                    {"key": "permissions", "label": "مجوزها", "type": "multiselect",
+                     "options": [[p, _perm_labels.get(p, p)] for p in _assignable_perms]},
+                ],
+            },
         })
         tabs.append({
             "id": "tgadmins", "title": "ادمین‌های ربات", "icon": "shield", "screen": "list",
@@ -1369,6 +1464,38 @@ async def api_order_receipt(order_id: int, admin=Depends(get_current_admin)):
         raise HTTPException(502, "دریافت رسید از تلگرام ناموفق بود.")
     content, content_type = result
     return Response(content=content, media_type=content_type)
+
+
+@app.get("/api/orders/{order_id}/full")
+async def api_order_full(order_id: int, admin=Depends(get_current_admin)):
+    """جزئیات کامل یک سفارش برای صفحه‌ی جزئیات اپ موبایل (detail_source)."""
+    order = (await asyncio.to_thread(db.get_order, order_id))
+    if not order:
+        raise HTTPException(404, "سفارش یافت نشد.")
+    o = dict(order)
+    product = row_to_dict(db.get_product(o["product_id"])) if o.get("product_id") else None
+    user = row_to_dict(db.get_user(o["user_id"])) if o.get("user_id") else None
+    o["product_name"] = product["name"] if product else ("ساخت کانفیگ شخصی" if o.get("is_custom_config") else "-")
+    o["username"] = (user or {}).get("username")
+    o["full_name"] = (user or {}).get("full_name")
+    o["has_receipt"] = bool(o.get("receipt_file_id"))
+    o.pop("receipt_file_id", None)
+    return o
+
+
+@app.get("/api/orders/{order_id}/receipt-base64")
+async def api_order_receipt_base64(order_id: int, admin=Depends(get_current_admin)):
+    """نسخه‌ی JSON/base64 رسید، مخصوص اپ موبایل (که به‌جای کوکی از Bearer
+    توکن استفاده می‌کند و نمی‌تواند مستقیماً از یک <img src> با هدر سفارشی
+    عکس بارگذاری کند)."""
+    order = (await asyncio.to_thread(db.get_order, order_id))
+    if not order or not order["receipt_file_id"]:
+        raise HTTPException(404, "رسیدی برای این سفارش ثبت نشده است.")
+    result = await fetch_telegram_file(_bot_token(), order["receipt_file_id"])
+    if not result:
+        raise HTTPException(502, "دریافت رسید از تلگرام ناموفق بود.")
+    content, content_type = result
+    return {"content_type": content_type, "data_base64": base64.b64encode(content).decode("ascii")}
 
 
 @app.post("/api/orders/{order_id}/approve")
