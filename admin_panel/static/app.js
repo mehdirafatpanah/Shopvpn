@@ -785,26 +785,26 @@ async function renderPage(tab) {
   setContent('<div class="loading">در حال بارگذاری...</div>');
   try {
     switch (tab) {
-      case 'dashboard': return renderDashboard();
-      case 'orders': return renderOrders();
-      case 'topups': return renderTopups();
-      case 'users': return renderUsers();
-      case 'catalog': return renderCatalog();
-      case 'discounts': return renderDiscounts();
-      case 'tickets': return renderTickets();
-      case 'support': return renderSupport();
-      case 'broadcast': return renderBroadcast();
-      case 'resellers': return renderResellers();
-      case 'panels': return renderPanels();
-      case 'system': return renderSystem();
-      case 'settings': return renderSettings();
-      case 'buttons': return renderButtons();
-      case 'salessettings': return renderSalesSettings();
-      case 'banners': return renderBanners();
-      case 'logs': return renderLogs();
-      case 'webadmins': return renderWebAdmins();
-      case 'tgadmins': return renderTelegramAdmins();
-      case 'account': return renderAccount();
+      case 'dashboard': return await renderDashboard();
+      case 'orders': return await renderOrders();
+      case 'topups': return await renderTopups();
+      case 'users': return await renderUsers();
+      case 'catalog': return await renderCatalog();
+      case 'discounts': return await renderDiscounts();
+      case 'tickets': return await renderTickets();
+      case 'support': return await renderSupport();
+      case 'broadcast': return await renderBroadcast();
+      case 'resellers': return await renderResellers();
+      case 'panels': return await renderPanels();
+      case 'system': return await renderSystem();
+      case 'settings': return await renderSettings();
+      case 'buttons': return await renderButtons();
+      case 'salessettings': return await renderSalesSettings();
+      case 'banners': return await renderBanners();
+      case 'logs': return await renderLogs();
+      case 'webadmins': return await renderWebAdmins();
+      case 'tgadmins': return await renderTelegramAdmins();
+      case 'account': return await renderAccount();
     }
   } catch (e) { handleErr(e); setContent(`<div class="empty-state">${esc(e.message)}</div>`); }
 }
