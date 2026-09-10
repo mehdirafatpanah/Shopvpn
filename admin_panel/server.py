@@ -2719,6 +2719,19 @@ async def api_reseller_request_receipt(request_id: int, admin=Depends(require_pe
     return Response(content=content, media_type=content_type)
 
 
+@app.get("/api/reseller-requests/{request_id}/receipt-base64")
+async def api_reseller_request_receipt_base64(request_id: int, admin=Depends(require_permission("resellers"))):
+    """نسخه‌ی JSON/base64 رسید، مخصوص اپ موبایل (مشابه /api/orders/{id}/receipt-base64)."""
+    req = (await asyncio.to_thread(db.get_reseller_request, request_id))
+    if not req or not req["receipt_file_id"]:
+        raise HTTPException(404, "رسیدی برای این درخواست ثبت نشده است.")
+    result = await fetch_telegram_file(_bot_token(), req["receipt_file_id"])
+    if not result:
+        raise HTTPException(502, "دریافت رسید از تلگرام ناموفق بود.")
+    content, content_type = result
+    return {"content_type": content_type, "data_base64": base64.b64encode(content).decode("ascii")}
+
+
 class ResellerRequestQuoteBody(BaseModel):
     price_toman: int
     panel_server_id: Optional[int] = None
