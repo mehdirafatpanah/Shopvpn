@@ -2036,6 +2036,32 @@ async def api_admin_custom_config_cut_access(custom_config_id: int, admin=Depend
     return {"status": "ok", "subscription_url": result.subscription_url}
 
 
+@app.delete("/api/custom-configs/{custom_config_id}")
+async def api_admin_custom_config_delete(custom_config_id: int, admin=Depends(require_permission("users"))):
+    """حذف کامل یک سرویس مستقیم-پنل: هم از روی خودِ پنل VPN (best-effort) و هم
+    از دیتابیس. برخلاف «قطع دسترسی» که فقط لینک را عوض می‌کند، این عملیات
+    برگشت‌ناپذیر است و کاربر را کاملاً از این سرویس محروم می‌کند."""
+    cc = _admin_get_custom_config_or_404(custom_config_id)
+    if cc["source"] == "test":
+        raise HTTPException(403, "این قابلیت برای کانفیگ تست در دسترس نیست.")
+    if cc["panel_server_id"]:
+        server = await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])
+        if server:
+            try:
+                provider = get_provider(server)
+                await provider.delete_user(cc["username"])
+            except Exception:
+                logging.getLogger("admin_panel").exception(
+                    "حذف کاربر «%s» از پنل سرور #%s ناموفق بود؛ در هر صورت از دیتابیس حذف می‌شود.",
+                    cc["username"], cc["panel_server_id"],
+                )
+    (await asyncio.to_thread(db.delete_owned_custom_config, custom_config_id, cc["user_id"]))
+    (await asyncio.to_thread(db.log_admin_action, admin["id"], "custom_config_delete_admin",
+        f"سرویس «{cc['username']}» کاربر {cc['user_id']} حذف شد (پنل وب - {admin['username']})",
+        "user", cc["user_id"]))
+    return {"status": "ok"}
+
+
 # ------------------------------------------------------- categories/products --
 
 
