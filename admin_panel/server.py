@@ -769,6 +769,11 @@ def api_app_config(admin=Depends(get_current_admin)):
             "id": "users", "title": "کاربران", "icon": "people", "screen": "list",
             "section": "کاربران و پشتیبانی",
             "source": "/api/users", "item_id_field": "tg_id", "search": True,
+            # معادل تب‌های وضعیت («همه/فعال/منقضی/مسدود») در دایرکتوری کاربران
+            # پنل وب؛ چون این‌ها فیلترهای واقعی سمت سرور هستند (نه فقط جستجوی
+            # محلی روی همان صفحه)، به همان endpoint با پارامتر status ارسال می‌شوند.
+            "filters": [{"key": "status", "label": "وضعیت", "options":
+                         ["active", "expired", "blocked"]}],
             "fields": [
                 {"key": "tg_id", "label": "شناسه", "type": "text"},
                 {"key": "full_name", "label": "نام", "type": "title"},
@@ -777,12 +782,17 @@ def api_app_config(admin=Depends(get_current_admin)):
             "detail_source": "/api/users/{tg_id}",
             "detail_type": "user",
             "services_source": "/api/users/{tg_id}/custom-configs",
+            # کانفیگ‌های «بانک محصول» (لینک‌های ساده‌ی اختصاص‌یافته به کاربر) که
+            # قبلاً فقط در پنل وب دیده می‌شدند؛ حالا در جزئیات کاربر اپ هم هستند.
+            "bank_configs_source": "/api/users/{tg_id}/configs",
             "wallet_endpoint": "/api/users/{tg_id}/wallet",
             "actions": [
                 {"id": "block", "label": "مسدود", "method": "POST",
-                 "endpoint": "/api/users/{tg_id}/block", "style": "danger", "confirm": True},
+                 "endpoint": "/api/users/{tg_id}/block", "style": "danger", "confirm": True,
+                 "visible_if_field": "is_blocked", "visible_if_value": "false"},
                 {"id": "unblock", "label": "رفع مسدودی", "method": "POST",
-                 "endpoint": "/api/users/{tg_id}/unblock", "style": "success", "confirm": True},
+                 "endpoint": "/api/users/{tg_id}/unblock", "style": "success", "confirm": True,
+                 "visible_if_field": "is_blocked", "visible_if_value": "true"},
             ],
         })
     # تیکت‌ها صفحه‌ی اختصاصی native دارند تا جزئیات، پیام‌ها، پاسخ و بستن تیکت
@@ -1751,6 +1761,13 @@ def api_users(q: str = "", status: str = "all", page: int = 1, admin=Depends(get
         row["tg_id"] = row["telegram_id"]
         row["full_name"] = row.get("first_name") or (f"@{row['username']}" if row.get("username") else str(row["telegram_id"]))
         row["wallet_balance"] = row.get("referral_credit", 0)
+        # برای اینکه چیپ‌های فیلتر وضعیت در اپ اندروید (که بعد از فچ سرور یک
+        # بارِ دیگر هم لوکال چک می‌کنند) با پاسخ سرور ناسازگار نشوند.
+        row["status"] = db.get_user_status(row["telegram_id"])
+        # is_blocked در دیتابیس INTEGER (0/1) است؛ اینجا به bool واقعی تبدیل
+        # می‌شود تا هم در JSON به‌صورت true/false برسد (نه 0/1) و هم دکمه‌ی
+        # نمایش‌شرطی «مسدود/رفع مسدودی» در اپ اندروید درست کار کند.
+        row["is_blocked"] = bool(row.get("is_blocked"))
         items.append(row)
     return {"items": items, "total": total, "page": page, "limit": limit}
 
@@ -1761,8 +1778,12 @@ def api_user_detail(tg_id: int, admin=Depends(get_current_admin)):
     if not user:
         raise HTTPException(404, "کاربر یافت نشد.")
     history = db.get_user_full_history(tg_id)
+    user_dict = dict(user)
+    # همان تبدیل is_blocked به bool واقعی که در /api/users انجام می‌شود، اینجا
+    # هم لازم است تا صفحه‌ی جزئیات کاربر (وب و اندروید) وضعیت را درست بخواند.
+    user_dict["is_blocked"] = bool(user_dict.get("is_blocked"))
     return {
-        "user": dict(user),
+        "user": user_dict,
         "orders": rows_to_list(history["orders"]),
         "topups": rows_to_list(history["topups"]),
         "referral": db.get_referral_stats(tg_id),
