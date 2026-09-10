@@ -1836,6 +1836,60 @@ def api_user_custom_configs(tg_id: int, admin=Depends(get_current_admin)):
     ]
 
 
+# کانفیگ‌های «بانک محصول» (لینک‌های ساده‌ی از پیش‌آماده که به کاربر اختصاص
+# یافته‌اند - نه سرویس‌های مستقیم-پنل بالا) که پیش‌تر فقط از پنل ادمین داخل
+# مینی‌اپ قابل مشاهده/غیرفعال‌سازی/حذف بودند؛ همان توابع دیتابیس اینجا هم
+# استفاده می‌شوند تا رفتار دقیقاً یکسان باشد.
+
+@app.get("/api/users/{tg_id}/configs")
+def api_user_bank_configs(tg_id: int, admin=Depends(get_current_admin)):
+    rows = db.get_bank_configs_for_user(tg_id)
+    return [
+        {
+            "id": c["id"],
+            "product_name": c["product_name"] or "نامشخص",
+            "order_id": c["order_display_id"],
+            "link": c["link"],
+            "assigned_at": c["assigned_at"],
+            "expires_at": c["expires_at"] if "expires_at" in c.keys() else None,
+            "is_used": bool(c["is_used"]),
+            "is_disabled": bool(c["is_disabled"]) if "is_disabled" in c.keys() else False,
+        }
+        for c in rows
+    ]
+
+
+class ConfigDisableBody(BaseModel):
+    disabled: bool
+
+
+@app.post("/api/user-configs/{config_id}/disable")
+def api_user_config_disable(config_id: int, body: ConfigDisableBody, admin=Depends(require_permission("users"))):
+    row = db.get_config_by_id(config_id)
+    if not row:
+        raise HTTPException(404, "کانفیگ یافت نشد.")
+    db.set_config_disabled(config_id, body.disabled)
+    db.log_admin_action(
+        admin["id"], "config_disable" if body.disabled else "config_enable",
+        f"کانفیگ #{config_id} کاربر {row['assigned_user_id']} {'غیرفعال' if body.disabled else 'فعال'} شد (پنل وب - {admin['username']})",
+        "user", row["assigned_user_id"],
+    )
+    return {"status": "ok", "is_disabled": body.disabled}
+
+
+@app.delete("/api/user-configs/{config_id}")
+def api_user_config_delete(config_id: int, admin=Depends(require_permission("users"))):
+    row = db.admin_delete_bank_config(config_id)
+    if not row:
+        raise HTTPException(404, "کانفیگ یافت نشد.")
+    db.log_admin_action(
+        admin["id"], "config_delete_admin",
+        f"کانفیگ #{config_id} کاربر {row['assigned_user_id']} حذف شد (پنل وب - {admin['username']})",
+        "user", row["assigned_user_id"],
+    )
+    return {"status": "ok"}
+
+
 @app.post("/api/custom-configs/{custom_config_id}/toggle")
 async def api_admin_custom_config_toggle(custom_config_id: int, admin=Depends(require_permission("users"))):
     cc = _admin_get_custom_config_or_404(custom_config_id)
