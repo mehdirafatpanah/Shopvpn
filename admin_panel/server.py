@@ -958,6 +958,64 @@ def api_app_config(admin=Depends(get_current_admin)):
                 ]}]}
             ],
         })
+        # نسخه‌ی native تنظیمات پرداخت و مالی؛ همان کلیدهایی که در پنل وب زیر
+        # زیرتب «پرداخت» تنظیمات هستند (همه روی /api/settings ذخیره می‌شوند)،
+        # اینجا هم با فرم native نمایش داده می‌شوند - بدون نیاز به آپدیت اپ.
+        tabs.append({
+            "id": "paymentsettings", "title": "پرداخت و مالی", "icon": "wallet", "screen": "form",
+            "section": "تنظیمات و سیستم", "load_url": "/api/settings", "submit_url": "/api/settings",
+            "form_sections": [
+                {"title": "پرداخت و مالی", "groups": [{"title": "کارت بانکی", "fields": [
+                    {"key": "card_number", "label": "شماره کارت", "type": "text"},
+                    {"key": "card_holder", "label": "نام صاحب کارت", "type": "text"},
+                ]}, {"title": "نرخ ارز پشتیبان (عمومی فروشگاه)", "fields": [
+                    {"key": "manual_usd_rate_toman", "label": "نرخ دلار دستی (فقط اگر منابع زنده شکست بخورند)", "type": "number"},
+                ]}, {"title": "🪙 پرداخت کریپتو (Plisio)", "fields": [
+                    {"key": "crypto_payment_enabled", "label": "فعال بودن پرداخت کریپتو", "type": "bool"},
+                    {"key": "plisio_api_key", "label": "کلید API درگاه Plisio", "type": "password"},
+                ]}, {"title": "💳 آبان گیت‌وی (کارت به کارت خودکار)", "fields": [
+                    {"key": "abangateway_payment_enabled", "label": "فعال بودن درگاه آبان گیت‌وی", "type": "bool"},
+                    {"key": "abangateway_api_key", "label": "کلید API آبان گیت‌وی", "type": "password"},
+                ]}, {"title": "💳 بلوپال (کارت به کارت خودکار)", "fields": [
+                    {"key": "blupal_payment_enabled", "label": "فعال بودن درگاه بلوپال", "type": "bool"},
+                    {"key": "blupal_api_key", "label": "کلید API بلوپال", "type": "password"},
+                ]}, {"title": "⭐ NoapayBot - استارز تلگرام (تایید آنی)", "fields": [
+                    {"key": "noapay_payment_enabled", "label": "فعال بودن درگاه NoapayBot", "type": "bool"},
+                    {"key": "noapay_api_key", "label": "کلید API NoapayBot", "type": "password"},
+                    {"key": "noapay_webhook_secret", "label": "رمز HMAC وب‌هوک (X-Starbot-Signature)", "type": "password"},
+                    {"key": "noapay_rate_toman_per_star", "label": "نرخ تومان به‌ازای هر استارز", "type": "number"},
+                ]}, {"title": "📡 کارت‌به‌کارت با تایید خودکار (پیامک بانک)", "fields": [
+                    {"key": "card_to_card_auto_enabled", "label": "فعال بودن (نیازمند حداقل یک کارت فعال)", "type": "bool"},
+                    {"key": "card_to_card_auto_timeout_minutes", "label": "مهلت هر مبلغ (دقیقه)", "type": "number"},
+                    {"key": "card_to_card_auto_amount_digits", "label": "تعداد رقم آخر برای یکتاسازی مبلغ", "type": "number"},
+                    {"key": "card_to_card_sms_amount_unit", "label": "واحد مبلغ داخل پیامک بانک", "type": "select",
+                     "options": [["rial", "ریال (اکثر بانک‌ها)"], ["toman", "تومان"]]},
+                ]}]}
+            ],
+        })
+        # نسخه‌ی native مدیریت درگاه‌های سفارشی: فعال/غیرفعال، تست اتصال و حذف.
+        # ساخت/ویرایش تنظیمات کامل یک درگاه (credential_fields، body با
+        # placeholder، verify/webhook mapping) عمداً از اپ پشتیبانی نمی‌شود -
+        # این یک JSON DSL دلخواه است که با یک فرم ساده‌ی flat قابل نمایش امن
+        # نیست؛ دقیقاً مثل محدودیت افزودن 3X-UI/Hiddify از اپ، فعلاً فقط از
+        # پنل وب قابل ساخت/ویرایش است.
+        tabs.append({
+            "id": "custom_gateways", "title": "درگاه‌های سفارشی", "icon": "dns", "screen": "list",
+            "section": "تنظیمات و سیستم",
+            "source": "/api/gateways", "item_id_field": "id",
+            "fields": [
+                {"key": "name", "label": "نام", "type": "title"},
+                {"key": "key", "label": "کلید", "type": "text"},
+                {"key": "enabled", "label": "فعال", "type": "toggle",
+                 "toggle_endpoint": "/api/gateways/{id}/toggle"},
+            ],
+            "actions": [
+                {"id": "test", "label": "تست اتصال", "method": "POST",
+                 "endpoint": "/api/gateways/{id}/test", "style": "default", "confirm": True},
+                {"id": "delete", "label": "حذف", "method": "DELETE",
+                 "endpoint": "/api/gateways/{id}", "style": "danger", "confirm": True},
+            ],
+        })
         tabs.append({
             "id": "buttons", "title": "دکمه‌های ربات", "icon": "tune", "screen": "buttons",
             "section": "تنظیمات و سیستم", "source": "/api/buttons",
@@ -3147,6 +3205,18 @@ def api_delete_gateway(gateway_id: int, admin=Depends(require_permission("settin
     row, _ = _gw_load(gateway_id=gateway_id)
     db.delete_custom_gateway(gateway_id)
     db.log_admin_action(admin["id"], "custom_gateway_delete", f"درگاه سفارشی «{row['name']}» حذف شد (پنل وب - {admin['username']}).")
+    return {"ok": True}
+
+
+@app.post("/api/gateways/{gateway_id}/toggle")
+def api_toggle_gateway(gateway_id: int, admin=Depends(require_permission("settings"))):
+    """فعال/غیرفعال‌کردن سریع یک درگاه سفارشی بدون نیاز به ارسال کل config
+    (برای اپ موبایل - جایی که فقط کلید enabled باید عوض شود)."""
+    row, _ = _gw_load(gateway_id=gateway_id)
+    db.update_custom_gateway(gateway_id, enabled=not bool(row["enabled"]))
+    db.log_admin_action(admin["id"], "custom_gateway_toggle",
+                         f"درگاه سفارشی «{row['name']}» {'فعال' if not row['enabled'] else 'غیرفعال'} شد (پنل وب - {admin['username']}).",
+                         "gateway", gateway_id)
     return {"ok": True}
 
 
