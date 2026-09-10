@@ -769,7 +769,7 @@ def ai_faq_admin_kb(db, items) -> InlineKeyboardMarkup:
         short_q = q if len(q) <= 40 else q[:37] + "..."
         rows.append([InlineKeyboardButton(text=f"❓ {short_q}", callback_data="noop"), InlineKeyboardButton(text="🗑", callback_data=f"adm_ai_faq_del:{it['id']}")])
     rows.append([InlineKeyboardButton(text="➕ افزودن سوال جدید", callback_data="adm_ai_faq_add")])
-    rows.append([InlineKeyboardButton(text="⬅️ بازگشت به پنل مدیریت", callback_data="adm_back_panel")])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:access")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -875,7 +875,7 @@ def admin_tickets_list_kb(tickets, active_status: str) -> InlineKeyboardMarkup:
     ]
     rows.append(tab_row[:2])
     rows.append(tab_row[2:])
-    rows.append([InlineKeyboardButton(text="⬅️ بازگشت به پنل مدیریت", callback_data="adm_back_panel")])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:daily")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1403,7 +1403,7 @@ def admin_stats_period_kb(active_days: int = 7) -> InlineKeyboardMarkup:
             )
             for d, label in periods[2:]
         ],
-        [InlineKeyboardButton(text="⬅️ بازگشت به پنل مدیریت", callback_data="adm_back_panel")],
+        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:management")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -2094,7 +2094,7 @@ def discount_codes_kb(codes) -> InlineKeyboardMarkup:
             ]
         )
     rows.append([InlineKeyboardButton(text="➕ ساخت کد تخفیف جدید", callback_data="adm_disc_add")])
-    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:finance")])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:marketing")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -2172,7 +2172,7 @@ def referral_settings_kb(db) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="✏️ تغییر مبلغ شارژ", callback_data="adm_referral_invitebonus_amount_edit")],
         [InlineKeyboardButton(text="✏️ تغییر سقف تعداد نفرات (۰=نامحدود)", callback_data="adm_referral_invitebonus_max_edit")],
 
-        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:resellers")],
+        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:marketing")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -2206,7 +2206,7 @@ def wheel_settings_kb(db) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="✏️ تغییر لیست جوایز", callback_data="adm_wheel_edit_prizes")],
         [InlineKeyboardButton(text="✏️ تغییر اعتبار کد", callback_data="adm_wheel_edit_expiry")],
         [InlineKeyboardButton(text="✏️ تغییر فاصله چرخش", callback_data="adm_wheel_edit_cooldown")],
-        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:alerts")],
+        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:marketing")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
