@@ -38,7 +38,6 @@ class NoCacheStaticFiles(StaticFiles):
         response.headers["Cache-Control"] = "no-cache"
         return response
 from pydantic import BaseModel
-from admin_panel.static import settings_schema
 
 from config import DB_PATH, BOT_TOKEN, OWNER_ID, ADMIN_PANEL_SECRET, VAPID_PUBLIC_KEY, resolve_db_path, API_BASE_URL, RESELLER_DBS_DIR
 from database import Database, WEB_ADMIN_PERMISSIONS, MENU_BUTTON_META
@@ -616,7 +615,7 @@ class MobileTokenCreateBody(BaseModel):
 
 
 @app.post("/api/app/tokens")
-async def api_app_create_token(body: MobileTokenCreateBody, admin=Depends(get_current_admin)):
+async def api_app_create_token(body: MobileTokenCreateBody, request: Request, admin=Depends(get_current_admin)):
     """یک توکن دسترسی طولانی‌مدت جدید برای اپ موبایل می‌سازد.
     رشته‌ی خام توکن فقط همین یک‌بار در پاسخ برمی‌گردد و هیچ‌جا ذخیره نمی‌شود."""
     tenant = _current_tenant.get()
@@ -628,7 +627,13 @@ async def api_app_create_token(body: MobileTokenCreateBody, admin=Depends(get_cu
         "id": token_id,
         "token": full_token,  # فقط همین یک بار نمایش داده می‌شود
         "name": body.name,
-        "server_url": API_BASE_URL,
+        # نکته: قبلاً اینجا از API_BASE_URL (تنظیمات config.py) استفاده می‌شد که
+        # در واقع آدرس دامنه‌ی مینی‌اپ/سرور FastAPI اصلی است (از MINIAPP_URL
+        # مشتق می‌شود)، نه آدرس همین پنل مدیریت وب که ممکن است روی دامنه/ساب‌دامنه‌ی
+        # جداگانه‌ای اجرا شود (مثلاً apanel.celenor.ir در برابر botmini.celenor.ir).
+        # چون اپ موبایل ادمین باید دقیقاً همین پنل ادمین را صدا بزند نه مینی‌اپ را،
+        # آدرس را از خودِ درخواست HTTP فعلی می‌گیریم که همیشه درست است.
+        "server_url": str(request.base_url).rstrip("/"),
     }
 
 
@@ -693,23 +698,6 @@ async def app_webview_bridge(token: str, next: str = "/"):
     response = RedirectResponse(url=next)
     response.set_cookie(COOKIE_NAME, session_token, httponly=True, samesite="lax", max_age=3600, path="/")
     return response
-
-
-def _eligible_free_config_product_options():
-    """لیست محصولاتی که واجد شرایط «جایزه‌ی رفرال با تعداد دعوت» هستند —
-    دقیقاً همان فیلتر تب رفرال در پنل وب (تحویل خودکار + وصل به یک پنل)."""
-    try:
-        products = rows_to_list(db.get_all_products())
-    except Exception:
-        return [["", "— انتخاب کنید —"]]
-    options = [["", "— انتخاب کنید —"]]
-    for p in products:
-        if p.get("is_auto_provision") and p.get("provision_server_id"):
-            label = p.get("name") or f"#{p.get('id')}"
-            if not p.get("is_active", True):
-                label += " (غیرفعال)"
-            options.append([str(p["id"]), label])
-    return options
 
 
 @app.get("/api/app/config")
@@ -804,11 +792,11 @@ def api_app_config(admin=Depends(get_current_admin)):
             {"key": "updated_at", "label": "آخرین بروزرسانی", "type": "date"},
         ],
     })
-    # چت زنده حالا کاملاً native است: لیست مکالمات + صفحه‌ی چت با polling،
-    # دقیقاً روی همان /api/support/* که پنل وب هم استفاده می‌کند.
+    # چت زنده هم مثل تب خودش در پنل وب برای هر ادمینی باز است؛ چون ماهیتش
+    # زنده/رفت‌وبرگشتی است همان صفحه‌ی وب را در یک وب‌ویوی داخل اپ نشان می‌دهیم
     tabs.append({
-        "id": "support", "title": "چت زنده", "icon": "chat", "screen": "support",
-        "section": "کاربران و پشتیبانی", "source": "/api/support/conversations",
+        "id": "support", "title": "چت زنده", "icon": "chat", "screen": "webview",
+        "section": "کاربران و پشتیبانی", "url": "/?tab=support",
     })
 
     # ------------------------------------------------------- محصولات و بازاریابی
@@ -842,17 +830,17 @@ def api_app_config(admin=Depends(get_current_admin)):
             ],
         })
     if allowed("broadcast"):
-        # بک‌اند این تب هیچ انتخاب مخاطب/ضمیمه‌ای ندارد — فقط متن ساده به همه‌ی
-        # کاربران (نگاه کن به BroadcastBody در همین فایل) — برای همین کاملاً
-        # native شده.
+        # فرم پیام همگانی (انتخاب مخاطب، ضمیمه و ...) در پنل وب پیاده شده؛
+        # چون ذاتاً یک فرم غنی است همان صفحه را این‌جا هم نشان می‌دهیم
         tabs.append({
-            "id": "broadcast", "title": "پیام همگانی", "icon": "campaign", "screen": "broadcast",
-            "section": "محصولات و بازاریابی", "submit_url": "/api/broadcast",
+            "id": "broadcast", "title": "پیام همگانی", "icon": "campaign", "screen": "webview",
+            "section": "محصولات و بازاریابی", "url": "/?tab=broadcast",
         })
     if allowed("settings"):
+        # آپلود تصویر بنر (multipart) در فرم وب پیاده شده؛ همان‌جا نگه می‌داریم
         tabs.append({
-            "id": "banners", "title": "بنرها", "icon": "image", "screen": "banners",
-            "section": "محصولات و بازاریابی", "source": "/api/banners", "submit_url": "/api/banners",
+            "id": "banners", "title": "بنرها", "icon": "image", "screen": "webview",
+            "section": "محصولات و بازاریابی", "url": "/?tab=banners",
         })
 
     # ------------------------------------------------------------ شبکه و همکاران
@@ -881,27 +869,23 @@ def api_app_config(admin=Depends(get_current_admin)):
             ],
         })
     tabs.append({
-        "id": "map", "title": "نقشه سرورها", "icon": "map", "screen": "server_map",
-        "section": "شبکه و همکاران",
-        "source": "/api/dashboard/servers-map", "map_source": "/api/dashboard/world-map",
+        "id": "map", "title": "نقشه سرورها", "icon": "map", "screen": "webview",
+        "section": "شبکه و همکاران", "url": "/?tab=dashboard",
     })
 
     # -------------------------------------------------------------- تنظیمات و سیستم
     if allowed("settings"):
         tabs.append({
-            "id": "branding", "title": "تنظیمات و برندینگ", "icon": "brush", "screen": "form",
-            "section": "تنظیمات و سیستم",
-            "load_url": "/api/settings", "submit_url": "/api/settings",
-            "form_sections": settings_schema.SETTINGS_FORM_SECTIONS,
+            "id": "branding", "title": "تنظیمات و برندینگ", "icon": "brush", "screen": "webview",
+            "section": "تنظیمات و سیستم", "url": "/?tab=settings",
         })
         tabs.append({
-            "id": "buttons", "title": "دکمه‌های ربات", "icon": "tune", "screen": "buttons",
-            "section": "تنظیمات و سیستم", "source": "/api/buttons",
+            "id": "buttons", "title": "دکمه‌های ربات", "icon": "tune", "screen": "webview",
+            "section": "تنظیمات و سیستم", "url": "/?tab=buttons",
         })
         tabs.append({
-            "id": "salessettings", "title": "تنظیمات فروش", "icon": "sell", "screen": "settings_group",
-            "section": "تنظیمات و سیستم",
-            "cards": settings_schema.sales_settings_cards(_eligible_free_config_product_options()),
+            "id": "salessettings", "title": "تنظیمات فروش", "icon": "sell", "screen": "webview",
+            "section": "تنظیمات و سیستم", "url": "/?tab=salessettings",
         })
     if is_owner:
         tabs.append({
@@ -924,11 +908,8 @@ def api_app_config(admin=Depends(get_current_admin)):
         })
     if allowed("system"):
         tabs.append({
-            "id": "system", "title": "سیستم و نگهداری", "icon": "memory", "screen": "system_status",
-            "section": "تنظیمات و سیستم",
-            "source": "/api/system/stats", "jobs_source": "/api/system/jobs",
-            "backup_status_source": "/api/system/backup/status",
-            "backup_create_endpoint": "/api/system/backup/create",
+            "id": "system", "title": "سیستم و نگهداری", "icon": "memory", "screen": "webview",
+            "section": "تنظیمات و سیستم", "url": "/?tab=system",
         })
         tabs.append({
             "id": "logs", "title": "لاگ فعالیت ادمین‌ها", "icon": "history", "screen": "list",
@@ -942,11 +923,9 @@ def api_app_config(admin=Depends(get_current_admin)):
         })
 
     # ------------------------------------------------------------------ حساب کاربری
-    # انتخاب تم پنل وب (رنگ/فونت مرورگر) این‌جا معنی ندارد چون اپ اندروید
-    # ظاهر Material خودش را دارد؛ فقط بخش «تغییر پسورد» را نگه می‌داریم.
     tabs.append({
-        "id": "account", "title": "حساب من", "icon": "account", "screen": "account",
-        "section": "حساب کاربری", "submit_url": "/api/me/password",
+        "id": "account", "title": "حساب من", "icon": "account", "screen": "webview",
+        "section": "حساب کاربری", "url": "/?tab=account",
     })
     tabs.append({
         "id": "device_settings", "title": "تنظیمات دستگاه", "icon": "settings", "screen": "settings",
