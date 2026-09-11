@@ -456,7 +456,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         await state.set_state(AdminAddCategory.waiting_name)
-        await safe_edit(call, "نام دسته‌بندی جدید را ارسال کنید:", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "نام دسته‌بندی جدید را ارسال کنید:", reply_markup=kb.admin_back_kb("adm_categories"))
         await call.answer()
 
     @router.message(AdminAddCategory.waiting_name)
@@ -533,7 +533,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             f"🧮 حداقل مبلغ واریزی برای درگاه «{row['name']}» چند تومان باشد؟\n"
             f"مقدار فعلی: {current:,} تومان\n"
             "برای بدون‌محدودیت، عدد 0 بفرست. فقط عدد ارسال کن:",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_custom_gateways"),
         )
         await call.answer()
 
@@ -591,7 +591,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         current = db.get_setting(key, "0")
         await safe_edit(call, 
             f"مقدار فعلی: {int(current or 0):,} تومان\nمبلغ جدید را فقط به‌صورت عدد ارسال کن (0 یعنی بدون محدودیت):",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_min_amount_settings"),
         )
         await call.answer()
 
@@ -735,8 +735,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.update_data(editing_product_id=product_id)
         await state.set_state(AdminEditProduct.waiting_volume)
         hint = " (یا 0 برای نامحدود)" if product["provision_server_id"] else ""
+        back_cb = f"adm_prod_cat:{product['category_id']}" if product["category_id"] is not None else "adm_products"
         await safe_edit(call, f"حجم جدید «{product['name']}» چند گیگابایت باشد؟ فقط عدد صحیح{hint}:",
-                         reply_markup=kb.admin_back_kb())
+                         reply_markup=kb.admin_back_kb(back_cb))
         await call.answer()
 
     @router.message(AdminEditProduct.waiting_volume)
@@ -848,7 +849,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         await state.update_data(category_id=cat_id)
         await state.set_state(AdminAddProduct.waiting_name)
-        await safe_edit(call, "نام محصول را ارسال کنید:", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "نام محصول را ارسال کنید:", reply_markup=kb.admin_back_kb("adm_cat:products"))
         await call.answer()
 
     @router.message(AdminAddProduct.waiting_name)
@@ -1105,7 +1106,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminAddConfigs.waiting_links)
         await safe_edit(call, 
             "لینک‌های کانفیگ را ارسال کنید (هر لینک در یک خط جداگانه). می‌توانید چند لینک را با هم در یک پیام بفرستید:",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_add_configs"),
         )
         await call.answer()
 
@@ -1166,7 +1167,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 f"`{item['subscription_url']}`\n\n"
                 f"📦 حجم: {vol_label} | ⏳ مدت: {dur_label}"
             )
-            await safe_edit(call, text, parse_mode="Markdown", reply_markup=kb.admin_back_kb())
+            await safe_edit(call, text, parse_mode="Markdown", reply_markup=kb.admin_back_kb("adm_random_cfg"))
             await call.answer("کانفیگ دریافت شد ✅")
             return
 
@@ -1180,7 +1181,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             f"`{result['link']}`\n\n"
             f"⏳ تاریخ انقضا: {expires_display}"
         )
-        await safe_edit(call, text, parse_mode="Markdown", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, text, parse_mode="Markdown", reply_markup=kb.admin_back_kb("adm_random_cfg"))
         await call.answer("کانفیگ دریافت شد ✅")
 
     # -------------------------------------------------------------------
@@ -1226,7 +1227,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         await state.set_state(AdminAddTestConfigs.waiting_links)
         await safe_edit(call, 
-            "لینک‌های بانک تست دستی (قدیمی) را ارسال کنید (هر لینک در یک خط):", reply_markup=kb.admin_back_kb()
+            "لینک‌های بانک تست دستی (قدیمی) را ارسال کنید (هر لینک در یک خط):", reply_markup=kb.admin_back_kb("adm_test_menu")
         )
         await call.answer()
 
@@ -1248,7 +1249,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         await state.clear()
         await state.set_state(AdminAddTestPlan.waiting_name)
-        await safe_edit(call, "نام این پلن کانفیگ تست چیست؟ (مثلاً «تست یک‌ساعته»):", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "نام این پلن کانفیگ تست چیست؟ (مثلاً «تست یک‌ساعته»):", reply_markup=kb.admin_back_kb("adm_test_menu"))
         await call.answer()
 
     @router.message(AdminAddTestPlan.waiting_name)
@@ -1276,7 +1277,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             )]
             for s in servers
         ]
-        rows.append([InlineKeyboardButton(text="❌ انصراف", callback_data="cancel_flow")])
+        rows.append([InlineKeyboardButton(text="❌ انصراف", callback_data="adm_test_menu")])
         await state.set_state(AdminAddTestPlan.waiting_panel)
         await message.answer("این پلن روی کدام سرور پنل ساخته شود؟", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
@@ -1286,7 +1287,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.update_data(panel_server_id=server_id)
         await state.set_state(AdminAddTestPlan.waiting_volume_mb)
         await safe_edit(call, "حجم این پلن چند مگابایت باشد؟ فقط عدد صحیح (مثال: 100 برای ۱۰۰ مگ، یا 1024 برای ۱ گیگ):",
-                         reply_markup=kb.admin_back_kb())
+                         reply_markup=kb.admin_back_kb("adm_test_menu"))
         await call.answer()
 
     @router.message(AdminAddTestPlan.waiting_volume_mb)
@@ -1330,7 +1331,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         plan_id = callback_id(call.data, "adm_tp_edit_name")
         await state.update_data(editing_plan_id=plan_id)
         await state.set_state(AdminEditTestPlan.waiting_name)
-        await safe_edit(call, "نام جدید پلن را ارسال کن:", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "نام جدید پلن را ارسال کن:", reply_markup=kb.admin_back_kb(f"adm_tp_view:{plan_id}"))
         await call.answer()
 
     @router.message(AdminEditTestPlan.waiting_name)
@@ -1352,7 +1353,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         plan_id = callback_id(call.data, "adm_tp_edit_prefix")
         await state.update_data(editing_plan_id=plan_id)
         await state.set_state(AdminEditTestPlan.waiting_prefix)
-        await safe_edit(call, "پیشوند جدید نام کاربری را ارسال کن (فقط حروف/عدد انگلیسی):", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "پیشوند جدید نام کاربری را ارسال کن (فقط حروف/عدد انگلیسی):", reply_markup=kb.admin_back_kb(f"adm_tp_view:{plan_id}"))
         await call.answer()
 
     @router.message(AdminEditTestPlan.waiting_prefix)
@@ -1392,7 +1393,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         plan_id = callback_id(call.data, "adm_tp_edit_volume")
         await state.update_data(editing_plan_id=plan_id)
         await state.set_state(AdminEditTestPlan.waiting_volume_mb)
-        await safe_edit(call, "حجم جدید این پلن چند مگابایت باشد؟ فقط عدد صحیح:", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "حجم جدید این پلن چند مگابایت باشد؟ فقط عدد صحیح:", reply_markup=kb.admin_back_kb(f"adm_tp_view:{plan_id}"))
         await call.answer()
 
     @router.message(AdminEditTestPlan.waiting_volume_mb)
@@ -1414,7 +1415,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         plan_id = callback_id(call.data, "adm_tp_edit_duration")
         await state.update_data(editing_plan_id=plan_id)
         await state.set_state(AdminEditTestPlan.waiting_duration_hours)
-        await safe_edit(call, "مدت جدید این پلن چند ساعت باشد؟ فقط عدد صحیح:", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "مدت جدید این پلن چند ساعت باشد؟ فقط عدد صحیح:", reply_markup=kb.admin_back_kb(f"adm_tp_view:{plan_id}"))
         await call.answer()
 
     @router.message(AdminEditTestPlan.waiting_duration_hours)
@@ -2068,7 +2069,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             f"وضعیت فعلی: {masked}\n"
             f"منبع کلید: {source_note}\n\n"
             f"برای غیرفعال‌کردن، عبارت «حذف» را بفرست.",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_cat:finance"),
         )
         await call.answer()
 
@@ -2242,7 +2243,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             f"منبع کلید: {source_note}"
             f"{webhook_note}\n\n"
             f"برای غیرفعال‌کردن، عبارت «حذف» را بفرست.",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_cat:finance"),
         )
         await call.answer()
 
@@ -2441,7 +2442,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             f"🔑 کلید API را ارسال کن (از دستور /apikey داخل ربات NoapayBot).\n"
             f"وضعیت فعلی: {masked}\n\n"
             f"برای پاک‌کردن، عبارت «حذف» را بفرست.",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_set_noapay"),
         )
         await call.answer()
 
@@ -2475,7 +2476,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             f"این رمز برای تایید امضای HMAC وب‌هوک‌های ورودی استفاده می‌شود و بدونش پرداخت‌ها آنی تایید نمی‌شوند.\n"
             f"وضعیت فعلی: {masked}\n\n"
             f"برای پاک‌کردن، عبارت «حذف» را بفرست.",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_set_noapay"),
         )
         await call.answer()
 
@@ -2505,7 +2506,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             f"مبلغی که خودِ NoapayBot در لحظه اعلام می‌کند ممکن است کمی با این نرخ فرق داشته باشد، "
             f"ولی مبلغی که از کیف‌پول/سفارش کاربر کم می‌شود همیشه دقیقاً همان مبلغ اصلی خواهد بود.\n"
             f"نرخ فعلی: {int(current or 0):,} تومان",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_set_noapay"),
         )
         await call.answer()
 
@@ -2553,7 +2554,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             f"⏱ مهلت فعلی: {current} دقیقه\n"
             "بعد از این مهلت، اگر پیامک بانک نرسیده باشد، فاکتور به صف بررسی دستی می‌رود.\n"
             "مهلت جدید را به دقیقه (فقط عدد) ارسال کن:",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_card_auto"),
         )
         await call.answer()
 
@@ -2579,7 +2580,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             f"🔢 تعداد رقم فعلی: {current}\n"
             "این تعداد رقم آخر مبلغ به‌صورت تصادفی اضافه می‌شود تا مبلغ هر فاکتور یکتا شود.\n"
             "عددی بین ۱ تا ۵ ارسال کن (پیشنهاد: ۳):",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_card_auto"),
         )
         await call.answer()
 
@@ -2657,7 +2658,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_support(call)
         await state.update_data(c2c_edit_id=None)
         await state.set_state(AdminC2CCard.waiting_number)
-        await safe_edit(call, "شماره کارت جدید (۱۶ رقم) را ارسال کن:", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "شماره کارت جدید (۱۶ رقم) را ارسال کن:", reply_markup=kb.admin_back_kb("adm_card_auto_cards"))
         await call.answer()
 
     @router.callback_query(F.data.startswith("adm_card_auto_card_edit:"))
@@ -2675,7 +2676,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await safe_edit(call, 
             f"شماره کارت فعلی: {card['card_number']}\n"
             "شماره کارت جدید (۱۶ رقم) را ارسال کن:",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_card_auto_cards"),
         )
         await call.answer()
 
@@ -2937,7 +2938,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_mid(call)
         await state.set_state(AdminCreateDiscount.waiting_code)
         await safe_edit(call, 
-            "نام کد تخفیف را ارسال کنید (مثلاً WELCOME20، بدون فاصله):", reply_markup=kb.admin_back_kb()
+            "نام کد تخفیف را ارسال کنید (مثلاً WELCOME20، بدون فاصله):", reply_markup=kb.admin_back_kb("adm_discounts_menu")
         )
         await call.answer()
 
@@ -3114,7 +3115,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_mid(call)
         await state.set_state(AdminReferralPercent.waiting_value)
         await safe_edit(call, 
-            "درصد پورسانت جدید را وارد کنید (عددی بین 0 تا 100):", reply_markup=kb.admin_back_kb()
+            "درصد پورسانت جدید را وارد کنید (عددی بین 0 تا 100):", reply_markup=kb.admin_back_kb("adm_referral_settings")
         )
         await call.answer()
 
@@ -3136,7 +3137,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await safe_edit(call,
             "حداکثر تعداد زیرمجموعه‌هایی که پورسانت خریدشان تعلق می‌گیرد را وارد کنید "
             "(برای نامحدود، عدد 0 را ارسال کنید):",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_referral_settings"),
         )
         await call.answer()
 
@@ -3173,7 +3174,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminReferralFreeConfigThreshold.waiting_value)
         await safe_edit(call,
             "با دعوت چند نفر، یک کانفیگ رایگان تعلق بگیرد؟ عدد را وارد کنید:",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_referral_settings"),
         )
         await call.answer()
 
@@ -3235,7 +3236,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminReferralInviteBonusAmount.waiting_value)
         await safe_edit(call,
             "مبلغ ثابتی که برای هر دعوت به کیف پول دعوت‌کننده اضافه شود را به تومان وارد کنید:",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_referral_settings"),
         )
         await call.answer()
 
@@ -3257,7 +3258,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await safe_edit(call,
             "این شارژ فقط برای چند نفر اول دعوت‌شده اعمال شود؟ عدد را وارد کنید "
             "(برای نامحدود، عدد 0 را ارسال کنید):",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_referral_settings"),
         )
         await call.answer()
 
@@ -3298,7 +3299,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_mid(call)
         await state.set_state(AdminWheelSettings.waiting_win_percent)
         await safe_edit(call, 
-            "درصد احتمال برد را وارد کنید (عددی بین 0 تا 100، مثلاً 10):", reply_markup=kb.admin_back_kb()
+            "درصد احتمال برد را وارد کنید (عددی بین 0 تا 100، مثلاً 10):", reply_markup=kb.admin_back_kb("adm_wheel_settings")
         )
         await call.answer()
 
@@ -3319,7 +3320,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminWheelSettings.waiting_prizes)
         await safe_edit(call, 
             "درصدهای تخفیف ممکن را با کاما جدا کرده و ارسال کنید (مثلاً: 10,20,30,50):",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_wheel_settings"),
         )
         await call.answer()
 
@@ -3339,7 +3340,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_mid(call)
         await state.set_state(AdminWheelSettings.waiting_expiry)
         await safe_edit(call, 
-            "کد جایزه چند ساعت اعتبار داشته باشد؟ (فقط عدد، مثلاً 24):", reply_markup=kb.admin_back_kb()
+            "کد جایزه چند ساعت اعتبار داشته باشد؟ (فقط عدد، مثلاً 24):", reply_markup=kb.admin_back_kb("adm_wheel_settings")
         )
         await call.answer()
 
@@ -3359,7 +3360,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_mid(call)
         await state.set_state(AdminWheelSettings.waiting_cooldown)
         await safe_edit(call, 
-            "فاصله مجاز بین دو چرخش هر کاربر چند ساعت باشد؟ (فقط عدد، مثلاً 24):", reply_markup=kb.admin_back_kb()
+            "فاصله مجاز بین دو چرخش هر کاربر چند ساعت باشد؟ (فقط عدد، مثلاً 24):", reply_markup=kb.admin_back_kb("adm_wheel_settings")
         )
         await call.answer()
 
@@ -3401,7 +3402,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminStockAlertSettings.waiting_threshold)
         await safe_edit(call, 
             "آستانه‌ی هشدار موجودی چند کانفیگ باشد؟ (فقط عدد، مثلاً 3):",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_stock_alert_settings"),
         )
         await call.answer()
 
@@ -3492,7 +3493,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         await state.set_state(AdminCustomConfigSettings.waiting_min_gb)
-        await safe_edit(call, "حداقل حجم مجاز چند گیگابایت باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "حداقل حجم مجاز چند گیگابایت باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb("adm_custom_config_settings"))
         await call.answer()
 
     @router.message(AdminCustomConfigSettings.waiting_min_gb)
@@ -3533,7 +3534,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             "بدون خط تیره - خودِ خط تیره خودکار اضافه می‌شود).\n"
             f"وضعیت فعلی: {('«' + current + '-»') if current else 'خاموش'}\n\n"
             "برای خاموش‌کردن پیش‌وند، کلمه‌ی «خاموش» را ارسال کنید.",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_custom_config_settings"),
         )
         await call.answer()
 
@@ -3573,11 +3574,12 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await target.answer(text, reply_markup=markup)
 
     @router.callback_query(F.data == "adm_ccp_list")
-    async def cb_ccp_list(call: CallbackQuery):
+    async def cb_ccp_list(call: CallbackQuery, state: FSMContext):
         if not (await asyncio.to_thread(db.is_full_access_bot, is_main_bot)):
             return await deny_reseller_panel_access(call)
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
+        await state.clear()
         await replace_admin_view(call,
             "🧩 محصولات کانفیگ‌ساز\n\n"
             "هر محصول می‌تواند پنل/اینباند، بازه‌ی حجم، مدت و قیمت‌گذاری مستقل خودش را داشته باشد. "
@@ -3604,7 +3606,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         await state.clear()
         await state.set_state(AdminCustomConfigProduct.waiting_name)
-        await safe_edit(call, "نام این محصول چیست؟ (مثلاً «پلن آلمان»):", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "نام این محصول چیست؟ (مثلاً «پلن آلمان»):", reply_markup=kb.admin_back_kb("adm_ccp_list"))
         await call.answer()
 
     @router.message(AdminCustomConfigProduct.waiting_name)
@@ -3629,7 +3631,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             )]
             for s in servers
         ]
-        rows.append([InlineKeyboardButton(text="❌ انصراف", callback_data="cancel_flow")])
+        rows.append([InlineKeyboardButton(text="❌ انصراف", callback_data="adm_ccp_list")])
         await state.set_state(AdminCustomConfigProduct.waiting_panel_pick)
         await message.answer(
             "این محصول روی کدام سرور پنل (و اینباند متصل به آن) ساخته شود؟",
@@ -3641,7 +3643,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         server_id = int(call.data.split(":", 1)[1])
         await state.update_data(panel_server_id=server_id)
         await state.set_state(AdminCustomConfigProduct.waiting_volume_min)
-        await safe_edit(call, "حداقل حجم مجاز این محصول چند گیگابایت باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "حداقل حجم مجاز این محصول چند گیگابایت باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb("adm_ccp_list"))
         await call.answer()
 
     @router.callback_query(F.data.startswith("adm_ccp_edit_panel:"))
@@ -3694,7 +3696,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⏳ مدت ثابت (ادمین تعیین می‌کند)", callback_data="adm_ccp_new_duration:fixed")],
                 [InlineKeyboardButton(text="🧑‍💻 مدت قابل‌انتخاب توسط مشتری", callback_data="adm_ccp_new_duration:user_choice")],
-                [InlineKeyboardButton(text="❌ انصراف", callback_data="cancel_flow")],
+                [InlineKeyboardButton(text="❌ انصراف", callback_data="adm_ccp_list")],
             ]),
         )
 
@@ -3705,7 +3707,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         product_id = callback_id(call.data, "adm_ccp_edit_volume")
         await state.set_state(AdminCustomConfigProduct.waiting_volume_min)
         await state.update_data(editing_product_id=product_id)
-        await safe_edit(call, "حداقل حجم مجاز جدید چند گیگابایت باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "حداقل حجم مجاز جدید چند گیگابایت باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb(f"adm_ccp_view:{product_id}"))
         await call.answer()
 
     @router.callback_query(F.data.startswith("adm_ccp_new_duration:"), AdminCustomConfigProduct.waiting_duration_mode_pick)
@@ -3713,10 +3715,10 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         mode = call.data.split(":", 1)[1]
         if mode == "fixed":
             await state.set_state(AdminCustomConfigProduct.waiting_duration_value)
-            await safe_edit(call, "مدت اعتبار (روز) چند روز باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb())
+            await safe_edit(call, "مدت اعتبار (روز) چند روز باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb("adm_ccp_list"))
         else:
             await state.set_state(AdminCustomConfigProduct.waiting_duration_min)
-            await safe_edit(call, "حداقل مدت قابل‌انتخاب (روز) چند روز باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb())
+            await safe_edit(call, "حداقل مدت قابل‌انتخاب (روز) چند روز باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb("adm_ccp_list"))
         await call.answer()
 
     @router.callback_query(F.data.startswith("adm_ccp_duration_mode:"))
@@ -3737,10 +3739,10 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.update_data(editing_product_id=product_id)
         if mode == "fixed":
             await state.set_state(AdminCustomConfigProduct.waiting_duration_value)
-            await safe_edit(call, "مدت اعتبار جدید (روز) چند روز باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb())
+            await safe_edit(call, "مدت اعتبار جدید (روز) چند روز باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb(f"adm_ccp_view:{product_id}"))
         else:
             await state.set_state(AdminCustomConfigProduct.waiting_duration_min)
-            await safe_edit(call, "حداقل مدت قابل‌انتخاب (روز) چند روز باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb())
+            await safe_edit(call, "حداقل مدت قابل‌انتخاب (روز) چند روز باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb(f"adm_ccp_view:{product_id}"))
         await call.answer()
 
     @router.message(AdminCustomConfigProduct.waiting_duration_value)
@@ -3796,7 +3798,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="💵 قیمت فلت (یک نرخ ثابت هر گیگ)", callback_data="adm_ccp_new_pricing:flat")],
                 [InlineKeyboardButton(text="📊 قیمت پله‌ای (بر اساس بازه‌ی حجم)", callback_data="adm_ccp_new_pricing:tiered")],
-                [InlineKeyboardButton(text="❌ انصراف", callback_data="cancel_flow")],
+                [InlineKeyboardButton(text="❌ انصراف", callback_data="adm_ccp_list")],
             ]),
         )
 
@@ -3818,7 +3820,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         mode = call.data.split(":", 1)[1]
         if mode == "flat":
             await state.set_state(AdminCustomConfigProduct.waiting_flat_price)
-            await safe_edit(call, "قیمت هر گیگابایت چند تومان باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb())
+            await safe_edit(call, "قیمت هر گیگابایت چند تومان باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb("adm_ccp_list"))
             await call.answer()
         else:
             await call.answer()
@@ -3842,7 +3844,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if mode == "flat":
             await state.update_data(editing_product_id=product_id)
             await state.set_state(AdminCustomConfigProduct.waiting_flat_price)
-            await safe_edit(call, "قیمت جدید هر گیگابایت چند تومان باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb())
+            await safe_edit(call, "قیمت جدید هر گیگابایت چند تومان باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb(f"adm_ccp_view:{product_id}"))
         else:
             (await asyncio.to_thread(db.update_custom_config_product, product_id, pricing_mode="tiered"))
             await _ccp_show_view(call, product_id, "✅ حالت قیمت‌گذاری روی «پله‌ای» تنظیم شد؛ تعرفه‌ها را از همین صفحه اضافه کن.")
@@ -3855,7 +3857,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         product_id = callback_id(call.data, "adm_ccp_edit_flat_price")
         await state.update_data(editing_product_id=product_id)
         await state.set_state(AdminCustomConfigProduct.waiting_flat_price)
-        await safe_edit(call, "قیمت جدید هر گیگابایت چند تومان باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "قیمت جدید هر گیگابایت چند تومان باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb(f"adm_ccp_view:{product_id}"))
         await call.answer()
 
     @router.message(AdminCustomConfigProduct.waiting_flat_price)
@@ -3881,7 +3883,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         product_id = callback_id(call.data, "adm_ccp_edit_name")
         await state.update_data(editing_product_id=product_id)
         await state.set_state(AdminCustomConfigProduct.waiting_name)
-        await safe_edit(call, "نام جدید محصول را ارسال کن:", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "نام جدید محصول را ارسال کن:", reply_markup=kb.admin_back_kb(f"adm_ccp_view:{product_id}"))
         await call.answer()
 
     @router.callback_query(F.data.startswith("adm_ccp_edit_desc:"))
@@ -3891,7 +3893,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         product_id = callback_id(call.data, "adm_ccp_edit_desc")
         await state.update_data(editing_product_id=product_id)
         await state.set_state(AdminCustomConfigProduct.waiting_description)
-        await safe_edit(call, "توضیح جدید این محصول را ارسال کن (برای کاربر نمایش داده می‌شود):", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "توضیح جدید این محصول را ارسال کن (برای کاربر نمایش داده می‌شود):", reply_markup=kb.admin_back_kb(f"adm_ccp_view:{product_id}"))
         await call.answer()
 
     @router.message(AdminCustomConfigProduct.waiting_description)
@@ -3952,7 +3954,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         product_id = callback_id(call.data, "adm_ccp_tier_add")
         await state.update_data(ccp_tier_product_id=product_id)
         await state.set_state(AdminAddCustomConfigProductTier.waiting_from_gb)
-        await safe_edit(call, "ابتدای این بازه چند گیگابایت باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "ابتدای این بازه چند گیگابایت باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb(f"adm_ccp_tiers:{product_id}"))
         await call.answer()
 
     @router.message(AdminAddCustomConfigProductTier.waiting_from_gb)
@@ -4101,7 +4103,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         await state.set_state(AdminAddPanelServer.waiting_name)
-        await safe_edit(call, "یک نام دلخواه برای این سرور بفرست (مثلاً «سرور آلمان»):", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "یک نام دلخواه برای این سرور بفرست (مثلاً «سرور آلمان»):", reply_markup=kb.admin_back_kb("adm_panel_servers"))
         await call.answer()
 
     @router.message(AdminAddPanelServer.waiting_name)
@@ -4339,7 +4341,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         await state.update_data(panel_server_id=server_id)
         await state.set_state(AdminSetPanelTemplate.waiting_username)
-        await safe_edit(call, "نام کاربری نمونه‌ی جدید (که روی پنل موجود است) را بفرست:", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "نام کاربری نمونه‌ی جدید (که روی پنل موجود است) را بفرست:", reply_markup=kb.admin_back_kb(f"adm_panel_server_view:{server_id}"))
         await call.answer()
 
     @router.message(AdminSetPanelTemplate.waiting_username)
@@ -4388,7 +4390,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             f"آدرس فعلی Subscription:\n{current}\n\n"
             "آدرس جدید Subscription پنل را بفرست (همان چیزی که پنل موقع ساخت کاربر دستی نشانت می‌دهد، "
             "مثلاً https://domain:2096/sub یا https://domain/sub - بدون / انتهایی):",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb(f"adm_panel_server_view:{server_id}"),
         )
         await call.answer()
 
@@ -4550,7 +4552,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         await state.set_state(AdminAddPricingTier.waiting_from_gb)
-        await safe_edit(call, "ابتدای این بازه چند گیگابایت باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "ابتدای این بازه چند گیگابایت باشد؟ (فقط عدد):", reply_markup=kb.admin_back_kb("adm_pricing_tiers"))
         await call.answer()
 
     @router.message(AdminAddPricingTier.waiting_from_gb)
@@ -4619,7 +4621,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             "پیامی که می‌خوای به کاربرانی که قبلاً کانفیگ تست گرفته‌اند ارسال بشه رو بفرست.\n"
             "(مثلاً: «🎉 کانفیگ تست دوباره برای شما فعال شد، از منوی اصلی دریافت کنید.»)\n\n"
             "بعد از این پیام، بازنشانی و ارسال شروع می‌شود.",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_test_menu"),
         )
         await call.answer()
 
@@ -4669,7 +4671,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminRenewalSettings.waiting_days_before)
         await safe_edit(call, 
             "چند روز قبل از اتمام سرویس، یادآوری ارسال شود؟ (فقط عدد، مثلاً 5):",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_renewal_settings"),
         )
         await call.answer()
 
@@ -4692,7 +4694,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminRenewalSettings.waiting_percent)
         await safe_edit(call, 
             "درصد تخفیف کد تشویقی تمدید چقدر باشد؟ (عددی بین 1 تا 100، مثلاً 20):",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_renewal_settings"),
         )
         await call.answer()
 
@@ -4713,7 +4715,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminRenewalSettings.waiting_expiry_hours)
         await safe_edit(call, 
             "کد تخفیف تشویقی چند ساعت اعتبار داشته باشد؟ (فقط عدد، مثلاً 24):",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_renewal_settings"),
         )
         await call.answer()
 
@@ -4765,7 +4767,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminVolumeReminderSettings.waiting_percent)
         await safe_edit(call,
             "وقتی چند درصد از حجم مصرف شد، یادآوری ارسال شود؟ (عددی بین 1 تا 99، مثلاً 80):",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_volume_reminder_settings"),
         )
         await call.answer()
 
@@ -4788,7 +4790,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminVolumeReminderSettings.waiting_gb_left)
         await safe_edit(call,
             "وقتی چند گیگابایت حجم باقی‌مانده شد، یادآوری ارسال شود؟ (عدد، مثلاً 2 یا 1.5):",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_volume_reminder_settings"),
         )
         await call.answer()
 
@@ -4815,7 +4817,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminVolumeReminderSettings.waiting_discount_percent)
         await safe_edit(call,
             "درصد تخفیف کد تشویقی اتمام حجم چقدر باشد؟ (عددی بین 1 تا 100، مثلاً 20):",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_volume_reminder_settings"),
         )
         await call.answer()
 
@@ -4836,7 +4838,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminVolumeReminderSettings.waiting_discount_hours)
         await safe_edit(call,
             "کد تخفیف تشویقی اتمام حجم چند ساعت اعتبار داشته باشد؟ (فقط عدد، مثلاً 24):",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_volume_reminder_settings"),
         )
         await call.answer()
 
@@ -5231,7 +5233,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await state.set_state(AdminAddResellerBot.waiting_token)
             await safe_edit(call, 
                 "توکن بات نماینده را ارسال کنید (همانی که از @BotFather گرفته):",
-                reply_markup=kb.admin_back_kb(),
+                reply_markup=kb.admin_back_kb("adm_resellers_menu"),
             )
             await call.answer()
 
@@ -5566,7 +5568,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 await safe_edit(
                     call,
                     f"📋 درخواست‌های باز نمایندگی\n\n✅ درخواست #{request_id} کنسل شد. دیگر درخواست باز دیگری باقی نمانده.",
-                    reply_markup=kb.admin_back_kb(),
+                    reply_markup=kb.admin_back_kb("adm_cat:daily"),
                 )
             await call.answer("درخواست کنسل شد.")
 
@@ -5780,7 +5782,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         current = (await asyncio.to_thread(db.get_setting, key))
         await safe_edit(call, 
             f"متن فعلی: {current}\n\nمتن جدید را ارسال کنید (می‌توانید ایموجی هم اضافه کنید):",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_edit_buttons"),
         )
         await call.answer()
 
@@ -5949,7 +5951,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
         await state.set_state(AdminSetCard.waiting_number)
-        await safe_edit(call, "شماره کارت جدید را ارسال کنید:", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "شماره کارت جدید را ارسال کنید:", reply_markup=kb.admin_back_kb("adm_set_card"))
         await call.answer()
 
     @router.message(AdminSetCard.waiting_number)
@@ -6057,7 +6059,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             f"وضعیت فعلی: {masked}\n"
             f"منبع کلید: {source_note}\n\n"
             f"برای غیرفعال‌کردن، عبارت «حذف» را بفرست.",
-            reply_markup=kb.admin_back_kb(),
+            reply_markup=kb.admin_back_kb("adm_cat:finance"),
         )
         await call.answer()
 
@@ -6088,7 +6090,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_support(call)
         await state.set_state(AdminEditWelcome.waiting_text)
         current = (await asyncio.to_thread(db.get_setting, "welcome_text"))
-        await safe_edit(call, f"متن فعلی:\n{current}\n\nمتن جدید را ارسال کنید:", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, f"متن فعلی:\n{current}\n\nمتن جدید را ارسال کنید:", reply_markup=kb.admin_back_kb("adm_cat:appearance"))
         await call.answer()
 
     @router.message(AdminEditWelcome.waiting_text)
@@ -6283,7 +6285,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
         await state.set_state(AdminBroadcast.waiting_message)
-        await replace_admin_view(call, "متن پیام همگانی را ارسال کنید (برای همه کاربران ارسال می‌شود):", reply_markup=kb.admin_back_kb())
+        await replace_admin_view(call, "متن پیام همگانی را ارسال کنید (برای همه کاربران ارسال می‌شود):", reply_markup=kb.admin_back_kb("adm_cat:marketing"))
         await call.answer()
 
     @router.message(AdminBroadcast.waiting_message)
@@ -6343,7 +6345,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         value = call.data.split(":", 1)[1]
         if value == "custom":
             await state.set_state(AdminBroadcast.waiting_custom_minutes)
-            await replace_admin_view(call, "مدت دلخواه را به دقیقه ارسال کن (مثلاً 45):", reply_markup=kb.admin_back_kb())
+            await replace_admin_view(call, "مدت دلخواه را به دقیقه ارسال کن (مثلاً 45):", reply_markup=kb.admin_back_kb("adm_cat:marketing"))
             await call.answer()
             return
         await call.answer("در حال ارسال...")
@@ -7382,7 +7384,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not (is_main_bot and owner_only(call.from_user.id)):
             return await deny_support(call)
         await state.clear()
-        await safe_edit(call, "❌ بازیابی کامل لغو شد.", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "❌ بازیابی کامل لغو شد.", reply_markup=kb.admin_back_kb("adm_backup_menu"))
         await call.answer()
 
     @router.message(AdminRestoreFullBackup.waiting_file, F.document)
@@ -7508,7 +7510,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             except OSError:
                 pass
         await state.clear()
-        await safe_edit(call, "❌ بازیابی کامل لغو شد.", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "❌ بازیابی کامل لغو شد.", reply_markup=kb.admin_back_kb("adm_backup_menu"))
         await call.answer()
 
     # -------------------------------------------------------------------
@@ -7822,7 +7824,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not owner_only(call.from_user.id):
             return await deny_support(call)
         await state.clear()
-        await safe_edit(call, "❌ بازیابی لغو شد.", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "❌ بازیابی لغو شد.", reply_markup=kb.admin_back_kb("adm_backup_menu"))
         await call.answer()
 
     @router.message(AdminRestoreBackup.waiting_file, F.document)
@@ -7900,7 +7902,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             except OSError:
                 pass
         await state.clear()
-        await safe_edit(call, "❌ بازیابی لغو شد.", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "❌ بازیابی لغو شد.", reply_markup=kb.admin_back_kb("adm_backup_menu"))
         await call.answer()
 
     # -------------------------------------------------------------------
@@ -7970,7 +7972,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not owner_only(call.from_user.id):
             return await deny_support(call)
         await state.clear()
-        await safe_edit(call, "❌ بازگشت به حالت کارخانه لغو شد.", reply_markup=kb.admin_back_kb())
+        await safe_edit(call, "❌ بازگشت به حالت کارخانه لغو شد.", reply_markup=kb.admin_back_kb("adm_backup_menu"))
         await call.answer()
 
     # -------------------------------------------------------------------
