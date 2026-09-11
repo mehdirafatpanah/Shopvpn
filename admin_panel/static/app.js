@@ -5129,6 +5129,18 @@ const SETTINGS_GROUPS = [
     { key: 'svc_show_transfer', label: 'دکمه «انتقال کانفیگ»', type: 'bool' },
     { key: 'svc_show_history', label: 'دکمه «تاریخچه سرویس»', type: 'bool' },
   ]},
+
+  // -------------------------------------------------------------- اپ موبایل
+  // این ۴ مقدار از پروژه‌ی فایربیس خودت می‌آید (کنسول فایربیس > تنظیمات پروژه
+  // > اپ اندروید با پکیج com.shopvpn.admin > google-services.json). این مقادیر
+  // محرمانه نیستند (داخل هر APK قابل مشاهده‌اند)، فقط برای تشخیص پروژه‌اند؛
+  // اپ اندروید این‌ها را در زمان اجرا برای فعال‌شدن پوش لحظه‌ای (FCM) می‌خواند.
+  { tab: 'mobile_app', title: '🔔 پوش نوتیف اندروید (Firebase)', fields: [
+    { key: 'firebase_api_key', label: 'Firebase API Key', type: 'text' },
+    { key: 'firebase_app_id', label: 'Firebase App ID', type: 'text' },
+    { key: 'firebase_project_id', label: 'Firebase Project ID', type: 'text' },
+    { key: 'firebase_sender_id', label: 'Firebase Sender ID (Project number)', type: 'text' },
+  ]},
 ];
 
 function settingsFieldHtml(f, settings) {
