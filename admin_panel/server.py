@@ -1155,6 +1155,13 @@ def api_app_config(admin=Depends(get_current_admin)):
         "server_name": "ShopVPN Admin",
         "tenant": admin["tenant"] or "main",
         "tabs": tabs,
+        # مقادیر عمومی (غیرمحرمانه) پروژه‌ی فایربیس همین سرور -- از تنظیمات >
+        # اپ موبایل در پنل وب. اپ اندروید این‌ها را در زمان اجرا به FirebaseOptions
+        # می‌دهد؛ اگر خالی باشند، اپ فقط برای همین سرور پوش را غیرفعال می‌کند.
+        "firebase_api_key": db.get_setting("firebase_api_key") or None,
+        "firebase_app_id": db.get_setting("firebase_app_id") or None,
+        "firebase_project_id": db.get_setting("firebase_project_id") or None,
+        "firebase_sender_id": db.get_setting("firebase_sender_id") or None,
     }
 
 
