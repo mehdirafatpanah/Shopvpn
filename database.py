@@ -2794,12 +2794,22 @@ class Database:
             ).fetchall()
 
     def get_pending_orders(self):
-        """سفارش‌های نیازمند بررسی دستی؛ سفارش‌هایی که برایشان فاکتور کریپتو ساخته شده‌اند اینجا نمی‌آیند."""
+        """سفارش‌های نیازمند بررسی دستی؛ سفارش‌هایی که برایشان فاکتور کریپتو ساخته شده‌اند
+        اینجا نمی‌آیند، و همین‌طور سفارش‌هایی که یک درگاه «تایید آنی» (آبان‌گیت‌وی/بلوپال/
+        نوپی/درگاه سفارشی/کارت‌به‌کارت خودکار) برایشان فاکتور ساخته ولی هنوز new/pending
+        است - چون این‌ها منتظر تاییدِ خودکار (وب‌هوک/پیامک) هستند، نه بررسی ادمین؛ همین که
+        فاکتور به حالت گیرافتاده/ناموفق (هر چیزی جز new/pending) برسد دوباره اینجا دیده
+        می‌شوند تا ادمین متوجه‌ی معطل‌ماندنشان بشود."""
         with self._get_conn() as conn:
             return conn.execute(
                 "SELECT o.* FROM orders o "
                 "WHERE o.status='pending' "
                 "AND NOT EXISTS (SELECT 1 FROM crypto_invoices ci WHERE ci.kind='order' AND ci.ref_id=o.id) "
+                "AND NOT EXISTS (SELECT 1 FROM abangateway_invoices gi WHERE gi.kind='order' AND gi.ref_id=o.id AND gi.status IN ('new','pending')) "
+                "AND NOT EXISTS (SELECT 1 FROM blupal_invoices gi WHERE gi.kind='order' AND gi.ref_id=o.id AND gi.status IN ('new','pending')) "
+                "AND NOT EXISTS (SELECT 1 FROM noapay_invoices gi WHERE gi.kind='order' AND gi.ref_id=o.id AND gi.status IN ('new','pending')) "
+                "AND NOT EXISTS (SELECT 1 FROM custom_gateway_invoices gi WHERE gi.kind='order' AND gi.ref_id=o.id AND gi.status IN ('new','pending')) "
+                "AND NOT EXISTS (SELECT 1 FROM card_to_card_invoices gi WHERE gi.kind='order' AND gi.ref_id=o.id AND gi.status='pending') "
                 "ORDER BY o.id"
             ).fetchall()
 
@@ -3444,12 +3454,19 @@ class Database:
             ).fetchall()
 
     def get_pending_topups(self):
-        """شارژهای نیازمند بررسی دستی؛ شارژهای دارای فاکتور کریپتو اینجا نمی‌آیند."""
+        """شارژهای نیازمند بررسی دستی؛ شارژهای دارای فاکتور کریپتو، یا فاکتور فعال
+        new/pending نزد یک درگاه «تایید آنی» دیگر (آبان‌گیت‌وی/بلوپال/نوپی/درگاه
+        سفارشی/کارت‌به‌کارت خودکار)، اینجا نمی‌آیند - رجوع به توضیح get_pending_orders."""
         with self._get_conn() as conn:
             return conn.execute(
                 "SELECT t.* FROM wallet_topups t "
                 "WHERE t.status='pending' "
                 "AND NOT EXISTS (SELECT 1 FROM crypto_invoices ci WHERE ci.kind='wallet_topup' AND ci.ref_id=t.id) "
+                "AND NOT EXISTS (SELECT 1 FROM abangateway_invoices gi WHERE gi.kind='wallet_topup' AND gi.ref_id=t.id AND gi.status IN ('new','pending')) "
+                "AND NOT EXISTS (SELECT 1 FROM blupal_invoices gi WHERE gi.kind='wallet_topup' AND gi.ref_id=t.id AND gi.status IN ('new','pending')) "
+                "AND NOT EXISTS (SELECT 1 FROM noapay_invoices gi WHERE gi.kind='wallet_topup' AND gi.ref_id=t.id AND gi.status IN ('new','pending')) "
+                "AND NOT EXISTS (SELECT 1 FROM custom_gateway_invoices gi WHERE gi.kind='wallet_topup' AND gi.ref_id=t.id AND gi.status IN ('new','pending')) "
+                "AND NOT EXISTS (SELECT 1 FROM card_to_card_invoices gi WHERE gi.kind='wallet_topup' AND gi.ref_id=t.id AND gi.status='pending') "
                 "ORDER BY t.id"
             ).fetchall()
 
@@ -4100,15 +4117,20 @@ class Database:
                 "min_amount": int(self.get_setting(f"min_amount_{m['key']}", "0") or 0),
                 "push_enabled": self.get_setting(f"push_pm_{m['key']}", "1") == "1",
                 "is_custom": False,
+                "is_instant": m["key"] in self._INSTANT_GATEWAY_TABLES,
+                "notify_timeout_minutes": self.get_payment_method_notify_timeout(m["key"]),
             })
         for gw in self.list_custom_gateways(only_enabled=only_enabled):
+            key = f"custom:{gw['gateway_key']}"
             items.append({
-                "key": f"custom:{gw['gateway_key']}",
+                "key": key,
                 "label": f"💠 {gw['name']}",
                 "enabled": bool(gw["enabled"]),
                 "min_amount": int(gw["min_amount"] or 0) if "min_amount" in gw.keys() else 0,
                 "push_enabled": self.get_setting(f"push_pm_custom:{gw['gateway_key']}", "1") == "1",
                 "is_custom": True,
+                "is_instant": True,
+                "notify_timeout_minutes": self.get_payment_method_notify_timeout(key),
                 "gateway_id": gw["id"],
             })
         return items
@@ -4128,6 +4150,53 @@ class Database:
 
     def is_payment_method_push_enabled(self, method_key: str) -> bool:
         return self.get_setting(f"push_pm_{method_key}", "1") == "1"
+
+    def get_payment_method_notify_timeout(self, method_key: str) -> int:
+        """چند دقیقه بعد از ساخته‌شدن فاکتورِ یک درگاه «تایید آنی»، اگر هنوز
+        new/pending مانده بود، باید یک پوش «معطل‌مانده» جدا برای ادمین برود.
+        فقط برای درگاه‌های خودکار (abangateway/blupal/noapay/card_auto/custom:<key>)
+        معنا دارد. صفر یعنی این قابلیت برای این روش خاموش است (پیش‌فرض)."""
+        try:
+            return max(0, int(self.get_setting(f"push_timeout_{method_key}", "0") or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def set_payment_method_notify_timeout(self, method_key: str, minutes: int):
+        self.set_setting(f"push_timeout_{method_key}", str(max(0, int(minutes or 0))))
+
+    # جدول/شرط «هنوز در جریان» هر درگاه آنی - برای هم مخفی‌نگه‌داشتن سفارش از
+    # لیست بررسی دستی (تا وقتی در جریان است) و هم تشخیص «معطل‌مانده» بعد از timeout.
+    _INSTANT_GATEWAY_TABLES = {
+        "abangateway": ("abangateway_invoices", "status IN ('new','pending')"),
+        "blupal": ("blupal_invoices", "status IN ('new','pending')"),
+        "noapay": ("noapay_invoices", "status IN ('new','pending')"),
+        "card_auto": ("card_to_card_invoices", "status='pending'"),
+    }
+
+    def list_stuck_gateway_invoices(self, method_key: str, minutes: int):
+        """فاکتورهای یک درگاه آنیِ داخلی (نه سفارشی) که از ساخته‌شدنشان بیش از
+        `minutes` دقیقه گذشته و هنوز در جریان مانده‌اند (تایید نشده، ولی گیرافتاده/
+        ناموفق هم اعلام نشده) - نامزد پوش «معطل‌مانده»."""
+        if minutes <= 0 or method_key not in self._INSTANT_GATEWAY_TABLES:
+            return []
+        table, in_progress_clause = self._INSTANT_GATEWAY_TABLES[method_key]
+        with self._get_conn() as conn:
+            return conn.execute(
+                f"SELECT * FROM {table} WHERE {in_progress_clause} "
+                "AND created_at <= datetime('now', ?) ORDER BY id",
+                (f'-{int(minutes)} minutes',),
+            ).fetchall()
+
+    def list_stuck_custom_gateway_invoices(self, gateway_id: int, minutes: int):
+        """معادل list_stuck_gateway_invoices برای یک درگاه سفارشی مشخص."""
+        if minutes <= 0:
+            return []
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM custom_gateway_invoices WHERE gateway_id=? AND status IN ('new','pending') "
+                "AND created_at <= datetime('now', ?) ORDER BY id",
+                (gateway_id, f'-{int(minutes)} minutes'),
+            ).fetchall()
 
     def resolve_payment_method(self, kind: str, ref_id: int):
         """گیت‌وی واقعی یک سفارش/شارژ (order/wallet_topup) را از روی رکورد
