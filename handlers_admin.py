@@ -2622,9 +2622,40 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         )
         rows = [
             [InlineKeyboardButton(text="🔁 ساخت/بازتولید توکن", callback_data="adm_card_auto_webhook_regen")],
+            [InlineKeyboardButton(text="📖 راهنمای کامل نصب و دانلود", callback_data="adm_card_auto_webhook_guide")],
             [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_card_auto")],
         ]
         await safe_edit(call, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_card_auto_webhook_guide")
+    async def cb_admin_card_auto_webhook_guide(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        text = (
+            "📖 *راهنمای کامل اپ فوروارد پیامک (BankSmsForwarder)*\n\n"
+            "این اپ اندروید روی گوشی/سیم‌کارتی نصب می‌شود که پیامک واریزی بانک بهش می‌رسد؛ هر پیامک "
+            "بانکی را می‌خواند و به آدرس وب‌هوک (همراه توکن) می‌فرستد تا فاکتور کارت‌به‌کارت مربوطه "
+            "بدون دخالت دستی تایید شود.\n\n"
+            "*نصب و اتصال:*\n"
+            "۱. APK را از دکمه پایین دانلود و نصب کن.\n"
+            "۲. دسترسی «خواندن پیامک‌ها (SMS)» را داخل اپ تایید کن.\n"
+            "۳. آدرس وب‌هوک و توکن (از دکمه قبلی) را داخل تنظیمات اپ وارد کن.\n"
+            "۴. اپ را از «بهینه‌سازی باتری» گوشی مستثنی کن تا در پس‌زمینه بسته نشود.\n\n"
+            "⚠️ *چرا موقع نصب اخطار امنیتی می‌دهد؟*\n"
+            "چون این اپ از گوگل‌پلی نصب نمی‌شود، اندروید هر APK خارج از پلی‌استور را خودکار «ناشناس» "
+            "علامت می‌زند و هشدار عمومی «ممکن است مضر باشد» نشان می‌دهد - این هشدار برای همه‌ی اپ‌های "
+            "خارج از پلی‌استور است و ربطی به خطرناک‌بودن واقعی کد ندارد. سورس‌کد این اپ کاملاً اوپن‌سورس "
+            "و عمومی است و هیچ داده‌ای جز پیامک بانک به سرور خودت فرستاده نمی‌شود."
+        )
+        rows = [
+            [InlineKeyboardButton(text="⬇️ دانلود اپ فوروارد پیامک",
+                                   url="https://github.com/mehdirafatpanah/sms-forwarder/archive/refs/heads/main.zip")],
+            [InlineKeyboardButton(text="مشاهده سورس در گیت‌هاب",
+                                   url="https://github.com/mehdirafatpanah/sms-forwarder")],
+            [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_card_auto_webhook")],
+        ]
+        await safe_edit(call, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="Markdown")
         await call.answer()
 
     @router.callback_query(F.data == "adm_card_auto_webhook_regen")
