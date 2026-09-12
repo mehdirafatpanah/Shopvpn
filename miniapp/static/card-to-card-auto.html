@@ -41,6 +41,13 @@
   .actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
   .hint{font-size:11px;color:var(--muted);margin-top:2px}
   code{background:var(--input);padding:1px 5px;border-radius:4px;font-size:11px}
+  details.guide{margin-top:10px;border:1px solid var(--border);border-radius:8px;padding:8px 10px}
+  details.guide summary{cursor:pointer;font-size:13px;color:var(--accent);list-style:none}
+  details.guide summary::-webkit-details-marker{display:none}
+  details.guide p, details.guide li{font-size:12.5px;line-height:1.9;color:var(--text)}
+  details.guide ol{margin:6px 0;padding-inline-start:18px}
+  details.guide a.btn-link{display:inline-block;background:var(--accent);color:#fff;text-decoration:none;border-radius:8px;padding:8px 14px;font-size:13px;margin-top:8px;margin-inline-end:8px}
+  details.guide a.btn-link.secondary{background:#374151}
 </style>
 </head>
 <body>
@@ -77,6 +84,31 @@
   </div>
   <p class="hint">آدرس و توکن را داخل تنظیمات اپ اندروید BankSmsForwarder (بخش Webhook URL / Token) وارد کن.
   هر بار «بازتولید توکن» بزنی، توکن قبلی از کار می‌افتد و باید توی اپ هم آپدیتش کنی.</p>
+
+  <details class="guide">
+    <summary>📖 راهنمای کامل نصب، اتصال و رفع اخطار امنیتی نصب</summary>
+    <p><b>این اپ چیکار می‌کنه؟</b> یک اپ اندروید سبک (BankSmsForwarder) که روی همون گوشی/سیم‌کارتی
+    نصب می‌شه که پیامک واریزی بانک بهش می‌رسه. هر پیامک بانکی دریافتی رو می‌خونه و به آدرس وب‌هوک بالا
+    (همراه با توکن) می‌فرسته؛ چون مبلغ هر فاکتور یکتاست، ربات خودش تشخیص می‌ده این پیامک برای کدوم
+    فاکتور بوده و اون سفارش رو بدون هیچ دخالت دستی تایید می‌کنه.</p>
+    <p><b>📥 نصب و اتصال:</b></p>
+    <ol>
+      <li>APK رو از دکمه‌ی «دانلود اپ فوروارد پیامک» پایین دانلود کن.</li>
+      <li>نصبش کن (اگه اخطار امنیتی دیدی، پایین همین راهنما رو بخون).</li>
+      <li>دسترسی «خواندن پیامک‌ها (SMS)» رو داخل اپ تایید کن.</li>
+      <li>آدرس وب‌هوک و توکن بالای همین صفحه رو کپی و داخل تنظیمات اپ (Webhook URL / Token) پیست کن.</li>
+      <li>اپ رو از «بهینه‌سازی باتری» گوشی مستثنی کن تا در پس‌زمینه بسته نشه و پیامک از دست نره.</li>
+    </ol>
+    <p><b>⚠️ چرا موقع نصب اخطار امنیتی می‌ده؟</b> چون این اپ از گوگل‌پلی نصب نمی‌شه، اندروید
+    (Play Protect) هر APK خارج از پلی‌استور رو خودکار «ناشناس» علامت می‌زنه و هشدار عمومی
+    «ممکن است مضر باشد» نشون می‌ده - این هشدار برای همه‌ی اپ‌های خارج از پلی‌استوره و ربطی به
+    خطرناک‌بودن واقعی کد نداره. سورس‌کد کامل این اپ به‌صورت اوپن‌سورس روی گیت‌هاب منتشر شده و هرکسی
+    می‌تونه ببینه فقط پیامک بانک رو می‌خونه و به همون سرور خودت می‌فرسته، نه جای دیگه.</p>
+    <div>
+      <a class="btn-link" target="_blank" rel="noopener" href="https://github.com/mehdirafatpanah/sms-forwarder/archive/refs/heads/main.zip">⬇️ دانلود اپ فوروارد پیامک</a>
+      <a class="btn-link secondary" target="_blank" rel="noopener" href="https://github.com/mehdirafatpanah/sms-forwarder">مشاهده سورس در گیت‌هاب</a>
+    </div>
+  </details>
 </div>
 
 <div id="list" class="card"><div class="muted">در حال بارگذاری کارت‌ها...</div></div>
