@@ -175,3 +175,49 @@ async def send_to_tokens(db, tokens: list, title: str, body: str, data: dict = N
                 logger.exception("خطا در ارسال پوش FCM")
 
     return invalid_tokens
+
+
+async def send_test(db, token: str) -> dict:
+    """یک پوش تک‌توکنی می‌فرستد و به‌جای فقط لاگ‌کردن، جزئیات خام پاسخ گوگل را
+    برمی‌گرداند - برای دکمه‌ی «تست پوش» در پنل. بدون این، وقتی پوشی نمی‌رسد
+    راهی برای تشخیص علت (سرویس‌اکانت نامعتبر؟ توکن مال پروژه‌ی دیگری‌ست؟ خودِ
+    گوشی مسدودش کرده؟) جز کندوکاو در لاگ سرور نیست."""
+    sa = _load_service_account(db)
+    if not sa:
+        return {"ok": False, "reason": "not_configured"}
+    try:
+        access_token = await _get_access_token(sa)
+    except Exception as e:
+        return {"ok": False, "reason": "auth_failed", "detail": str(e)}
+
+    project_id = sa["project_id"]
+    url = f"https://fcm.googleapis.com/v1/projects/{project_id}/messages:send"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json; UTF-8",
+    }
+    message = {
+        "message": {
+            "token": token,
+            "notification": {
+                "title": "🔔 اعلان تست",
+                "body": "این یک پیام آزمایشی از پنل مدیریت ShopVPN است.",
+            },
+            "android": {"priority": "high"},
+        }
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, data=json.dumps(message)) as resp:
+                body = await resp.json()
+                if resp.status == 200:
+                    return {"ok": True}
+                error = body.get("error", {}) if isinstance(body, dict) else {}
+                return {
+                    "ok": False,
+                    "reason": "rejected",
+                    "http_status": resp.status,
+                    "detail": error.get("message") or error.get("status") or str(body),
+                }
+    except Exception as e:
+        return {"ok": False, "reason": "request_failed", "detail": str(e)}
