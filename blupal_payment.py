@@ -189,6 +189,10 @@ async def finalize_paid_order(db, bot, order_id: int, notify_admins_fn=None) -> 
         except RenewalError as e:
             db.release_order_claim(order_id)
             return f"⛔️ تمدید ناموفق بود: {e}\nبا پشتیبانی تماس بگیرید."
+        except Exception:
+            logger.exception("خطای غیرمنتظره در execute_renewal برای سفارش تمدید #%s (بلوپال)", order_id)
+            db.release_order_claim(order_id)
+            return "⛔️ خطای غیرمنتظره‌ای در تمدید رخ داد. سفارش برای بررسی دوباره آزاد شد؛ با پشتیبانی تماس بگیرید."
         db.approve_renewal_order(order_id)
         try:
             await bot.send_message(order["user_id"], result_text)
