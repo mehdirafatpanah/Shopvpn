@@ -5164,6 +5164,12 @@ const SETTINGS_GROUPS = [
   { tab: 'mobile_app', title: '🔐 سرویس‌اکانت فایربیس (سمت سرور - برای واقعاً فرستادن پوش)', fields: [
     { key: 'firebase_service_account_json', label: 'Firebase Service Account JSON (کل فایل دانلودی را اینجا پیست کن)', type: 'textarea' },
   ]},
+  // دکمه‌ای که یک پوش واقعی به آخرین دستگاه ثبت‌شده‌ی همین ادمین می‌فرستد و
+  // خطای واقعی گوگل را نشان می‌دهد - به‌جای اینکه برای تست، منتظر یک سفارش
+  // واقعی بمانی و از سکوت حدس بزنی مشکل کجاست.
+  { tab: 'mobile_app', title: '🧪 تست ارسال پوش', fields: [
+    { key: '_push_test_button', label: 'ارسال یک پوش آزمایشی به آخرین دستگاه ثبت‌شده‌ی این ادمین', type: 'push_test_button' },
+  ]},
 ];
 
 function settingsFieldHtml(f, settings) {
@@ -5175,6 +5181,12 @@ function settingsFieldHtml(f, settings) {
         <span>${esc(f.label)}</span>
         <span class="switch" data-key="${f.key}" data-type="bool" data-on="${on ? '1' : '0'}"><i></i></span>
       </label>`;
+  }
+  if (f.type === 'push_test_button') {
+    return `<label class="field">
+      <span>${esc(f.label)}</span>
+      <button type="button" class="btn btn-sm push-test-btn">ارسال پوش تست</button>
+    </label>`;
   }
   if (f.type === 'firebase_json_extract') {
     return `<label class="field">
@@ -5412,6 +5424,22 @@ function extractGoogleServicesJson(text) {
 }
 
 function bindSettingsGroupEvents(root) {
+  $$('.push-test-btn', root).forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const prevTxt = btn.textContent;
+      btn.textContent = 'در حال ارسال...';
+      try {
+        await apiPost('/app/push-test');
+        toast('پوش تست با موفقیت به گوگل تحویل داده شد. اگه تا چند ثانیه روی گوشی چیزی نیومد، مشکل دیگه سمت سرور نیست - مجوز نوتیف یا بهینه‌سازی باتری رو روی گوشی چک کن.');
+      } catch (e) {
+        handleErr(e);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = prevTxt;
+      }
+    });
+  });
   $$('.firebase-json-extract', root).forEach((box) => {
     const textarea = $('textarea', box);
     const btn = $('.firebase-json-extract-btn', box);
