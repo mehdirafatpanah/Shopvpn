@@ -1661,6 +1661,19 @@ async def api_abangateway_webhook(request: Request, tenant: Tenant = Depends(get
                 except Exception:
                     pass
             return {"status": "ok"}
+        except Exception:
+            logging.exception("خطای غیرمنتظره در execute_renewal برای سفارش تمدید #%s (وب‌هوک آبان گیت وی)", order_id)
+            db.release_order_claim(order_id)
+            for admin_id in db.list_admins():
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        await session.post(
+                            f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+                            json={"chat_id": admin_id, "text": f"⚠️ سفارش تمدید #{order_id} با آبان گیت وی پرداخت شد ولی یک خطای غیرمنتظره در تمدید رخ داد.\nلطفاً لاگ سرور و دستی رسیدگی کنید."},
+                        )
+                except Exception:
+                    pass
+            return {"status": "ok"}
         db.approve_renewal_order(order_id)
         try:
             async with aiohttp.ClientSession() as session:
@@ -1914,6 +1927,19 @@ async def api_blupal_webhook(request: Request, tenant: Tenant = Depends(get_tena
                         await session.post(
                             f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
                             json={"chat_id": admin_id, "text": f"⚠️ سفارش تمدید #{order_id} با بلوپال پرداخت شد ولی تمدید ناموفق بود: {e}\nلطفاً دستی رسیدگی کنید."},
+                        )
+                except Exception:
+                    pass
+            return {"status": "ok"}
+        except Exception:
+            logging.exception("خطای غیرمنتظره در execute_renewal برای سفارش تمدید #%s (وب‌هوک بلوپال)", order_id)
+            db.release_order_claim(order_id)
+            for admin_id in db.list_admins():
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        await session.post(
+                            f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+                            json={"chat_id": admin_id, "text": f"⚠️ سفارش تمدید #{order_id} با بلوپال پرداخت شد ولی یک خطای غیرمنتظره در تمدید رخ داد.\nلطفاً لاگ سرور و دستی رسیدگی کنید."},
                         )
                 except Exception:
                     pass
@@ -2485,6 +2511,15 @@ async def _complete_generic_gateway_payment(db: Database, tenant: "Tenant", invo
                     f"⚠️ سفارش تمدید #{order_id} با درگاه سفارشی پرداخت شد ولی تمدید ناموفق بود: {e}\nلطفاً دستی رسیدگی کنید.",
                 )
             return
+        except Exception:
+            logging.exception("خطای غیرمنتظره در execute_renewal برای سفارش تمدید #%s (درگاه سفارشی/کارت خودکار/نوآپی)", order_id)
+            db.release_order_claim(order_id)
+            for admin_id in db.list_admins():
+                await _notify(
+                    admin_id,
+                    f"⚠️ سفارش تمدید #{order_id} پرداخت شد ولی یک خطای غیرمنتظره در تمدید رخ داد.\nلطفاً لاگ سرور و دستی رسیدگی کنید.",
+                )
+            return
         db.approve_renewal_order(order_id)
         await _notify(order["user_id"], result_text)
         return
@@ -2955,6 +2990,20 @@ async def api_plisio_webhook(request: Request, tenant: Tenant = Depends(get_tena
                                 await session.post(
                                     f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
                                     json={"chat_id": admin_id, "text": f"⚠️ سفارش تمدید #{order_id} با کریپتو پرداخت شد ولی تمدید ناموفق بود: {e}\nلطفاً دستی رسیدگی کنید."},
+                                )
+                            except Exception:
+                                pass
+                    return {"status": "ok"}
+                except Exception:
+                    logging.exception("خطای غیرمنتظره در execute_renewal برای سفارش تمدید #%s (وب‌هوک کریپتو/پلیزیو)", order_id)
+                    db.release_order_claim(order_id)
+                    admin_ids = db.list_admins()
+                    async with aiohttp.ClientSession() as session:
+                        for admin_id in admin_ids:
+                            try:
+                                await session.post(
+                                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+                                    json={"chat_id": admin_id, "text": f"⚠️ سفارش تمدید #{order_id} با کریپتو پرداخت شد ولی یک خطای غیرمنتظره در تمدید رخ داد.\nلطفاً لاگ سرور و دستی رسیدگی کنید."},
                                 )
                             except Exception:
                                 pass
