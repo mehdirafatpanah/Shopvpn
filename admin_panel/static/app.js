@@ -5141,6 +5141,15 @@ const SETTINGS_GROUPS = [
     { key: 'firebase_project_id', label: 'Firebase Project ID', type: 'text' },
     { key: 'firebase_sender_id', label: 'Firebase Sender ID (Project number)', type: 'text' },
   ]},
+  // این یکی جدا از ۴ فیلد بالاست: آن ۴ تا فقط برای مقداردهی فایربیس داخل خودِ
+  // اپ اندروید هستند (تا اپ بتواند توکن FCM بگیرد)، ولی این JSON برای سمت
+  // سرور است تا خودِ سرور بتواند واقعاً پوش بفرستد (Firebase Console > Project
+  // Settings > Service Accounts > Generate new private key، کل فایل دانلودی
+  // را همین‌جا پیست کن). بدون این فیلد، حتی اگر توکن دستگاه درست ثبت شده
+  // باشد، هیچ پوشی فرستاده نمی‌شود.
+  { tab: 'mobile_app', title: '🔐 سرویس‌اکانت فایربیس (سمت سرور - برای واقعاً فرستادن پوش)', fields: [
+    { key: 'firebase_service_account_json', label: 'Firebase Service Account JSON (کل فایل دانلودی را اینجا پیست کن)', type: 'textarea' },
+  ]},
 ];
 
 function settingsFieldHtml(f, settings) {
