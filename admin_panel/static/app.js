@@ -6104,6 +6104,8 @@ function bindPaymentExtrasEvents(root, { gateways, c2cCards, c2cWebhook }) {
   }));
 
   $$('[data-push-key]', root).forEach(sw => sw.addEventListener('click', async () => {
+    if (sw.dataset.busy === '1') return; // جلوگیری از دابل‌تپ/دابل‌کلیک که حالت رو خراب می‌کرد
+    sw.dataset.busy = '1';
     const key = sw.dataset.pushKey;
     const nextOn = sw.dataset.on !== '1';
     sw.dataset.on = nextOn ? '1' : '0'; // خوش‌بینانه: فوری تغییر بده، اگر خطا خورد برگردون
@@ -6113,6 +6115,8 @@ function bindPaymentExtrasEvents(root, { gateways, c2cCards, c2cWebhook }) {
     } catch (e) {
       sw.dataset.on = nextOn ? '0' : '1';
       handleErr(e);
+    } finally {
+      sw.dataset.busy = '0';
     }
   }));
 
