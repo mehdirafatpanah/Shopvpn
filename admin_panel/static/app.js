@@ -2303,6 +2303,11 @@ async function showUserDetail(tgId) {
       <button class="btn btn-primary" id="wallet-submit">اعمال</button>
     </div>` : ''}
 
+    ${isSenior ? `<div class="form-row" style="margin:16px 0">
+      <input class="input" id="user-msg-text" type="text" placeholder="متن پیام مستقیم به این کاربر...">
+      <button class="btn btn-primary" id="user-msg-submit">ارسال پیام</button>
+    </div>` : ''}
+
     ${services.length ? `
     <h4 class="ud-section-title">سرویس‌های مستقیم-پنل</h4>
     <div id="ud-services">${renderUserServices(services, isSenior)}</div>
@@ -2326,6 +2331,14 @@ async function showUserDetail(tgId) {
       const delta = Number($('#wallet-delta', body).value);
       if (!delta) return;
       try { await apiPost(`/users/${tgId}/wallet`, { delta }); toast('کیف پول به‌روزرسانی شد.'); close(); }
+      catch (e) { handleErr(e); }
+    });
+    const msgBtn = $('#user-msg-submit', body);
+    if (msgBtn) msgBtn.addEventListener('click', async () => {
+      const input = $('#user-msg-text', body);
+      const text = input.value.trim();
+      if (!text) return;
+      try { await apiPost(`/users/${tgId}/message`, { text }); toast('پیام ارسال شد.'); input.value = ''; }
       catch (e) { handleErr(e); }
     });
     if (isSenior) wireUserServiceActions(body, tgId, close);
@@ -6369,6 +6382,7 @@ const ACTION_LABEL = {
   reset_test_configs: 'ریست کانفیگ‌های تست', setting_change: 'تغییر تنظیمات', support_reply: 'پاسخ پشتیبانی',
   ticket_close: 'بستن تیکت', ticket_reply: 'پاسخ تیکت', topup_approve: 'تایید شارژ کیف پول',
   topup_reject: 'رد شارژ کیف پول', user_block: 'مسدودسازی کاربر', user_unblock: 'رفع مسدودی کاربر',
+  user_message: 'پیام مستقیم به کاربر',
   wallet_adjust: 'تغییر موجودی کیف پول', web_admin_active: 'فعال/غیرفعال کردن ادمین پنل',
   web_admin_add: 'افزودن ادمین پنل', web_admin_delete: 'حذف ادمین پنل', web_admin_permissions: 'تغییر دسترسی‌های ادمین پنل',
 };
