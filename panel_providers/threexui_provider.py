@@ -334,6 +334,10 @@ class ThreeXUIProvider(BasePanelProvider):
             updated_client = None
             for client, inbound_id in matches:
                 current_expiry = client.get("expiryTime") or 0
+                try:
+                    current_expiry = int(current_expiry)
+                except (TypeError, ValueError):
+                    current_expiry = 0
                 base_ms = current_expiry if current_expiry > now_ms else now_ms
                 new_expiry = base_ms + add_days * 86400000 if add_days else current_expiry
                 new_total = int(client.get("totalGB") or 0) + int(add_volume_gb * (1024 ** 3)) if add_volume_gb else client.get("totalGB")

@@ -17,6 +17,7 @@ import time
 import json
 import asyncio
 import aiohttp
+from datetime import datetime
 
 from .base import BasePanelProvider, PanelUserResult, PanelError, PanelUsernameTakenError
 
@@ -25,6 +26,26 @@ _SECRET_FIELDS = {
     "trojan": ["password"],
     "wireguard": ["private_key", "public_key", "peer_ips"],
 }
+
+
+def _expire_to_epoch(value):
+    """پاسارگارد در GET، فیلد expire را گاهی به‌صورت رشته (عدد epoch رشته‌ای یا
+    تاریخ ISO) برمی‌گرداند، نه همیشه عدد خام مثل مرزبان. این تابع هر دو حالت
+    را به epoch عددی (ثانیه) تبدیل می‌کند؛ ورودی خالی/None => None (بدون انقضا)."""
+    if value in (None, "", 0, "0"):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value))
+        except ValueError:
+            pass
+        try:
+            return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+        except ValueError:
+            return None
+    return None
 
 
 class PasarguardProvider(BasePanelProvider):
@@ -258,7 +279,7 @@ class PasarguardProvider(BasePanelProvider):
                 raise PanelError(f"خطا در اتصال به پنل: {e or 'پاسخی از سرور در زمان مقرر دریافت نشد (timeout)'}") from e
 
             now_ts = int(time.time())
-            current_expire = current.get("expire")
+            current_expire = _expire_to_epoch(current.get("expire"))
             base_expire = current_expire if (current_expire and current_expire > now_ts) else now_ts
             new_expire = base_expire + add_days * 86400 if add_days else current_expire
             new_limit = int(current.get("data_limit") or 0) + int(add_volume_gb * (1024 ** 3)) if add_volume_gb else current.get("data_limit")
