@@ -3211,9 +3211,11 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
 
         if mode == "full":
-            products = [p for p in (await asyncio.to_thread(db.get_all_products)) if p["is_auto_provision"] and p["is_active"]]
+            current_volume = item["custom"]["volume_gb"]
+            all_products = [p for p in (await asyncio.to_thread(db.get_all_products)) if p["is_auto_provision"] and p["is_active"]]
+            products = [p for p in all_products if p["auto_provision_volume_gb"] == current_volume]
             if not products:
-                await call.answer("در حال حاضر پلن قابل انتخابی برای تمدید تعریف نشده.", show_alert=True)
+                await call.answer("در حال حاضر پلن تمدیدی متناسب با حجم این سرویس تعریف نشده.", show_alert=True)
                 return
             await call.answer()
             await _safe_edit(
