@@ -5358,7 +5358,7 @@ class UserMessageSend(BaseModel):
 
 @app.post("/api/admin/users/{telegram_id}/message")
 async def api_admin_message_user(telegram_id: int, body: UserMessageSend, tenant: Tenant = Depends(get_tenant), auth=Depends(require_admin)):
-    _, db, _ = auth
+    admin_id, db, _ = auth
     text = (body.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="متن پیام خالی است.")
@@ -5372,6 +5372,10 @@ async def api_admin_message_user(telegram_id: int, body: UserMessageSend, tenant
         ) as resp:
             if resp.status != 200:
                 raise HTTPException(status_code=502, detail="ارسال پیام به کاربر ناموفق بود (شاید بات را بلاک کرده).")
+    db.log_admin_action(
+        admin_id, "user_message", f"پیام مستقیم به کاربر {telegram_id} ارسال شد (مینی‌اپ)",
+        "user", telegram_id,
+    )
     return {"status": "ok"}
 
 
@@ -5520,7 +5524,7 @@ class BroadcastExpiredSend(BaseModel):
 
 @app.post("/api/admin/users/broadcast-expired")
 async def api_admin_broadcast_expired(body: BroadcastExpiredSend, tenant: Tenant = Depends(get_tenant), auth=Depends(require_full_admin)):
-    _, db, _ = auth
+    admin_id, db, _ = auth
     text = (body.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="متن پیام خالی است.")
@@ -5539,7 +5543,49 @@ async def api_admin_broadcast_expired(body: BroadcastExpiredSend, tenant: Tenant
                         failed += 1
             except Exception:
                 failed += 1
+    db.log_admin_action(
+        admin_id, "broadcast_expired",
+        f"پیام گروهی به {len(user_ids)} کاربر منقضی‌شده ارسال شد | موفق: {success} | ناموفق: {failed} (مینی‌اپ)",
+    )
     return {"status": "ok", "total": len(user_ids), "success": success, "failed": failed}
+
+
+class BroadcastAllSend(BaseModel):
+    text: str
+
+
+@app.post("/api/admin/users/broadcast-all")
+async def api_admin_broadcast_all(body: BroadcastAllSend, tenant: Tenant = Depends(get_tenant), auth=Depends(require_full_admin)):
+    """پیام همگانی واقعی: برخلاف broadcast-expired که فقط کاربران منقضی‌شده را
+    هدف می‌گیرد، این یکی معادل «پیام همگانی» پنل وب است و به همه‌ی کاربران بات
+    (چه فعال چه منقضی) ارسال می‌شود. با Semaphore هم‌زمان (نه صف کند تک‌به‌تک)
+    ارسال می‌کند تا برای بات‌های پرکاربر هم در زمان معقول تمام شود."""
+    admin_id, db, _ = auth
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="متن پیام خالی است.")
+    if len(text) > 4000:
+        raise HTTPException(status_code=400, detail="متن پیام بیش از حد طولانی است.")
+    user_ids = db.get_all_user_ids()
+    sem = asyncio.Semaphore(20)
+    counters = {"success": 0, "failed": 0}
+    async with aiohttp.ClientSession() as session:
+        async def _send(uid):
+            async with sem:
+                try:
+                    async with session.post(
+                        f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+                        json={"chat_id": uid, "text": text},
+                    ) as resp:
+                        counters["success" if resp.status == 200 else "failed"] += 1
+                except Exception:
+                    counters["failed"] += 1
+        await asyncio.gather(*[_send(uid) for uid in user_ids])
+    db.log_admin_action(
+        admin_id, "broadcast",
+        f"پیام همگانی به {len(user_ids)} کاربر ارسال شد | موفق: {counters['success']} | ناموفق: {counters['failed']} (مینی‌اپ)",
+    )
+    return {"status": "ok", "total": len(user_ids), "success": counters["success"], "failed": counters["failed"]}
 
 
 # ---------------------------------------------------------------------------
