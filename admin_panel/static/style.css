@@ -567,6 +567,7 @@ body{ transition: background .2s ease, color .2s ease; }
 
 .switch{
   --w:46px; --h:26px; width:var(--w); height:var(--h); border-radius:999px; flex-shrink:0;
+  display:inline-block; vertical-align:middle;
   background:var(--rose); border:1.5px solid var(--rose);
   position:relative; cursor:pointer; transition:background .2s ease, border-color .2s ease;
 }
