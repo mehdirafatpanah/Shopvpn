@@ -331,11 +331,17 @@ async def _notifier_loop():
                     user = (await asyncio.to_thread(db.get_user, m["user_id"]))
                     uname = (user["username"] if user else None) or (user["first_name"] if user else None) or m["user_id"]
                     preview = (m["message"] or "")[:120]
+                    # توجه: این با permission="tickets" می‌ره (همون مجوزی که چت زنده
+                    # لازم داره) ولی تب اپ اندروید برای چت زنده id="support" داره، نه
+                    # "tickets" (نگاه کن به تعریف تب‌ها در api_app_config) - قبلاً چون
+                    # category صریح نمی‌دادیم، این پیام‌ها هم مثل تیکت واقعی زیر دسته‌ی
+                    # "tickets" می‌رفتن و خاموش‌کردن سوییچ "چت زنده" روشون اثر نداشت
+                    # (همون باگی که در _notify_admins برای شارژ کیف‌پول مستند شده).
                     await _notify_admins("tickets", {
                         "title": "💬 پیام جدید در چت زنده",
                         "body": f"{uname}: {preview}",
                         "tag": "support",
-                    })
+                    }, category="support")
                 last_support_id = latest_support_id
 
             await _check_stuck_gateway_payments()
@@ -1870,19 +1876,32 @@ async def api_order_receipt(order_id: int, admin=Depends(get_current_admin)):
 
 @app.get("/api/orders/{order_id}/full")
 async def api_order_full(order_id: int, admin=Depends(get_current_admin)):
-    """جزئیات کامل یک سفارش برای صفحه‌ی جزئیات اپ موبایل (detail_source)."""
+    """جزئیات یک سفارش برای صفحه‌ی جزئیات اپ موبایل (detail_source).
+
+    عمداً کل سطر خام دیتابیس برگردانده نمی‌شود: صفحه‌ی جزئیات اپ (DetailScreen)
+    هر فیلد primitive که این endpoint برگرداند را (به‌جز چندتای معدود در
+    HIDDEN_DETAIL_KEYS سمت اپ) مستقیم به‌صورت یک ردیف نشان می‌دهد؛ سطر خام
+    سفارش پر از فیلدهای داخلی/فنی (توکن بات نمایندگی، جزئیات تمدید، فلگ‌های
+    ساخت کانفیگ شخصی/نمایندگی و...) بود که هیچ‌کدام برای بررسی و تایید/رد یک
+    سفارش به کار ادمین نمی‌آید و فقط صفحه را شلوغ می‌کرد. اینجا فقط همان
+    فیلدهایی که واقعاً برای این کار لازم است ساخته و برگردانده می‌شود."""
     order = (await asyncio.to_thread(db.get_order, order_id))
     if not order:
         raise HTTPException(404, "سفارش یافت نشد.")
     o = dict(order)
     product = row_to_dict(db.get_product(o["product_id"])) if o.get("product_id") else None
     user = row_to_dict(db.get_user(o["user_id"])) if o.get("user_id") else None
-    o["product_name"] = product["name"] if product else ("ساخت کانفیگ شخصی" if o.get("is_custom_config") else "-")
-    o["username"] = (user or {}).get("username")
-    o["full_name"] = (user or {}).get("full_name")
-    o["has_receipt"] = bool(o.get("receipt_file_id"))
-    o.pop("receipt_file_id", None)
-    return o
+    product_name = product["name"] if product else ("ساخت کانفیگ شخصی" if o.get("is_custom_config") else "-")
+    return {
+        "status": o.get("status"),
+        "product_name": product_name,
+        "quantity": o.get("quantity"),
+        "amount": o.get("final_price"),
+        "username": (user or {}).get("username"),
+        "full_name": (user or {}).get("full_name"),
+        "created_at": o.get("created_at"),
+        "has_receipt": bool(o.get("receipt_file_id")),
+    }
 
 
 @app.get("/api/orders/{order_id}/receipt-base64")
