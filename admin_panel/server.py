@@ -752,6 +752,26 @@ async def api_app_unregister_fcm(body: FcmTokenBody, admin=Depends(get_current_a
     return {"ok": True}
 
 
+@app.post("/api/app/push-test")
+async def api_app_push_test(admin=Depends(get_current_admin)):
+    """یک پوش واقعی به آخرین دستگاه ثبت‌شده‌ی همین ادمین می‌فرستد و خطای واقعی
+    گوگل را برمی‌گرداند - تا مشخص شود مشکل سمت سرور/تنظیمات فایربیس است یا
+    سمت گوشی (مجوز نوتیف/بهینه‌سازی باتری)، به‌جای حدس‌زدن از روی سکوت."""
+    tenant = _current_tenant.get()
+    tokens = await asyncio.to_thread(tenant.db.list_fcm_tokens, admin["id"])
+    if not tokens:
+        raise HTTPException(
+            400,
+            "هیچ دستگاهی برای این حساب ادمین ثبت نشده. یک‌بار از اپ اندروید خارج و دوباره وارد شو.",
+        )
+    result = await fcm_client.send_test(tenant.db, tokens[-1])
+    if result.get("reason") == "not_configured":
+        raise HTTPException(400, "سرویس‌اکانت فایربیس روی سرور تنظیم نشده (تنظیمات > اپ موبایل).")
+    if not result.get("ok"):
+        raise HTTPException(502, f"ارسال ناموفق بود: {result.get('detail') or result.get('reason')}")
+    return {"ok": True}
+
+
 @app.get("/app/webview-bridge")
 async def app_webview_bridge(token: str, next: str = "/"):
     """پل بین PAT اپ موبایل و پنل وب کامل (که هنوز کوکی‌محور است): توکن را مثل
