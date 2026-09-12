@@ -359,7 +359,9 @@ async def _server_status_loop():
 
 @app.on_event("startup")
 async def _start_notifier():
-    if PUSH_ENABLED:
+    # این تسک هم پوش وب (PUSH_ENABLED / VAPID) و هم پوش موبایل (FCM_ENABLED) را
+    # می‌فرستد، پس اگر فقط یکی از این دو تنظیم شده باشد هم باید استارت شود.
+    if PUSH_ENABLED or fcm_client.FCM_ENABLED:
         asyncio.create_task(_notifier_loop())
         asyncio.create_task(_notifier_supervisor())
         asyncio.create_task(_server_status_loop())
