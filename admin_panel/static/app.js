@@ -5991,14 +5991,21 @@ function paymentExtrasHtml({ methods, gateways, c2cCards, c2cWebhook, c2cInvoice
         از این عدد کمتر باشد، آن روش برای کاربر نمایش داده نمی‌شود (۰ یعنی بدون محدودیت).
         در بات و مینی‌اپ هر دو یکسان اعمال می‌شود.</div>
       <div class="table-wrap"><table>
-        <thead><tr><th>روش پرداخت</th><th>حداقل مبلغ (تومان)</th><th></th><th>پوش نوتیف ادمین</th></tr></thead>
+        <thead><tr><th>روش پرداخت</th><th>حداقل مبلغ (تومان)</th><th></th><th>پوش نوتیف ادمین</th><th>پوش «معطل‌مانده» بعد از (دقیقه)</th></tr></thead>
         <tbody>${builtin.map(m => `<tr>
           <td>${esc(m.label)}</td>
           <td><input class="input" data-min-amount="${esc(m.key)}" type="number" min="0" value="${m.min_amount || 0}" style="max-width:160px"></td>
           <td><button class="btn btn-sm" data-save-min="${esc(m.key)}">ذخیره</button></td>
           <td><span class="switch" data-push-key="${esc(m.key)}" data-on="${m.push_enabled ? '1' : '0'}" title="پوش نوتیف ادمین برای این روش پرداخت"><i></i></span></td>
+          <td>${m.is_instant ? `<div class="form-grid" style="grid-template-columns:120px auto;gap:6px">
+            <input class="input" data-notify-timeout="${esc(m.key)}" type="number" min="0" value="${m.notify_timeout_minutes || 0}" style="max-width:100px" title="۰ یعنی خاموش">
+            <button class="btn btn-sm" data-save-timeout="${esc(m.key)}">ذخیره</button>
+          </div>` : '—'}</td>
         </tr>`).join('')}</tbody>
       </table></div>
+      <div class="card-sub" style="margin-top:8px">ستون آخر فقط برای درگاه‌های «تایید آنی» است: اگر فاکتور یک سفارش/شارژ
+        بیش از این مدت هنوز new/pending بماند (نه تایید شده، نه گیرافتاده)، یک پوش جدای «معطل‌مانده» برای ادمین می‌رود
+        تا خودت پیگیری کنی. صفر یعنی این قابلیت خاموش است.</div>
     </div>
 
     <div class="toolbar">
@@ -6011,13 +6018,17 @@ function paymentExtrasHtml({ methods, gateways, c2cCards, c2cWebhook, c2cInvoice
         <code>{amount}</code>, <code>{order_id}</code>, <code>{callback_url}</code>, <code>{webhook_url}</code> و
         هر فیلد اعتبارنامه (مثلاً <code>{api_key}</code>) استفاده کن.</div>
       ${(gateways || []).length ? `<div class="table-wrap"><table>
-        <thead><tr><th>نام</th><th>کلید</th><th>حداقل مبلغ</th><th>وضعیت</th><th>پوش نوتیف ادمین</th><th>عملیات</th></tr></thead>
+        <thead><tr><th>نام</th><th>کلید</th><th>حداقل مبلغ</th><th>وضعیت</th><th>پوش نوتیف ادمین</th><th>پوش «معطل‌مانده» (دقیقه)</th><th>عملیات</th></tr></thead>
         <tbody>${gateways.map(gw => `<tr>
           <td>${esc(gw.name)}</td>
           <td class="mono">${esc(gw.key)}</td>
           <td>${gw.min_amount ? fmt(gw.min_amount) + ' ت' : '—'}</td>
           <td>${gw.enabled ? '<span class="badge badge-approved">فعال</span>' : '<span class="badge badge-rejected">غیرفعال</span>'}</td>
           <td><span class="switch" data-push-key="custom:${esc(gw.key)}" data-on="${(methods || []).find(m => m.key === `custom:${gw.key}`)?.push_enabled ? '1' : '0'}" title="پوش نوتیف ادمین برای این درگاه"><i></i></span></td>
+          <td><div class="form-grid" style="grid-template-columns:90px auto;gap:6px">
+            <input class="input" data-notify-timeout="custom:${esc(gw.key)}" type="number" min="0" value="${(methods || []).find(m => m.key === `custom:${gw.key}`)?.notify_timeout_minutes || 0}" style="max-width:90px" title="۰ یعنی خاموش">
+            <button class="btn btn-sm" data-save-timeout="custom:${esc(gw.key)}">ذخیره</button>
+          </div></td>
           <td><button class="btn btn-sm" data-edit="${gw.id}">ویرایش</button></td>
         </tr>`).join('')}</tbody>
       </table></div>` : '<div class="card-sub">هنوز درگاهی اضافه نشده.</div>'}
@@ -6080,6 +6091,15 @@ function bindPaymentExtrasEvents(root, { gateways, c2cCards, c2cWebhook }) {
     try {
       await apiPost(`/payment-methods/${encodeURIComponent(key)}/min-amount`, { min_amount: value });
       toast('ذخیره شد.');
+    } catch (e) { handleErr(e); }
+  }));
+
+  $$('[data-save-timeout]', root).forEach(b => b.addEventListener('click', async () => {
+    const key = b.dataset.saveTimeout;
+    const minutes = Math.max(0, Number($(`[data-notify-timeout="${key}"]`, root).value) || 0);
+    try {
+      await apiPost(`/payment-methods/${encodeURIComponent(key)}/notify-timeout`, { minutes });
+      toast(minutes > 0 ? `اگر بیش از ${minutes} دقیقه تایید نشود، پوش «معطل‌مانده» می‌رود.` : 'پوش «معطل‌مانده» برای این روش خاموش شد.');
     } catch (e) { handleErr(e); }
   }));
 
