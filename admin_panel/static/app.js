@@ -5149,6 +5149,7 @@ const SETTINGS_GROUPS = [
   // محرمانه نیستند (داخل هر APK قابل مشاهده‌اند)، فقط برای تشخیص پروژه‌اند؛
   // اپ اندروید این‌ها را در زمان اجرا برای فعال‌شدن پوش لحظه‌ای (FCM) می‌خواند.
   { tab: 'mobile_app', title: '🔔 پوش نوتیف اندروید (Firebase)', fields: [
+    { key: '_firebase_json_extract', label: 'استخراج خودکار از google-services.json (پیشنهادی)', type: 'firebase_json_extract' },
     { key: 'firebase_api_key', label: 'Firebase API Key', type: 'text' },
     { key: 'firebase_app_id', label: 'Firebase App ID', type: 'text' },
     { key: 'firebase_project_id', label: 'Firebase Project ID', type: 'text' },
@@ -5174,6 +5175,16 @@ function settingsFieldHtml(f, settings) {
         <span>${esc(f.label)}</span>
         <span class="switch" data-key="${f.key}" data-type="bool" data-on="${on ? '1' : '0'}"><i></i></span>
       </label>`;
+  }
+  if (f.type === 'firebase_json_extract') {
+    return `<label class="field">
+      <span>${esc(f.label)}</span>
+      <span class="card-sub">کل فایل google-services.json (کنسول فایربیس &gt; تنظیمات پروژه &gt; اپ اندروید com.shopvpn.admin) را دانلود کن و محتواش را اینجا پیست کن؛ ۴ فیلد پایین خودکار پر می‌شوند - نیازی به کپی دستی تک‌تک مقادیر نیست.</span>
+      <div class="firebase-json-extract">
+        <textarea class="input" rows="4" placeholder='{"project_info": {...}, "client": [...]}'></textarea>
+        <button type="button" class="btn btn-sm firebase-json-extract-btn" style="margin-top:8px">استخراج و پرکردن خودکار</button>
+      </div>
+    </label>`;
   }
   if (f.type === 'textarea') {
     return `<label class="field"><span>${esc(f.label)}</span>
@@ -5378,7 +5389,48 @@ function bindMobileAppEvents(root, refresh) {
 }
 
 
+// از کل محتوای google-services.json دقیقاً همان ۴ مقداری را که پنل نیاز
+// دارد بیرون می‌کشد. چون این مقادیر عیناً از فایل خوانده می‌شوند (نه با
+// کپی دستی هر بخش)، دیگر امکان جابه‌جا پیست‌کردن ترتیب Firebase App ID
+// (باگی که یک‌بار باعث قطع کامل نوتیف شد) وجود ندارد.
+function extractGoogleServicesJson(text) {
+  const data = JSON.parse(text);
+  const projectNumber = data?.project_info?.project_number;
+  const projectId = data?.project_info?.project_id;
+  const client = (data?.client || [])[0];
+  const appId = client?.client_info?.mobilesdk_app_id;
+  const apiKey = (client?.api_key || [])[0]?.current_key;
+  if (!projectNumber || !projectId || !appId || !apiKey) {
+    throw new Error('missing fields');
+  }
+  return {
+    firebase_sender_id: String(projectNumber),
+    firebase_project_id: String(projectId),
+    firebase_app_id: String(appId),
+    firebase_api_key: String(apiKey),
+  };
+}
+
 function bindSettingsGroupEvents(root) {
+  $$('.firebase-json-extract', root).forEach((box) => {
+    const textarea = $('textarea', box);
+    const btn = $('.firebase-json-extract-btn', box);
+    btn.addEventListener('click', () => {
+      let values;
+      try {
+        values = extractGoogleServicesJson(textarea.value);
+      } catch (e) {
+        toast('این متن، فایل معتبر google-services.json به‌نظر نمی‌رسه. مطمئن شو کل فایل رو (بدون تغییر) پیست کردی.');
+        return;
+      }
+      Object.entries(values).forEach(([key, value]) => {
+        const input = $(`[data-key="${key}"]`, root);
+        if (input) input.value = value;
+      });
+      textarea.value = '';
+      toast('۴ فیلد پایین با موفقیت پر شدند؛ حالا روی «ذخیره تغییرات» بزن.');
+    });
+  });
   $$('.settings-group-head', root).forEach(btn => btn.addEventListener('click', () => {
     btn.parentElement.classList.toggle('open');
   }));
@@ -5413,6 +5465,18 @@ async function collectAndSaveSettings(root, btn) {
   $$('[data-key][data-type]:not(.switch)', root).forEach(el => items.push({ key: el.dataset.key, value: el.value }));
   $$('.switch[data-key]', root).forEach(sw => items.push({ key: sw.dataset.key, value: sw.dataset.on === '1' ? '1' : '0' }));
   $$('.color-pick[data-key]', root).forEach(box => items.push({ key: box.dataset.key, value: box.dataset.color || '' }));
+
+  // اعتبارسنجی فرمت Firebase App ID: باید دقیقاً «شماره‌پروژه:شماره‌اپ:android:هش»
+  // باشد (عیناً همان‌طور که داخل google-services.json آمده). اگر ترتیبش
+  // جابه‌جا پیست شود، اپ اندروید هیچ‌وقت نمی‌تواند توکن FCM بگیرد و هیچ
+  // نوتیفی نمی‌رسد - بدون هیچ خطای قابل‌مشاهده‌ای در پنل یا اپ. این چک همان
+  // لحظه‌ی ذخیره جلوی این اشتباه رو می‌گیره.
+  const appIdItem = items.find((i) => i.key === 'firebase_app_id');
+  if (appIdItem && appIdItem.value.trim() && !/^\d+:\d+:android:[0-9a-fA-F]+$/.test(appIdItem.value.trim())) {
+    toast('Firebase App ID نامعتبره. فرمت درست باید مثل 1:691452629264:android:b0b15107cc5a72ea8dd595 باشه - دقیقاً از google-services.json کپی کن.');
+    return;
+  }
+
   btn.disabled = true;
   const prevTxt = btn.textContent; btn.textContent = 'در حال ذخیره...';
   try {
