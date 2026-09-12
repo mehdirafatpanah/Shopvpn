@@ -52,6 +52,7 @@ import fcm_client
 from reseller_auto_provision import provision_auto_config, ProvisionError
 from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
 from stock_alerts import check_and_notify_low_stock
+import ai_support
 from renewal_engine import execute_renewal, RenewalError
 from panel_providers import (
     get_provider, PanelError, PanelUsernameTakenError, PANEL_TYPE_LABELS,
@@ -159,7 +160,7 @@ def resolve_tenant_by_slug(slug: str) -> Optional[Tenant]:
 # (PUSH_ENABLED=False) این تسک اصلاً استارت نمی‌شود.
 
 
-async def _notify_admins(permission: str, payload: dict):
+async def _notify_admins(permission: str, payload: dict, category: str | None = None):
     subs = (await asyncio.to_thread(db.list_push_subscriptions_for_permission, permission))
     if subs:
         gone = []
@@ -173,15 +174,19 @@ async def _notify_admins(permission: str, payload: dict):
     # پوش اپ موبایل (FCM) — مستقل از وب‌پوش. تنظیم‌بودنش هر بار زنده از
     # دیتابیس همین تننت چک می‌شود (نه یک پرچم ثابت زمان استارت)، تا وصل‌کردنش
     # از پنل وب فوری اثر کند و بدون ری‌استارت هم کار کند.
-    # "category" همان permission است (orders/tickets/panels/...) که با id تب
-    # مربوطه در اپ اندروید یکی است؛ اپ از رویش تشخیص می‌دهد که کاربر نوتیف
-    # همان بخش را از تنظیمات خودش خاموش کرده یا نه (نگاه کن به
-    # PushService.onMessageReceived در پروژه‌ی اندروید).
+    # "category" باید دقیقاً با id همون تب در اپ اندروید یکی باشه؛ اپ از رویش
+    # تشخیص می‌ده کاربر نوتیف همون بخش رو از تنظیمات خودش خاموش کرده یا نه
+    # (نگاه کن به PushService.onMessageReceived در پروژه‌ی اندروید).
+    # توجه: category با permission (پارامتر اول - برای فیلترکردن اینکه کدوم
+    # ادمین‌ها اجازه‌ی دیدن این پوش رو دارن) یکی نیست؛ مثلاً شارژ کیف‌پول زیر
+    # permission="orders" می‌ره (چون همون مجوز رو لازم داره) ولی توی اپ تب
+    # جدا با id="topups" داره - قبلاً چون category رو مساوی permission
+    # می‌ذاشتیم، خاموش‌کردن سوییچ "شارژ کیف‌پول" هیچ اثری نداشت.
     fcm_tokens = (await asyncio.to_thread(db.list_fcm_tokens))
     if fcm_tokens:
         invalid = await fcm_client.send_to_tokens(
             db, fcm_tokens, payload.get("title", "ShopVPN"), payload.get("body", ""),
-            data={"tag": payload.get("tag", ""), "category": permission},
+            data={"tag": payload.get("tag", ""), "category": category or permission},
         )
         for t in invalid:
             await asyncio.to_thread(db.delete_fcm_token, t)
@@ -216,13 +221,14 @@ async def _check_stuck_gateway_payments():
             if uid in _stuck_notified_ids:
                 continue
             _stuck_notified_ids.add(uid)
-            kind_label = "شارژ کیف پول" if inv["kind"] == "wallet_topup" else "سفارش"
+            is_topup = inv["kind"] == "wallet_topup"
+            kind_label = "شارژ کیف پول" if is_topup else "سفارش"
             await _notify_admins("orders", {
                 "title": "⏱ پرداخت معطل‌مانده",
                 "body": f"{kind_label} #{inv['ref_id']} با {_STUCK_METHOD_LABELS[method_key]} "
                         f"بیش از {minutes} دقیقه تایید نشده - بررسی کن.",
                 "tag": "stuck_payment",
-            })
+            }, category="topups" if is_topup else "orders")
 
     for gw in (await asyncio.to_thread(db.list_custom_gateways)):
         method_key = f"custom:{gw['gateway_key']}"
@@ -238,13 +244,14 @@ async def _check_stuck_gateway_payments():
             if uid in _stuck_notified_ids:
                 continue
             _stuck_notified_ids.add(uid)
-            kind_label = "شارژ کیف پول" if inv["kind"] == "wallet_topup" else "سفارش"
+            is_topup = inv["kind"] == "wallet_topup"
+            kind_label = "شارژ کیف پول" if is_topup else "سفارش"
             await _notify_admins("orders", {
                 "title": "⏱ پرداخت معطل‌مانده",
                 "body": f"{kind_label} #{inv['ref_id']} با درگاه «{gw['name']}» "
                         f"بیش از {minutes} دقیقه تایید نشده - بررسی کن.",
                 "tag": "stuck_payment",
-            })
+            }, category="topups" if is_topup else "orders")
 
     _stuck_notified_ids.intersection_update(still_stuck_ids)
 
@@ -302,7 +309,7 @@ async def _notifier_loop():
                     "title": "💳 درخواست شارژ جدید",
                     "body": f"شارژ #{t['id']} از {uname} به مبلغ {t['amount']:,} تومان.",
                     "tag": "topups",
-                })
+                }, category="topups")
             if new_topups:
                 last_topup_id = max(t["id"] for t in new_topups)
 
@@ -880,6 +887,9 @@ def api_app_config(admin=Depends(get_current_admin)):
             # قبلاً فقط در پنل وب دیده می‌شدند؛ حالا در جزئیات کاربر اپ هم هستند.
             "bank_configs_source": "/api/users/{tg_id}/configs",
             "wallet_endpoint": "/api/users/{tg_id}/wallet",
+            # پیام مستقیم به همین کاربر (نه پیام همگانی)؛ معادل دکمه‌ی «ارسال
+            # پیام» در جزئیات کاربر پنل وب.
+            "message_endpoint": "/api/users/{tg_id}/message",
             "actions": [
                 {"id": "block", "label": "مسدود", "method": "POST",
                  "endpoint": "/api/users/{tg_id}/block", "style": "danger", "confirm": True,
@@ -1037,12 +1047,49 @@ def api_app_config(admin=Depends(get_current_admin)):
                     {"key": "default_group", "label": "گروه پیش‌فرض (اختیاری)", "type": "text", "nullable": True},
                 ],
             },
+            # ویرایش نام/آدرس/اطلاعات ورود پنل موجود؛ تغییر نوع پنل یا
+            # inbound/آدرس Subscription (3X-UI/Hiddify) هنوز فقط از پنل وب است.
+            "edit_form": {
+                "title": "ویرایش پنل",
+                "submit_url": "/api/panel-servers/{id}",
+                "method": "PUT",
+                "fields": [
+                    {"key": "name", "label": "نام سرور", "type": "text", "nullable": True},
+                    {"key": "api_url", "label": "آدرس پنل (API URL)", "type": "text", "nullable": True},
+                    {"key": "api_username", "label": "نام کاربری ادمین پنل", "type": "text", "nullable": True},
+                    {"key": "api_password", "label": "پسورد/توکن جدید (خالی=بدون تغییر)", "type": "password", "nullable": True},
+                ],
+            },
+            "actions": [
+                {"id": "test", "label": "تست اتصال", "method": "POST",
+                 "endpoint": "/api/panel-servers/{id}/test", "style": "default", "confirm": True},
+                {"id": "delete", "label": "حذف", "method": "DELETE",
+                 "endpoint": "/api/panel-servers/{id}", "style": "danger", "confirm": True},
+            ],
         })
     tabs.append({
         "id": "map", "title": "نقشه سرورها", "icon": "map", "screen": "server_map",
         "section": "شبکه و همکاران", "source": "/api/dashboard/servers-map",
         "map_source": "/api/dashboard/world-map",
     })
+    if allowed("settings"):
+        # لینک ساب مادر و فاصله/آستانه‌ی چک آنلاین‌بودن سرورها؛ قبلاً فقط از
+        # پنل وب قابل تنظیم بود، هیچ فرمی برایشان در تب نقشه‌ی اپ نبود.
+        tabs.append({
+            "id": "map_settings", "title": "تنظیمات نقشه و مانیتورینگ", "icon": "map",
+            "screen": "settings_group", "section": "شبکه و همکاران",
+            "cards": [
+                {"title": "لینک ساب مادر", "load_url": "/api/settings/master-sub",
+                 "submit_url": "/api/settings/master-sub", "fields": [
+                    {"key": "link", "label": "لینک ساب (http/https)", "type": "text"},
+                ]},
+                {"title": "بررسی آنلاین‌بودن سرورها", "load_url": "/api/settings/server-check",
+                 "submit_url": "/api/settings/server-check", "fields": [
+                    {"key": "interval_min", "label": "هر چند دقیقه چک شود", "type": "number"},
+                    {"key": "offline_streak", "label": "تعداد شکست پیاپی برای آفلاین اعلام‌کردن", "type": "number"},
+                ]},
+            ],
+        })
 
     # -------------------------------------------------------------- تنظیمات و سیستم
     if allowed("settings"):
@@ -1101,12 +1148,14 @@ def api_app_config(admin=Depends(get_current_admin)):
                 ]}]}
             ],
         })
-        # نسخه‌ی native مدیریت درگاه‌های سفارشی: فعال/غیرفعال، تست اتصال و حذف.
-        # ساخت/ویرایش تنظیمات کامل یک درگاه (credential_fields، body با
-        # placeholder، verify/webhook mapping) عمداً از اپ پشتیبانی نمی‌شود -
-        # این یک JSON DSL دلخواه است که با یک فرم ساده‌ی flat قابل نمایش امن
-        # نیست؛ دقیقاً مثل محدودیت افزودن 3X-UI/Hiddify از اپ، فعلاً فقط از
-        # پنل وب قابل ساخت/ویرایش است.
+        # نسخه‌ی native مدیریت درگاه‌های سفارشی: فعال/غیرفعال، تست اتصال، حذف
+        # و ساخت/ویرایش. چون config یک JSON DSL دلخواه است (credential_fields،
+        # body با placeholder، verify/webhook mapping)، فیلد "config" با نوع
+        # "json" نمایش داده می‌شود: یک ادیتور متنی چندخطی که کل شیء JSON را
+        # خام می‌گیرد/نشان می‌دهد - همان چیزی که پنل وب هم برای ساخت اولیه
+        # پیشنهاد می‌کند، فقط بدون UI مرحله‌به‌مرحله. مقادیر محرمانه‌ی
+        # ماسک‌شده (که با "..." شروع می‌شوند) اگر دست‌نخورده بمانند توسط خودِ
+        # /api/gateways سمت سرور با مقدار واقعی قبلی جایگزین می‌شوند.
         tabs.append({
             "id": "custom_gateways", "title": "درگاه‌های سفارشی", "icon": "dns", "screen": "list",
             "section": "تنظیمات و سیستم",
@@ -1123,6 +1172,86 @@ def api_app_config(admin=Depends(get_current_admin)):
                 {"id": "delete", "label": "حذف", "method": "DELETE",
                  "endpoint": "/api/gateways/{id}", "style": "danger", "confirm": True},
             ],
+            "create_form": {
+                "title": "افزودن درگاه سفارشی",
+                "submit_url": "/api/gateways",
+                "method": "POST",
+                "fields": [
+                    {"key": "key", "label": "کلید (فقط حروف/عدد انگلیسی، - و _)", "type": "text"},
+                    {"key": "name", "label": "نام", "type": "text"},
+                    {"key": "enabled", "label": "فعال", "type": "bool"},
+                    {"key": "min_amount", "label": "حداقل مبلغ واریز (تومان، ۰=بدون محدودیت)", "type": "number"},
+                    {"key": "config", "label": "تنظیمات (JSON)", "type": "json"},
+                ],
+            },
+            "edit_form": {
+                "title": "ویرایش درگاه سفارشی",
+                "submit_url": "/api/gateways/{id}",
+                "method": "PUT",
+                "fields": [
+                    {"key": "key", "label": "کلید", "type": "text"},
+                    {"key": "name", "label": "نام", "type": "text"},
+                    {"key": "enabled", "label": "فعال", "type": "bool"},
+                    {"key": "min_amount", "label": "حداقل مبلغ واریز (تومان، ۰=بدون محدودیت)", "type": "number"},
+                    {"key": "config", "label": "تنظیمات (JSON)", "type": "json"},
+                ],
+            },
+        })
+        # تنظیمات دستیار هوشمند (AI Support) قبلاً فقط از منوی ربات تلگرام
+        # قابل تنظیم بود؛ نه در پنل وب، نه در اپ. اینجا معادل native آن اضافه
+        # می‌شود: فعال/غیرفعال، انتخاب مسیر/مدل هر Provider، کلیدهای API
+        # (چندخطی، هر خط یک کلید) و سوالات متداول.
+        tabs.append({
+            "id": "aisupport", "title": "دستیار هوشمند", "icon": "chat", "screen": "settings_group",
+            "section": "تنظیمات و سیستم", "cards": [
+                {"title": "عمومی", "load_url": "/api/settings/ai-support", "submit_url": "/api/settings/ai-support", "fields": [
+                    {"key": "enabled", "label": "فعال بودن دستیار هوشمند", "type": "bool"},
+                    {"key": "provider", "label": "مسیر انتخاب مدل", "type": "select", "options": [
+                        ["auto", "خودکار (Gemini → Groq → OpenRouter)"], ["gemini", "فقط Gemini"],
+                        ["groq", "فقط Groq"], ["openrouter", "فقط OpenRouter"],
+                    ]},
+                ]},
+                {"title": "🔷 Gemini", "load_url": "/api/settings/ai-support", "submit_url": "/api/settings/ai-support", "fields": [
+                    {"key": "gemini_model", "label": "مدل", "type": "select", "options": [
+                        [m, label] for prov, m, label in ai_support.MODEL_CHOICES if prov == "gemini"
+                    ]},
+                    {"key": "gemini_api_key", "label": "کلید(های) API (هر خط یک کلید؛ خالی=بدون تغییر)", "type": "textarea"},
+                ]},
+                {"title": "🚀 Groq", "load_url": "/api/settings/ai-support", "submit_url": "/api/settings/ai-support", "fields": [
+                    {"key": "groq_model", "label": "مدل", "type": "select", "options": [
+                        [m, label] for prov, m, label in ai_support.MODEL_CHOICES if prov == "groq"
+                    ]},
+                    {"key": "groq_api_key", "label": "کلید(های) API (هر خط یک کلید؛ خالی=بدون تغییر)", "type": "textarea"},
+                ]},
+                {"title": "🌐 OpenRouter", "load_url": "/api/settings/ai-support", "submit_url": "/api/settings/ai-support", "fields": [
+                    {"key": "openrouter_model", "label": "مدل", "type": "select", "options": [
+                        [m, label] for prov, m, label in ai_support.MODEL_CHOICES if prov == "openrouter"
+                    ]},
+                    {"key": "openrouter_api_key", "label": "کلید(های) API (هر خط یک کلید؛ خالی=بدون تغییر)", "type": "textarea"},
+                ]},
+            ],
+        })
+        tabs.append({
+            "id": "aifaq", "title": "سوالات متداول دستیار", "icon": "chat", "screen": "list",
+            "section": "تنظیمات و سیستم",
+            "source": "/api/ai-faq", "item_id_field": "id",
+            "fields": [
+                {"key": "question", "label": "سوال", "type": "title"},
+                {"key": "answer", "label": "جواب", "type": "text"},
+            ],
+            "actions": [
+                {"id": "delete", "label": "حذف", "method": "DELETE",
+                 "endpoint": "/api/ai-faq/{id}", "style": "danger", "confirm": True},
+            ],
+            "create_form": {
+                "title": "افزودن سوال متداول",
+                "submit_url": "/api/ai-faq",
+                "method": "POST",
+                "fields": [
+                    {"key": "question", "label": "سوال", "type": "text"},
+                    {"key": "answer", "label": "جواب", "type": "textarea"},
+                ],
+            },
         })
         tabs.append({
             "id": "buttons", "title": "دکمه‌های ربات", "icon": "tune", "screen": "buttons",
@@ -1222,6 +1351,13 @@ def api_app_config(admin=Depends(get_current_admin)):
             "jobs_source": "/api/system/jobs",
             "backup_status_source": "/api/system/backup/status",
             "backup_create_endpoint": "/api/system/backup/create",
+            # بازیابی بکاپ و بازنشانی کارخانه‌ای هر دو مخرب/غیرقابل‌برگشت‌اند و
+            # سمت سرور هم require_owner هستند؛ برای همین فقط برای owner در
+            # پیکربندی اپ فرستاده می‌شوند (مثل خودِ پنل وب).
+            **({
+                "backup_restore_endpoint": "/api/system/backup/restore",
+                "factory_reset_endpoint": "/api/system/factory-reset",
+            } if is_owner else {}),
         })
         tabs.append({
             "id": "logs", "title": "لاگ فعالیت ادمین‌ها", "icon": "history", "screen": "list",
@@ -1419,6 +1555,99 @@ def api_set_server_check_settings(body: ServerCheckSettingsBody, admin=Depends(r
         f"server_check_interval_min={body.interval_min}, server_offline_streak={body.offline_streak} (پنل وب - {admin['username']})",
         "setting", "server_check",
     )
+    return {"ok": True}
+
+
+# ------------------------------------------------------------- AI support --
+# قبلاً این تنظیمات فقط از منوی ادمین ربات تلگرام قابل تغییر بودند؛ اینجا
+# معادل REST آن‌ها برای پنل وب و اپ اندروید اضافه می‌شود.
+
+
+def _mask_key_lines(raw: str) -> str:
+    keys = ai_support._split_keys(raw or "")
+    return "\n".join((f"...{k[-4:]}" if len(k) > 4 else "•••") for k in keys)
+
+
+class AiSupportSettingsBody(BaseModel):
+    enabled: bool = True
+    provider: str = "auto"
+    gemini_model: str = ""
+    groq_model: str = ""
+    openrouter_model: str = ""
+    gemini_api_key: str = ""
+    groq_api_key: str = ""
+    openrouter_api_key: str = ""
+
+
+@app.get("/api/settings/ai-support")
+def api_get_ai_support_settings(admin=Depends(require_permission("settings"))):
+    return {
+        "enabled": db.get_setting("ai_support_enabled", "1") == "1",
+        "provider": ai_support.resolve_provider_mode(db),
+        "gemini_model": ai_support.resolve_gemini_model(db),
+        "groq_model": ai_support.resolve_groq_model(db),
+        "openrouter_model": ai_support.resolve_openrouter_model(db),
+        # کلیدها هیچ‌وقت خام برنمی‌گردند، فقط ماسک‌شده - برای این‌که فرم نشان
+        # بدهد کلیدی تنظیم شده یا نه. اگر ادمین این متن ماسک‌شده را دست‌نخورده
+        # بگذارد، ذخیره تغییری در کلید نمی‌دهد.
+        "gemini_api_key": _mask_key_lines(db.get_setting("gemini_api_key", "")),
+        "groq_api_key": _mask_key_lines(db.get_setting("groq_api_key", "")),
+        "openrouter_api_key": _mask_key_lines(db.get_setting("openrouter_api_key", "")),
+    }
+
+
+@app.post("/api/settings/ai-support")
+def api_set_ai_support_settings(body: AiSupportSettingsBody, admin=Depends(require_permission("settings"))):
+    if body.provider not in ai_support.PROVIDER_LABELS:
+        raise HTTPException(400, "مسیر انتخاب مدل نامعتبر است.")
+    db.set_setting("ai_support_enabled", "1" if body.enabled else "0")
+    db.set_setting("ai_provider", body.provider)
+    if body.gemini_model:
+        db.set_setting("gemini_model", body.gemini_model)
+    if body.groq_model:
+        db.set_setting("groq_model", body.groq_model)
+    if body.openrouter_model:
+        db.set_setting("openrouter_model", body.openrouter_model)
+    for field, setting_key in (
+        ("gemini_api_key", "gemini_api_key"),
+        ("groq_api_key", "groq_api_key"),
+        ("openrouter_api_key", "openrouter_api_key"),
+    ):
+        raw = getattr(body, field)
+        current_masked = _mask_key_lines(db.get_setting(setting_key, ""))
+        if raw.strip() == current_masked.strip():
+            continue  # دست‌نخورده مانده؛ کلید تغییر نکند
+        db.set_setting(setting_key, "\n".join(ai_support._split_keys(raw)))
+    db.log_admin_action(admin["id"], "ai_support_settings_change", f"تنظیمات دستیار هوشمند تغییر کرد (پنل وب - {admin['username']}).")
+    return {"ok": True}
+
+
+class AiFaqItemBody(BaseModel):
+    question: str
+    answer: str
+
+
+@app.get("/api/ai-faq")
+def api_list_ai_faq(admin=Depends(require_permission("settings"))):
+    return [dict(row) for row in db.get_ai_faq_items()]
+
+
+@app.post("/api/ai-faq")
+def api_add_ai_faq(body: AiFaqItemBody, admin=Depends(require_permission("settings"))):
+    question, answer = body.question.strip(), body.answer.strip()
+    if not question or not answer:
+        raise HTTPException(400, "سوال و جواب نمی‌توانند خالی باشند.")
+    item_id = db.add_ai_faq_item(question, answer)
+    db.log_admin_action(admin["id"], "ai_faq_add", f"سوال متداول دستیار اضافه شد (پنل وب - {admin['username']}).")
+    return {"id": item_id, "ok": True}
+
+
+@app.delete("/api/ai-faq/{item_id}")
+def api_delete_ai_faq(item_id: int, admin=Depends(require_permission("settings"))):
+    if not db.get_ai_faq_item(item_id):
+        raise HTTPException(404, "یافت نشد.")
+    db.delete_ai_faq_item(item_id)
+    db.log_admin_action(admin["id"], "ai_faq_delete", f"سوال متداول دستیار حذف شد (پنل وب - {admin['username']}).")
     return {"ok": True}
 
 
