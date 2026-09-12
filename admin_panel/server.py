@@ -183,6 +183,68 @@ async def _notify_admins(permission: str, payload: dict):
             await asyncio.to_thread(db.delete_fcm_token, t)
 
 
+_STUCK_METHOD_LABELS = {
+    "abangateway": "آبان‌گیت‌وی",
+    "blupal": "بلوپال",
+    "noapay": "NoapayBot",
+    "card_auto": "کارت‌به‌کارت خودکار",
+}
+
+# شناسه‌های (روش/جدول، id فاکتور) که یک بار پوش «معطل‌مانده» برایشان رفته -
+# تا هر دور دوباره اسپم نشوند. وقتی فاکتور از حالت new/pending خارج شود
+# (تایید یا گیرافتاده/ناموفق)، دیگر توسط کوئری stuck برگردانده نمی‌شود و
+# خودش از این‌جا هرس می‌شود.
+_stuck_notified_ids = set()
+
+
+async def _check_stuck_gateway_payments():
+    still_stuck_ids = set()
+    for method_key in _STUCK_METHOD_LABELS:
+        minutes = (await asyncio.to_thread(db.get_payment_method_notify_timeout, method_key))
+        if minutes <= 0:
+            continue
+        if not (await asyncio.to_thread(db.is_payment_method_push_enabled, method_key)):
+            continue
+        stuck = (await asyncio.to_thread(db.list_stuck_gateway_invoices, method_key, minutes))
+        for inv in stuck:
+            uid = (method_key, inv["id"])
+            still_stuck_ids.add(uid)
+            if uid in _stuck_notified_ids:
+                continue
+            _stuck_notified_ids.add(uid)
+            kind_label = "شارژ کیف پول" if inv["kind"] == "wallet_topup" else "سفارش"
+            await _notify_admins("orders", {
+                "title": "⏱ پرداخت معطل‌مانده",
+                "body": f"{kind_label} #{inv['ref_id']} با {_STUCK_METHOD_LABELS[method_key]} "
+                        f"بیش از {minutes} دقیقه تایید نشده - بررسی کن.",
+                "tag": "stuck_payment",
+            })
+
+    for gw in (await asyncio.to_thread(db.list_custom_gateways)):
+        method_key = f"custom:{gw['gateway_key']}"
+        minutes = (await asyncio.to_thread(db.get_payment_method_notify_timeout, method_key))
+        if minutes <= 0:
+            continue
+        if not (await asyncio.to_thread(db.is_payment_method_push_enabled, method_key)):
+            continue
+        stuck = (await asyncio.to_thread(db.list_stuck_custom_gateway_invoices, gw["id"], minutes))
+        for inv in stuck:
+            uid = ("custom", inv["id"])
+            still_stuck_ids.add(uid)
+            if uid in _stuck_notified_ids:
+                continue
+            _stuck_notified_ids.add(uid)
+            kind_label = "شارژ کیف پول" if inv["kind"] == "wallet_topup" else "سفارش"
+            await _notify_admins("orders", {
+                "title": "⏱ پرداخت معطل‌مانده",
+                "body": f"{kind_label} #{inv['ref_id']} با درگاه «{gw['name']}» "
+                        f"بیش از {minutes} دقیقه تایید نشده - بررسی کن.",
+                "tag": "stuck_payment",
+            })
+
+    _stuck_notified_ids.intersection_update(still_stuck_ids)
+
+
 async def _notifier_loop():
     init_orders = (await asyncio.to_thread(db.get_pending_orders))
     init_topups = (await asyncio.to_thread(db.get_pending_topups))
@@ -264,6 +326,8 @@ async def _notifier_loop():
                         "tag": "support",
                     })
                 last_support_id = latest_support_id
+
+            await _check_stuck_gateway_payments()
         except Exception:
             logger.exception("خطا در حلقه‌ی اعلان زنده‌ی پنل وب")
         await asyncio.sleep(NOTIFY_POLL_SECONDS)
@@ -3430,6 +3494,25 @@ def api_set_payment_method_push(method_key: str, body: PaymentMethodPushBody,
     db.set_payment_method_push_enabled(method_key, body.enabled)
     db.log_admin_action(admin["id"], "payment_method_push",
                          f"{method_key} push={'on' if body.enabled else 'off'} (پنل وب - {admin['username']})",
+                         "setting", method_key)
+    return {"ok": True}
+
+
+class PaymentMethodNotifyTimeoutBody(BaseModel):
+    minutes: int = 0
+
+
+@app.post("/api/payment-methods/{method_key}/notify-timeout")
+def api_set_payment_method_notify_timeout(method_key: str, body: PaymentMethodNotifyTimeoutBody,
+                                           admin=Depends(require_permission("settings"))):
+    """مهلت (دقیقه) برای درگاه‌های «تایید آنی»: اگر فاکتور بیش از این مدت هنوز
+    تایید نشده باشد، یک پوش «معطل‌مانده» جدا برای ادمین می‌رود. صفر یعنی خاموش."""
+    if method_key.startswith("custom:") and not db.get_custom_gateway_by_key(method_key.split(":", 1)[1]):
+        raise HTTPException(status_code=404, detail="این درگاه پیدا نشد.")
+    minutes = max(0, int(body.minutes or 0))
+    db.set_payment_method_notify_timeout(method_key, minutes)
+    db.log_admin_action(admin["id"], "payment_method_notify_timeout",
+                         f"{method_key} timeout={minutes}m (پنل وب - {admin['username']})",
                          "setting", method_key)
     return {"ok": True}
 
