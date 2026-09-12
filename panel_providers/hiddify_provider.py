@@ -161,7 +161,7 @@ class HiddifyProvider(BasePanelProvider):
             if reset_usage:
                 payload["current_usage_GB"] = 0
             try:
-                async with session.put(
+                async with session.patch(
                     f"{self._base_url()}/api/v2/admin/user/{user['uuid']}/",
                     json=payload,
                     headers=self._headers(),
@@ -182,7 +182,7 @@ class HiddifyProvider(BasePanelProvider):
             payload = dict(user)
             payload["enable"] = bool(enabled)
             try:
-                async with session.put(
+                async with session.patch(
                     f"{self._base_url()}/api/v2/admin/user/{user['uuid']}/",
                     json=payload,
                     headers=self._headers(),
@@ -202,7 +202,7 @@ class HiddifyProvider(BasePanelProvider):
             payload = dict(user)
             payload["name"] = new_username
             try:
-                async with session.put(
+                async with session.patch(
                     f"{self._base_url()}/api/v2/admin/user/{user['uuid']}/",
                     json=payload,
                     headers=self._headers(),
@@ -220,16 +220,19 @@ class HiddifyProvider(BasePanelProvider):
         update_user استفاده می‌کند جایگزین کنیم؛ usage_limit_GB/package_days/
         current_usage_GB بدون تغییر می‌مانند (لینک قدیمی دیگر کار نمی‌کند چون
         دیگر با هیچ کاربری روی پنل match نمی‌شود).
-        ⚠️ این رفتار (تغییر uuid از طریق فیلد uuid در بدنه‌ی PUT) بر اساس
-        همان الگوی به‌کاررفته در update_user این پروژه است؛ مستقیماً روی یک
-        نصب واقعی Hiddify تست نشده - قبل از استفاده‌ی جدی حتماً امتحان شود."""
+        ⚠️ این رفتار (تغییر uuid از طریق فیلد uuid در بدنه‌ی درخواست) بر اساس
+        همان الگوی به‌کاررفته در update_user این پروژه است. متد HTTP این
+        درخواست از PUT به PATCH تغییر کرد چون یک نصب واقعی Hiddify روی PUT
+        خطای «405 Method Not Allowed» می‌داد (یعنی API v2 هیدیفای اصلاً PUT
+        را روی این مسیر ثبت نکرده و فقط PATCH/GET/POST/DELETE را می‌شناسد) -
+        اگر باز هم خطای مشابه دیده شد، حتماً گزارش شود."""
         async with aiohttp.ClientSession() as session:
             user = await self._find_by_name(session, username)
             new_uuid = str(uuid_lib.uuid4())
             payload = dict(user)
             payload["uuid"] = new_uuid
             try:
-                async with session.put(
+                async with session.patch(
                     f"{self._base_url()}/api/v2/admin/user/{user['uuid']}/",
                     json=payload,
                     headers=self._headers(),
