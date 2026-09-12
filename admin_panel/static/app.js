@@ -5149,6 +5149,7 @@ const SETTINGS_GROUPS = [
   // محرمانه نیستند (داخل هر APK قابل مشاهده‌اند)، فقط برای تشخیص پروژه‌اند؛
   // اپ اندروید این‌ها را در زمان اجرا برای فعال‌شدن پوش لحظه‌ای (FCM) می‌خواند.
   { tab: 'mobile_app', title: '🔔 پوش نوتیف اندروید (Firebase)', fields: [
+    { key: '_push_guide_button', label: 'راهنمای کامل فعال‌سازی پوش (قدم به قدم)', type: 'push_guide_button' },
     { key: '_firebase_json_extract', label: 'استخراج خودکار از google-services.json (پیشنهادی)', type: 'firebase_json_extract' },
     { key: 'firebase_api_key', label: 'Firebase API Key', type: 'text' },
     { key: 'firebase_app_id', label: 'Firebase App ID', type: 'text' },
@@ -5186,6 +5187,12 @@ function settingsFieldHtml(f, settings) {
     return `<label class="field">
       <span>${esc(f.label)}</span>
       <button type="button" class="btn btn-sm push-test-btn">ارسال پوش تست</button>
+    </label>`;
+  }
+  if (f.type === 'push_guide_button') {
+    return `<label class="field">
+      <span>${esc(f.label)}</span>
+      <button type="button" class="btn btn-sm push-guide-btn">📖 مشاهده راهنما</button>
     </label>`;
   }
   if (f.type === 'firebase_json_extract') {
@@ -5289,10 +5296,14 @@ function mobileTokenRowsHtml(tokens) {
 function mobileAppCardHtml(tokens) {
   return `
   <div class="card">
-    <h3>اپ موبایل مدیریت</h3>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+      <h3 style="margin:0">اپ موبایل مدیریت</h3>
+      <button type="button" class="btn btn-sm" id="admin-app-guide">📖 راهنمای کامل و دانلود</button>
+    </div>
     <p style="color:var(--muted,#888);font-size:13px">
       از اینجا یک توکن دسترسی برای اپ اندروید ShopVPN Admin بساز. آدرس همین پنل و
       این توکن را داخل اپ وارد کن تا وصل شود. هر گوشی/دستگاه بهتر است توکن جدا داشته باشد.
+      برای توضیح کامل، نصب، و رفع اخطار امنیتی نصب، روی «راهنمای کامل و دانلود» بزن.
     </p>
     <div class="form-inline" style="display:flex;gap:8px;margin:12px 0">
       <input type="text" id="new-mobile-token-name" placeholder="نام دستگاه (مثلاً گوشی من)" style="flex:1" />
@@ -5365,6 +5376,7 @@ function bindMobileTokenListEvents(root) {
 }
 
 function bindMobileAppEvents(root, refresh) {
+  $('#admin-app-guide', root)?.addEventListener('click', () => openModal('📖 راهنمای کامل اپ مدیریت', _adminAppGuideHtml(), null, { wide: true }));
   const createBtn = $('#create-mobile-token-btn', root);
   if (createBtn) createBtn.addEventListener('click', async () => {
     const nameInput = $('#new-mobile-token-name', root);
@@ -5424,6 +5436,9 @@ function extractGoogleServicesJson(text) {
 }
 
 function bindSettingsGroupEvents(root) {
+  $$('.push-guide-btn', root).forEach((btn) => {
+    btn.addEventListener('click', () => openModal('📖 راهنمای کامل فعال‌سازی پوش نوتیف', _pushNotifGuideHtml(), null, { wide: true }));
+  });
   $$('.push-test-btn', root).forEach((btn) => {
     btn.addEventListener('click', async () => {
       btn.disabled = true;
@@ -6072,6 +6087,128 @@ function _gwGuideHtml() {
   `;
 }
 
+// چرا نصب APKهای این پروژه (فوروارد پیامک / اپ مدیریت) هشدار امنیتی اندروید
+// را نشان می‌دهد — این توضیح مشترک، هم در راهنمای فوروارد پیامک و هم در
+// راهنمای اپ مدیریت استفاده می‌شود تا یک‌جا نگه‌داری شود.
+function _installWarningHtml(repoUrl) {
+  return `
+    <p class="card-sub"><b>⚠️ چرا موقع نصب اخطار امنیتی نشون می‌ده؟</b> چون این اپ از گوگل‌پلی نصب
+    نمی‌شه (اونجا منتشر نشده)، خودِ اندروید (Play Protect) هر APK ای که خارج از پلی‌استور نصب بشه رو
+    به‌صورت خودکار «ناشناس» علامت می‌زنه و هشدار عمومی «این برنامه ممکن است مضر باشد» رو نشون می‌ده -
+    این هشدار برای <b>همه‌ی</b> اپ‌های خارج از پلی‌استوره (حتی اپ‌های کاملاً معتبر)، نه فقط این یکی، و
+    هیچ ربطی به خطرناک‌بودن واقعی کد نداره.</p>
+    <p class="card-sub">چون سورس‌کد کامل این اپ به‌صورت عمومی و اوپن‌سورس روی گیت‌هاب منتشر شده،
+    هرکسی (خودت یا هر برنامه‌نویسی) می‌تونه کل کد رو بخونه و ببینه دقیقاً چیکار می‌کنه - هیچ داده‌ای به
+    سرور شخص سومی فرستاده نمی‌شه، فقط با همون سروری که خودت مالکشی حرف می‌زنه:</p>
+    <p class="card-sub" style="direction:ltr;text-align:left">
+      <a href="${repoUrl}" target="_blank" rel="noopener">${repoUrl}</a>
+    </p>
+    <p class="card-sub">برای رد کردن هشدار موقع نصب: روی «نصب بدون بررسی» / «Install anyway» بزن (متن
+    دقیق بسته به گوشی فرق داره). اگه گوشیت اصلاً اجازه‌ی نصب از «منابع ناشناس» رو نمی‌ده، اول باید از
+    تنظیمات گوشی (Settings ← Apps ← نصب اپ‌های ناشناس / Install unknown apps) این اجازه رو برای
+    مرورگر یا فایل‌منیجری که APK رو باهاش باز می‌کنی فعال کنی.</p>
+  `;
+}
+
+function _smsForwarderGuideHtml() {
+  const repo = 'https://github.com/mehdirafatpanah/sms-forwarder';
+  const zip = 'https://github.com/mehdirafatpanah/sms-forwarder/archive/refs/heads/main.zip';
+  return `
+    <p class="card-sub"><b>این اپ چیکار می‌کنه؟</b> یک اپ اندروید سبک (BankSmsForwarder) که روی همون
+    گوشی/سیم‌کارتی نصب می‌شه که پیامک‌های واریزی بانک بهش می‌رسه. هر پیامک بانکی که دریافت می‌شه رو
+    می‌خونه و به آدرس «وب‌هوک» بالا (همراه با توکن امنیتی) می‌فرسته؛ چون مبلغ هر فاکتور یکتاست (مبلغ
+    اصلی + چند رقم آخر تصادفی)، ربات خودش تشخیص می‌ده این پیامک برای کدوم فاکتور بوده و اون سفارش/شارژ
+    رو <b>بدون هیچ دخالت دستی ادمین</b> تایید می‌کنه.</p>
+
+    <p class="card-sub"><b>📥 نصب و اتصال — قدم به قدم</b></p>
+    <ol style="margin:6px 0;padding-inline-start:18px;line-height:2">
+      <li>APK رو از دکمه‌ی «دانلود اپ فوروارد پیامک» پایین همین راهنما دانلود کن.</li>
+      <li>فایل دانلودشده رو نصب کن (اگه هشدار امنیتی دید، بخش پایین همین راهنما رو بخون).</li>
+      <li>اپ رو باز کن و دسترسی «خواندن پیامک‌ها (SMS)» رو که می‌خواد، تایید کن - بدون این دسترسی اپ
+      اصلاً نمی‌تونه پیامک بانک رو ببینه.</li>
+      <li>«آدرس وب‌هوک» و «توکن» بالای همین صفحه (دکمه‌های «کپی آدرس» و «ساخت/بازتولید توکن») رو کپی
+      کن و داخل تنظیمات اپ (Webhook URL / Token) پیست کن.</li>
+      <li><b>مهم:</b> از تنظیمات گوشی، این اپ رو از «بهینه‌سازی باتری» (Battery optimization) مستثنی
+      کن. بدون این کار، اندروید ممکنه اپ رو در پس‌زمینه ببنده و پیامک‌های جدید رو از دست بدی.</li>
+    </ol>
+    <p class="card-sub">هر بار «بازتولید توکن» بزنی، توکن قبلی از کار می‌افته و باید همون توکن جدید رو
+    داخل اپ هم آپدیت کنی، وگرنه پیامک‌ها دیگه تایید نمی‌شن.</p>
+
+    ${_installWarningHtml(repo)}
+
+    <div class="actions" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+      <a href="${zip}" target="_blank" rel="noopener" class="btn btn-primary btn-sm">⬇️ دانلود اپ فوروارد پیامک (APK/سورس)</a>
+      <a href="${repo}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">مشاهده سورس‌کد در گیت‌هاب</a>
+    </div>
+  `;
+}
+
+function _adminAppGuideHtml() {
+  const repo = 'https://github.com/mehdirafatpanah/app-shopvpn';
+  const zip = 'https://github.com/mehdirafatpanah/app-shopvpn/archive/refs/heads/main.zip';
+  return `
+    <p class="card-sub"><b>این اپ چیکار می‌کنه؟</b> نسخه‌ی موبایل همین پنل ادمین (ShopVpnAdmin) -
+    سفارش‌ها، کاربران، محصولات، نمایندگی‌ها، درگاه‌های پرداخت و تنظیمات فروشگاه رو مستقیم از روی گوشی
+    مدیریت کن، به‌علاوه‌ی امکان دریافت پوش نوتیف لحظه‌ای برای سفارش‌های جدید (اگه راهنمای پوش نوتیف رو
+    هم انجام بدی).</p>
+
+    <p class="card-sub"><b>📥 نصب و اتصال — قدم به قدم</b></p>
+    <ol style="margin:6px 0;padding-inline-start:18px;line-height:2">
+      <li>APK رو از دکمه‌ی «دانلود اپ مدیریت» پایین همین راهنما دانلود و نصب کن.</li>
+      <li>بالای همین کارت («اپ موبایل مدیریت»)، یک نام برای دستگاهت بزن و روی «ساخت توکن» بزن.</li>
+      <li>توکن نمایش‌داده‌شده رو کپی کن - این توکن فقط همون یک‌بار کامل نشون داده می‌شه.</li>
+      <li>داخل اپ اندروید، آدرس همین پنل (دامنه‌ای که همین الان داخل مرورگرت بازه) و همون توکن رو وارد
+      کن تا وصل بشه. برای هر گوشی/دستگاه بهتره یک توکن جدا بسازی تا در صورت نیاز فقط همون یکی رو باطل
+      کنی.</li>
+    </ol>
+
+    ${_installWarningHtml(repo)}
+
+    <div class="actions" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+      <a href="${zip}" target="_blank" rel="noopener" class="btn btn-primary btn-sm">⬇️ دانلود اپ مدیریت (APK/سورس)</a>
+      <a href="${repo}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">مشاهده سورس‌کد در گیت‌هاب</a>
+    </div>
+  `;
+}
+
+function _pushNotifGuideHtml() {
+  const repo = 'https://github.com/mehdirafatpanah/app-shopvpn';
+  return `
+    <p class="card-sub">پوش نوتیف اپ مدیریت روی <b>پروژه‌ی فایربیس (Firebase) خودت</b> کار می‌کنه - هر
+    نصب مستقل ShopVPN، پروژه‌ی فایربیس مجزای خودش رو می‌سازه (رایگانه)، و اپ اندروید (بدون نیاز به
+    بیلد جدید) این تنظیمات رو در لحظه‌ی ورود از همین پنل می‌خونه.</p>
+
+    <p class="card-sub"><b>🔔 قدم‌های فعال‌سازی</b></p>
+    <ol style="margin:6px 0;padding-inline-start:18px;line-height:2">
+      <li>وارد <a href="https://console.firebase.google.com" target="_blank" rel="noopener">console.firebase.google.com</a>
+      شو و یک پروژه‌ی جدید بساز (Add project) - رایگانه، نیازی به کارت بانکی نیست.</li>
+      <li>داخل پروژه، «Add app» رو بزن و نوع اپ رو Android انتخاب کن. در «Android package name»
+      دقیقاً همین رو وارد کن (بزرگی/کوچکی حروف مهمه): <code>com.shopvpn.admin</code></li>
+      <li>فایل <code>google-services.json</code> که گوگل بهت می‌ده رو دانلود کن (نیازی به قدم‌های بعدی
+      SDK پیشنهادی گوگل نیست، فقط همین فایل کافیه).</li>
+      <li>به تب «🔔 پوش نوتیف اندروید (Firebase)» همین صفحه برگرد، کل محتوای فایل رو داخل کادر
+      «استخراج خودکار از google-services.json» پیست کن و دکمه‌ی «استخراج و پرکردن خودکار» رو بزن؛
+      ۴ فیلد پایینش خودکار پر می‌شن. بعد «ذخیره تغییرات» رو بزن.</li>
+      <li>برای اینکه سرور واقعاً بتونه پوش بفرسته (نه فقط اپ توکن بگیره): توی همون کنسول فایربیس برو
+      Project Settings ← Service Accounts ← «Generate new private key»، و کل فایل JSON دانلودشده رو
+      داخل فیلد «Firebase Service Account JSON» (کمی پایین‌تر همین تب) پیست کن و دوباره ذخیره کن.</li>
+      <li>اپ اندروید مدیریت رو <b>کامل ببند</b> (نه فقط برو پس‌زمینه، از لیست اپ‌های اخیر هم حذفش کن) و
+      دوباره باز کن تا با تنظیمات جدید فایربیس مقداردهی بشه.</li>
+      <li>برای تست: از همین تب دکمه‌ی «ارسال پوش تست» رو بزن - اگه گوشیت پوش رو گرفت، تمام شد؛ اگه
+      نگرفت، دسترسی نوتیف و بهینه‌سازی باتری اپ رو روی گوشی چک کن.</li>
+    </ol>
+
+    <p class="card-sub">این ۴ مقدار محرمانه نیستن (داخل خود APK هم قابل مشاهده‌ان)، فقط برای شناسایی
+    پروژه‌ی فایربیس هستن؛ چیزی که واقعاً باید محرمانه بمونه همون «Service Account JSON» بالاست.</p>
+
+    <p class="card-sub">اپ اندروید مدیریت هم مثل اپ فوروارد پیامک کاملاً اوپن‌سورسه، پس هیچ نگرانی
+    امنیتی‌ای از بابت نصبش (یا هشداری که اندروید موقع نصب نشون می‌ده) وجود نداره - سورس کامل:</p>
+    <p class="card-sub" style="direction:ltr;text-align:left">
+      <a href="${repo}" target="_blank" rel="noopener">${repo}</a>
+    </p>
+  `;
+}
+
 // همه‌ی روش‌های پرداخت (حداقل مبلغ هر روش، درگاه‌های سفارشی، کارت‌به‌کارت خودکار)
 // در همین یک تب («تنظیمات» ← «پرداخت») کنار کارت/کریپتو/آبان‌گیت‌وی نمایش داده می‌شود
 // تا مدیریت پرداخت یک‌جا باشد، نه پخش‌شده در چند صفحه‌ی جدا.
@@ -6144,7 +6281,10 @@ function paymentExtrasHtml({ methods, gateways, c2cCards, c2cWebhook, c2cInvoice
         </tr>`).join('')}</tbody>
       </table></div>` : '<div class="card-sub">هنوز کارتی اضافه نشده — بدون حداقل یک کارت فعال، این روش پرداخت به کاربر نمایش داده نمی‌شود.</div>'}
 
-      <div class="card-sub" style="margin:16px 0 6px"><b>📡 اتصال اپ BankSmsForwarder</b></div>
+      <div class="card-sub" style="margin:16px 0 6px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <b>📡 اتصال اپ BankSmsForwarder</b>
+        <button type="button" class="btn btn-sm" id="sms-forwarder-guide">📖 راهنمای کامل و دانلود</button>
+      </div>
       ${(c2cWebhook || {}).webhook_url ? `<div class="form-grid">
         <input class="input" readonly value="${esc(c2cWebhook.webhook_url)}" style="direction:ltr;text-align:left">
         <button class="btn btn-sm" id="c2c-copy-url">📋 کپی آدرس</button>
@@ -6155,7 +6295,8 @@ function paymentExtrasHtml({ methods, gateways, c2cCards, c2cWebhook, c2cInvoice
       </div>
       <div class="card-sub" style="margin-top:6px;color:var(--muted,#9ca3af);font-size:12px">
         آدرس بالا و توکن رو داخل تنظیمات اپ اندروید BankSmsForwarder (بخش Webhook URL / Token) وارد کن.
-        هر بار «بازتولید توکن» بزنی، توکن قبلی از کار می‌افته و باید توی اپ هم آپدیتش کنی.
+        هر بار «بازتولید توکن» بزنی، توکن قبلی از کار می‌افته و باید توی اپ هم آپدیتش کنی. برای توضیح
+        کامل، نصب، و رفع اخطار امنیتی نصب، روی «راهنمای کامل و دانلود» بالا بزن.
       </div>
     </div>
 
@@ -6177,6 +6318,7 @@ function paymentExtrasHtml({ methods, gateways, c2cCards, c2cWebhook, c2cInvoice
 }
 
 function bindPaymentExtrasEvents(root, { gateways, c2cCards, c2cWebhook }) {
+  $('#sms-forwarder-guide', root)?.addEventListener('click', () => openModal('📖 راهنمای کامل فوروارد پیامک', _smsForwarderGuideHtml(), null, { wide: true }));
   $$('[data-save-min]', root).forEach(b => b.addEventListener('click', async () => {
     const key = b.dataset.saveMin;
     const value = Math.max(0, Number($(`[data-min-amount="${key}"]`, root).value) || 0);
