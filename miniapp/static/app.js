@@ -4425,6 +4425,12 @@ async function renderAdminUsersList(body) {
 
   body.innerHTML = `
     <div class="card">
+      <div class="eyebrow" style="margin-top:0">📢 پیام همگانی</div>
+      <textarea class="input" id="broadcast-all-text" rows="2" placeholder="متن پیام برای همه‌ی کاربران بات..." style="margin-bottom:8px;resize:vertical"></textarea>
+      <button class="btn outline small" id="broadcast-all-btn" style="width:auto">ارسال به همه‌ی کاربران</button>
+    </div>
+
+    <div class="card">
       <div class="eyebrow" style="margin-top:0">📢 پیام گروهی به کاربران منقضی‌شده</div>
       <textarea class="input" id="broadcast-expired-text" rows="2" placeholder="متن پیام تشویق به تمدید..." style="margin-bottom:8px;resize:vertical"></textarea>
       <button class="btn outline small" id="broadcast-expired-btn" style="width:auto">ارسال به همه‌ی کاربران منقضی‌شده</button>
@@ -4482,6 +4488,18 @@ async function renderAdminUsersList(body) {
       tg.HapticFeedback.notificationOccurred("success");
       notify(`ارسال شد. موفق: ${res.success} از ${res.total}`);
       document.getElementById("broadcast-expired-text").value = "";
+    } catch (e) { notify("⚠️ " + e.message); }
+  };
+
+  document.getElementById("broadcast-all-btn").onclick = async () => {
+    const text = document.getElementById("broadcast-all-text").value.trim();
+    if (!text) { notify("متن پیام را وارد کن."); return; }
+    if (!confirm("این پیام برای همه‌ی کاربران ربات (غیرمسدود و مسدود) ارسال می‌شود و قابل بازگشت نیست. مطمئنی؟")) return;
+    try {
+      const res = await api("/api/admin/users/broadcast-all", { method: "POST", body: JSON.stringify({ text }) });
+      tg.HapticFeedback.notificationOccurred("success");
+      notify(`ارسال شد. موفق: ${res.success} از ${res.total}`);
+      document.getElementById("broadcast-all-text").value = "";
     } catch (e) { notify("⚠️ " + e.message); }
   };
 }
@@ -4740,6 +4758,8 @@ const ADMIN_ACTION_LABELS = {
   discount_toggle: "🎟 تغییر وضعیت کد تخفیف",
   discount_delete: "🗑 حذف کد تخفیف",
   broadcast: "📢 ارسال پیام همگانی",
+  broadcast_expired: "📢 پیام گروهی به کاربران منقضی‌شده",
+  user_message: "✉️ پیام مستقیم به کاربر",
 };
 
 let adminLogSelectedId = "";
