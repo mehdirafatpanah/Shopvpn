@@ -1933,6 +1933,10 @@ async def api_approve_order(order_id: int, admin=Depends(require_permission("ord
         except RenewalError as e:
             await asyncio.to_thread(db.release_order_claim, order_id)
             raise HTTPException(400, f"تمدید ناموفق بود: {e}")
+        except Exception:
+            logger.exception("خطای غیرمنتظره در execute_renewal برای سفارش تمدید #%s (پنل وب)", order_id)
+            await asyncio.to_thread(db.release_order_claim, order_id)
+            raise HTTPException(400, "خطای غیرمنتظره‌ای در تمدید رخ داد. سفارش برای بررسی دوباره آزاد شد؛ لاگ سرور را بررسی کن.")
         (await asyncio.to_thread(db.approve_renewal_order, order_id))
         (await asyncio.to_thread(db.log_admin_action,
             admin["id"], "renewal_approve",
