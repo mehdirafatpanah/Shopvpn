@@ -148,11 +148,24 @@ async def send_to_tokens(db, tokens: list, title: str, body: str, data: dict = N
 
     async with aiohttp.ClientSession() as session:
         for token in tokens:
+            # عمداً بدون کلید top-level "notification" - وقتی پیام هم
+            # notification و هم data داشته باشه، FCM اسمش رو می‌ذاره
+            # "notification message" و وقتی اپ در پس‌زمینه یا کامل بسته باشه،
+            # خودِ سیستم‌عامل (نه PushService.onMessageReceived) نوتیف رو مستقیم
+            # از روی همون فیلد نشون می‌ده - یعنی فیلتر category توی
+            # PushService اصلاً اجرا نمی‌شه و خاموش‌کردن سوییجِ یک بخش هیچ اثری
+            # نداره مگر وقتی اپ باز و در فورگراند باشه. با فرستادنِ پیام
+            # "data-only" (بدون notification در سطح بالا)، اندروید همیشه
+            # onMessageReceived رو صدا می‌زنه (فورگراند، پس‌گراند، یا حتی اپ
+            # بسته) و PushService خودش نوتیف رو (بعد از چک‌کردن فیلتر) می‌سازه.
             message = {
                 "message": {
                     "token": token,
-                    "notification": {"title": title, "body": body},
-                    "data": {k: str(v) for k, v in (data or {}).items()},
+                    "data": {
+                        **{k: str(v) for k, v in (data or {}).items()},
+                        "title": title,
+                        "body": body,
+                    },
                     "android": {"priority": "high"},
                 }
             }
@@ -196,10 +209,14 @@ async def send_test(db, token: str) -> dict:
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json; UTF-8",
     }
+    # مثل send_to_tokens، عمداً data-only (بدون notification در سطح بالا) تا
+    # وقتی اپ بسته یا در پس‌زمینه است هم PushService.onMessageReceived صدا
+    # زده بشه و نتیجه‌ی تست واقعاً منعکس‌کننده‌ی چیزی باشه که در عمل اتفاق
+    # می‌افته، نه فقط رفتار سیستم‌عامل وقتی اپ در فورگراند است.
     message = {
         "message": {
             "token": token,
-            "notification": {
+            "data": {
                 "title": "🔔 اعلان تست",
                 "body": "این یک پیام آزمایشی از پنل مدیریت ShopVPN است.",
             },
