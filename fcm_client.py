@@ -3,17 +3,28 @@
 کلاینت Firebase Cloud Messaging (FCM HTTP v1) برای ارسال نوتیفیکیشن پوش به
 اپ اندروید مدیریت.
 
-راه‌اندازی:
+راه‌اندازی (از پنل وب، بدون نیاز به SSH یا فایل روی سرور):
     1. یک پروژه‌ی رایگان در https://console.firebase.google.com بساز.
     2. از Project Settings → Service Accounts → Generate new private key یک
-       فایل JSON بگیر و مسیرش را در تنظیمات پنل ("firebase_service_account_path")
-       یا متغیر محیطی FIREBASE_SERVICE_ACCOUNT_PATH بگذار.
-    3. project_id همان فایل به‌عنوان FCM_PROJECT_ID استفاده می‌شود (خودکار
-       از خودِ فایل خوانده می‌شود).
+       فایل JSON بگیر.
+    3. کل محتوای همان فایل JSON را در پنل وب > تنظیمات و سیستم > اپ موبایل،
+       فیلد «Firebase Service Account JSON» پیست کن و ذخیره بزن.
 
-اگر فایل سرویس‌اکانت تنظیم نشده باشد، send_to_tokens() چیزی نمی‌فرستد و به‌جای
-خطا دادن، سکوت می‌کند (دقیقاً مثل رفتار PUSH_ENABLED برای وب‌پوش) تا نصب‌های
-بدون Firebase از کار نیفتند.
+project_id مستقیم از همان JSON خوانده می‌شود.
+
+نکته‌ی مهم (چندمستأجری/reseller): این تنظیم مثل بقیه‌ی تنظیمات پنل، per-tenant
+است — هر بات (بات اصلی یا هر نماینده‌ی سطح ۱ با پنل وب مستقل) پروژه‌ی فایربیس
+و سرویس‌اکانت خودش را جدا در دیتابیس خودش ذخیره می‌کند، و هر بار قبل از ارسال
+دوباره از دیتابیس همان تننت خوانده می‌شود (نه یک بار در زمان استارت پردازش) تا
+تنظیم‌کردن یا تغییردادنش نیازی به ری‌استارت سرویس نداشته باشد.
+
+برای سازگاری با نصب‌های قدیمی‌تر، اگر این تنظیم خالی باشد، از فایل
+firebase-service-account.json (یا مسیر FIREBASE_SERVICE_ACCOUNT_PATH) هم به‌عنوان
+جایگزین سراسری خوانده می‌شود.
+
+اگر هیچ‌کدام تنظیم نشده باشند، send_to_tokens() چیزی نمی‌فرستد و به‌جای خطا
+دادن سکوت می‌کند (دقیقاً مثل رفتار PUSH_ENABLED برای وب‌پوش) تا نصب‌های بدون
+Firebase از کار نیفتند.
 """
 
 import json
@@ -25,11 +36,16 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
+_SETTING_KEY = "firebase_service_account_json"
 _SA_PATH = os.environ.get("FIREBASE_SERVICE_ACCOUNT_PATH", "")
-_cached_access_token = {"token": None, "exp": 0}
+
+# کش توکن OAuth2، کلید‌شده بر اساس client_email سرویس‌اکانت (چون هر تننت
+# می‌تواند سرویس‌اکانت/پروژه‌ی متفاوتی داشته باشد و یک کش سراسری تک‌مقداری
+# باعث می‌شد پوش تننت‌های دیگر با توکن اشتباه (پروژه‌ی عوضی) رد شود).
+_access_token_cache: dict = {}
 
 
-def _load_service_account():
+def _load_service_account_from_file():
     path = _SA_PATH or "firebase-service-account.json"
     if not os.path.exists(path):
         return None
@@ -41,15 +57,41 @@ def _load_service_account():
         return None
 
 
-FCM_ENABLED = _load_service_account() is not None
+def _load_service_account(db):
+    """اول از تنظیمات همین تننت (دیتابیس) می‌خواند؛ اگر خالی بود، به فایل/env
+    سراسری برمی‌گردد (سازگاری با نصب‌های قدیمی)."""
+    raw = ""
+    try:
+        raw = (db.get_setting(_SETTING_KEY) or "").strip()
+    except Exception:
+        logger.exception("خواندن تنظیم %s از دیتابیس ناموفق بود", _SETTING_KEY)
+    if raw:
+        try:
+            sa = json.loads(raw)
+            if sa.get("client_email") and sa.get("private_key") and sa.get("project_id"):
+                return sa
+            logger.warning("مقدار %s در تنظیمات JSON معتبر سرویس‌اکانت فایربیس نیست", _SETTING_KEY)
+        except Exception:
+            logger.exception("پارس JSON سرویس‌اکانت فایربیس از تنظیمات ناموفق بود")
+    return _load_service_account_from_file()
+
+
+def is_configured(db) -> bool:
+    """آیا برای این تننت (یا سراسری، به‌صورت fallback) سرویس‌اکانت فایربیس
+    معتبری در دسترس است؟ برخلاف نسخه‌ی قبلی این تابع، هر بار زنده چک می‌کند،
+    نه یک‌بار در زمان بالا آمدن پردازش — پس بعد از ثبت تنظیمات از پنل وب،
+    نیازی به ری‌استارت سرویس نیست."""
+    return _load_service_account(db) is not None
 
 
 async def _get_access_token(sa: dict) -> str:
     """توکن OAuth2 کوتاه‌مدت گوگل را با jwt امضاشده با کلید سرویس‌اکانت می‌گیرد.
-    کش می‌شود تا هر ارسال، یک درخواست جدید به گوگل نزند."""
+    کش می‌شود (به ازای هر client_email) تا هر ارسال، یک درخواست جدید به گوگل نزند."""
+    cache_key = sa.get("client_email", "")
     now = time.time()
-    if _cached_access_token["token"] and _cached_access_token["exp"] > now + 60:
-        return _cached_access_token["token"]
+    cached = _access_token_cache.get(cache_key)
+    if cached and cached["exp"] > now + 60:
+        return cached["token"]
 
     import jwt  # PyJWT - در requirements.txt اضافه شده
 
@@ -75,15 +117,18 @@ async def _get_access_token(sa: dict) -> str:
             data = await resp.json()
             if resp.status != 200:
                 raise RuntimeError(f"دریافت access token گوگل ناموفق بود: {data}")
-            _cached_access_token["token"] = data["access_token"]
-            _cached_access_token["exp"] = iat + int(data.get("expires_in", 3600))
+            _access_token_cache[cache_key] = {
+                "token": data["access_token"],
+                "exp": iat + int(data.get("expires_in", 3600)),
+            }
             return data["access_token"]
 
 
-async def send_to_tokens(tokens: list, title: str, body: str, data: dict = None) -> list:
-    """برای هر توکن FCM یک نوتیف می‌فرستد. برمی‌گرداند: لیست توکن‌هایی که
-    گوگل گفته دیگر معتبر نیستند (باید از دیتابیس حذف شوند)."""
-    sa = _load_service_account()
+async def send_to_tokens(db, tokens: list, title: str, body: str, data: dict = None) -> list:
+    """برای هر توکن FCM یک نوتیف می‌فرستد (سرویس‌اکانت مخصوص همین تننت/db).
+    برمی‌گرداند: لیست توکن‌هایی که گوگل گفته دیگر معتبر نیستند (باید از
+    دیتابیس حذف شوند)."""
+    sa = _load_service_account(db)
     if not sa or not tokens:
         return []
 
@@ -118,6 +163,12 @@ async def send_to_tokens(tokens: list, title: str, body: str, data: dict = None)
                         status = (resp_data.get("error", {}).get("status", ""))
                         if status in ("NOT_FOUND", "INVALID_ARGUMENT", "UNREGISTERED"):
                             invalid_tokens.append(token)
+                        else:
+                            logger.warning(
+                                "ارسال FCM رد شد (status=%s, error=%s) - احتمالا project_id/سرویس‌اکانت "
+                                "با پروژه‌ی فایربیسی که اپ اندروید با آن مقداردهی شده یکی نیست",
+                                resp.status, status,
+                            )
                     elif resp.status >= 400:
                         logger.warning("ارسال FCM ناموفق (status=%s) برای یک توکن", resp.status)
             except Exception:
