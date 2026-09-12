@@ -173,11 +173,15 @@ async def _notify_admins(permission: str, payload: dict):
     # پوش اپ موبایل (FCM) — مستقل از وب‌پوش. تنظیم‌بودنش هر بار زنده از
     # دیتابیس همین تننت چک می‌شود (نه یک پرچم ثابت زمان استارت)، تا وصل‌کردنش
     # از پنل وب فوری اثر کند و بدون ری‌استارت هم کار کند.
+    # "category" همان permission است (orders/tickets/panels/...) که با id تب
+    # مربوطه در اپ اندروید یکی است؛ اپ از رویش تشخیص می‌دهد که کاربر نوتیف
+    # همان بخش را از تنظیمات خودش خاموش کرده یا نه (نگاه کن به
+    # PushService.onMessageReceived در پروژه‌ی اندروید).
     fcm_tokens = (await asyncio.to_thread(db.list_fcm_tokens))
     if fcm_tokens:
         invalid = await fcm_client.send_to_tokens(
             db, fcm_tokens, payload.get("title", "ShopVPN"), payload.get("body", ""),
-            data={"tag": payload.get("tag", "")},
+            data={"tag": payload.get("tag", ""), "category": permission},
         )
         for t in invalid:
             await asyncio.to_thread(db.delete_fcm_token, t)
