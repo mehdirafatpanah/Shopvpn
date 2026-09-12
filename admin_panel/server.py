@@ -170,17 +170,17 @@ async def _notify_admins(permission: str, payload: dict):
         if gone:
             (await asyncio.to_thread(db.delete_push_subscriptions_by_endpoints, gone))
 
-    # پوش اپ موبایل (FCM) — مستقل از وب‌پوش؛ اگر Firebase تنظیم نشده باشد
-    # (FCM_ENABLED=False) این بخش عملاً کاری نمی‌کند.
-    if fcm_client.FCM_ENABLED:
-        fcm_tokens = (await asyncio.to_thread(db.list_fcm_tokens))
-        if fcm_tokens:
-            invalid = await fcm_client.send_to_tokens(
-                fcm_tokens, payload.get("title", "ShopVPN"), payload.get("body", ""),
-                data={"tag": payload.get("tag", "")},
-            )
-            for t in invalid:
-                await asyncio.to_thread(db.delete_fcm_token, t)
+    # پوش اپ موبایل (FCM) — مستقل از وب‌پوش. تنظیم‌بودنش هر بار زنده از
+    # دیتابیس همین تننت چک می‌شود (نه یک پرچم ثابت زمان استارت)، تا وصل‌کردنش
+    # از پنل وب فوری اثر کند و بدون ری‌استارت هم کار کند.
+    fcm_tokens = (await asyncio.to_thread(db.list_fcm_tokens))
+    if fcm_tokens:
+        invalid = await fcm_client.send_to_tokens(
+            db, fcm_tokens, payload.get("title", "ShopVPN"), payload.get("body", ""),
+            data={"tag": payload.get("tag", "")},
+        )
+        for t in invalid:
+            await asyncio.to_thread(db.delete_fcm_token, t)
 
 
 async def _notifier_loop():
@@ -359,12 +359,16 @@ async def _server_status_loop():
 
 @app.on_event("startup")
 async def _start_notifier():
-    # این تسک هم پوش وب (PUSH_ENABLED / VAPID) و هم پوش موبایل (FCM_ENABLED) را
-    # می‌فرستد، پس اگر فقط یکی از این دو تنظیم شده باشد هم باید استارت شود.
-    if PUSH_ENABLED or fcm_client.FCM_ENABLED:
-        asyncio.create_task(_notifier_loop())
-        asyncio.create_task(_notifier_supervisor())
-        asyncio.create_task(_server_status_loop())
+    # همیشه استارت می‌شود: این تسک هم پوش وب (VAPID) و هم پوش موبایل (FCM) را
+    # می‌فرستد، و تنظیم‌بودن هرکدام حالا به‌صورت زنده (نه یک پرچم ثابت زمان
+    # استارت پردازش) از تنظیمات همان تننت خوانده می‌شود؛ در نتیجه یک پرچم
+    # سراسری واحد نمی‌تواند تشخیص بدهد که آیا لازم است این تسک اجرا شود یا نه
+    # (هر تننت/نماینده می‌تواند مستقل از بقیه، فقط FCM یا فقط وب‌پوش را روشن
+    # داشته باشد). هزینه‌ی این حلقه هم ناچیز است: فقط دیتابیس را برای سفارش/
+    # شارژ/تیکت جدید پول می‌کند و اگر چیزی برای فرستادن نباشد کاری نمی‌کند.
+    asyncio.create_task(_notifier_loop())
+    asyncio.create_task(_notifier_supervisor())
+    asyncio.create_task(_server_status_loop())
 
 
 # --------------------------------- اعلان زنده برای پنل نماینده‌های کامل --
