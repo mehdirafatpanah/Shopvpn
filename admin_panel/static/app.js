@@ -5382,7 +5382,7 @@ function bindSettingsGroupEvents(root) {
   $$('.settings-group-head', root).forEach(btn => btn.addEventListener('click', () => {
     btn.parentElement.classList.toggle('open');
   }));
-  $$('.switch', root).forEach(sw => sw.addEventListener('click', () => {
+  $$('.switch[data-key]', root).forEach(sw => sw.addEventListener('click', () => {
     const on = sw.dataset.on !== '1';
     sw.dataset.on = on ? '1' : '0';
   }));
