@@ -1819,6 +1819,31 @@ def api_unblock_user(tg_id: int, admin=Depends(require_permission("users"))):
     return {"ok": True}
 
 
+class UserMessageBody(BaseModel):
+    text: str
+
+
+@app.post("/api/users/{tg_id}/message")
+async def api_message_user(tg_id: int, body: UserMessageBody, admin=Depends(require_permission("users"))):
+    """پیام مستقیم به یک کاربر خاص (نه پیام همگانی) - معادل همین قابلیت در مینی‌اپ."""
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "متن پیام نمی‌تواند خالی باشد.")
+    if len(text) > 4000:
+        raise HTTPException(400, "متن پیام بیش از حد طولانی است.")
+    user = row_to_dict(db.get_user(tg_id))
+    if not user:
+        raise HTTPException(404, "کاربری با این آیدی عددی پیدا نشد.")
+    ok = await tg_send(_bot_token(), tg_id, f"📩 پیام از پشتیبانی:\n\n{text}")
+    if not ok:
+        raise HTTPException(502, "ارسال پیام به کاربر ناموفق بود (شاید بات را بلاک کرده).")
+    (await asyncio.to_thread(db.log_admin_action,
+        admin["id"], "user_message", f"پیام مستقیم به کاربر {tg_id} ارسال شد (پنل وب - {admin['username']})",
+        "user", tg_id,
+    ))
+    return {"ok": True}
+
+
 class WalletAdjustBody(BaseModel):
     delta: int
 
