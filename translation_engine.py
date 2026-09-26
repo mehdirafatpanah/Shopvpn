@@ -236,15 +236,16 @@ class _DeepTranslatorProvider(_Provider):
 class _LibreTranslateProvider(_Provider):
     name = "libretranslate"
 
-    def __init__(self, endpoint: str, api_key: str | None = None):
+    def __init__(self, endpoint: str, api_key: str | None = None, source: str = "en"):
         self.endpoint = endpoint.rstrip("/")
         self.api_key = api_key
+        self.source = source
 
     def translate_batch(self, texts: list[str], target: str, contexts: Dict[str, str] | None = None) -> list[str]:
         target = _LIBRETRANSLATE_LANG.get(target, target)
         out = []
         for text in texts:
-            payload = {"q": text, "source": "en", "target": target, "format": "text"}
+            payload = {"q": text, "source": self.source, "target": target, "format": "text"}
             if self.api_key:
                 payload["api_key"] = self.api_key
             req = urllib.request.Request(
@@ -268,10 +269,11 @@ class _LibreTranslateProvider(_Provider):
 class _GeminiProvider(_Provider):
     name = "gemini"
 
-    def __init__(self, keys: list[str], model: str, client_factory=None):
+    def __init__(self, keys: list[str], model: str, client_factory=None, source_name: str = "English"):
         self.keys = keys
         self.model = model
         self.client_factory = client_factory
+        self.source_name = source_name
 
     def _client(self, key: str):
         if self.client_factory:
@@ -281,9 +283,9 @@ class _GeminiProvider(_Provider):
 
     def _config(self, target: str):
         from google.genai import types
-        name = LANGUAGE_CATALOG.get(target, {}).get("name", target)
+        name = "English" if target == "en" else LANGUAGE_CATALOG.get(target, {}).get("name", target)
         instruction = (
-            f"You translate UI strings of a VPN sales Telegram bot from English to {name}. "
+            f"You translate UI strings of a VPN sales Telegram bot from {self.source_name} to {name}. "
             "Input is a JSON list of {id, text, context}. Return only a JSON list of {id, text} with the translation of each item. "
             "Keep tokens like __SHOPVPN_TOKEN_000__, emoji, line breaks and leading/trailing punctuation exactly as in the source. "
             "Use short natural wording for buttons. " + GLOSSARY
@@ -328,14 +330,15 @@ class _OpenRouterProvider(_Provider):
     """
     name = "openrouter"
 
-    def __init__(self, keys: list[str], model: str):
+    def __init__(self, keys: list[str], model: str, source_name: str = "English"):
         self.keys = keys
         self.model = model
+        self.source_name = source_name
 
     def _instruction(self, target: str) -> str:
-        name = LANGUAGE_CATALOG.get(target, {}).get("name", target)
+        name = "English" if target == "en" else LANGUAGE_CATALOG.get(target, {}).get("name", target)
         return (
-            f"You translate UI strings of a VPN sales Telegram bot from English to {name}. "
+            f"You translate UI strings of a VPN sales Telegram bot from {self.source_name} to {name}. "
             "Input is a JSON list of {id, text, context}. Reply with ONLY a JSON array of {id, text} "
             "containing the translation of each item — no markdown fences, no extra commentary. "
             "Keep tokens like __SHOPVPN_TOKEN_000__, emoji, line breaks and leading/trailing punctuation "
@@ -463,6 +466,114 @@ def _providers(target: str, db=None) -> list[_Provider]:
             if endpoint:
                 providers.append(_LibreTranslateProvider(endpoint, os.getenv("SHOPVPN_LIBRETRANSLATE_API_KEY")))
     return providers
+
+
+def _fa_en_providers(db=None) -> list[_Provider]:
+    """Providers configured to translate FROM Persian TO English.
+
+    Mirrors ``_providers`` but every provider is pointed at the reverse
+    direction, since the rest of the engine only ever translates English UI
+    text into other languages. This is what lets the English admin-panel UI
+    itself be completed automatically instead of relying solely on the
+    static M/FRAGMENTS dictionary in i18n.js.
+    """
+    providers: list[_Provider] = []
+    try:
+        from deep_translator import GoogleTranslator, MyMemoryTranslator
+    except Exception:
+        GoogleTranslator = MyMemoryTranslator = None
+    for name in _provider_order():
+        if name == "gemini":
+            keys = _gemini_keys(db)
+            if keys:
+                providers.append(_GeminiProvider(
+                    keys, os.getenv("SHOPVPN_TRANSLATION_MODEL", "gemini-2.5-flash"), source_name="Persian",
+                ))
+        elif name == "openrouter":
+            keys = _openrouter_keys(db)
+            if keys:
+                providers.append(_OpenRouterProvider(
+                    keys, os.getenv("SHOPVPN_TRANSLATION_OPENROUTER_MODEL", "google/gemini-2.0-flash-exp:free"),
+                    source_name="Persian",
+                ))
+        elif name == "google" and GoogleTranslator:
+            providers.append(_DeepTranslatorProvider(GoogleTranslator, "google", min_interval=0.3, source="fa"))
+        elif name in {"mymemory", "my-memory"} and MyMemoryTranslator:
+            providers.append(_DeepTranslatorProvider(
+                MyMemoryTranslator, "mymemory", min_interval=1.0, source="fa-IR",
+            ))
+        elif name == "libretranslate":
+            endpoint = os.getenv("SHOPVPN_LIBRETRANSLATE_URL", "").strip()
+            if endpoint:
+                providers.append(_LibreTranslateProvider(endpoint, os.getenv("SHOPVPN_LIBRETRANSLATE_API_KEY"), source="fa"))
+    return providers
+
+
+def translate_fa_to_english_partial(texts: Iterable[str], *, cached: Dict[str, str] | None = None, db=None) -> tuple[Dict[str, str], list[str]]:
+    """Translate raw Persian admin-panel strings straight into English.
+
+    Keyed by the original Persian text (unlike the fa->en->target pipeline
+    used for other languages, there is no intermediate English string to key
+    on here). Returns (translations, failure messages); never raises, so
+    partial progress is kept even if a provider is down.
+    """
+    values = list(dict.fromkeys(str(x) for x in texts if str(x).strip()))
+    result: Dict[str, str] = {}
+    cached = cached or {}
+    for value in values:
+        candidate = cached.get(value) or _SHARED_CACHE.get(("en", value))
+        if candidate and str(candidate).strip() and validate(value, str(candidate), "en")[0]:
+            result[value] = str(candidate)
+    remaining = [x for x in values if x not in result]
+    if not remaining:
+        return result, []
+    providers = _fa_en_providers(db)
+    if not providers:
+        raise RuntimeError("No translation provider is configured. Install deep-translator, set GEMINI_API_KEY or configure LibreTranslate.")
+    failures: list[str] = []
+    for provider in providers:
+        if not remaining:
+            break
+        protected = {value: protect(value) for value in remaining}
+        still: list[str] = []
+        provider_failed = False
+        for i in range(0, len(remaining), BATCH_SIZE):
+            batch = remaining[i:i + BATCH_SIZE]
+            if provider_failed:
+                still.extend(batch)
+                continue
+            try:
+                translated = provider.translate_batch([protected[v][0] for v in batch], "en", {})
+                if not translated or len(translated) != len(batch):
+                    raise TranslationProviderError(f"{provider.name}: incomplete batch")
+            except Exception as exc:
+                failures.append(str(exc))
+                log.warning("Translation provider %s failed for fa->en: %s", provider.name, exc)
+                provider_failed = True
+                still.extend(batch)
+                continue
+            for src, dst in zip(batch, translated):
+                restored = restore(str(dst or ""), protected[src][1])
+                ok, reason = validate(src, restored, "en")
+                if ok:
+                    result[src] = restored
+                    _SHARED_CACHE[("en", src)] = restored
+                else:
+                    failures.append(f"{provider.name}: rejected {src!r}: {reason}")
+                    still.append(src)
+        remaining = still
+    return result, failures
+
+
+def translate_many_to_english(texts: Iterable[str], *, cached: Dict[str, str] | None = None, db=None) -> Dict[str, str]:
+    """Translate every Persian string into English or raise; keeps partial progress via cached."""
+    texts = [str(x) for x in texts]
+    result, failures = translate_fa_to_english_partial(texts, cached=cached, db=db)
+    values = list(dict.fromkeys(x for x in texts if x.strip()))
+    missing = [x for x in values if x not in result]
+    if missing:
+        raise RuntimeError("All translation providers failed; missing %d item(s): %s" % (len(missing), "; ".join(failures[-3:])))
+    return result
 
 
 def provider_status(db=None) -> list[dict]:
