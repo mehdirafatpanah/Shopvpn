@@ -168,6 +168,8 @@ MSG_EN[sec_api]="INTEGRATION API"
 MSG_FA[sec_api]="API یکپارچه‌سازی"
 MSG_EN[sec_advanced]="ADVANCED"
 MSG_FA[sec_advanced]="پیشرفته"
+MSG_EN[sec_translation]="AUTO-TRANSLATION"
+MSG_FA[sec_translation]="ترجمه خودکار"
 MSG_EN[pause_prompt]="Press Enter to return to the menu..."
 MSG_FA[pause_prompt]="برای بازگشت به منو، Enter را بزن..."
 
@@ -537,16 +539,54 @@ MSG_EN[menu_26]="Update integration API"
 MSG_FA[menu_26]="آپدیت API یکپارچه‌سازی"
 MSG_EN[menu_23]="Change admin panel username/password"
 MSG_FA[menu_23]="تغییر نام کاربری و رمز عبور پنل مدیریت وب"
+MSG_EN[menu_27]="Install / manage self-hosted LibreTranslate (pip, no Docker, free, no key, no limits)"
+MSG_FA[menu_27]="نصب/مدیریت LibreTranslate اختصاصی (با pip، بدون Docker، رایگان، بدون کلید و محدودیت)"
+MSG_EN[menu_28]="Remove LibreTranslate"
+MSG_FA[menu_28]="حذف LibreTranslate"
 MSG_EN[menu_lang]="Language / زبان (English ⇄ فارسی)"
 MSG_FA[menu_lang]="Language / زبان (English ⇄ فارسی)"
 MSG_EN[menu_0]="Exit"
 MSG_FA[menu_0]="خروج"
-MSG_EN[enter_choice_prompt]="Enter choice [0-23, L]: "
-MSG_FA[enter_choice_prompt]="یک گزینه انتخاب کن [0-23, L]: "
+MSG_EN[enter_choice_prompt]="Enter choice [0-28, L]: "
+MSG_FA[enter_choice_prompt]="یک گزینه انتخاب کن [0-28, L]: "
 MSG_EN[invalid_choice]="Invalid option."
 MSG_FA[invalid_choice]="گزینه نامعتبر است."
 MSG_EN[goodbye]="Goodbye 👋"
 MSG_FA[goodbye]="خدانگهدار 👋"
+
+# LibreTranslate self-hosted install / لغات نصب LibreTranslate اختصاصی
+MSG_EN[lt_header]="Self-hosted LibreTranslate"
+MSG_FA[lt_header]="LibreTranslate اختصاصی (self-hosted)"
+MSG_EN[lt_installing_deps]="📦 Making sure Python/venv are installed..."
+MSG_FA[lt_installing_deps]="📦 اطمینان از نصب بودن Python/venv..."
+MSG_EN[lt_venv_failed]="✗ Failed to create the virtual environment."
+MSG_FA[lt_venv_failed]="✗ ساخت virtual environment ناموفق بود."
+MSG_EN[lt_installing_pip]="⬇️ Installing LibreTranslate via pip (downloads translation models, may take several minutes and needs a few GB of free disk)..."
+MSG_FA[lt_installing_pip]="⬇️ در حال نصب LibreTranslate با pip (مدل‌های ترجمه دانلود می‌شود، ممکن است چند دقیقه طول بکشد و چند گیگابایت فضای دیسک لازم دارد)..."
+MSG_EN[lt_pip_failed]="✗ pip install failed. Last lines of the log:"
+MSG_FA[lt_pip_failed]="✗ نصب با pip ناموفق بود. آخرین خطوط لاگ:"
+MSG_EN[lt_writing_service]="⚙️ Creating the systemd service..."
+MSG_FA[lt_writing_service]="⚙️ در حال ساخت سرویس systemd..."
+MSG_EN[lt_already_installed]="⚠️ A LibreTranslate service already exists on this server."
+MSG_FA[lt_already_installed]="⚠️ یک سرویس LibreTranslate از قبل روی این سرور وجود دارد."
+MSG_EN[lt_confirm_reinstall]="Remove it and reinstall fresh? (type yes to confirm): "
+MSG_FA[lt_confirm_reinstall]="حذف و نصب دوباره از صفر؟ (برای تأیید yes بنویس): "
+MSG_EN[lt_waiting_ready]="⏳ Waiting for language models to load (first run only, can take a few minutes)"
+MSG_FA[lt_waiting_ready]="⏳ در انتظار بارگذاری مدل‌های زبان (فقط بار اول، ممکن است چند دقیقه طول بکشد)"
+MSG_EN[lt_ready]="✅ LibreTranslate is up and answering requests."
+MSG_FA[lt_ready]="✅ LibreTranslate بالا آمد و به درخواست‌ها پاسخ می‌دهد."
+MSG_EN[lt_not_ready_yet]="⚠️ Still not answering after a few minutes; it may still be downloading language models in the background. Check again shortly with: sudo journalctl -u %s -n 50 --no-pager"
+MSG_FA[lt_not_ready_yet]="⚠️ بعد از چند دقیقه هنوز پاسخ نمی‌دهد؛ ممکن است هنوز در حال دانلود مدل‌های زبان در پس‌زمینه باشد. کمی بعد با این دستور بررسی کن: sudo journalctl -u %s -n 50 --no-pager"
+MSG_EN[lt_env_saved]="✅ Saved the LibreTranslate address in .env (SHOPVPN_LIBRETRANSLATE_URL)."
+MSG_FA[lt_env_saved]="✅ آدرس LibreTranslate در .env ذخیره شد (SHOPVPN_LIBRETRANSLATE_URL)."
+MSG_EN[lt_done]="🎉 Done. LibreTranslate now runs automatically as a free, unlimited translation fallback — no API key needed."
+MSG_FA[lt_done]="🎉 تمام شد. از این به بعد LibreTranslate به‌صورت خودکار به‌عنوان جایگزین رایگان و بدون محدودیت ترجمه استفاده می‌شود — بدون نیاز به هیچ کلید API."
+MSG_EN[lt_remove_warn]="⚠️ This stops and removes the LibreTranslate service and its setting from .env. Bot translation will fall back to Google/MyMemory only."
+MSG_FA[lt_remove_warn]="⚠️ این کار سرویس LibreTranslate و تنظیمش در .env را حذف می‌کند. ترجمه بات فقط به Google/MyMemory برمی‌گردد."
+MSG_EN[lt_removed]="✅ LibreTranslate removed."
+MSG_FA[lt_removed]="✅ LibreTranslate حذف شد."
+MSG_EN[lt_not_installed]="ℹ️ LibreTranslate is not installed on this server."
+MSG_FA[lt_not_installed]="ℹ️ LibreTranslate روی این سرور نصب نیست."
 
 # t <key> [args...] -> prints the localized, formatted string for the
 # current APP_LANG (falls back to English if a key is somehow missing).
@@ -2025,6 +2065,137 @@ remove_api() {
 }
 
 # ---------------------------------------------------------------------------
+# Action: install/manage a self-hosted LibreTranslate instance natively (pip
+# + venv + systemd, no Docker) and wire it into .env
+# (SHOPVPN_LIBRETRANSLATE_URL) so translation_engine.py automatically picks
+# it up as a free fallback provider alongside Gemini/Google/MyMemory. Bound
+# to 127.0.0.1 only: the bot talks to it locally, it is never exposed to the
+# internet.
+# عملیات: نصب/مدیریت یک نمونه اختصاصی LibreTranslate به‌صورت native (بدون
+# Docker) با pip در یک venv جدا و سرویس systemd، و اتصال آن به .env تا موتور
+# ترجمه به‌صورت خودکار از آن به‌عنوان جایگزین رایگان استفاده کند.
+# ---------------------------------------------------------------------------
+LIBRETRANSLATE_DIR="$HOME/libretranslate"
+LIBRETRANSLATE_SERVICE="${SERVICE_NAME}-libretranslate"
+LIBRETRANSLATE_PORT="5050"
+
+setup_libretranslate() {
+    section_header "$(t lt_header)"
+
+    if systemctl list-units --full -all 2>/dev/null | grep -q "${LIBRETRANSLATE_SERVICE}.service"; then
+        echo -e "${YELLOW}$(t lt_already_installed)${RESET}"
+        read -rp "$(t lt_confirm_reinstall)" CONFIRM
+        [ "$CONFIRM" != "yes" ] && { echo -e "${YELLOW}$(t cancelled)${RESET}"; return; }
+        sudo systemctl stop "$LIBRETRANSLATE_SERVICE" >/dev/null 2>&1
+    fi
+
+    echo -e "${CYAN}$(t lt_installing_deps)${RESET}"
+    timeout 120 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 \
+        apt-get install -y -qq python3 python3-pip python3-venv >/dev/null 2>&1
+
+    mkdir -p "$LIBRETRANSLATE_DIR"
+    if [ ! -d "$LIBRETRANSLATE_DIR/venv" ]; then
+        python3 -m venv "$LIBRETRANSLATE_DIR/venv" || { echo -e "${RED}$(t lt_venv_failed)${RESET}"; return; }
+    fi
+
+    echo -e "${CYAN}$(t lt_installing_pip)${RESET}"
+    if ! "$LIBRETRANSLATE_DIR/venv/bin/pip" install --quiet --upgrade pip libretranslate >/tmp/lt_pip.log 2>&1; then
+        echo -e "${RED}$(t lt_pip_failed)${RESET}"
+        tail -5 /tmp/lt_pip.log | sed "s/^/    ${DIM}/" | sed "s/\$/${RESET}/"
+        return
+    fi
+
+    # Only the languages ShopVPN's LANGUAGE_CATALOG (i18n.py) actually ships
+    # are loaded: keeps memory/disk use down and the first-run model
+    # download fast instead of pulling all ~30 languages LibreTranslate
+    # supports.
+    local LOAD_ONLY="en,fa,tr,ar,ru,de,fr,es,it,pt,zh,ja,ko,nl,pl,uk"
+
+    echo -e "${CYAN}$(t lt_writing_service)${RESET}"
+    sudo tee "/etc/systemd/system/${LIBRETRANSLATE_SERVICE}.service" >/dev/null <<EOF
+[Unit]
+Description=ShopVPN self-hosted LibreTranslate
+After=network.target
+
+[Service]
+Type=simple
+User=$(whoami)
+WorkingDirectory=$LIBRETRANSLATE_DIR
+ExecStart=$LIBRETRANSLATE_DIR/venv/bin/libretranslate --host 127.0.0.1 --port ${LIBRETRANSLATE_PORT} --load-only ${LOAD_ONLY} --update-models --disable-web-ui
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now "$LIBRETRANSLATE_SERVICE" >/dev/null 2>&1
+
+    echo -ne "${CYAN}$(t lt_waiting_ready)${RESET}"
+    local waited=0 ready=0
+    while [ "$waited" -lt 300 ]; do
+        if curl -fsS "http://127.0.0.1:${LIBRETRANSLATE_PORT}/languages" >/dev/null 2>&1; then
+            ready=1
+            break
+        fi
+        sleep 5
+        waited=$((waited + 5))
+        printf '.'
+    done
+    echo ""
+
+    if [ "$ready" = "1" ]; then
+        echo -e "${GREEN}$(t lt_ready)${RESET}"
+    else
+        echo -e "${YELLOW}$(t lt_not_ready_yet "$LIBRETRANSLATE_SERVICE")${RESET}"
+    fi
+
+    local ENV_FILE="$INSTALL_DIR/.env"
+    touch "$ENV_FILE"
+    if grep -q "^SHOPVPN_LIBRETRANSLATE_URL=" "$ENV_FILE" 2>/dev/null; then
+        sed -i "s|^SHOPVPN_LIBRETRANSLATE_URL=.*|SHOPVPN_LIBRETRANSLATE_URL=http://127.0.0.1:${LIBRETRANSLATE_PORT}|" "$ENV_FILE"
+    else
+        echo "SHOPVPN_LIBRETRANSLATE_URL=http://127.0.0.1:${LIBRETRANSLATE_PORT}" >> "$ENV_FILE"
+    fi
+    echo -e "${GREEN}$(t lt_env_saved)${RESET}"
+
+    if [ -d "$INSTALL_DIR" ] && systemctl list-units --full -all 2>/dev/null | grep -q "${SERVICE_NAME}.service"; then
+        echo -e "${CYAN}$(t restarting_bot_service)${RESET}"
+        sudo systemctl restart "$SERVICE_NAME"
+    fi
+
+    echo ""
+    echo -e "${GREEN}${BOLD}$(t lt_done)${RESET}"
+}
+
+remove_libretranslate() {
+    if ! systemctl list-units --full -all 2>/dev/null | grep -q "${LIBRETRANSLATE_SERVICE}.service"; then
+        echo -e "${YELLOW}$(t lt_not_installed)${RESET}"
+        return
+    fi
+
+    echo -e "${RED}${BOLD}$(t lt_remove_warn)${RESET}"
+    read -rp "$(t confirm_prompt)" CONFIRM
+    [ "$CONFIRM" != "yes" ] && { echo -e "${YELLOW}$(t cancelled)${RESET}"; return; }
+
+    sudo systemctl stop "$LIBRETRANSLATE_SERVICE" >/dev/null 2>&1
+    sudo systemctl disable "$LIBRETRANSLATE_SERVICE" >/dev/null 2>&1
+    sudo rm -f "/etc/systemd/system/${LIBRETRANSLATE_SERVICE}.service"
+    sudo systemctl daemon-reload
+    rm -rf "$LIBRETRANSLATE_DIR"
+
+    local ENV_FILE="$INSTALL_DIR/.env"
+    [ -f "$ENV_FILE" ] && sed -i "/^SHOPVPN_LIBRETRANSLATE_URL=/d" "$ENV_FILE"
+
+    if [ -d "$INSTALL_DIR" ] && systemctl list-units --full -all 2>/dev/null | grep -q "${SERVICE_NAME}.service"; then
+        sudo systemctl restart "$SERVICE_NAME"
+    fi
+
+    echo -e "${GREEN}$(t lt_removed)${RESET}"
+}
+
+# ---------------------------------------------------------------------------
 # Main menu / منوی اصلی
 # ---------------------------------------------------------------------------
 while true; do
@@ -2060,6 +2231,9 @@ while true; do
     menu_item 24 menu_24
     menu_item 25 menu_25 "$RED"
     menu_item 26 menu_26
+    menu_section sec_translation
+    menu_item 27 menu_27
+    menu_item 28 menu_28 "$RED"
     menu_section sec_advanced
     menu_item 21 menu_21
     menu_item 22 menu_22
@@ -2098,6 +2272,8 @@ while true; do
         24) setup_api; pause ;;
         25) remove_api; pause ;;
         26) update_api; pause ;;
+        27) setup_libretranslate; pause ;;
+        28) remove_libretranslate; pause ;;
         [Ll]) toggle_lang ;;
         0) echo -e "${CYAN}$(t goodbye)${RESET}"; exit 0 ;;
         *) echo -e "${RED}$(t invalid_choice)${RESET}"; sleep 1 ;;
