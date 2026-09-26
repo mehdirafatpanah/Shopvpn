@@ -927,7 +927,7 @@
   async function loadCatalog(lang){
     ACTIVE_LANG=lang||'fa';
     CATALOG_READY=false;
-    if(ACTIVE_LANG==='fa'||ACTIVE_LANG==='en'){ CATALOG={}; CATALOG_READY=true; return; }
+    if(ACTIVE_LANG==='fa'){ CATALOG={}; CATALOG_READY=true; return; }
     if(CATALOG_LOADING) await CATALOG_LOADING;
     CATALOG_LOADING=(async()=>{
       try{
@@ -949,30 +949,38 @@
   function tr(s){
     const raw=String(s);
     if(ACTIVE_LANG==='fa') return raw;
+    if(ACTIVE_LANG==='en'){
+      // English is keyed by the original Persian text (there's no
+      // intermediate English string to key on the way other languages are),
+      // and falls back to the static word/fragment dictionary only until the
+      // server-side machine catalog catches up.
+      if(Object.prototype.hasOwnProperty.call(CATALOG,raw)) return CATALOG[raw];
+      return baseEnglish(raw);
+    }
     const en=baseEnglish(raw);
-    if(ACTIVE_LANG==='en') return en;
     if(Object.prototype.hasOwnProperty.call(CATALOG,en)) return CATALOG[en];
     if(VERBATIM.has(en)) return raw;
     return en;
   }
   async function translateMissing(root){
-    if(!root || ACTIVE_LANG==='fa'||ACTIVE_LANG==='en') return;
+    if(!root || ACTIVE_LANG==='fa') return;
     const texts=[]; const nodes=[];
     const w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);
     while(w.nextNode()){
       const n=w.currentNode, p=n.parentElement;
       if(!p||['SCRIPT','STYLE','NOSCRIPT','TEXTAREA'].includes(p.tagName)||p.closest('[data-no-auto-translate]')||p.classList.contains('mono')) continue;
-      const raw=n.nodeValue||''; const en=baseEnglish(raw).trim();
-      if(!en||CATALOG[en]||VERBATIM.has(en)) continue;
-      if(en.length>240||/^[\d\s.,:%+\-_/]+$/.test(en)) continue;
-      texts.push(en); nodes.push({n,en});
+      const raw0=n.nodeValue||'';
+      const key=(ACTIVE_LANG==='en'?raw0:baseEnglish(raw0)).trim();
+      if(!key||CATALOG[key]||VERBATIM.has(key)) continue;
+      if(key.length>240||/^[\d\s.,:%+\-_/]+$/.test(key)) continue;
+      texts.push(key); nodes.push({n,key});
     }
     if(!texts.length) return;
     try{
       const h=new Headers({'Content-Type':'application/json','X-Language':ACTIVE_LANG});
       if(tg?.initData) h.set('X-Init-Data',tg.initData);
       const r=await fetch('/api/i18n/translate-batch',{method:'POST',headers:h,credentials:'include',body:JSON.stringify({language:ACTIVE_LANG,texts:[...new Set(texts)].slice(0,50)})});
-      if(r.ok){ const d=await r.json(); Object.assign(CATALOG,d.catalog||{}); (d.verbatim||[]).forEach(x=>VERBATIM.add(x)); nodes.forEach(x=>{ if(CATALOG[x.en]) x.n.nodeValue=String(x.n.nodeValue).replace(x.en,CATALOG[x.en]); }); }
+      if(r.ok){ const d=await r.json(); Object.assign(CATALOG,d.catalog||{}); (d.verbatim||[]).forEach(x=>VERBATIM.add(x)); nodes.forEach(x=>{ if(CATALOG[x.key]) x.n.nodeValue=String(x.n.nodeValue).replace(x.key,CATALOG[x.key]); }); }
     }catch(e){}
   }
   async function apply(root){
