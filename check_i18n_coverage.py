@@ -6,7 +6,14 @@ import sys
 import i18n
 
 PERSIAN = re.compile(r"[\u0600-\u06ff]")
-CALLS = {"tr", "api_message", "localized"}
+# tr()/api_message()/localized() take the Persian text as arg 0.
+# db.get_text(key, default)/self.get_text(key, default) take it as arg 1 - the
+# actual UI string is the *default*, not the lookup key. This was previously
+# missed entirely, which is how ~1000 db.get_text() fallback strings in
+# handlers_admin.py/handlers_user.py ended up with zero i18n coverage without
+# this scanner ever flagging them.
+CALLS_ARG0 = {"tr", "api_message", "localized"}
+CALLS_ARG1 = {"get_text"}
 
 
 def _call_name(func):
@@ -16,7 +23,8 @@ def _call_name(func):
 
 
 def find_uncovered(root="."):
-    """Return Persian tr() literals and f-string templates that have no English translation."""
+    """Return Persian literals/f-string templates (from tr()-family calls and
+    db.get_text() defaults) that have no English translation."""
     known = set(i18n._TRANSLATIONS.get("en", {})) | set(i18n._PHRASE_TRANSLATIONS)
     literals, templates = {}, {}
     for dirpath, _, files in os.walk(root):
@@ -29,9 +37,16 @@ def find_uncovered(root="."):
             except (OSError, SyntaxError):
                 continue
             for node in ast.walk(tree):
-                if not (isinstance(node, ast.Call) and _call_name(node.func) in CALLS and node.args):
+                if not isinstance(node, ast.Call):
                     continue
-                arg = node.args[0]
+                name_ = _call_name(node.func)
+                if name_ in CALLS_ARG0 and node.args:
+                    arg_index = 0
+                elif name_ in CALLS_ARG1 and len(node.args) >= 2:
+                    arg_index = 1
+                else:
+                    continue
+                arg = node.args[arg_index]
                 if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                     text = arg.value
                     if PERSIAN.search(text) and text not in known and not i18n.dynamic_match(text):

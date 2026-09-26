@@ -419,7 +419,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     # ورود به پنل
     # -------------------------------------------------------------------
 
-    @router.message(F.text.func(lambda t: t == db.get_setting("btn_admin_panel")))
+    @router.message(F.text.func(lambda t: t in (db.get_setting("btn_admin_panel"), tr(db.get_setting("btn_admin_panel")))))
     async def open_admin_panel(message: Message, state: FSMContext):
         if not admin_only(message.from_user.id):
             return
