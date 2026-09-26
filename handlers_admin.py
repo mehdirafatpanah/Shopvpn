@@ -254,6 +254,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     # administration features for a dedicated reseller.
     full_access_bot = db.is_full_access_bot(is_main_bot)
     router = Router()
+    _bg_lang_tasks: set[str] = set()
 
     def admin_only(user_id: int) -> bool:
         return db.is_admin(user_id)
@@ -11090,6 +11091,45 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         )
         await call.answer()
 
+    async def _bg_generate_language(bot, code: str, admin_id: int):
+        """Keep retrying translation for `code` — combining every configured
+        provider each pass — until fully complete, however long that takes,
+        then flip it on and tell the admin who asked for it. No time limit:
+        the admin explicitly asked for patience over giving up."""
+        from translation_engine import sync_language
+        from i18n import LANGUAGE_CATALOG
+        delay = 30.0
+        try:
+            while True:
+                try:
+                    info = await asyncio.to_thread(sync_language, db, code, allow_network=True)
+                except Exception:
+                    logger.exception("زمینه‌ی تولید ترجمه‌ی زبان %s با خطا مواجه شد؛ تلاش مجدد.", code)
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 1.5, 300.0)
+                    continue
+                if info.get("status") == "busy":
+                    await asyncio.sleep(delay)
+                    continue
+                if not info.get("missing_count"):
+                    await asyncio.to_thread(db.enable_language, code, True)
+                    await asyncio.to_thread(db.log_admin_action, admin_id, "language_enable", code)
+                    name = LANGUAGE_CATALOG.get(code, {}).get("name", code)
+                    try:
+                        await bot.send_message(
+                            admin_id,
+                            tr(f"✅ ترجمه‌ی زبان {name} کامل شد و فعال گردید."),
+                        )
+                    except Exception:
+                        pass
+                    return
+                # هنوز چیزی باقی مانده؛ کمی صبر کن و دوباره با همه‌ی ارائه‌دهنده‌های
+                # پیکربندی‌شده (Gemini/OpenRouter/Google/MyMemory/LibreTranslate) تلاش کن
+                await asyncio.sleep(delay)
+                delay = min(delay * 1.3, 300.0)
+        finally:
+            _bg_lang_tasks.discard(code)
+
     @router.callback_query(F.data.startswith("adm_translation_lang_toggle:"))
     async def cb_admin_translation_lang_toggle(call: CallbackQuery):
         if not full_admin_only(call.from_user.id):
@@ -11104,24 +11144,18 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await asyncio.to_thread(db.disable_language, code)
             await asyncio.to_thread(db.log_admin_action, call.from_user.id, "language_disable", code)
             await call.answer(tr("⚪️ زبان غیرفعال شد."))
+        elif code in _bg_lang_tasks:
+            await call.answer(tr("⏳ تولید ترجمه‌ی این زبان از قبل در حال انجام است؛ صبر کن."), show_alert=True)
+            return
         else:
-            await call.answer(tr("⏳ در حال تولید ترجمه‌ها..."))
-            from translation_engine import generate_language, inspect_language
-            try:
-                await asyncio.to_thread(generate_language, db, code)
-                status = await asyncio.to_thread(inspect_language, db, code)
-                if status.get("missing_count"):
-                    raise RuntimeError(f"{status['missing_count']} ترجمه ناقص باقی ماند")
-                await asyncio.to_thread(db.enable_language, code, True)
-                await asyncio.to_thread(db.log_admin_action, call.from_user.id, "language_enable", code)
-            except Exception as exc:
-                await asyncio.to_thread(db.disable_language, code, automatic=True, error=str(exc)[:500])
-                await replace_admin_view(
-                    call,
-                    tr("⚠️ ترجمه خودکار این زبان کامل نشد؛ زبان فعال نشد. دوباره تلاش کن یا کلید Gemini تنظیم کن."),
-                    reply_markup=kb.translation_languages_kb(db),
-                )
-                return
+            _bg_lang_tasks.add(code)
+            asyncio.create_task(_bg_generate_language(call.bot, code, call.from_user.id))
+            await call.answer(
+                tr("⏳ تولید ترجمه در پس‌زمینه شروع شد؛ هرچقدر طول بکشد (حتی چند ساعت) ادامه می‌یابد "
+                   "و با ترکیب همه‌ی ارائه‌دهنده‌های فعال (از جمله LibreTranslate) تا اتمام کامل تلاش می‌کند. "
+                   "بعد از تکمیل، پیام تأیید برایت ارسال می‌شود."),
+                show_alert=True,
+            )
         await replace_admin_view(
             call,
             "🌍 مدیریت زبان‌ها\n\n"
