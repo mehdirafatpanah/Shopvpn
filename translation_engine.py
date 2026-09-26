@@ -182,12 +182,13 @@ class _DeepTranslatorProvider(_Provider):
     """
 
     def __init__(self, provider_cls, name: str, lang_map: Dict[str, str] | None = None,
-                 min_interval: float = 0.0, max_retries: int = 2):
+                 min_interval: float = 0.0, max_retries: int = 2, source: str = "en"):
         self.provider_cls = provider_cls
         self.name = name
         self.lang_map = lang_map or {}
         self.min_interval = min_interval
         self.max_retries = max_retries
+        self.source = source
         self._last_call = 0.0
         self._pace_lock = threading.Lock()
 
@@ -203,7 +204,7 @@ class _DeepTranslatorProvider(_Provider):
     def translate_batch(self, texts: list[str], target: str, contexts: Dict[str, str] | None = None) -> list[str]:
         target_code = self.lang_map.get(target, target)
         try:
-            translator = self.provider_cls(source="en", target=target_code)
+            translator = self.provider_cls(source=self.source, target=target_code)
         except Exception as exc:
             raise TranslationProviderError(f"{self.name}: {exc}") from exc
         out: list[str] = []
@@ -357,6 +358,7 @@ def _providers(target: str, db=None) -> list[_Provider]:
         elif name in {"mymemory", "my-memory"} and MyMemoryTranslator:
             providers.append(_DeepTranslatorProvider(
                 MyMemoryTranslator, "mymemory", lang_map=_MYMEMORY_LANG, min_interval=1.0,
+                source="en-US",
             ))
         elif name == "libretranslate":
             endpoint = os.getenv("SHOPVPN_LIBRETRANSLATE_URL", "").strip()
