@@ -34,6 +34,11 @@ _MYMEMORY_LANG = {
     "es": "es-ES", "it": "it-IT", "pt": "pt-PT", "zh": "zh-CN", "ja": "ja-JP",
     "ko": "ko-KR", "nl": "nl-NL", "pl": "pl-PL", "uk": "uk-UA",
 }
+# LibreTranslate's argos-translate models expose Chinese under the code
+# "zh-Hans" (per its own /languages endpoint), not the bare "zh" the rest of
+# ShopVPN's catalog uses; without this, every Chinese request 404s/errors on
+# a self-hosted LibreTranslate instance even though the model is installed.
+_LIBRETRANSLATE_LANG = {"zh": "zh-Hans"}
 GLOSSARY = (
     "ShopVPN, VPN, Telegram, Mini App, Stars, USDT stay untranslated. "
     "'Toman' stays 'Toman'. 'Config' means a VPN configuration. "
@@ -236,6 +241,7 @@ class _LibreTranslateProvider(_Provider):
         self.api_key = api_key
 
     def translate_batch(self, texts: list[str], target: str, contexts: Dict[str, str] | None = None) -> list[str]:
+        target = _LIBRETRANSLATE_LANG.get(target, target)
         out = []
         for text in texts:
             payload = {"q": text, "source": "en", "target": target, "format": "text"}
