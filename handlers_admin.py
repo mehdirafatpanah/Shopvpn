@@ -11091,6 +11091,58 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         )
         await call.answer()
 
+    @router.callback_query(F.data == "adm_lang_settings")
+    async def cb_admin_lang_settings(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await replace_admin_view(
+            call,
+            tr("🌐 زبان ادمین/کاربران") + "\n\n" +
+            tr("زبان نمایش این ربات رو می‌خوای فقط برای خودت عوض کنی یا برای همه‌ی کاربرانی که با ربات کار می‌کنن؟"),
+            reply_markup=kb.admin_lang_scope_kb(),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_lang_self")
+    async def cb_admin_lang_self(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await replace_admin_view(
+            call,
+            tr("زبان نمایش خودت رو انتخاب کن (روی بقیه‌ی کاربران اثر نداره):"),
+            reply_markup=kb.language_kb(db, back_callback="adm_lang_settings"),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_lang_all")
+    async def cb_admin_lang_all(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await replace_admin_view(
+            call,
+            tr("⚠️ زبان همه‌ی کاربران ربات عوض می‌شه، نه فقط زبان تو. یکی رو انتخاب کن:"),
+            reply_markup=kb.language_kb(db, back_callback="adm_lang_settings", callback_prefix="language_all"),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("language_all:"))
+    async def cb_admin_lang_all_set(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        from i18n import normalize_language, is_language_enabled, language_label
+        lang = normalize_language(call.data.split(":", 1)[1])
+        if not await asyncio.to_thread(is_language_enabled, db, lang):
+            await call.answer(tr("زبان در حال حاضر فعال نیست."), show_alert=True)
+            return
+        count = await asyncio.to_thread(db.set_all_users_language, lang)
+        await asyncio.to_thread(db.log_admin_action, call.from_user.id, "language_set_all", f"{lang}:{count}")
+        await call.answer(language_label(lang))
+        await replace_admin_view(
+            call,
+            tr("✅ زبان همه‌ی کاربران ربات تغییر کرد.") + f" ({count})",
+            reply_markup=kb.admin_back_kb("adm_lang_settings"),
+        )
+
     async def _activate_language(bot, code: str, admin_id: int):
         """Activate `code` right away after a fast sync of only the
         high-frequency catalog (main menu, common buttons/messages) — enough

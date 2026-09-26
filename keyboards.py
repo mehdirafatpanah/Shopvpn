@@ -55,21 +55,21 @@ def _miniapp_url(db, language: str = "") -> str:
 MINIAPP_BTN_TEXT = "✨ مینی‌اپ فروشگاه"
 LANGUAGE_BTN_TEXT = "🌐 زبان / Language"
 
-def language_kb(db=None, back_callback: str = "") -> InlineKeyboardMarkup:
+def language_kb(db=None, back_callback: str = "", callback_prefix: str = "language") -> InlineKeyboardMarkup:
     if db is not None and hasattr(db, "list_languages"):
         languages = [dict(r) for r in db.list_languages(enabled_only=True)]
         rows = []
         row = []
         for item in languages:
             text = f"{item.get('flag', '')} {item.get('native_name') or item.get('name') or item.get('code')}".strip()
-            row.append(InlineKeyboardButton(text=text, callback_data=f"language:{item['code']}"))
+            row.append(InlineKeyboardButton(text=text, callback_data=f"{callback_prefix}:{item['code']}"))
             if len(row) == 2:
                 rows.append(row); row = []
         if row:
             rows.append(row)
     else:
-        rows = [[InlineKeyboardButton(text=tr("🇮🇷 فارسی"), callback_data="language:fa"),
-                 InlineKeyboardButton(text="🇬🇧 English", callback_data="language:en")]]
+        rows = [[InlineKeyboardButton(text=tr("🇮🇷 فارسی"), callback_data=f"{callback_prefix}:fa"),
+                 InlineKeyboardButton(text="🇬🇧 English", callback_data=f"{callback_prefix}:en")]]
     if back_callback:
         rows.append([InlineKeyboardButton(text=tr("⬅️ حساب کاربری"), callback_data=back_callback)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -1394,6 +1394,7 @@ ADMIN_PANEL_ITEMS = [
     ("adm_set_support_contact", "📞 روش‌های ارتباط با پشتیبانی", "adm_set_support_contact"),
     ("adm_ai_support_settings", "🤖 دستیار هوشمند (سوالات متداول)", "adm_ai_support_settings"),
     ("adm_translation_settings", "🌐 ترجمه خودکار", "adm_translation_settings"),
+    ("adm_lang_settings", "🌐 زبان ادمین/کاربران", "adm_lang_settings"),
 ]
 
 ADMIN_PANEL_ITEMS += [
@@ -1488,6 +1489,7 @@ ADMIN_PANEL_CATEGORIES = [
         "adm_set_support_contact",
         "adm_ai_support_settings",
         "adm_translation_settings",
+        "adm_lang_settings",
     ]),
     ("appearance", "🎨 ظاهر و رنگ‌بندی", [
         "adm_edit_buttons",
@@ -1556,7 +1558,8 @@ def admin_panel_kb(db, is_main_bot: bool = True) -> InlineKeyboardMarkup:
         visible_items = [k for k in item_keys if _is_item_visible(db, k, is_main_bot)]
         if not visible_items:
             continue
-        label = db.get_setting(f"catlbl_{cat_key}", cat_label)
+        custom_label = db.get_setting(f"catlbl_{cat_key}", "")
+        label = custom_label if custom_label else tr(cat_label)
         current_row.append(_styled_inline(db, label, f"adm_cat:{cat_key}", f"catlbl_{cat_key}_style"))
         if len(current_row) == 2:
             rows.append(current_row)
@@ -1579,9 +1582,10 @@ def admin_category_kb(db, is_main_bot: bool, cat_key: str) -> InlineKeyboardMark
             continue
         label, callback_data = _admin_item_label_and_cb(key)
         if key in _EXTRA_PANEL_ITEM_LABELS:
-            current_row.append(InlineKeyboardButton(text=label, callback_data=callback_data))
+            current_row.append(InlineKeyboardButton(text=tr(label), callback_data=callback_data))
         else:
-            label = db.get_setting(f"{key}_label", label)
+            custom_label = db.get_setting(f"{key}_label", "")
+            label = custom_label if custom_label else tr(label)
             current_row.append(_styled_inline(db, label, callback_data, f"{key}_style"))
         if len(current_row) == 2:
             rows.append(current_row)
@@ -1595,8 +1599,8 @@ def admin_category_kb(db, is_main_bot: bool, cat_key: str) -> InlineKeyboardMark
 def admin_category_label(cat_key: str) -> str:
     for key, label, _ in ADMIN_PANEL_CATEGORIES:
         if key == cat_key:
-            return label
-    return "🔧 پنل مدیریت"
+            return tr(label)
+    return tr("🔧 پنل مدیریت")
 
 
 def admin_backup_menu_kb(show_full_backup: bool = False) -> InlineKeyboardMarkup:
@@ -1994,6 +1998,15 @@ def admin_back_kb(callback_data="adm_back_panel") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text=tr("⬅️ بازگشت به پنل مدیریت"), callback_data=callback_data)]]
     )
+
+
+def admin_lang_scope_kb() -> InlineKeyboardMarkup:
+    """انتخاب اینکه زبان فقط برای همین ادمین عوض بشه یا برای همه‌ی کاربران ربات."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=tr("👤 فقط برای من (این ادمین)"), callback_data="adm_lang_self")],
+        [InlineKeyboardButton(text=tr("🌍 برای همه‌ی کاربران ربات"), callback_data="adm_lang_all")],
+        [InlineKeyboardButton(text=tr("⬅️ بازگشت به پنل مدیریت"), callback_data="adm_back_panel")],
+    ])
 
 
 def user_full_stats_kb(tg_id: int, is_blocked: bool = False) -> InlineKeyboardMarkup:
