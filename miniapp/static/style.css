@@ -1009,6 +1009,9 @@ textarea.input { font-family: var(--font-mono); min-height: 90px; }
   transition: color 0.15s ease;
   cursor: pointer; -webkit-tap-highlight-color: transparent;
 }
+#tabbar button span {
+  display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+}
 #tabbar button svg { width: 22px; height: 22px; }
 #tabbar button .ic-filled { display: none; }
 #tabbar button.active .ic-outline { display: none; }

@@ -925,10 +925,18 @@
   let CATALOG_READY=false;
   const tg=window.Telegram?.WebApp;
   async function loadCatalog(lang){
-    ACTIVE_LANG=lang||'fa';
+    const target=lang||'fa';
+    if(target==='fa'){ ACTIVE_LANG='fa'; CATALOG={}; CATALOG_READY=true; return; }
+    // apply() runs on every DOM mutation (i.e. every in-app screen change,
+    // since this is a single-page app), so without this guard the entire
+    // server catalog was being re-fetched on every navigation instead of
+    // reusing what's already loaded in memory — unlike the bot side, where a
+    // translation is fetched once and reused. Only refetch when the language
+    // actually changes.
+    if(ACTIVE_LANG===target && CATALOG_READY) return;
+    ACTIVE_LANG=target;
     CATALOG_READY=false;
-    if(ACTIVE_LANG==='fa'){ CATALOG={}; CATALOG_READY=true; return; }
-    if(CATALOG_LOADING) await CATALOG_LOADING;
+    if(CATALOG_LOADING){ await CATALOG_LOADING; if(CATALOG_READY) return; }
     CATALOG_LOADING=(async()=>{
       try{
         const h=new Headers({'X-Language':ACTIVE_LANG});
