@@ -369,8 +369,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn/main
 2. Clones or updates the project
 3. Creates the Python virtual environment
 4. Installs required packages
-5. Creates/configures `.env`
-6. Creates the systemd service
+5. Installs/updates the local translation runtime and language models automatically
+6. Creates/configures `.env`
+7. Creates the systemd service
 7. Starts the bot and keeps it running after server reboots
 
 ### Basic service commands
@@ -382,7 +383,7 @@ sudo systemctl restart v2raybot
 sudo systemctl stop v2raybot
 ```
 
-The same one-line installer can be run again for future updates.
+The same one-line installer can be run again for future updates. Translation runtime and language models are installed/updated automatically; no manual translation setup is required.
 
 </details>
 

@@ -133,6 +133,7 @@ def _patch_method_texts(method, generated: dict) -> None:
                 pass
 
     markup = getattr(method, "reply_markup", None)
+    # Inline keyboard buttons.
     rows = getattr(markup, "inline_keyboard", None)
     if rows:
         for row in rows:
@@ -144,14 +145,12 @@ def _patch_method_texts(method, generated: dict) -> None:
                     except Exception:
                         pass
 
-    # Reply keyboards are the main menu in ShopVPN.  Previously only inline
-    # keyboards were patched, so the translation was correctly generated and
-    # saved in DB but the user still saw the original English fallback in the
-    # bottom keyboard.  Patch every KeyboardButton in the regular keyboard as
-    # well, using the same replacements.
-    reply_rows = getattr(markup, "keyboard", None)
-    if reply_rows:
-        for row in reply_rows:
+    # Reply keyboard buttons. The main ShopVPN menu uses this structure;
+    # omitting it meant a translation could be generated and saved correctly
+    # while Telegram still received the original English button labels.
+    rows = getattr(markup, "keyboard", None)
+    if rows:
+        for row in rows:
             for button in row:
                 text = getattr(button, "text", None)
                 if isinstance(text, str):

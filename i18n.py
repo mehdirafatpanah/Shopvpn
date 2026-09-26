@@ -606,6 +606,35 @@ def reset_language(token):
 def get_language() -> str:
     return _current_language.get()
 
+def _english_source_text(text: str) -> Optional[str]:
+    """Return the canonical English source key for a UI string.
+
+    A large part of the bot builds buttons from database settings. Those
+    settings can already contain the English label (for example ``My account``)
+    rather than the original Persian key. Older code only recognized the
+    Persian->English mapping, so such labels bypassed lazy translation and
+    were sent verbatim forever.
+
+    We only accept exact strings that belong to ShopVPN's known UI catalog;
+    arbitrary user/admin content is never auto-translated by this helper.
+    """
+    value = str(text or "")
+    if not value.strip():
+        return None
+    if value in _TRANSLATIONS.get("en", {}).values():
+        return value
+    if value in _PHRASE_TRANSLATIONS.values():
+        return value
+    if value in _FRAGMENT_TRANSLATIONS.values():
+        return value
+    if value in _WORD_TRANSLATIONS.values():
+        return value
+    for _fa, en_template in _DYNAMIC_PHRASES:
+        if value == numbered_template(en_template):
+            return value
+    return None
+
+
 def tr(text: str, language: Optional[str] = None) -> str:
     if text is None:
         return text
@@ -623,6 +652,8 @@ def tr(text: str, language: Optional[str] = None) -> str:
     catalog_value = catalog.get(text)
     if catalog_value:
         return catalog_value
+
+    # Normal source path: Persian source -> canonical English key.
     english = _TRANSLATIONS.get("en", {}).get(text) or _PHRASE_TRANSLATIONS.get(text)
     if english:
         value = catalog.get(english)
@@ -630,6 +661,18 @@ def tr(text: str, language: Optional[str] = None) -> str:
             return value
         note_missing(english)
         return english
+
+    # Important second path: the source is already English. This is common for
+    # configurable menu labels and DB-backed system text. Treat it exactly like
+    # any other known catalog entry so it can be translated lazily and cached.
+    english = _english_source_text(text)
+    if english:
+        value = catalog.get(english)
+        if value:
+            return value
+        note_missing(english)
+        return english
+
     matched = dynamic_match(text)
     if matched:
         template, values = matched
@@ -638,19 +681,6 @@ def tr(text: str, language: Optional[str] = None) -> str:
             note_missing(template)
             value = template
         return fill_template(value, values)
-
-    # Some installations store customized menu labels directly in English
-    # (for example ``Lucky wheel`` or ``Contact support``).  They are already
-    # the English source text, so the old dynamic-language path treated them as
-    # arbitrary user text and never queued them for translation.  Recognize
-    # every known English catalog value as a translatable source as well as the
-    # Persian key.  This is especially important for persisted menu settings.
-    english_sources = set(_TRANSLATIONS.get("en", {}).values())
-    english_sources.update(_PHRASE_TRANSLATIONS.values())
-    english_sources.update(_FRAGMENT_TRANSLATIONS.values())
-    english_sources.update(_WORD_TRANSLATIONS.values())
-    if text in english_sources:
-        note_missing(text)
     return text
 
 def api_message(text: str, language: Optional[str] = None) -> str:

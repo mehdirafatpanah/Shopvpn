@@ -539,8 +539,8 @@ MSG_EN[menu_26]="Update integration API"
 MSG_FA[menu_26]="آپدیت API یکپارچه‌سازی"
 MSG_EN[menu_23]="Change admin panel username/password"
 MSG_FA[menu_23]="تغییر نام کاربری و رمز عبور پنل مدیریت وب"
-MSG_EN[menu_27]="Install / manage self-hosted LibreTranslate (pip, no Docker, free, no key, no limits)"
-MSG_FA[menu_27]="نصب/مدیریت LibreTranslate اختصاصی (با pip، بدون Docker، رایگان، بدون کلید و محدودیت)"
+MSG_EN[menu_27]="Install / update local translation runtime (automatic)"
+MSG_FA[menu_27]="نصب/آپدیت خودکار موتور ترجمه محلی"
 MSG_EN[menu_28]="Remove LibreTranslate"
 MSG_FA[menu_28]="حذف LibreTranslate"
 MSG_EN[menu_lang]="Language / زبان (English ⇄ فارسی)"
@@ -581,8 +581,8 @@ MSG_EN[lt_env_saved]="✅ Saved the LibreTranslate address in .env (SHOPVPN_LIBR
 MSG_FA[lt_env_saved]="✅ آدرس LibreTranslate در .env ذخیره شد (SHOPVPN_LIBRETRANSLATE_URL)."
 MSG_EN[lt_done]="🎉 Done. LibreTranslate now runs automatically as a free, unlimited translation fallback — no API key needed."
 MSG_FA[lt_done]="🎉 تمام شد. از این به بعد LibreTranslate به‌صورت خودکار به‌عنوان جایگزین رایگان و بدون محدودیت ترجمه استفاده می‌شود — بدون نیاز به هیچ کلید API."
-MSG_EN[lt_remove_warn]="⚠️ This stops and removes the LibreTranslate service and its setting from .env. Bot translation will fall back to Google/MyMemory only."
-MSG_FA[lt_remove_warn]="⚠️ این کار سرویس LibreTranslate و تنظیمش در .env را حذف می‌کند. ترجمه بات فقط به Google/MyMemory برمی‌گردد."
+MSG_EN[lt_remove_warn]="⚠️ This removes the local LibreTranslate fallback. Argos local models remain available for translation."
+MSG_FA[lt_remove_warn]="⚠️ این کار LibreTranslate محلی را حذف می‌کند. مدل‌های محلی Argos همچنان برای ترجمه در دسترس می‌مانند."
 MSG_EN[lt_removed]="✅ LibreTranslate removed."
 MSG_FA[lt_removed]="✅ LibreTranslate حذف شد."
 MSG_EN[lt_not_installed]="ℹ️ LibreTranslate is not installed on this server."
@@ -772,6 +772,11 @@ EOF
         echo -e "${GREEN}$(t env_exists)${RESET}"
     fi
 
+    echo -e "${CYAN}🌍 نصب خودکار موتور ترجمه محلی و مدل‌های زبان...${RESET}"
+    if ! bash "$INSTALL_DIR/setup_local_translation.sh"; then
+        echo -e "${YELLOW}⚠️ نصب موتور ترجمه کامل نشد؛ بات ادامه می‌دهد و در آپدیت بعدی دوباره تلاش می‌کند.${RESET}"
+    fi
+
     echo -e "${CYAN}$(t creating_service)${RESET}"
     SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
     sudo bash -c "cat > $SERVICE_FILE" <<EOF
@@ -820,7 +825,7 @@ update_bot() {
     systemctl list-units --full -all | grep -q "${PANEL_SERVICE}.service" && has_panel=1
     systemctl list-units --full -all | grep -q "${API_SERVICE}.service" && has_api=1
 
-    local total=3
+    local total=4
     [ "$has_miniapp" = "1" ] && total=$((total+1))
     [ "$has_panel" = "1" ] && total=$((total+1))
     [ "$has_api" = "1" ] && total=$((total+1))
@@ -833,6 +838,9 @@ update_bot() {
 
     step=$((step+1))
     run_step "$step" "$total" "$(t updating_packages)" bash -c "source '$INSTALL_DIR/venv/bin/activate' && pip install -r requirements.txt --quiet && deactivate" || failed=1
+
+    step=$((step+1))
+    run_step "$step" "$total" "🌍 Updating local translation runtime/models" bash -c "bash '$INSTALL_DIR/setup_local_translation.sh'" || failed=1
 
     step=$((step+1))
     run_step "$step" "$total" "$(t restarting_bot_service)" bash -c "sudo systemctl restart '$SERVICE_NAME' && sleep 2" || failed=1
@@ -2065,108 +2073,29 @@ remove_api() {
 }
 
 # ---------------------------------------------------------------------------
-# Action: install/manage a self-hosted LibreTranslate instance natively (pip
-# + venv + systemd, no Docker) and wire it into .env
-# (SHOPVPN_LIBRETRANSLATE_URL) so translation_engine.py automatically picks
-# it up as a free fallback provider alongside Gemini/Google/MyMemory. Bound
-# to 127.0.0.1 only: the bot talks to it locally, it is never exposed to the
-# internet.
-# عملیات: نصب/مدیریت یک نمونه اختصاصی LibreTranslate به‌صورت native (بدون
-# Docker) با pip در یک venv جدا و سرویس systemd، و اتصال آن به .env تا موتور
-# ترجمه به‌صورت خودکار از آن به‌عنوان جایگزین رایگان استفاده کند.
+# Action: install/manage the project-owned local translation runtime.
+# Everything is automated: Argos models + isolated LibreTranslate fallback.
 # ---------------------------------------------------------------------------
-LIBRETRANSLATE_DIR="$HOME/libretranslate"
 LIBRETRANSLATE_SERVICE="${SERVICE_NAME}-libretranslate"
-LIBRETRANSLATE_PORT="5050"
 
 setup_libretranslate() {
     section_header "$(t lt_header)"
-
-    if systemctl list-units --full -all 2>/dev/null | grep -q "${LIBRETRANSLATE_SERVICE}.service"; then
-        echo -e "${YELLOW}$(t lt_already_installed)${RESET}"
-        read -rp "$(t lt_confirm_reinstall)" CONFIRM
-        [ "$CONFIRM" != "yes" ] && { echo -e "${YELLOW}$(t cancelled)${RESET}"; return; }
-        sudo systemctl stop "$LIBRETRANSLATE_SERVICE" >/dev/null 2>&1
-    fi
-
-    echo -e "${CYAN}$(t lt_installing_deps)${RESET}"
-    timeout 120 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 \
-        apt-get install -y -qq python3 python3-pip python3-venv >/dev/null 2>&1
-
-    mkdir -p "$LIBRETRANSLATE_DIR"
-    if [ ! -d "$LIBRETRANSLATE_DIR/venv" ]; then
-        python3 -m venv "$LIBRETRANSLATE_DIR/venv" || { echo -e "${RED}$(t lt_venv_failed)${RESET}"; return; }
-    fi
-
-    echo -e "${CYAN}$(t lt_installing_pip)${RESET}"
-    if ! "$LIBRETRANSLATE_DIR/venv/bin/pip" install --quiet --upgrade pip libretranslate >/tmp/lt_pip.log 2>&1; then
-        echo -e "${RED}$(t lt_pip_failed)${RESET}"
-        tail -5 /tmp/lt_pip.log | sed "s/^/    ${DIM}/" | sed "s/\$/${RESET}/"
+    if [ ! -f "$INSTALL_DIR/setup_local_translation.sh" ]; then
+        echo -e "${RED}$(t bot_not_installed)${RESET}"
         return
     fi
 
-    # Only the languages ShopVPN's LANGUAGE_CATALOG (i18n.py) actually ships
-    # are loaded: keeps memory/disk use down and the first-run model
-    # download fast instead of pulling all ~30 languages LibreTranslate
-    # supports.
-    local LOAD_ONLY="en,fa,tr,ar,ru,de,fr,es,it,pt,zh,ja,ko,nl,pl,uk"
-
-    echo -e "${CYAN}$(t lt_writing_service)${RESET}"
-    sudo tee "/etc/systemd/system/${LIBRETRANSLATE_SERVICE}.service" >/dev/null <<EOF
-[Unit]
-Description=ShopVPN self-hosted LibreTranslate
-After=network.target
-
-[Service]
-Type=simple
-User=$(whoami)
-WorkingDirectory=$LIBRETRANSLATE_DIR
-ExecStart=$LIBRETRANSLATE_DIR/venv/bin/libretranslate --host 127.0.0.1 --port ${LIBRETRANSLATE_PORT} --load-only ${LOAD_ONLY} --update-models --disable-web-ui
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now "$LIBRETRANSLATE_SERVICE" >/dev/null 2>&1
-
-    echo -ne "${CYAN}$(t lt_waiting_ready)${RESET}"
-    local waited=0 ready=0
-    while [ "$waited" -lt 300 ]; do
-        if curl -fsS "http://127.0.0.1:${LIBRETRANSLATE_PORT}/languages" >/dev/null 2>&1; then
-            ready=1
-            break
-        fi
-        sleep 5
-        waited=$((waited + 5))
-        printf '.'
-    done
-    echo ""
-
-    if [ "$ready" = "1" ]; then
-        echo -e "${GREEN}$(t lt_ready)${RESET}"
+    echo -e "${CYAN}🌍 Installing/updating Argos models and the local LibreTranslate runtime...${RESET}"
+    if bash "$INSTALL_DIR/setup_local_translation.sh"; then
+        echo -e "${GREEN}${BOLD}$(t lt_done)${RESET}"
     else
-        echo -e "${YELLOW}$(t lt_not_ready_yet "$LIBRETRANSLATE_SERVICE")${RESET}"
+        echo -e "${RED}$(t lt_pip_failed)${RESET}"
+        return
     fi
-
-    local ENV_FILE="$INSTALL_DIR/.env"
-    touch "$ENV_FILE"
-    if grep -q "^SHOPVPN_LIBRETRANSLATE_URL=" "$ENV_FILE" 2>/dev/null; then
-        sed -i "s|^SHOPVPN_LIBRETRANSLATE_URL=.*|SHOPVPN_LIBRETRANSLATE_URL=http://127.0.0.1:${LIBRETRANSLATE_PORT}|" "$ENV_FILE"
-    else
-        echo "SHOPVPN_LIBRETRANSLATE_URL=http://127.0.0.1:${LIBRETRANSLATE_PORT}" >> "$ENV_FILE"
-    fi
-    echo -e "${GREEN}$(t lt_env_saved)${RESET}"
 
     if [ -d "$INSTALL_DIR" ] && systemctl list-units --full -all 2>/dev/null | grep -q "${SERVICE_NAME}.service"; then
-        echo -e "${CYAN}$(t restarting_bot_service)${RESET}"
         sudo systemctl restart "$SERVICE_NAME"
     fi
-
-    echo ""
-    echo -e "${GREEN}${BOLD}$(t lt_done)${RESET}"
 }
 
 remove_libretranslate() {
@@ -2179,14 +2108,14 @@ remove_libretranslate() {
     read -rp "$(t confirm_prompt)" CONFIRM
     [ "$CONFIRM" != "yes" ] && { echo -e "${YELLOW}$(t cancelled)${RESET}"; return; }
 
-    sudo systemctl stop "$LIBRETRANSLATE_SERVICE" >/dev/null 2>&1
-    sudo systemctl disable "$LIBRETRANSLATE_SERVICE" >/dev/null 2>&1
+    sudo systemctl stop "$LIBRETRANSLATE_SERVICE" >/dev/null 2>&1 || true
+    sudo systemctl disable "$LIBRETRANSLATE_SERVICE" >/dev/null 2>&1 || true
     sudo rm -f "/etc/systemd/system/${LIBRETRANSLATE_SERVICE}.service"
     sudo systemctl daemon-reload
-    rm -rf "$LIBRETRANSLATE_DIR"
+    rm -rf "$INSTALL_DIR/translation-venv"
 
     local ENV_FILE="$INSTALL_DIR/.env"
-    [ -f "$ENV_FILE" ] && sed -i "/^SHOPVPN_LIBRETRANSLATE_URL=/d" "$ENV_FILE"
+    [ -f "$ENV_FILE" ] && sed -i '/^SHOPVPN_LIBRETRANSLATE_URL=/d' "$ENV_FILE"
 
     if [ -d "$INSTALL_DIR" ] && systemctl list-units --full -all 2>/dev/null | grep -q "${SERVICE_NAME}.service"; then
         sudo systemctl restart "$SERVICE_NAME"

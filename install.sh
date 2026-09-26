@@ -30,7 +30,7 @@ echo "────────────────────────�
 # ----------------------------------------------------------------------------
 echo "📦 بررسی و نصب پیش‌نیازها (git, python3, pip, venv)..."
 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get update -qq
-timeout 120 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get install -y -qq git python3 python3-pip python3-venv > /dev/null
+timeout 120 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 apt-get install -y -qq git python3 python3-pip python3-venv ca-certificates curl > /dev/null
 
 # ----------------------------------------------------------------------------
 # ۲. دریافت یا آپدیت کد از گیت‌هاب
@@ -171,26 +171,16 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-# ۴-ب. راه‌اندازی کاملاً خودکار ترجمه محلی
-#      LibreTranslate self-hosted + Argos. هیچ API key لازم نیست.
-#      این مرحله بعد از ساخت .env اجرا می‌شود.
+# ۵. نصب و راه‌اندازی خودکار موتور ترجمه محلی
+#    کاربر نباید هیچ مدل Argos یا LibreTranslate را دستی نصب کند.
 # ----------------------------------------------------------------------------
-echo "🌐 راه‌اندازی موتور ترجمه محلی (LibreTranslate + Argos)..."
-chmod +x "$INSTALL_DIR/setup_local_translation.sh"
-"$INSTALL_DIR/setup_local_translation.sh"
-
-# Ensure the bot always points to the private/local translation service.
-ENV_FILE="$INSTALL_DIR/.env"
-if [ -f "$ENV_FILE" ]; then
-    if grep -q "^SHOPVPN_LIBRETRANSLATE_URL=" "$ENV_FILE"; then
-        sed -i "s|^SHOPVPN_LIBRETRANSLATE_URL=.*|SHOPVPN_LIBRETRANSLATE_URL=http://127.0.0.1:5050|" "$ENV_FILE"
-    else
-        printf '\nSHOPVPN_LIBRETRANSLATE_URL=http://127.0.0.1:5050\n' >> "$ENV_FILE"
-    fi
+echo "🌍 نصب خودکار موتور ترجمه محلی و مدل‌های زبان..."
+if ! bash "$INSTALL_DIR/setup_local_translation.sh"; then
+    echo "⚠️ نصب موتور ترجمه محلی کامل نشد؛ بات ادامه می‌دهد و در آپدیت بعدی دوباره تلاش می‌کند."
 fi
 
 # ----------------------------------------------------------------------------
-# ۵. ساخت systemd service برای اجرای دائمی و خودکار بعد از ری‌بوت سرور
+# ۶. ساخت systemd service برای اجرای دائمی و خودکار بعد از ری‌بوت سرور
 # ----------------------------------------------------------------------------
 echo "⚙️ تنظیم سرویس systemd برای اجرای همیشگی بات..."
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
