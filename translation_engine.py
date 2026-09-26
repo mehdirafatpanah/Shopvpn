@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 import urllib.parse
 import urllib.request
@@ -53,6 +54,61 @@ GLOSSARY = (
 )
 
 log = logging.getLogger(__name__)
+
+# Argos/Stanza are extremely chatty at INFO level (sentence segmentation,
+# tokenization and beam-search hypotheses). ShopVPN only needs the final
+# translation, so suppress their internal trace while a local translation is
+# running. The temporary global INFO suppression is protected by a lock so it
+# cannot interleave between concurrent translation jobs.
+for _logger_name in ("argostranslate", "argostranslate.utils", "stanza", "stanza.pipeline"):
+    _logger = logging.getLogger(_logger_name)
+    _logger.setLevel(logging.WARNING)
+    _logger.propagate = False
+
+_ARGOS_LOG_LOCK = threading.Lock()
+
+_TOKEN_RE = re.compile(
+    r"_{1,2}\s*SHOPVPN\s*_?\s*TOKEN\s*_?\s*(\d+)\s*_{1,2}",
+    re.I,
+)
+
+def _argos_translate_preserving_tokens(translation, text: str) -> str:
+    """Translate only human-readable segments; never send ShopVPN tokens to Argos.
+
+    ``translation_engine`` protects URLs/placeholders/markup before calling a
+    provider. Argos/Stanza must not see those sentinels at all: it tokenizes
+    values such as ``__SHOPVPN_TOKEN_000__`` and may alter them. We therefore
+    split the protected string into ordinary-text segments and translate each
+    segment independently, then stitch the untouched sentinel back in.
+    """
+    value = str(text or "")
+    matches = list(_TOKEN_RE.finditer(value))
+
+    def _translate_segment(segment: str) -> str:
+        if not segment or not segment.strip():
+            return segment
+        # Argos/Stanza logs at INFO from several internal logger names. Disable
+        # INFO globally only for the short synchronous model call.
+        with _ARGOS_LOG_LOCK:
+            previous_disable = logging.root.manager.disable
+            logging.disable(logging.INFO)
+            try:
+                return str(translation.translate(segment))
+            finally:
+                logging.disable(previous_disable)
+
+    if not matches:
+        return _translate_segment(value)
+
+    pieces: list[str] = []
+    cursor = 0
+    for match in matches:
+        pieces.append(_translate_segment(value[cursor:match.start()]))
+        # The sentinel is copied byte-for-byte; it is never passed to Argos.
+        pieces.append(match.group(0))
+        cursor = match.end()
+    pieces.append(_translate_segment(value[cursor:]))
+    return "".join(pieces)
 
 
 def _mark_provider(name: str, *, ok: bool, error: str | None = None) -> None:
@@ -315,7 +371,7 @@ class _ArgosProvider(_Provider):
         out = []
         for text in texts:
             try:
-                value = translation.translate(text)
+                value = _argos_translate_preserving_tokens(translation, text)
             except Exception as exc:
                 raise TranslationProviderError(f"argos: {exc}") from exc
             if value is None or not str(value).strip():
