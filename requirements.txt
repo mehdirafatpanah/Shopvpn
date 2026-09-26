@@ -15,4 +15,7 @@ PyJWT>=2.8.0
 cryptography>=41.0.0
 
 # Automatic multi-language translation
+# Local/offline translation engine. Model packages are installed separately.
+argostranslate>=1.11.0
+# Optional public fallback providers; only used when SHOPVPN_TRANSLATION_ALLOW_PUBLIC_APIS=1.
 deep-translator>=1.11.4

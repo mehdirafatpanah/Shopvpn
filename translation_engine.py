@@ -24,7 +24,13 @@ from translation_quality import protect, restore, validate
 from i18n import LANGUAGE_CATALOG, PARTIAL_MAX_RATIO
 
 BATCH_SIZE = 40
+# Keep provider defaults current. These can always be overridden with the
+# corresponding SHOPVPN_TRANSLATION_*_MODEL environment variables.
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
+DEFAULT_OPENROUTER_MODEL = "google/gemini-3.8-flash"
+DEFAULT_PROVIDER_ORDER = "argos,libretranslate,google,mymemory,gemini,openrouter"
 _SHARED_CACHE: Dict[tuple, str] = {}
+_PROVIDER_RUNTIME: Dict[str, dict] = {}
 _SYNC_LOCKS: Dict[tuple, threading.Lock] = {}
 _SYNC_LOCKS_GUARD = threading.Lock()
 # deep-translator's GoogleTranslator accepts bare ISO codes; MyMemory's free API
@@ -47,6 +53,19 @@ GLOSSARY = (
 )
 
 log = logging.getLogger(__name__)
+
+
+def _mark_provider(name: str, *, ok: bool, error: str | None = None) -> None:
+    state = _PROVIDER_RUNTIME.setdefault(name, {"attempts": 0, "successes": 0, "failures": 0, "last_error": None, "last_status": None})
+    state["attempts"] += 1
+    if ok:
+        state["successes"] += 1
+        state["last_status"] = "ok"
+        state["last_error"] = None
+    else:
+        state["failures"] += 1
+        state["last_status"] = "error"
+        state["last_error"] = str(error or "provider failed")[:500]
 
 
 def _dynamic_sources() -> Dict[str, str]:
@@ -266,6 +285,45 @@ class _LibreTranslateProvider(_Provider):
         return out
 
 
+
+
+class _ArgosProvider(_Provider):
+    """Local/offline Argos Translate provider.
+
+    It never contacts the network. Translation model packages must already be
+    installed on the host; if a direct pair is unavailable Argos may use an
+    installed pivot language.
+    """
+    name = "argos"
+
+    def __init__(self, source: str = "en"):
+        self.source = source
+        try:
+            import argostranslate.translate as _argos_translate
+        except Exception as exc:
+            raise TranslationProviderError(f"argos: package not installed: {exc}") from exc
+        self._argos_translate = _argos_translate
+
+    def translate_batch(self, texts: list[str], target: str, contexts: Dict[str, str] | None = None) -> list[str]:
+        target = _normalize_target(target)
+        try:
+            translation = self._argos_translate.get_translation_from_codes(self.source, target)
+        except Exception as exc:
+            raise TranslationProviderError(
+                f"argos: no installed model for {self.source}->{target}: {exc}"
+            ) from exc
+        out = []
+        for text in texts:
+            try:
+                value = translation.translate(text)
+            except Exception as exc:
+                raise TranslationProviderError(f"argos: {exc}") from exc
+            if value is None or not str(value).strip():
+                raise TranslationProviderError("argos: empty translation")
+            out.append(str(value))
+        return out
+
+
 class _GeminiProvider(_Provider):
     name = "gemini"
 
@@ -382,7 +440,7 @@ class _OpenRouterProvider(_Provider):
 
 
 def _provider_order() -> list[str]:
-    raw = os.getenv("SHOPVPN_TRANSLATION_PROVIDERS", "gemini,openrouter,google,mymemory,libretranslate")
+    raw = os.getenv("SHOPVPN_TRANSLATION_PROVIDERS", DEFAULT_PROVIDER_ORDER)
     return [x.strip().lower() for x in raw.split(",") if x.strip()]
 
 
@@ -436,39 +494,58 @@ def openrouter_key_source(db=None) -> str:
     return "none"
 
 
-def _providers(target: str, db=None) -> list[_Provider]:
+def _public_translation_allowed() -> bool:
+    return os.getenv("SHOPVPN_TRANSLATION_ALLOW_PUBLIC_APIS", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_local_endpoint(endpoint: str) -> bool:
+    try:
+        parsed = urllib.parse.urlparse(endpoint)
+        host = (parsed.hostname or "").lower()
+        return host in {"127.0.0.1", "localhost", "::1"} or host.startswith("192.168.") or host.startswith("10.")
+    except Exception:
+        return False
+
+
+def _providers(target: str, db=None, *, local_only: bool = False) -> list[_Provider]:
     providers: list[_Provider] = []
+    public_allowed = _public_translation_allowed() and not local_only
     try:
         from deep_translator import GoogleTranslator, MyMemoryTranslator
     except Exception:
         GoogleTranslator = MyMemoryTranslator = None
     for name in _provider_order():
-        if name == "gemini":
+        if name == "argos":
+            try:
+                providers.append(_ArgosProvider(source="en"))
+            except Exception:
+                pass
+        elif name == "gemini" and public_allowed:
             keys = _gemini_keys(db)
             if keys:
-                providers.append(_GeminiProvider(keys, os.getenv("SHOPVPN_TRANSLATION_MODEL", "gemini-2.5-flash")))
-        elif name == "openrouter":
+                providers.append(_GeminiProvider(keys, os.getenv("SHOPVPN_TRANSLATION_MODEL", DEFAULT_GEMINI_MODEL)))
+        elif name == "openrouter" and public_allowed:
             keys = _openrouter_keys(db)
             if keys:
                 providers.append(_OpenRouterProvider(
-                    keys, os.getenv("SHOPVPN_TRANSLATION_OPENROUTER_MODEL", "google/gemini-2.0-flash-exp:free")
+                    keys, os.getenv("SHOPVPN_TRANSLATION_OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL)
                 ))
-        elif name == "google" and GoogleTranslator:
+        elif name == "google" and GoogleTranslator and public_allowed:
             # Google's free web endpoint allows ~5 req/s; stay safely under that.
             providers.append(_DeepTranslatorProvider(GoogleTranslator, "google", min_interval=0.3))
-        elif name in {"mymemory", "my-memory"} and MyMemoryTranslator:
+        elif name in {"mymemory", "my-memory"} and MyMemoryTranslator and public_allowed:
             providers.append(_DeepTranslatorProvider(
                 MyMemoryTranslator, "mymemory", lang_map=_MYMEMORY_LANG, min_interval=1.0,
                 source="en-US",
             ))
         elif name == "libretranslate":
             endpoint = os.getenv("SHOPVPN_LIBRETRANSLATE_URL", "").strip()
-            if endpoint:
+            if endpoint and ((_is_local_endpoint(endpoint)) or (public_allowed and not local_only)):
                 providers.append(_LibreTranslateProvider(endpoint, os.getenv("SHOPVPN_LIBRETRANSLATE_API_KEY")))
     return providers
 
 
-def _fa_en_providers(db=None) -> list[_Provider]:
+def _fa_en_providers(db=None, *, local_only: bool = False) -> list[_Provider]:
     """Providers configured to translate FROM Persian TO English.
 
     Mirrors ``_providers`` but every provider is pointed at the reverse
@@ -482,29 +559,35 @@ def _fa_en_providers(db=None) -> list[_Provider]:
         from deep_translator import GoogleTranslator, MyMemoryTranslator
     except Exception:
         GoogleTranslator = MyMemoryTranslator = None
+    public_allowed = _public_translation_allowed() and not local_only
     for name in _provider_order():
-        if name == "gemini":
+        if name == "argos":
+            try:
+                providers.append(_ArgosProvider(source="fa"))
+            except Exception:
+                pass
+        elif name == "gemini" and public_allowed:
             keys = _gemini_keys(db)
             if keys:
                 providers.append(_GeminiProvider(
-                    keys, os.getenv("SHOPVPN_TRANSLATION_MODEL", "gemini-2.5-flash"), source_name="Persian",
+                    keys, os.getenv("SHOPVPN_TRANSLATION_MODEL", DEFAULT_GEMINI_MODEL), source_name="Persian",
                 ))
-        elif name == "openrouter":
+        elif name == "openrouter" and public_allowed:
             keys = _openrouter_keys(db)
             if keys:
                 providers.append(_OpenRouterProvider(
-                    keys, os.getenv("SHOPVPN_TRANSLATION_OPENROUTER_MODEL", "google/gemini-2.0-flash-exp:free"),
+                    keys, os.getenv("SHOPVPN_TRANSLATION_OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL),
                     source_name="Persian",
                 ))
-        elif name == "google" and GoogleTranslator:
+        elif name == "google" and GoogleTranslator and public_allowed:
             providers.append(_DeepTranslatorProvider(GoogleTranslator, "google", min_interval=0.3, source="fa"))
-        elif name in {"mymemory", "my-memory"} and MyMemoryTranslator:
+        elif name in {"mymemory", "my-memory"} and MyMemoryTranslator and public_allowed:
             providers.append(_DeepTranslatorProvider(
                 MyMemoryTranslator, "mymemory", min_interval=1.0, source="fa-IR",
             ))
         elif name == "libretranslate":
             endpoint = os.getenv("SHOPVPN_LIBRETRANSLATE_URL", "").strip()
-            if endpoint:
+            if endpoint and ((_is_local_endpoint(endpoint)) or (public_allowed and not local_only)):
                 providers.append(_LibreTranslateProvider(endpoint, os.getenv("SHOPVPN_LIBRETRANSLATE_API_KEY"), source="fa"))
     return providers
 
@@ -529,7 +612,7 @@ def translate_fa_to_english_partial(texts: Iterable[str], *, cached: Dict[str, s
         return result, []
     providers = _fa_en_providers(db)
     if not providers:
-        raise RuntimeError("No translation provider is configured. Install deep-translator, set GEMINI_API_KEY or configure LibreTranslate.")
+        raise RuntimeError("No local translation provider is configured. Install Argos model packages or configure a self-hosted LibreTranslate. Public APIs are disabled by default; set SHOPVPN_TRANSLATION_ALLOW_PUBLIC_APIS=1 only if you explicitly want them.")
     failures: list[str] = []
     for provider in providers:
         if not remaining:
@@ -548,6 +631,7 @@ def translate_fa_to_english_partial(texts: Iterable[str], *, cached: Dict[str, s
                     raise TranslationProviderError(f"{provider.name}: incomplete batch")
             except Exception as exc:
                 failures.append(str(exc))
+                _mark_provider(provider.name, ok=False, error=exc)
                 log.warning("Translation provider %s failed for fa->en: %s", provider.name, exc)
                 provider_failed = True
                 still.extend(batch)
@@ -558,6 +642,7 @@ def translate_fa_to_english_partial(texts: Iterable[str], *, cached: Dict[str, s
                 if ok:
                     result[src] = restored
                     _SHARED_CACHE[("en", src)] = restored
+                    _mark_provider(provider.name, ok=True)
                 else:
                     failures.append(f"{provider.name}: rejected {src!r}: {reason}")
                     still.append(src)
@@ -577,15 +662,43 @@ def translate_many_to_english(texts: Iterable[str], *, cached: Dict[str, str] | 
 
 
 def provider_status(db=None) -> list[dict]:
-    """Describe configured providers without making network calls."""
-    return [{"name": p.name, "configured": True} for p in _providers("tr", db)]
+    """Describe translation providers and whether they are locally usable.
+
+    This intentionally does not call public APIs.
+    """
+    providers = _providers("tr", db)
+    names = {p.name for p in providers}
+    out = []
+    for name in _provider_order():
+        if name == "argos":
+            installed = "argos" in names
+            item = {"name": name, "configured": installed, "local": True, "network": False, "status": "ready" if installed else "not_installed"}
+            item.update({k: v for k, v in _PROVIDER_RUNTIME.get(name, {}).items() if k in {"attempts", "successes", "failures", "last_error", "last_status"}})
+            out.append(item)
+        elif name == "libretranslate":
+            endpoint = os.getenv("SHOPVPN_LIBRETRANSLATE_URL", "").strip()
+            configured = bool(endpoint and (not _public_translation_allowed() or _is_local_endpoint(endpoint)))
+            item = {"name": name, "configured": configured, "local": _is_local_endpoint(endpoint) if endpoint else False, "network": True, "status": "configured" if configured else "not_configured"}
+            item.update({k: v for k, v in _PROVIDER_RUNTIME.get(name, {}).items() if k in {"attempts", "successes", "failures", "last_error", "last_status"}})
+            out.append(item)
+        elif name in {"gemini", "openrouter"}:
+            key = bool(_gemini_keys(db) if name == "gemini" else _openrouter_keys(db))
+            item = {"name": name, "configured": key and _public_translation_allowed(), "local": False, "network": True, "status": "disabled_by_default" if not _public_translation_allowed() else ("configured" if key else "no_key")}
+            item.update({k: v for k, v in _PROVIDER_RUNTIME.get(name, {}).items() if k in {"attempts", "successes", "failures", "last_error", "last_status"}})
+            out.append(item)
+        else:
+            enabled = _public_translation_allowed()
+            item = {"name": name, "configured": enabled, "local": False, "network": True, "status": "enabled" if enabled else "disabled_by_default"}
+            item.update({k: v for k, v in _PROVIDER_RUNTIME.get(name, {}).items() if k in {"attempts", "successes", "failures", "last_error", "last_status"}})
+            out.append(item)
+    return out
 
 
 def _normalize_target(target: str) -> str:
     return (target or "").lower().split("-", 1)[0]
 
 
-def translate_many_partial(texts: Iterable[str], target: str, *, cached: Dict[str, str] | None = None, db=None) -> tuple[Dict[str, str], list[str]]:
+def translate_many_partial(texts: Iterable[str], target: str, *, cached: Dict[str, str] | None = None, db=None, local_only: bool = False) -> tuple[Dict[str, str], list[str]]:
     """Translate as many strings as possible; return (translations, failure messages)."""
     target = _normalize_target(target)
     if target in {"fa", "en"}:
@@ -603,9 +716,9 @@ def translate_many_partial(texts: Iterable[str], target: str, *, cached: Dict[st
     remaining = [x for x in values if x not in result]
     if not remaining:
         return result, []
-    providers = _providers(target, db)
+    providers = _providers(target, db, local_only=local_only)
     if not providers:
-        raise RuntimeError("No translation provider is configured. Install deep-translator, set GEMINI_API_KEY or configure LibreTranslate.")
+        raise RuntimeError("No local translation provider is configured. Install Argos model packages or configure a self-hosted LibreTranslate. Public APIs are disabled by default; set SHOPVPN_TRANSLATION_ALLOW_PUBLIC_APIS=1 only if you explicitly want them.")
     failures: list[str] = []
     for provider in providers:
         if not remaining:
@@ -629,6 +742,7 @@ def translate_many_partial(texts: Iterable[str], target: str, *, cached: Dict[st
                     raise TranslationProviderError(f"{provider.name}: incomplete batch")
             except Exception as exc:
                 failures.append(str(exc))
+                _mark_provider(provider.name, ok=False, error=exc)
                 log.warning("Translation provider %s failed for %s: %s", provider.name, target, exc)
                 provider_failed = True
                 still.extend(batch)
@@ -639,6 +753,7 @@ def translate_many_partial(texts: Iterable[str], target: str, *, cached: Dict[st
                 if ok:
                     result[src] = restored
                     _SHARED_CACHE[(target, src)] = restored
+                    _mark_provider(provider.name, ok=True)
                 else:
                     failures.append(f"{provider.name}: rejected {src!r}: {reason}")
                     still.append(src)
@@ -722,7 +837,7 @@ def sync_language(db, language: str, *, allow_network: bool = True) -> dict:
         return info
     try:
         try:
-            generated, failures = translate_many_partial(info["missing"], language, cached=db.translation_catalog(language), db=db)
+            generated, failures = translate_many_partial(info["missing"], language, cached=db.translation_catalog(language), db=db, local_only=not allow_network)
         except Exception as exc:
             db.upsert_translation_manifest(language, info["catalog_version"], info["source_count"],
                                            info["translated_count"], info["missing_count"], info["obsolete_count"], "error", str(exc)[:500])
