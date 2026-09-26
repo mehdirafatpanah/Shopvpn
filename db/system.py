@@ -542,7 +542,11 @@ class SystemMixin:
         return len(values)
 
     def translation_catalog(self, language: str):
-        if language.lower() in {"fa", "en"}:
+        # Persian is the source language itself, so it never has a stored
+        # catalog. English used to be treated the same way, but it now has
+        # its own machine-completed catalog (see translate_many_to_english)
+        # to fill the gaps the static admin-panel dictionary misses.
+        if language.lower() == "fa":
             return {}
         return self.get_translations(language)
 
