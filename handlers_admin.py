@@ -431,7 +431,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not admin_only(call.from_user.id):
             return await call.answer()
         await state.clear()
-        await replace_admin_view(call, "🔧 پنل مدیریت:", reply_markup=kb.admin_panel_kb(db, is_main_bot))
+        await replace_admin_view(call, tr("🔧 پنل مدیریت:"), reply_markup=kb.admin_panel_kb(db, is_main_bot))
         await call.answer()
 
     @router.callback_query(F.data == "adm_exit_panel")
@@ -482,7 +482,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_mid(call)
         try:
             categories = (await asyncio.to_thread(db.get_categories, active_only=False))
-            await replace_admin_view(call, "📂 مدیریت دسته‌بندی‌ها:", kb.admin_categories_kb(categories))
+            await replace_admin_view(call, tr("📂 مدیریت دسته‌بندی‌ها:"), kb.admin_categories_kb(categories))
             await call.answer()
         except Exception:
             await call.answer(db.get_text('handlers_admin.auto_9a43de7a', '⚠️ بارگذاری دسته\u200cبندی\u200cها ناموفق بود. دوباره تلاش کنید.'), show_alert=True)
@@ -560,7 +560,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_mid(call)
         try:
             gateways = (await asyncio.to_thread(db.list_custom_gateways))
-            await replace_admin_view(call, "💠 درگاه‌های پرداخت سفارشی:", kb.admin_custom_gateways_kb(gateways))
+            await replace_admin_view(call, tr("💠 درگاه‌های پرداخت سفارشی:"), kb.admin_custom_gateways_kb(gateways))
             await call.answer()
         except Exception:
             await call.answer(db.get_text('handlers_admin.auto_404586fb', '⚠️ بارگذاری درگاه\u200cها ناموفق بود. دوباره تلاش کنید.'), show_alert=True)
@@ -643,10 +643,10 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         await replace_admin_view(call, 
-            "🧮 حداقل مبلغ پرداخت‌ها و سقف کیف پول:\n\n"
+            tr("🧮 حداقل مبلغ پرداخت‌ها و سقف کیف پول:\n\n"
             "برای هر روش، پایین‌تر از این مبلغ اجازه‌ی پرداخت داده نمی‌شود (0 یعنی بدون محدودیت).\n"
             "سقف موجودی کیف پول: اگر موجودی فعلی کاربر به‌علاوه‌ی مبلغ شارژ از این عدد بیشتر شود، شارژ رد می‌شود (0 یعنی بدون محدودیت).\n"
-            "حداقل مبلغ هر درگاه سفارشی از داخل «درگاه‌های پرداخت سفارشی» قابل تنظیم است.",
+            "حداقل مبلغ هر درگاه سفارشی از داخل «درگاه‌های پرداخت سفارشی» قابل تنظیم است."),
             reply_markup=kb.min_amount_settings_kb(db),
         )
         await call.answer()
@@ -1017,7 +1017,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_mid(call)
         categories = (await asyncio.to_thread(db.get_categories, active_only=False))
         await replace_admin_view(call, 
-            "📦 مدیریت محصولات - ابتدا دسته‌بندی را انتخاب کنید:",
+            tr("📦 مدیریت محصولات - ابتدا دسته‌بندی را انتخاب کنید:"),
             reply_markup=kb.admin_products_categories_kb(categories),
         )
         await call.answer()
@@ -1397,10 +1397,10 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         await replace_admin_view(call, 
-            "👛 روش‌های پرداخت مجاز برای «شارژ کیف پول»:\n\n"
+            tr("👛 روش‌های پرداخت مجاز برای «شارژ کیف پول»:\n\n"
             "با لمس هر گزینه، فعال/غیرفعال می‌شود. اگر «همه‌ی روش‌ها» تیک بخورد، شارژ کیف پول از هر روش پرداخت "
             "فعالی ممکن است (با اضافه‌شدن هر درگاه جدید در آینده هم خودکار برایش فعال می‌شود). این تنظیم فقط "
-            "روی شارژ کیف پول اثر دارد و مستقل از محدودیت روش پرداخت هر محصول است.",
+            "روی شارژ کیف پول اثر دارد و مستقل از محدودیت روش پرداخت هر محصول است."),
             reply_markup=kb.admin_wallet_payment_methods_kb(db),
         )
         await call.answer()
@@ -1453,9 +1453,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         await replace_admin_view(call, 
-            "🛠 روش‌های پرداخت مجاز برای «ساخت کانفیگ شخصی»:\n\n"
+            tr("🛠 روش‌های پرداخت مجاز برای «ساخت کانفیگ شخصی»:\n\n"
             "با لمس هر گزینه، فعال/غیرفعال می‌شود. اگر «همه‌ی روش‌ها» تیک بخورد، ساخت کانفیگ شخصی از هر روش "
-            "پرداخت فعالی ممکن است. پلنی که محدودیت خودش را دارد بر این تنظیم اولویت دارد.",
+            "پرداخت فعالی ممکن است. پلنی که محدودیت خودش را دارد بر این تنظیم اولویت دارد."),
             reply_markup=kb.admin_custom_config_payment_methods_kb(db),
         )
         await call.answer()
@@ -1837,7 +1837,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         await state.set_state(AdminAddConfigs.waiting_product)
         await replace_admin_view(call, 
-            "افزودن کانفیگ به کدام محصول؟", reply_markup=kb.admin_pick_product_kb(products, "adm_addcfg_prod")
+            tr("افزودن کانفیگ به کدام محصول؟"), reply_markup=kb.admin_pick_product_kb(products, "adm_addcfg_prod")
         )
         await call.answer()
 
@@ -1884,7 +1884,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await call.answer(db.get_text('handlers_admin.auto_0d101458', 'ابتدا باید یک محصول بسازید.'), show_alert=True)
             return
         await replace_admin_view(call, 
-            "دریافت یک کانفیگ رندوم آزاد از کدام محصول؟",
+            tr("دریافت یک کانفیگ رندوم آزاد از کدام محصول؟"),
             reply_markup=kb.admin_pick_product_kb(products, "adm_randomcfg_prod"),
         )
         await call.answer()
@@ -1951,7 +1951,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         await state.clear()
-        await replace_admin_view(call, "🧪 مدیریت کانفیگ تست:", reply_markup=kb.admin_test_menu_kb(db, is_main_bot))
+        await replace_admin_view(call, tr("🧪 مدیریت کانفیگ تست:"), reply_markup=kb.admin_test_menu_kb(db, is_main_bot))
         await call.answer()
 
     @router.callback_query(F.data == "adm_service_alert_channel")
@@ -2395,7 +2395,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         plan_id = callback_id(call.data, "adm_tp_delete_force")
         (await asyncio.to_thread(db.delete_test_config_plan, plan_id))
         (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "test_plan_delete", f"پلن #{plan_id}"))
-        await replace_admin_view(call, "🧪 مدیریت کانفیگ تست:", reply_markup=kb.admin_test_menu_kb(db, is_main_bot))
+        await replace_admin_view(call, tr("🧪 مدیریت کانفیگ تست:"), reply_markup=kb.admin_test_menu_kb(db, is_main_bot))
         await call.answer(db.get_text('handlers_admin.auto_48c23ce2', 'پلن حذف شد.'))
 
     # -------------------------------------------------------------------
@@ -2407,9 +2407,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
         await replace_admin_view(call, 
-            "📢 عضویت اجباری در کانال:\n\n"
+            tr("📢 عضویت اجباری در کانال:\n\n"
             "کاربران قبل از استفاده از بات باید عضو کانال شما باشند. "
-            "دقت کن که ربات باید از قبل ادمین کانال شده باشد تا بتواند عضویت را بررسی کند.",
+            "دقت کن که ربات باید از قبل ادمین کانال شده باشد تا بتواند عضویت را بررسی کند."),
             reply_markup=kb.admin_forcejoin_menu_kb(db),
         )
         await call.answer()
@@ -2478,7 +2478,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not orders:
             await call.answer(db.get_text('handlers_admin.auto_8045a61a', 'سفارش در انتظاری وجود ندارد.'), show_alert=True)
             return
-        await replace_admin_view(call, "🧾 سفارش‌های در انتظار بررسی:", reply_markup=kb.pending_orders_kb(orders))
+        await replace_admin_view(call, tr("🧾 سفارش‌های در انتظار بررسی:"), reply_markup=kb.pending_orders_kb(orders))
         await call.answer()
 
     async def _show_order_surveys(call: CallbackQuery, notice: str = None):
@@ -2493,7 +2493,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 surveys[o["id"]] = survey
         await replace_admin_view(
             call,
-            "🗳 نظرسنجی سفارش‌ها\n\nروی یک سفارش تایید‌شده بزن تا نظرسنجی برای خریدار ارسال شود (۲۰ سفارش اخیر):",
+            tr("🗳 نظرسنجی سفارش‌ها\n\nروی یک سفارش تایید‌شده بزن تا نظرسنجی برای خریدار ارسال شود (۲۰ سفارش اخیر):"),
             reply_markup=kb.order_surveys_list_kb(orders, surveys),
         )
         await call.answer(notice)
@@ -2893,7 +2893,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not topups:
             await call.answer(db.get_text('handlers_admin.auto_0b515b9c', 'درخواست شارژ در انتظاری وجود ندارد.'), show_alert=True)
             return
-        await replace_admin_view(call, "👛 درخواست‌های شارژ کیف پول در انتظار:", reply_markup=kb.pending_topups_kb(topups))
+        await replace_admin_view(call, tr("👛 درخواست‌های شارژ کیف پول در انتظار:"), reply_markup=kb.pending_topups_kb(topups))
         await call.answer()
 
     # -------------------------------------------------------------------
@@ -2912,7 +2912,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         await replace_admin_view(
             call,
-            "🪙 پرداخت‌های کریپتو\n\nاین پرداخت‌ها به‌صورت خودکار تایید می‌شوند و در بخش سفارش‌ها/شارژهای دستی نمایش داده نمی‌شوند.",
+            tr("🪙 پرداخت‌های کریپتو\n\nاین پرداخت‌ها به‌صورت خودکار تایید می‌شوند و در بخش سفارش‌ها/شارژهای دستی نمایش داده نمی‌شوند."),
             reply_markup=kb.crypto_invoices_kb(invoices),
         )
         await call.answer()
@@ -2981,14 +2981,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         (await asyncio.to_thread(db.purge_old_crypto_invoices, days=7))
         invoices = (await asyncio.to_thread(db.get_crypto_invoices, 50))
         if not invoices:
-            await replace_admin_view(call, "🪙 پرداخت‌های کریپتو\n\nهیچ پرداخت کریپتویی ثبت نشده است.",
+            await replace_admin_view(call, tr("🪙 پرداخت‌های کریپتو\n\nهیچ پرداخت کریپتویی ثبت نشده است."),
                                       reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                                           [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:daily")]
                                       ]))
             return
         await replace_admin_view(
             call,
-            "🪙 پرداخت‌های کریپتو\n\nاین پرداخت‌ها به‌صورت خودکار تایید می‌شوند و در بخش سفارش‌ها/شارژهای دستی نمایش داده نمی‌شوند.",
+            tr("🪙 پرداخت‌های کریپتو\n\nاین پرداخت‌ها به‌صورت خودکار تایید می‌شوند و در بخش سفارش‌ها/شارژهای دستی نمایش داده نمی‌شوند."),
             reply_markup=kb.crypto_invoices_kb(invoices),
         )
 
@@ -3008,7 +3008,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         await replace_admin_view(
             call,
-            "💳 پرداخت‌های آبان گیت وی\n\nاین پرداخت‌ها به‌صورت خودکار تایید می‌شوند و در بخش سفارش‌ها/شارژهای دستی نمایش داده نمی‌شوند.",
+            tr("💳 پرداخت‌های آبان گیت وی\n\nاین پرداخت‌ها به‌صورت خودکار تایید می‌شوند و در بخش سفارش‌ها/شارژهای دستی نمایش داده نمی‌شوند."),
             reply_markup=kb.abangateway_invoices_kb(invoices),
         )
         await call.answer()
@@ -3103,14 +3103,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         (await asyncio.to_thread(db.purge_old_abangateway_invoices, days=7))
         invoices = (await asyncio.to_thread(db.get_abangateway_invoices, 50))
         if not invoices:
-            await replace_admin_view(call, "💳 پرداخت‌های آبان گیت وی\n\nهیچ پرداخت آبان گیت‌وی‌ای ثبت نشده است.",
+            await replace_admin_view(call, tr("💳 پرداخت‌های آبان گیت وی\n\nهیچ پرداخت آبان گیت‌وی‌ای ثبت نشده است."),
                                       reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                                           [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:daily")]
                                       ]))
             return
         await replace_admin_view(
             call,
-            "💳 پرداخت‌های آبان گیت وی\n\nاین پرداخت‌ها به‌صورت خودکار تایید می‌شوند و در بخش سفارش‌ها/شارژهای دستی نمایش داده نمی‌شوند.",
+            tr("💳 پرداخت‌های آبان گیت وی\n\nاین پرداخت‌ها به‌صورت خودکار تایید می‌شوند و در بخش سفارش‌ها/شارژهای دستی نمایش داده نمی‌شوند."),
             reply_markup=kb.abangateway_invoices_kb(invoices),
         )
 
@@ -3130,8 +3130,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         }[source]
         await replace_admin_view(
             call,
-            "💳 تنظیم درگاه آبان گیت وی (پرداخت کارتی/آنلاین)\n\n"
-            f"منبع کلید: {source_note}",
+            tr("💳 تنظیم درگاه آبان گیت وی (پرداخت کارتی/آنلاین)\n\n"
+            f"منبع کلید: {source_note}"),
             reply_markup=kb.abangateway_settings_kb(db),
         )
         await call.answer()
@@ -3185,7 +3185,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         await replace_admin_view(
             call,
-            "💳 پرداخت‌های بلوپال\n\nاین پرداخت‌ها به‌صورت خودکار تایید می‌شوند و در بخش سفارش‌ها/شارژهای دستی نمایش داده نمی‌شوند.",
+            tr("💳 پرداخت‌های بلوپال\n\nاین پرداخت‌ها به‌صورت خودکار تایید می‌شوند و در بخش سفارش‌ها/شارژهای دستی نمایش داده نمی‌شوند."),
             reply_markup=kb.blupal_invoices_kb(invoices),
         )
         await call.answer()
@@ -3279,14 +3279,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         (await asyncio.to_thread(db.purge_old_blupal_invoices, days=7))
         invoices = (await asyncio.to_thread(db.get_blupal_invoices, 50))
         if not invoices:
-            await replace_admin_view(call, "💳 پرداخت‌های بلوپال\n\nهیچ پرداخت بلوپالی ثبت نشده است.",
+            await replace_admin_view(call, tr("💳 پرداخت‌های بلوپال\n\nهیچ پرداخت بلوپالی ثبت نشده است."),
                                       reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                                           [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:daily")]
                                       ]))
             return
         await replace_admin_view(
             call,
-            "💳 پرداخت‌های بلوپال\n\nاین پرداخت‌ها به‌صورت خودکار تایید می‌شوند و در بخش سفارش‌ها/شارژهای دستی نمایش داده نمی‌شوند.",
+            tr("💳 پرداخت‌های بلوپال\n\nاین پرداخت‌ها به‌صورت خودکار تایید می‌شوند و در بخش سفارش‌ها/شارژهای دستی نمایش داده نمی‌شوند."),
             reply_markup=kb.blupal_invoices_kb(invoices),
         )
 
@@ -3313,9 +3313,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         )
         await replace_admin_view(
             call,
-            "💳 تنظیم درگاه بلوپال (پرداخت کارتی/آنلاین)\n\n"
+            tr("💳 تنظیم درگاه بلوپال (پرداخت کارتی/آنلاین)\n\n"
             f"منبع کلید: {source_note}"
-            f"{webhook_note}",
+            f"{webhook_note}"),
             reply_markup=kb.blupal_settings_kb(db),
         )
         await call.answer()
@@ -3375,7 +3375,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         await replace_admin_view(
             call,
-            "⭐ پرداخت‌های NoapayBot (استارز تلگرام)\n\nاین پرداخت‌ها به‌صورت خودکار تایید می‌شوند و در بخش سفارش‌ها/شارژهای دستی نمایش داده نمی‌شوند.",
+            tr("⭐ پرداخت‌های NoapayBot (استارز تلگرام)\n\nاین پرداخت‌ها به‌صورت خودکار تایید می‌شوند و در بخش سفارش‌ها/شارژهای دستی نمایش داده نمی‌شوند."),
             reply_markup=kb.noapay_invoices_kb(invoices),
         )
         await call.answer()
@@ -3471,14 +3471,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         (await asyncio.to_thread(db.purge_old_noapay_invoices, days=7))
         invoices = (await asyncio.to_thread(db.get_noapay_invoices, 50))
         if not invoices:
-            await replace_admin_view(call, "⭐ پرداخت‌های NoapayBot\n\nهیچ پرداخت NoapayBot ای ثبت نشده است.",
+            await replace_admin_view(call, tr("⭐ پرداخت‌های NoapayBot\n\nهیچ پرداخت NoapayBot ای ثبت نشده است."),
                                       reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                                           [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:daily")]
                                       ]))
             return
         await replace_admin_view(
             call,
-            "⭐ پرداخت‌های NoapayBot (استارز تلگرام)\n\nاین پرداخت‌ها به‌صورت خودکار تایید می‌شوند و در بخش سفارش‌ها/شارژهای دستی نمایش داده نمی‌شوند.",
+            tr("⭐ پرداخت‌های NoapayBot (استارز تلگرام)\n\nاین پرداخت‌ها به‌صورت خودکار تایید می‌شوند و در بخش سفارش‌ها/شارژهای دستی نمایش داده نمی‌شوند."),
             reply_markup=kb.noapay_invoices_kb(invoices),
         )
 
@@ -3492,11 +3492,11 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_support(call)
         await replace_admin_view(
             call,
-            "⭐ تنظیم درگاه NoapayBot (خرید استارز تلگرام به‌عنوان روش پرداخت)\n\n"
+            tr("⭐ تنظیم درگاه NoapayBot (خرید استارز تلگرام به‌عنوان روش پرداخت)\n\n"
             "کلید API و رمز وب‌هوک را از دستور /apikey داخل ربات NoapayBot بگیر.\n"
             "این درگاه بر اساس «تعداد استارز» کار می‌کند، نه مبلغ تومانی مستقیم؛ "
             "چون نرخ لحظه‌ای ثابت نیست، باید یک نرخ تقریبی (تومان به‌ازای هر استارز) هم تنظیم کنی "
-            "تا مبلغ سفارش/شارژ به تعداد استارز تبدیل شود.",
+            "تا مبلغ سفارش/شارژ به تعداد استارز تبدیل شود."),
             reply_markup=kb.noapay_settings_kb(db),
         )
         await call.answer()
@@ -3617,7 +3617,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def cb_admin_card_auto(call: CallbackQuery):
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
-        await replace_admin_view(call, "📶 کارت‌به‌کارت با تایید خودکار (پیامک بانک):",
+        await replace_admin_view(call, tr("📶 کارت‌به‌کارت با تایید خودکار (پیامک بانک):"),
                                   reply_markup=kb.card_auto_settings_kb(db))
         await call.answer()
 
@@ -4021,7 +4021,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         codes = (await asyncio.to_thread(db.list_discount_codes, "bulk_admin"))
-        await replace_admin_view(call, "🎟 مدیریت کدهای تخفیف:", reply_markup=kb.discount_codes_kb(codes, db))
+        await replace_admin_view(call, tr("🎟 مدیریت کدهای تخفیف:"), reply_markup=kb.discount_codes_kb(codes, db))
         await call.answer()
 
     @router.callback_query(F.data.startswith("adm_disc_toggle:"))
@@ -4333,7 +4333,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminBulkDiscount.picking_filters)
         await replace_admin_view(
             call,
-            "🎯 کد تخفیف گروهی — کدام کاربران هدف باشند؟ (می‌توانید چند فیلتر را با هم انتخاب کنید؛ اگر کاربری در چند فیلتر باشد فقط یک کد می‌گیرد)",
+            tr("🎯 کد تخفیف گروهی — کدام کاربران هدف باشند؟ (می‌توانید چند فیلتر را با هم انتخاب کنید؛ اگر کاربری در چند فیلتر باشد فقط یک کد می‌گیرد)"),
             reply_markup=kb.bulk_discount_filters_kb([]),
         )
         await call.answer()
@@ -4365,7 +4365,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await state.set_state(AdminBulkDiscount.waiting_no_purchase_days)
             await replace_admin_view(
                 call,
-                "چند روز؟ (کاربرانی که حداقل یک خرید تاییدشده دارند ولی در این تعداد روز اخیر خرید تاییدشده‌ی جدیدی نداشته‌اند هدف قرار می‌گیرند)",
+                tr("چند روز؟ (کاربرانی که حداقل یک خرید تاییدشده دارند ولی در این تعداد روز اخیر خرید تاییدشده‌ی جدیدی نداشته‌اند هدف قرار می‌گیرند)"),
                 reply_markup=kb.admin_back_kb("adm_bulk_disc_cancel"),
             )
             await call.answer()
@@ -4373,7 +4373,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminBulkDiscount.waiting_type_value)
         await replace_admin_view(
             call,
-            "نوع و مقدار تخفیف را به یکی از این دو شکل ارسال کنید:\n\nبرای تخفیف درصدی: `percent 20`\nبرای تخفیف مبلغ ثابت: `fixed 50000`\n\n(همین یک تخفیف برای همه‌ی کاربران این دسته اعمال می‌شود؛ کد هر کاربر یکتا خواهد بود)",
+            tr("نوع و مقدار تخفیف را به یکی از این دو شکل ارسال کنید:\n\nبرای تخفیف درصدی: `percent 20`\nبرای تخفیف مبلغ ثابت: `fixed 50000`\n\n(همین یک تخفیف برای همه‌ی کاربران این دسته اعمال می‌شود؛ کد هر کاربر یکتا خواهد بود)"),
             reply_markup=kb.admin_back_kb("adm_bulk_disc_cancel"),
         )
         await call.answer()
@@ -4497,7 +4497,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def cb_admin_bulk_disc_cancel(call: CallbackQuery, state: FSMContext):
         await state.clear()
         codes = (await asyncio.to_thread(db.list_discount_codes, "bulk_admin"))
-        await replace_admin_view(call, "🎟 مدیریت کدهای تخفیف:", reply_markup=kb.discount_codes_kb(codes, db))
+        await replace_admin_view(call, tr("🎟 مدیریت کدهای تخفیف:"), reply_markup=kb.discount_codes_kb(codes, db))
         await call.answer()
 
     @router.callback_query(F.data == "adm_gift_menu")
@@ -4586,7 +4586,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def cb_admin_referral_settings(call: CallbackQuery):
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
-        await replace_admin_view(call, "🤝 تنظیمات زیرمجموعه‌گیری:", reply_markup=kb.referral_settings_kb(db))
+        await replace_admin_view(call, tr("🤝 تنظیمات زیرمجموعه‌گیری:"), reply_markup=kb.referral_settings_kb(db))
         await call.answer()
 
     @router.callback_query(F.data == "adm_referral_toggle")
@@ -4783,7 +4783,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def cb_admin_referral_freeconfig_product(call: CallbackQuery):
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
-        await replace_admin_view(call, "📦 محصولی که به‌عنوان جایزه رایگان تحویل داده شود را انتخاب کنید:", reply_markup=kb.referral_freeconfig_product_kb(db))
+        await replace_admin_view(call, tr("📦 محصولی که به‌عنوان جایزه رایگان تحویل داده شود را انتخاب کنید:"), reply_markup=kb.referral_freeconfig_product_kb(db))
         await call.answer()
 
     @router.callback_query(F.data.startswith("adm_referral_freeconfig_setprod:"))
@@ -4871,7 +4871,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def cb_admin_signup_gift_settings(call: CallbackQuery):
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
-        await replace_admin_view(call, "🎁 تنظیمات هدیه‌ی عضویت:", reply_markup=kb.signup_gift_settings_kb(db))
+        await replace_admin_view(call, tr("🎁 تنظیمات هدیه‌ی عضویت:"), reply_markup=kb.signup_gift_settings_kb(db))
         await call.answer()
 
     @router.callback_query(F.data == "adm_signup_gift_toggle")
@@ -4937,7 +4937,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def cb_admin_wheel_settings(call: CallbackQuery):
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
-        await replace_admin_view(call, "🎡 مدیریت گردونه شانس:", reply_markup=kb.wheel_settings_kb(db))
+        await replace_admin_view(call, tr("🎡 مدیریت گردونه شانس:"), reply_markup=kb.wheel_settings_kb(db))
         await call.answer()
 
     @router.callback_query(F.data == "adm_wheel_toggle")
@@ -5038,7 +5038,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def cb_admin_renewal_settings(call: CallbackQuery):
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
-        await replace_admin_view(call, "🔔 یادآوری تمدید سرویس:", reply_markup=kb.renewal_settings_kb(db))
+        await replace_admin_view(call, tr("🔔 یادآوری تمدید سرویس:"), reply_markup=kb.renewal_settings_kb(db))
         await call.answer()
 
     @router.callback_query(F.data == "adm_stock_alert_settings")
@@ -5046,7 +5046,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
         await replace_admin_view(call, 
-            "📦 آستانه‌ی هشدار موجودی:\n\nوقتی موجودی یک محصول به این عدد یا کمتر برسد، همه‌ی ادمین‌ها یک‌بار پیام هشدار می‌گیرند.",
+            tr("📦 آستانه‌ی هشدار موجودی:\n\nوقتی موجودی یک محصول به این عدد یا کمتر برسد، همه‌ی ادمین‌ها یک‌بار پیام هشدار می‌گیرند."),
             reply_markup=kb.stock_alert_settings_kb(db),
         )
         await call.answer()
@@ -5086,9 +5086,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         free = await asyncio.to_thread(db.get_setting, "location_change_free_quota", "0")
         await replace_admin_view(
             call,
-            "📍 تنظیمات تغییر لوکیشن\n\n"
+            tr("📍 تنظیمات تغییر لوکیشن\n\n"
             f"سقف انتقال هر کاربر: {'نامحدود' if limit == '0' else limit}\n"
-            f"سهمیه رایگان کلی: {'خاموش' if free == '0' else free + ' انتقال'}",
+            f"سهمیه رایگان کلی: {'خاموش' if free == '0' else free + ' انتقال'}"),
             reply_markup=kb.location_transfer_settings_kb(db),
         )
         await call.answer()
@@ -5140,9 +5140,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         await replace_admin_view(call,
-            "🛠 ساخت کانفیگ شخصی\n\n"
+            tr("🛠 ساخت کانفیگ شخصی\n\n"
             "کاربران می‌توانند با تعیین نام، حجم و پرداخت متناسب، کاربر خودشان را مستقیماً "
-            "روی یکی از سرورهای پنل زیر بسازند.",
+            "روی یکی از سرورهای پنل زیر بسازند."),
             reply_markup=kb.custom_config_menu_kb(db, is_main_bot),
         )
         await call.answer()
@@ -5170,9 +5170,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_mid(call)
         await replace_admin_view(
             call,
-            "📤 تنظیمات ارسال کانفیگ\n\n"
+            tr("📤 تنظیمات ارسال کانفیگ\n\n"
             "این دو مورد مستقل از هم قابل فعال/غیرفعال کردن هستند و روی همه‌ی مسیرهای "
-            "تحویل کانفیگ اثر می‌گذارند (بانک کانفیگ، محصول متصل به پنل، ساخت کانفیگ شخصی، کانفیگ تست):",
+            "تحویل کانفیگ اثر می‌گذارند (بانک کانفیگ، محصول متصل به پنل، ساخت کانفیگ شخصی، کانفیگ تست):"),
             reply_markup=kb.delivery_settings_kb(db),
         )
         await call.answer()
@@ -5479,9 +5479,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_mid(call)
         await state.clear()
         await replace_admin_view(call,
-            "🧩 محصولات کانفیگ‌ساز\n\n"
+            tr("🧩 محصولات کانفیگ‌ساز\n\n"
             "هر محصول می‌تواند پنل/اینباند، بازه‌ی حجم، مدت و قیمت‌گذاری مستقل خودش را داشته باشد. "
-            "اگر بیش از یک محصول فعال باشد، کاربر قبل از ساخت کانفیگ اول محصول را انتخاب می‌کند.",
+            "اگر بیش از یک محصول فعال باشد، کاربر قبل از ساخت کانفیگ اول محصول را انتخاب می‌کند."),
             reply_markup=kb.custom_config_products_list_kb(db),
         )
         await call.answer()
@@ -5830,7 +5830,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         product_id = callback_id(call.data, "adm_ccp_delete_force")
         (await asyncio.to_thread(db.delete_custom_config_product, product_id))
         (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "ccp_delete", f"محصول #{product_id}"))
-        await replace_admin_view(call, "🧩 محصولات کانفیگ‌ساز:", reply_markup=kb.custom_config_products_list_kb(db))
+        await replace_admin_view(call, tr("🧩 محصولات کانفیگ‌ساز:"), reply_markup=kb.custom_config_products_list_kb(db))
         await call.answer(db.get_text('handlers_admin.auto_1002ca8f', 'محصول حذف شد.'))
 
     @router.callback_query(F.data.startswith("adm_ccp_tiers:"))
@@ -5839,8 +5839,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_mid(call)
         product_id = callback_id(call.data, "adm_ccp_tiers")
         await replace_admin_view(call,
-            "💰 تعرفه‌های پله‌ای این محصول:\n\n"
-            "قیمت نهایی = کل حجم انتخابی کاربر × نرخ همان بازه‌ای که حجم داخلش قرار می‌گیرد.",
+            tr("💰 تعرفه‌های پله‌ای این محصول:\n\n"
+            "قیمت نهایی = کل حجم انتخابی کاربر × نرخ همان بازه‌ای که حجم داخلش قرار می‌گیرد."),
             reply_markup=kb.custom_config_product_tiers_kb(db, product_id),
         )
         await call.answer()
@@ -5903,7 +5903,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         _, product_id, tier_id = call.data.split(":")
         (await asyncio.to_thread(db.delete_custom_config_product_tier, int(tier_id)))
         (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "ccp_tier_delete", f"بازه #{tier_id}"))
-        await replace_admin_view(call, "💰 تعرفه‌های پله‌ای این محصول:",
+        await replace_admin_view(call, tr("💰 تعرفه‌های پله‌ای این محصول:"),
                                   reply_markup=kb.custom_config_product_tiers_kb(db, int(product_id)))
         await call.answer()
 
@@ -5917,10 +5917,10 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_mid(call)
         await replace_admin_view(
             call,
-            "💳 قیمت‌گذاری تمدید حجم/زمان سرویس\n\n"
+            tr("💳 قیمت‌گذاری تمدید حجم/زمان سرویس\n\n"
             "این نرخ‌ها فقط برای «تمدید حجم» و «تمدید زمان» (از حساب کاربری) استفاده می‌شود؛ "
             "«تمدید کامل سرویس» همچنان بر اساس قیمت همان پلن انتخابی محاسبه می‌شود.\n"
-            "اگر نرخی صفر باشد، آن دکمه‌ی تمدید برای کاربران قابل استفاده نخواهد بود.",
+            "اگر نرخی صفر باشد، آن دکمه‌ی تمدید برای کاربران قابل استفاده نخواهد بود."),
             reply_markup=kb.renewal_pricing_kb(db),
         )
         await call.answer()
@@ -5990,7 +5990,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_reseller_panel_access(call)
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
-        await replace_admin_view(call, "🖥 سرورهای پنل VPN متصل:", reply_markup=kb.panel_servers_list_kb(db))
+        await replace_admin_view(call, tr("🖥 سرورهای پنل VPN متصل:"), reply_markup=kb.panel_servers_list_kb(db))
         await call.answer()
 
     @router.callback_query(F.data == "adm_panel_server_add")
@@ -6851,7 +6851,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         (await asyncio.to_thread(db.delete_panel_server, server_id))
         (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "panel_server_delete", f"سرور #{server_id}"))
-        await replace_admin_view(call, "🖥 سرورهای پنل VPN متصل:", reply_markup=kb.panel_servers_list_kb(db))
+        await replace_admin_view(call, tr("🖥 سرورهای پنل VPN متصل:"), reply_markup=kb.panel_servers_list_kb(db))
         await call.answer(db.get_text('handlers_admin.auto_c65370fc', 'سرور حذف شد.'))
 
     @router.callback_query(F.data.startswith("adm_panel_server_delete_force:"))
@@ -6870,7 +6870,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             call.from_user.id, "panel_server_delete",
             f"سرور #{server_id} ({server['name']}) + {removed} کانفیگ شخصی مرتبط",
         ))
-        await replace_admin_view(call, "🖥 سرورهای پنل VPN متصل:", reply_markup=kb.panel_servers_list_kb(db))
+        await replace_admin_view(call, tr("🖥 سرورهای پنل VPN متصل:"), reply_markup=kb.panel_servers_list_kb(db))
         await call.answer(db.get_text('handlers_admin.auto_736eb2b9', 'سرور و کانفیگ\u200cهای مرتبط حذف شدند.'))
 
     @router.callback_query(F.data == "adm_pricing_tiers")
@@ -6878,9 +6878,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         await replace_admin_view(call,
-            "💰 قیمت‌گذاری بر اساس بازه‌ی حجم:\n\n"
+            tr("💰 قیمت‌گذاری بر اساس بازه‌ی حجم:\n\n"
             "قیمت نهایی = کل حجم انتخابی کاربر × نرخ همان بازه‌ای که حجم داخلش قرار می‌گیرد "
-            "(نه پلکانی/تصاعدی؛ یک نرخ ثابت برای کل حجم).",
+            "(نه پلکانی/تصاعدی؛ یک نرخ ثابت برای کل حجم)."),
             reply_markup=kb.pricing_tiers_kb(db),
         )
         await call.answer()
@@ -6946,7 +6946,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         tier_id = callback_id(call.data, "adm_pricing_tier_delete")
         (await asyncio.to_thread(db.delete_pricing_tier, tier_id))
         (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "pricing_tier_delete", f"بازه #{tier_id}"))
-        await replace_admin_view(call, "💰 قیمت‌گذاری بر اساس بازه‌ی حجم:", reply_markup=kb.pricing_tiers_kb(db))
+        await replace_admin_view(call, tr("💰 قیمت‌گذاری بر اساس بازه‌ی حجم:"), reply_markup=kb.pricing_tiers_kb(db))
         await call.answer(db.get_text('handlers_admin.auto_a2f65e87', 'بازه حذف شد.'))
 
     @router.callback_query(F.data == "adm_reset_test_configs")
@@ -7074,7 +7074,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def cb_admin_volume_settings(call: CallbackQuery):
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
-        await replace_admin_view(call, "📉 یادآوری اتمام حجم:", reply_markup=kb.volume_reminder_settings_kb(db))
+        await replace_admin_view(call, tr("📉 یادآوری اتمام حجم:"), reply_markup=kb.volume_reminder_settings_kb(db))
         await call.answer()
 
     @router.callback_query(F.data == "adm_volume_toggle")
@@ -7198,7 +7198,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         await replace_admin_view(
-            call, "🔌 هشدار اتصال/عدم‌اتصال به کانفیگ:", reply_markup=kb.connect_alert_settings_kb(db)
+            call, tr("🔌 هشدار اتصال/عدم‌اتصال به کانفیگ:"), reply_markup=kb.connect_alert_settings_kb(db)
         )
         await call.answer()
 
@@ -7349,7 +7349,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         await replace_admin_view(
-            call, "🎁 تخفیف تمدید کامل زودهنگام:", reply_markup=kb.early_renewal_discount_kb(db)
+            call, tr("🎁 تخفیف تمدید کامل زودهنگام:"), reply_markup=kb.early_renewal_discount_kb(db)
         )
         await call.answer()
 
@@ -7420,9 +7420,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             tiers = await asyncio.to_thread(db.list_reseller_tiers, False)
             await replace_admin_view(
                 call,
-                "⏳ <b>هزینه و انقضای نمایندگی</b>\n\n"
+                tr("⏳ <b>هزینه و انقضای نمایندگی</b>\n\n"
                 "هزینه از کیف پول اعتباری کاربر در زمان تایید/تمدید کسر می‌شود. "
-                "مدت ۰ یا خالی یعنی دائمی. سقف اعتبار پس‌پرداخت (تومان) سقف پیش‌فرض همه‌ی نماینده‌های این سطح است؛ ۰ یعنی بدون اعتبار.",
+                "مدت ۰ یا خالی یعنی دائمی. سقف اعتبار پس‌پرداخت (تومان) سقف پیش‌فرض همه‌ی نماینده‌های این سطح است؛ ۰ یعنی بدون اعتبار."),
                 reply_markup=kb.reseller_membership_tiers_kb(tiers),
             )
             await call.answer()
@@ -7497,7 +7497,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             if not senior_admin_only(call.from_user.id):
                 return await deny_mid(call)
             bots = (await asyncio.to_thread(db.list_reseller_bots))
-            await replace_admin_view(call, "🏪 مدیریت بات‌های نمایندگی:", reply_markup=kb.resellers_kb(bots))
+            await replace_admin_view(call, tr("🏪 مدیریت بات‌های نمایندگی:"), reply_markup=kb.resellers_kb(bots))
             await call.answer()
 
         @router.callback_query(F.data.startswith("adm_resbot_toggle:"))
@@ -7546,8 +7546,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             if already_enabled:
                 await replace_admin_view(
                     call,
-                    "🌐 پنل وب این نماینده فعال است.\n\n"
-                    "اگر لینک راه‌اندازی را گم کرده یا نیاز به لینک جدید دارید، از دکمه‌ی زیر استفاده کنید.",
+                    tr("🌐 پنل وب این نماینده فعال است.\n\n"
+                    "اگر لینک راه‌اندازی را گم کرده یا نیاز به لینک جدید دارید، از دکمه‌ی زیر استفاده کنید."),
                     reply_markup=kb.resbot_webpanel_kb(bot_id),
                 )
                 return await call.answer()
@@ -8486,9 +8486,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 return
             await replace_admin_view(
                 call,
-                f"📋 درخواست‌های باز نمایندگی ({len(requests)} مورد):\n\n"
+                tr(f"📋 درخواست‌های باز نمایندگی ({len(requests)} مورد):\n\n"
                 "با «کنسل دستی» می‌توانید یک درخواست را در هر مرحله‌ای که هست "
-                "(بدون توضیح یا اطلاع‌رسانی رد رسمی) لغو کنید.",
+                "(بدون توضیح یا اطلاع‌رسانی رد رسمی) لغو کنید."),
                 reply_markup=kb.reseller_requests_open_kb(requests),
             )
             await call.answer()
@@ -8556,9 +8556,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             resellers = (await asyncio.to_thread(db.get_resellers))
             await replace_admin_view(
                 call,
-                "💳 نمایندگی حجمی:\n\n"
+                tr("💳 نمایندگی حجمی:\n\n"
                 "کاربرانی که اعتبار (گیگ) خریده‌اند و می‌توانند از داخل همین بات، بدون دیدن پنل واقعی، "
-                "برای مشتری‌های خودشان کانفیگ بسازند.",
+                "برای مشتری‌های خودشان کانفیگ بسازند."),
                 reply_markup=kb.credit_resellers_menu_kb(resellers),
             )
             await call.answer()
@@ -8738,8 +8738,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             panels = (await asyncio.to_thread(db.get_panel_servers, active_only=True))
             await replace_admin_view(
                 call,
-                "🔗 این نماینده روی کدام پنل کانفیگ بسازد؟\n"
-                "(نماینده هیچ‌وقت آدرس/مشخصات این پنل را نمی‌بیند.)",
+                tr("🔗 این نماینده روی کدام پنل کانفیگ بسازد؟\n"
+                "(نماینده هیچ‌وقت آدرس/مشخصات این پنل را نمی‌بیند.)"),
                 reply_markup=kb.credit_reseller_panel_pick_kb(target_id, panels),
             )
             await call.answer()
@@ -8781,9 +8781,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             pending = (await asyncio.to_thread(db.list_commission_reseller_requests, "pending"))
             await replace_admin_view(
                 call,
-                "💼 نمایندگی کمیسیونی\n\n"
+                tr("💼 نمایندگی کمیسیونی\n\n"
                 "بدون حجم و بدون محصول آماده؛ فقط یک لینک اختصاصی و درصد کمیسیون دائمی روی خریدهای "
-                "مشتریانی که با آن لینک وارد شده‌اند - تا وقتی خودتان غیرفعالش کنید.",
+                "مشتریانی که با آن لینک وارد شده‌اند - تا وقتی خودتان غیرفعالش کنید."),
                 reply_markup=kb.commission_resellers_menu_kb(len(pending)),
             )
             await call.answer()
@@ -8795,13 +8795,13 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             pending = (await asyncio.to_thread(db.list_commission_reseller_requests, "pending"))
             if not pending:
                 await replace_admin_view(
-                    call, "📋 هیچ درخواست نمایندگی کمیسیونیِ در انتظاری وجود ندارد.",
+                    call, tr("📋 هیچ درخواست نمایندگی کمیسیونیِ در انتظاری وجود ندارد."),
                     reply_markup=kb.admin_back_kb("adm_commission_resellers_menu"),
                 )
                 await call.answer()
                 return
             await replace_admin_view(
-                call, f"📋 {len(pending)} درخواست در انتظار بررسی:",
+                call, tr(f"📋 {len(pending)} درخواست در انتظار بررسی:"),
                 reply_markup=kb.commission_resellers_pending_kb(pending),
             )
             await call.answer()
@@ -8820,10 +8820,10 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             username = (user_row["username"] if user_row else "") or "---"
             await replace_admin_view(
                 call,
-                f"💼 درخواست نمایندگی کمیسیونی #{request_id}\n"
+                tr(f"💼 درخواست نمایندگی کمیسیونی #{request_id}\n"
                 f"👤 کاربر: {first_name} (@{username})\n"
                 f"🆔 آیدی عددی: {req['user_id']}\n"
-                f"📊 درصد پیشنهادی: {req['proposed_percent']}٪",
+                f"📊 درصد پیشنهادی: {req['proposed_percent']}٪"),
                 reply_markup=kb.commission_reseller_request_review_kb(request_id),
             )
             await call.answer()
@@ -8921,13 +8921,13 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             resellers = (await asyncio.to_thread(db.list_inline_resellers))
             if not resellers:
                 await replace_admin_view(
-                    call, "📊 هیچ نماینده‌ی کمیسیونیِ فعالی وجود ندارد.",
+                    call, tr("📊 هیچ نماینده‌ی کمیسیونیِ فعالی وجود ندارد."),
                     reply_markup=kb.admin_back_kb("adm_commission_resellers_menu"),
                 )
                 await call.answer()
                 return
             await replace_admin_view(
-                call, f"📊 {len(resellers)} نماینده‌ی کمیسیونیِ فعال:",
+                call, tr(f"📊 {len(resellers)} نماینده‌ی کمیسیونیِ فعال:"),
                 reply_markup=kb.commission_reseller_active_kb(resellers),
             )
             await call.answer()
@@ -8940,11 +8940,11 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             stats = (await asyncio.to_thread(db.get_inline_reseller_stats, target_id))
             await replace_admin_view(
                 call,
-                f"👤 نماینده‌ی کمیسیونی {target_id}\n\n"
+                tr(f"👤 نماینده‌ی کمیسیونی {target_id}\n\n"
                 f"📊 درصد کمیسیون: {stats['percent']}٪\n"
                 f"👥 تعداد مشتریان: {stats['customers']}\n"
                 f"🧾 خریدهای تسویه‌شده: {stats['paid_orders']}\n"
-                f"👛 مجموع کارمزد پرداختی: {stats['total_commission']:,} تومان",
+                f"👛 مجموع کارمزد پرداختی: {stats['total_commission']:,} تومان"),
                 reply_markup=kb.commission_reseller_active_view_kb(target_id),
             )
             await call.answer()
@@ -8962,7 +8962,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 pass
             resellers = (await asyncio.to_thread(db.list_inline_resellers))
             await replace_admin_view(
-                call, f"✅ نمایندگی این کاربر غیرفعال شد.\n\n📊 {len(resellers)} نماینده‌ی کمیسیونیِ فعال:",
+                call, tr(f"✅ نمایندگی این کاربر غیرفعال شد.\n\n📊 {len(resellers)} نماینده‌ی کمیسیونیِ فعال:"),
                 reply_markup=kb.commission_reseller_active_kb(resellers),
             )
             await call.answer(db.get_text('handlers_admin.auto_f2d4c165', 'غیرفعال شد.'))
@@ -9080,7 +9080,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def cb_admin_edit_buttons(call: CallbackQuery):
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
-        await replace_admin_view(call, "کدام دکمه ویرایش شود؟", reply_markup=kb.admin_edit_buttons_kb(db))
+        await replace_admin_view(call, tr("کدام دکمه ویرایش شود؟"), reply_markup=kb.admin_edit_buttons_kb(db))
         await call.answer()
 
     @router.callback_query(F.data == "adm_account_settings")
@@ -9089,7 +9089,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_support(call)
         await replace_admin_view(
             call,
-            "🧾 تنظیمات حساب کاربری کاربران\n\nهر دکمه را برای فعال/غیرفعال‌کردن لمس کنید:",
+            tr("🧾 تنظیمات حساب کاربری کاربران\n\nهر دکمه را برای فعال/غیرفعال‌کردن لمس کنید:"),
             reply_markup=kb.account_settings_kb(db),
         )
         await call.answer()
@@ -9155,7 +9155,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def cb_admin_main_menu_settings(call: CallbackQuery):
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
-        await replace_admin_view(call, "🧩 تنظیمات منوی اصلی:", reply_markup=kb.main_menu_settings_kb(db))
+        await replace_admin_view(call, tr("🧩 تنظیمات منوی اصلی:"), reply_markup=kb.main_menu_settings_kb(db))
         await call.answer()
 
     @router.callback_query(F.data == "adm_mm_toggle_reply")
@@ -9256,12 +9256,12 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
 
     @router.callback_query(F.data == "adm_panel_colors_menu")
     async def cb_admin_panel_colors_menu(call: CallbackQuery):
-        await replace_admin_view(call, "🎨 رنگ‌آمیزی دکمه‌های پنل مدیریت:", reply_markup=kb.admin_panel_colors_kb(db, is_main_bot))
+        await replace_admin_view(call, tr("🎨 رنگ‌آمیزی دکمه‌های پنل مدیریت:"), reply_markup=kb.admin_panel_colors_kb(db, is_main_bot))
         await call.answer()
 
     @router.callback_query(F.data == "adm_buyflow_colors_menu")
     async def cb_admin_buyflow_colors_menu(call: CallbackQuery):
-        await replace_admin_view(call, "🎨 رنگ‌آمیزی دکمه‌های خرید:", reply_markup=kb.buy_flow_colors_kb(db))
+        await replace_admin_view(call, tr("🎨 رنگ‌آمیزی دکمه‌های خرید:"), reply_markup=kb.buy_flow_colors_kb(db))
         await call.answer()
 
     # -------------------------------------------------------------------
@@ -9272,7 +9272,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def cb_admin_set_card(call: CallbackQuery):
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
-        await replace_admin_view(call, "💳 تنظیمات پرداخت کارت‌به‌کارت:", reply_markup=kb.card_settings_kb(db))
+        await replace_admin_view(call, tr("💳 تنظیمات پرداخت کارت‌به‌کارت:"), reply_markup=kb.card_settings_kb(db))
         await call.answer()
 
     @router.callback_query(F.data == "adm_card_toggle")
@@ -9388,9 +9388,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         }[source]
         await replace_admin_view(
             call,
-            "🪙 تنظیم درگاه پرداخت کریپتو (Plisio)\n\n"
+            tr("🪙 تنظیم درگاه پرداخت کریپتو (Plisio)\n\n"
             f"منبع کلید: {source_note}\n\n"
-            "بعد از تنظیم کلید، از مینی‌اپ → مدیریت → فروش → «پرداخت کریپتو» فعالش کن.",
+            "بعد از تنظیم کلید، از مینی‌اپ → مدیریت → فروش → «پرداخت کریپتو» فعالش کن."),
             reply_markup=kb.plisio_settings_kb(db),
         )
         await call.answer()
@@ -9752,7 +9752,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not owner_only(call.from_user.id):
             return await call.answer(db.get_text('handlers_admin.auto_c7320c54', '⛔️ مدیریت ادمین\u200cها فقط برای مالک اصلی در دسترس است.'), show_alert=True)
         try:
-            await replace_admin_view(call, "👤 مدیریت ادمین‌ها:", kb.admin_admins_menu_kb())
+            await replace_admin_view(call, tr("👤 مدیریت ادمین‌ها:"), kb.admin_admins_menu_kb())
             await call.answer()
         except Exception:
             await call.answer(db.get_text('handlers_admin.auto_cd56b196', '⚠️ باز کردن مدیریت ادمین\u200cها ناموفق بود.'), show_alert=True)
@@ -9780,7 +9780,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await call.answer(db.get_text('handlers_admin.auto_51c82ee1', '⛔️ فقط مالک اصلی می\u200cتواند ادمین اضافه کند.'), show_alert=True)
         await state.set_state(AdminAddAdmin.waiting_id)
         await replace_admin_view(call, 
-            "آیدی عددی کاربر جدید برای افزودن به ادمین‌ها را ارسال کنید:", reply_markup=kb.admin_back_kb("adm_admins_menu")
+            tr("آیدی عددی کاربر جدید برای افزودن به ادمین‌ها را ارسال کنید:"), reply_markup=kb.admin_back_kb("adm_admins_menu")
         )
         await call.answer()
 
@@ -9833,7 +9833,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await call.answer(db.get_text('handlers_admin.auto_f394eb63', '⛔️ فقط مالک اصلی می\u200cتواند نقش ادمین\u200cها را تغییر دهد.'), show_alert=True)
         await state.set_state(AdminChangeRole.waiting_id)
         await replace_admin_view(call, 
-            "آیدی عددی ادمینی که می‌خواهی نقشش را تغییر دهی را ارسال کن:",
+            tr("آیدی عددی ادمینی که می‌خواهی نقشش را تغییر دهی را ارسال کن:"),
             reply_markup=kb.admin_back_kb("adm_admins_menu"),
         )
         await call.answer()
@@ -9889,7 +9889,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await call.answer(db.get_text('handlers_admin.auto_d42365c3', '⛔️ فقط مالک اصلی می\u200cتواند ادمین حذف کند.'), show_alert=True)
         await state.set_state(AdminRemoveAdmin.waiting_id)
         await replace_admin_view(call, 
-            "آیدی عددی ادمینی که باید حذف شود را ارسال کنید:", reply_markup=kb.admin_back_kb("adm_admins_menu")
+            tr("آیدی عددی ادمینی که باید حذف شود را ارسال کنید:"), reply_markup=kb.admin_back_kb("adm_admins_menu")
         )
         await call.answer()
 
@@ -9949,7 +9949,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
         await state.clear()
-        await replace_admin_view(call, "📢 پیام همگانی به چه کسانی ارسال شود؟", reply_markup=kb.admin_broadcast_target_kb())
+        await replace_admin_view(call, tr("📢 پیام همگانی به چه کسانی ارسال شود؟"), reply_markup=kb.admin_broadcast_target_kb())
         await call.answer()
 
     @router.callback_query(F.data.startswith("adm_broadcast_target:"))
@@ -9958,7 +9958,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_support(call)
         choice = call.data.split(":", 1)[1]
         if choice == "server":
-            await replace_admin_view(call, "🖥 سرور مورد نظر را انتخاب کن:", reply_markup=kb.admin_broadcast_server_select_kb(db))
+            await replace_admin_view(call, tr("🖥 سرور مورد نظر را انتخاب کن:"), reply_markup=kb.admin_broadcast_server_select_kb(db))
             await call.answer()
             return
         if choice == "no_config":
@@ -9966,7 +9966,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await state.set_state(AdminBroadcast.waiting_message)
             await replace_admin_view(
                 call,
-                "متن یا عکس (با یا بدون کپشن) پیام همگانی را ارسال کنید (فقط برای کاربرانی که الان هیچ کانفیگی ندارند ارسال می‌شود):",
+                tr("متن یا عکس (با یا بدون کپشن) پیام همگانی را ارسال کنید (فقط برای کاربرانی که الان هیچ کانفیگی ندارند ارسال می‌شود):"),
                 reply_markup=kb.admin_back_kb("adm_cat:marketing"),
             )
             await call.answer()
@@ -9976,7 +9976,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await state.set_state(AdminBroadcast.waiting_message)
             await replace_admin_view(
                 call,
-                "متن یا عکس (با یا بدون کپشن) پیام همگانی را ارسال کنید (فقط برای کاربرانی که یک کانفیگ غیرفعال/منقضی‌شده دارند ارسال می‌شود):",
+                tr("متن یا عکس (با یا بدون کپشن) پیام همگانی را ارسال کنید (فقط برای کاربرانی که یک کانفیگ غیرفعال/منقضی‌شده دارند ارسال می‌شود):"),
                 reply_markup=kb.admin_back_kb("adm_cat:marketing"),
             )
             await call.answer()
@@ -9986,7 +9986,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await state.set_state(AdminBroadcast.waiting_no_purchase_days)
             await replace_admin_view(
                 call,
-                f"عدد روز را وارد کن (کاربرانی که حداقل یک خرید تاییدشده دارند ولی در این تعداد روز اخیر خرید تاییدشده‌ی جدیدی نداشته‌اند هدف قرار می‌گیرند). پیش‌فرض فعلی: {default_days}",
+                tr(f"عدد روز را وارد کن (کاربرانی که حداقل یک خرید تاییدشده دارند ولی در این تعداد روز اخیر خرید تاییدشده‌ی جدیدی نداشته‌اند هدف قرار می‌گیرند). پیش‌فرض فعلی: {default_days}"),
                 reply_markup=kb.admin_back_kb("adm_broadcast"),
             )
             await call.answer()
@@ -10000,14 +10000,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await state.set_state(AdminBroadcast.waiting_message)
             await replace_admin_view(
                 call,
-                "متن یا عکس (با یا بدون کپشن) پیام همگانی را ارسال کنید (فقط برای کاربرانی که الان عضو کانال اجباری نیستند ولی هنوز عضو ربات‌اند ارسال می‌شود؛ عضویت هنگام ارسال چک می‌شود پس ممکن است کمی طول بکشد):",
+                tr("متن یا عکس (با یا بدون کپشن) پیام همگانی را ارسال کنید (فقط برای کاربرانی که الان عضو کانال اجباری نیستند ولی هنوز عضو ربات‌اند ارسال می‌شود؛ عضویت هنگام ارسال چک می‌شود پس ممکن است کمی طول بکشد):"),
                 reply_markup=kb.admin_back_kb("adm_cat:marketing"),
             )
             await call.answer()
             return
         await state.update_data(broadcast_target="all", broadcast_target_server_id=None)
         await state.set_state(AdminBroadcast.waiting_message)
-        await replace_admin_view(call, "متن یا عکس (با یا بدون کپشن) پیام همگانی را ارسال کنید (برای همه کاربران ارسال می‌شود):", reply_markup=kb.admin_back_kb("adm_cat:marketing"))
+        await replace_admin_view(call, tr("متن یا عکس (با یا بدون کپشن) پیام همگانی را ارسال کنید (برای همه کاربران ارسال می‌شود):"), reply_markup=kb.admin_back_kb("adm_cat:marketing"))
         await call.answer()
 
     @router.message(AdminBroadcast.waiting_no_purchase_days)
@@ -10040,7 +10040,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminBroadcast.waiting_message)
         await replace_admin_view(
             call,
-            f"متن یا عکس (با یا بدون کپشن) پیام همگانی را ارسال کنید (فقط برای کاربران دارای سرویس فعال روی سرور «{server['name']}» ارسال می‌شود):",
+            tr(f"متن یا عکس (با یا بدون کپشن) پیام همگانی را ارسال کنید (فقط برای کاربران دارای سرویس فعال روی سرور «{server['name']}» ارسال می‌شود):"),
             reply_markup=kb.admin_back_kb("adm_cat:marketing"),
         )
         await call.answer()
@@ -10178,7 +10178,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
         await state.clear()
-        await replace_admin_view(call, "❌ ارسال پیام همگانی لغو شد.", reply_markup=kb.admin_category_kb(db, is_main_bot, "marketing"))
+        await replace_admin_view(call, tr("❌ ارسال پیام همگانی لغو شد."), reply_markup=kb.admin_category_kb(db, is_main_bot, "marketing"))
         await call.answer()
 
     @router.callback_query(F.data.startswith("adm_broadcast_dur:"))
@@ -10188,7 +10188,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         value = call.data.split(":", 1)[1]
         if value == "custom":
             await state.set_state(AdminBroadcast.waiting_custom_minutes)
-            await replace_admin_view(call, "مدت دلخواه را به دقیقه ارسال کن (مثلاً 45):", reply_markup=kb.admin_back_kb("adm_cat:marketing"))
+            await replace_admin_view(call, tr("مدت دلخواه را به دقیقه ارسال کن (مثلاً 45):"), reply_markup=kb.admin_back_kb("adm_cat:marketing"))
             await call.answer()
             return
         await call.answer(db.get_text('handlers_admin.auto_aad6a683', 'در حال ارسال...'))
@@ -10205,7 +10205,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminBroadcast.waiting_schedule_time)
         await replace_admin_view(
             call,
-            "زمان ارسال را به وقت تهران بفرست:\nYYYY-MM-DD HH:MM\nمثال: 2026-09-25 18:30",
+            tr("زمان ارسال را به وقت تهران بفرست:\nYYYY-MM-DD HH:MM\nمثال: 2026-09-25 18:30"),
             reply_markup=kb.admin_back_kb("adm_cat:marketing"),
         )
         await call.answer()
@@ -10274,7 +10274,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.clear()
         await replace_admin_view(
             call,
-            "⏳ پیام موقت: پیامی که بعد از مدت مشخص خودش حذف می‌شود (مثلاً یادداشت یا شماره کارت).\n\nمقصد را انتخاب کن:",
+            tr("⏳ پیام موقت: پیامی که بعد از مدت مشخص خودش حذف می‌شود (مثلاً یادداشت یا شماره کارت).\n\nمقصد را انتخاب کن:"),
             reply_markup=kb.admin_temp_message_target_kb(),
         )
         await call.answer()
@@ -10287,10 +10287,10 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if choice == "self":
             await state.update_data(temp_target_id=call.from_user.id)
             await state.set_state(AdminTempMessage.waiting_text)
-            await replace_admin_view(call, "متن پیام موقت را ارسال کن:", reply_markup=kb.admin_back_kb("adm_temp_message"))
+            await replace_admin_view(call, tr("متن پیام موقت را ارسال کن:"), reply_markup=kb.admin_back_kb("adm_temp_message"))
         else:
             await state.set_state(AdminTempMessage.waiting_target_id)
-            await replace_admin_view(call, "آیدی عددی (Telegram ID) کاربر مقصد را ارسال کن:", reply_markup=kb.admin_back_kb("adm_temp_message"))
+            await replace_admin_view(call, tr("آیدی عددی (Telegram ID) کاربر مقصد را ارسال کن:"), reply_markup=kb.admin_back_kb("adm_temp_message"))
         await call.answer()
 
     @router.message(AdminTempMessage.waiting_target_id)
@@ -10317,7 +10317,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         value = call.data.split(":", 1)[1]
         if value == "custom":
             await state.set_state(AdminTempMessage.waiting_custom_minutes)
-            await replace_admin_view(call, "مدت دلخواه را به دقیقه ارسال کن (مثلاً 45):", reply_markup=kb.admin_back_kb("adm_temp_message"))
+            await replace_admin_view(call, tr("مدت دلخواه را به دقیقه ارسال کن (مثلاً 45):"), reply_markup=kb.admin_back_kb("adm_temp_message"))
             await call.answer()
             return
         await call.answer(db.get_text('handlers_admin.auto_aad6a683', 'در حال ارسال...'))
@@ -10340,7 +10340,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         await state.clear()
-        await replace_admin_view(call, "🔗 ابزار دیپ‌لینک و پست کانال:", reply_markup=kb.deeplink_tools_menu_kb())
+        await replace_admin_view(call, tr("🔗 ابزار دیپ‌لینک و پست کانال:"), reply_markup=kb.deeplink_tools_menu_kb())
         await call.answer()
 
     @router.callback_query(F.data == "adm_dl_params_list")
@@ -10396,8 +10396,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminChannelButton.waiting_forward)
         await replace_admin_view(
             call,
-            "همون پستی که قبلاً تو کانال گذاشتی رو از کانال به اینجا فوروارد کن.\n"
-            "(بات باید تو کانال ادمین باشه و دسترسی «ویرایش پیام‌های دیگران» داشته باشه)",
+            tr("همون پستی که قبلاً تو کانال گذاشتی رو از کانال به اینجا فوروارد کن.\n"
+            "(بات باید تو کانال ادمین باشه و دسترسی «ویرایش پیام‌های دیگران» داشته باشه)"),
             reply_markup=kb.admin_back_kb("adm_deeplink_tools"),
         )
         await call.answer()
@@ -10701,7 +10701,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not admin_only(call.from_user.id):
             return await call.answer()
         tickets = (await asyncio.to_thread(db.get_all_tickets, "open"))
-        await replace_admin_view(call, "🎫 تیکت‌های پشتیبانی:", reply_markup=kb.admin_tickets_list_kb(tickets, "open"))
+        await replace_admin_view(call, tr("🎫 تیکت‌های پشتیبانی:"), reply_markup=kb.admin_tickets_list_kb(tickets, "open"))
         await call.answer()
 
     @router.callback_query(F.data.startswith("adm_tickets_list:"))
@@ -10818,7 +10818,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not owner_only(call.from_user.id):
             return await call.answer(db.get_text('handlers_admin.auto_0cbf62fc', '⛔️ فقط مالک می\u200cتواند دپارتمان\u200cها را تنظیم کند.'), show_alert=True)
         departments = await asyncio.to_thread(db.list_ticket_departments, False)
-        await replace_admin_view(call, "🧩 دپارتمان‌های پشتیبانی\n\nبرای تعیین ادمین‌های هر بخش، دپارتمان را انتخاب کنید:", reply_markup=kb.admin_ticket_departments_kb(departments))
+        await replace_admin_view(call, tr("🧩 دپارتمان‌های پشتیبانی\n\nبرای تعیین ادمین‌های هر بخش، دپارتمان را انتخاب کنید:"), reply_markup=kb.admin_ticket_departments_kb(departments))
         await call.answer()
 
     @router.callback_query(F.data.startswith("adm_ticket_dept:"))
@@ -10891,7 +10891,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminSetSupportContact.waiting_id)
         await replace_admin_view(
             call,
-            "آیدی عددی تلگرام مدیر را ارسال کنید (برای دریافت آیدی عددی می‌توانید از بات‌هایی مثل @userinfobot کمک بگیرید):",
+            tr("آیدی عددی تلگرام مدیر را ارسال کنید (برای دریافت آیدی عددی می‌توانید از بات‌هایی مثل @userinfobot کمک بگیرید):"),
             reply_markup=kb.admin_back_kb("adm_set_support_contact"),
         )
         await call.answer()
@@ -10991,7 +10991,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def cb_admin_ai_set_provider(call: CallbackQuery):
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
-        await replace_admin_view(call, "🔀 مسیر انتخاب مدل\n\n«خودکار» بهترین حالت است: به‌ترتیب Gemini → Groq → OpenRouter را امتحان می‌کند و با خطای سهمیه/اختلال به بعدی می‌رود.", reply_markup=kb.ai_provider_choice_kb(db))
+        await replace_admin_view(call, tr("🔀 مسیر انتخاب مدل\n\n«خودکار» بهترین حالت است: به‌ترتیب Gemini → Groq → OpenRouter را امتحان می‌کند و با خطای سهمیه/اختلال به بعدی می‌رود."), reply_markup=kb.ai_provider_choice_kb(db))
         await call.answer()
 
     @router.callback_query(F.data.startswith("adm_ai_provider_pick:"))
@@ -11010,7 +11010,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def cb_admin_ai_set_model(call: CallbackQuery):
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
-        await replace_admin_view(call, "🧠 انتخاب مدل\n\nبرای ۵۰۰ پیام روزانه، مدل‌های سریع را انتخاب کن. در حالت خودکار اگر Provider فعلی 429/5xx بدهد، Agent به Provider بعدی می‌رود. توضیح هر مدل کنار دکمه آمده است.", reply_markup=kb.ai_model_choice_kb(db))
+        await replace_admin_view(call, tr("🧠 انتخاب مدل\n\nبرای ۵۰۰ پیام روزانه، مدل‌های سریع را انتخاب کن. در حالت خودکار اگر Provider فعلی 429/5xx بدهد، Agent به Provider بعدی می‌رود. توضیح هر مدل کنار دکمه آمده است."), reply_markup=kb.ai_model_choice_kb(db))
         await call.answer()
 
     @router.callback_query(F.data.startswith("adm_ai_model_pick:"))
@@ -11027,7 +11027,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         key = {"gemini":"gemini_model", "groq":"groq_model", "openrouter":"openrouter_model"}[provider]
         await asyncio.to_thread(db.set_setting, key, model)
         await asyncio.to_thread(db.log_admin_action, call.from_user.id, "ai_model_change", f"{provider}: {model}")
-        await replace_admin_view(call, f"✅ مدل {provider} روی «{model}» تنظیم شد.", reply_markup=kb.ai_model_choice_kb(db))
+        await replace_admin_view(call, tr(f"✅ مدل {provider} روی «{model}» تنظیم شد."), reply_markup=kb.ai_model_choice_kb(db))
         await call.answer(db.get_text('handlers_admin.auto_0479b78b', '✅ ذخیره شد'))
 
     async def _show_ai_key_prompt(call, state, provider, state_cls, setting_key, title, source_env):
@@ -11043,8 +11043,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         guide = f"\n🔗 راهنما/ثبت‌نام: {link}" if link else ""
         await replace_admin_view(
             call,
-            f"{title}\n\nکلید یا چند کلید را بفرست؛ هر کلید در یک خط. در صورت 429 کلید بعدی امتحان می‌شود."
-            f"{guide}\n\nکلیدهای فعلی:\n{masked}\n\nبرای حذف: «حذف»\n\nENV جایگزین: {source_env}",
+            tr(f"{title}\n\nکلید یا چند کلید را بفرست؛ هر کلید در یک خط. در صورت 429 کلید بعدی امتحان می‌شود."
+            f"{guide}\n\nکلیدهای فعلی:\n{masked}\n\nبرای حذف: «حذف»\n\nENV جایگزین: {source_env}"),
             reply_markup=kb.admin_back_kb("adm_ai_support_settings"),
         )
         await call.answer()
@@ -11070,10 +11070,10 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_support(call)
         await replace_admin_view(
             call,
-            "🌐 ترجمه خودکار\n\n"
+            tr("🌐 ترجمه خودکار\n\n"
             "ربات به‌صورت خودکار متن‌های فارسی رابط کاربری را برای زبان‌های فعال ترجمه می‌کند. "
             "برای بهترین کیفیت (ترجمه‌ای که context محصول/VPN را می‌فهمد)، یک کلید Gemini رایگان تنظیم کن؛ "
-            "بدون کلید هم سیستم با ارائه‌دهنده‌های رایگان جایگزین کار می‌کند، فقط کیفیت پایین‌تر است.",
+            "بدون کلید هم سیستم با ارائه‌دهنده‌های رایگان جایگزین کار می‌کند، فقط کیفیت پایین‌تر است."),
             reply_markup=kb.translation_settings_kb(db),
         )
         await call.answer()
@@ -11084,9 +11084,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_support(call)
         await replace_admin_view(
             call,
-            "🌍 مدیریت زبان‌ها\n\n"
+            tr("🌍 مدیریت زبان‌ها\n\n"
             "روی وضعیت هر زبان بزن تا فعال/غیرفعال بشه. فعال‌کردن یک زبان جدید نیاز به تولید خودکار ترجمه‌هاش داره و ممکنه چند ثانیه طول بکشه. "
-            "فارسی و انگلیسی همیشه فعال‌اند و قابل غیرفعال‌سازی نیستند.",
+            "فارسی و انگلیسی همیشه فعال‌اند و قابل غیرفعال‌سازی نیستند."),
             reply_markup=kb.translation_languages_kb(db),
         )
         await call.answer()
@@ -11199,9 +11199,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             )
         await replace_admin_view(
             call,
-            "🌍 مدیریت زبان‌ها\n\n"
+            tr("🌍 مدیریت زبان‌ها\n\n"
             "روی وضعیت هر زبان بزن تا فعال/غیرفعال بشه. فعال‌کردن یک زبان جدید نیاز به تولید خودکار ترجمه‌هاش داره و ممکنه چند ثانیه طول بکشه. "
-            "فارسی و انگلیسی همیشه فعال‌اند و قابل غیرفعال‌سازی نیستند.",
+            "فارسی و انگلیسی همیشه فعال‌اند و قابل غیرفعال‌سازی نیستند."),
             reply_markup=kb.translation_languages_kb(db),
         )
 
@@ -11214,13 +11214,13 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminSetTranslationGeminiKey.waiting_key)
         await replace_admin_view(
             call,
-            "🔑 کلید Gemini برای ترجمه خودکار\n\n"
+            tr("🔑 کلید Gemini برای ترجمه خودکار\n\n"
             "این کلید فقط برای موتور ترجمه استفاده می‌شود و از کلید Gemini «دستیار هوشمند» کاملاً جداست؛ "
             "می‌توانی همان کلید را اینجا هم بفرستی یا کلید/quota جداگانه بسازی.\n\n"
             "🔗 ساخت کلید رایگان: https://aistudio.google.com/apikey\n\n"
             "کلید یا چند کلید را بفرست؛ هر کلید در یک خط (در صورت پر شدن سهمیه‌ی یکی، بعدی امتحان می‌شود).\n\n"
             f"کلیدهای فعلی:\n{masked}\n\n"
-            "برای حذف (و بازگشت به .env یا ارائه‌دهنده‌های رایگان): «حذف»",
+            "برای حذف (و بازگشت به .env یا ارائه‌دهنده‌های رایگان): «حذف»"),
             reply_markup=kb.admin_back_kb("adm_translation_settings"),
         )
         await call.answer()
@@ -11256,14 +11256,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminSetTranslationOpenRouterKey.waiting_key)
         await replace_admin_view(
             call,
-            "🔑 کلید OpenRouter برای ترجمه خودکار\n\n"
+            tr("🔑 کلید OpenRouter برای ترجمه خودکار\n\n"
             "این کلید فقط برای موتور ترجمه استفاده می‌شود و از کلید OpenRouter «دستیار هوشمند» کاملاً جداست؛ "
             "می‌توانی همان کلید را اینجا هم بفرستی یا کلید جداگانه بسازی.\n\n"
             "نیازی به ساخت پروژه‌ی گوگل‌کلاود ندارد و ثبت‌نامش معمولاً بدون محدودیت منطقه‌ای انجام می‌شود.\n\n"
             "🔗 ساخت کلید رایگان: https://openrouter.ai/keys\n\n"
             "کلید یا چند کلید را بفرست؛ هر کلید در یک خط (در صورت پر شدن سهمیه‌ی یکی، بعدی امتحان می‌شود).\n\n"
             f"کلیدهای فعلی:\n{masked}\n\n"
-            "برای حذف: «حذف»",
+            "برای حذف: «حذف»"),
             reply_markup=kb.admin_back_kb("adm_translation_settings"),
         )
         await call.answer()
@@ -11324,7 +11324,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminAIFaqAdd.waiting_question)
         await replace_admin_view(
             call,
-            "❓ متن سوال را ارسال کن (همان چیزی که کاربر معمولاً می‌پرسد):",
+            tr("❓ متن سوال را ارسال کن (همان چیزی که کاربر معمولاً می‌پرسد):"),
             reply_markup=kb.admin_back_kb("adm_ai_support_settings"),
         )
         await call.answer()
@@ -11451,7 +11451,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 lines.append(f"{medals.get(i, str(i) + '.')} {label} ({r['telegram_id']}) — {int(r['total_purchase']):,} تومان")
             body = "\n".join(lines)
         await replace_admin_view(
-            call, f"🏆 برترین خریداران (۱۰ نفر برتر بر اساس مجموع خرید تاییدشده)\n\n{body}",
+            call, tr(f"🏆 برترین خریداران (۱۰ نفر برتر بر اساس مجموع خرید تاییدشده)\n\n{body}"),
             reply_markup=kb.admin_back_kb("adm_stats"),
         )
         await call.answer()
@@ -11598,7 +11598,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminUserFullStats.waiting_identifier)
         await replace_admin_view(
             call,
-            "آیدی عددی تلگرام یا یوزرنیم کاربر را بفرست.",
+            tr("آیدی عددی تلگرام یا یوزرنیم کاربر را بفرست."),
             reply_markup=kb.admin_back_kb("adm_stats"),
         )
         await call.answer()
