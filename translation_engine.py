@@ -393,15 +393,26 @@ class _LibreTranslateProvider(_Provider):
                 headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "ShopVPN/1.0"},
                 method="POST",
             )
-            try:
-                with urllib.request.urlopen(req, timeout=60) as response:
-                    data = _json.loads(response.read().decode("utf-8"))
-                value = data.get("translatedText") if isinstance(data, dict) else None
-                if not value:
-                    raise RuntimeError("empty translatedText")
-                out.append(str(value))
-            except Exception as exc:
-                raise TranslationProviderError(f"{self.name}: {exc}") from exc
+            last_exc = None
+            for attempt in range(3):
+                try:
+                    with urllib.request.urlopen(req, timeout=30) as response:
+                        data = _json.loads(response.read().decode("utf-8"))
+                    value = data.get("translatedText") if isinstance(data, dict) else None
+                    if not value:
+                        raise RuntimeError("empty translatedText")
+                    out.append(str(value))
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    # LibreTranslate may still be loading its Argos models just
+                    # after boot. Retry transient connection failures instead of
+                    # permanently abandoning the whole batch on the first request.
+                    if attempt < 2:
+                        time.sleep(2.0 * (attempt + 1))
+            if last_exc is not None:
+                raise TranslationProviderError(f"{self.name}: {last_exc}") from last_exc
         return out
 
 

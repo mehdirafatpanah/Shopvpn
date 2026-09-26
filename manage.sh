@@ -539,7 +539,7 @@ MSG_EN[menu_26]="Update integration API"
 MSG_FA[menu_26]="آپدیت API یکپارچه‌سازی"
 MSG_EN[menu_23]="Change admin panel username/password"
 MSG_FA[menu_23]="تغییر نام کاربری و رمز عبور پنل مدیریت وب"
-MSG_EN[menu_27]="Install / update local translation runtime (automatic)"
+MSG_EN[menu_27]="Repair / install local translation runtime (automatic)"
 MSG_FA[menu_27]="نصب/آپدیت خودکار موتور ترجمه محلی"
 MSG_EN[menu_28]="Remove LibreTranslate"
 MSG_FA[menu_28]="حذف LibreTranslate"
@@ -2076,7 +2076,7 @@ remove_api() {
 # Action: install/manage the project-owned local translation runtime.
 # Everything is automated: Argos models + isolated LibreTranslate fallback.
 # ---------------------------------------------------------------------------
-LIBRETRANSLATE_SERVICE="${SERVICE_NAME}-libretranslate"
+LIBRETRANSLATE_SERVICE="shopvpn-libretranslate"
 
 setup_libretranslate() {
     section_header "$(t lt_header)"
@@ -2085,7 +2085,7 @@ setup_libretranslate() {
         return
     fi
 
-    echo -e "${CYAN}🌍 Installing/updating Argos models and the local LibreTranslate runtime...${RESET}"
+    echo -e "${CYAN}🌍 Installing/repairing Argos models and the local LibreTranslate runtime...${RESET}"
     if bash "$INSTALL_DIR/setup_local_translation.sh"; then
         echo -e "${GREEN}${BOLD}$(t lt_done)${RESET}"
     else

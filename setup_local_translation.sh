@@ -8,6 +8,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_DIR="${VENV_DIR:-$ROOT_DIR/venv}"
 TRANSLATION_VENV_DIR="${TRANSLATION_VENV_DIR:-$ROOT_DIR/translation-venv}"
+TRANSLATION_HOME="${TRANSLATION_HOME:-$ROOT_DIR/.translation-home}"
 PYTHON_BIN="${PYTHON_BIN:-$VENV_DIR/bin/python3}"
 LT_PYTHON="${LT_PYTHON:-$TRANSLATION_VENV_DIR/bin/python3}"
 export PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -106,6 +107,8 @@ set_env SHOPVPN_LIBRETRANSLATE_URL 'http://127.0.0.1:5000'
 # remains first and therefore avoids HTTP overhead for normal short UI strings.
 if command -v systemctl >/dev/null 2>&1; then
   SERVICE_FILE=/etc/systemd/system/shopvpn-libretranslate.service
+  as_root mkdir -p "$TRANSLATION_HOME"
+  as_root chmod 755 "$TRANSLATION_HOME"
   as_root bash -c "cat > '$SERVICE_FILE' <<EOF
 [Unit]
 Description=ShopVPN Local LibreTranslate
@@ -114,15 +117,36 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$ROOT_DIR
-ExecStart=$LT_PYTHON -m libretranslate --host 127.0.0.1 --port 5000 --load-only en,fa,tr,ar,ru,de,fr,es,it,pt,zh,ja,ko,nl,pl,uk --update-models --disable-web-ui
-Restart=always
+Environment=HOME=$TRANSLATION_HOME
+Environment=PYTHONUNBUFFERED=1
+ExecStart=$TRANSLATION_VENV_DIR/bin/libretranslate --host 127.0.0.1 --port 5000 --load-only en,fa,tr,ar,de,fr,es,it,pt,zh,ja,ko,nl,pl,uk,ru --disable-web-ui
+Restart=on-failure
 RestartSec=5
+TimeoutStartSec=15min
+TimeoutStopSec=30s
 
 [Install]
 WantedBy=multi-user.target
 EOF"
   as_root systemctl daemon-reload
-  as_root systemctl enable --now shopvpn-libretranslate.service || true
+  as_root systemctl enable shopvpn-libretranslate.service >/dev/null
+  as_root systemctl restart shopvpn-libretranslate.service || true
+
+  # Wait for the local API to become ready before the bot starts making lazy
+  # translation requests. The documented health surface is /languages.
+  ready=0
+  for _ in $(seq 1 90); do
+    if curl -fsS --max-time 3 http://127.0.0.1:5000/languages >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    sleep 2
+  done
+  if [ "$ready" -ne 1 ]; then
+    echo "[translation] WARNING: LibreTranslate did not become ready within 180s." >&2
+    as_root systemctl --no-pager --full status shopvpn-libretranslate.service 2>&1 | tail -40 >&2 || true
+    as_root journalctl -u shopvpn-libretranslate.service -n 40 --no-pager 2>&1 >&2 || true
+  fi
 fi
 
 "$PYTHON_BIN" - <<'PY'
@@ -131,7 +155,7 @@ print("[translation] Argos Translate: ready")
 PY
 
 if command -v curl >/dev/null 2>&1; then
-  if curl -fsS --max-time 5 http://127.0.0.1:5000/health >/dev/null 2>&1; then
+  if curl -fsS --max-time 5 http://127.0.0.1:5000/languages >/dev/null 2>&1; then
     echo "[translation] Local LibreTranslate: ready"
   else
     echo "[translation] Local LibreTranslate is not reachable; Argos remains the primary provider."
