@@ -962,6 +962,27 @@
     if(VERBATIM.has(en)) return raw;
     return en;
   }
+  function splitLong(raw){
+    // Break a long string into <=200-char, sentence-shaped pieces so each one
+    // still qualifies for the real translation API instead of permanently
+    // falling back to the crude word/fragment substitution below (which was
+    // only ever meant as a stop-gap until the AI catalog fills in, and reads
+    // as broken, word-order-agnostic text for anything long).
+    const LIMIT=200;
+    const parts=String(raw).split(/([.!؟?\n]+)/);
+    const chunks=[]; let cur='';
+    for(const seg of parts){
+      if((cur+seg).length>LIMIT && cur){ chunks.push(cur); cur=seg; }
+      else cur+=seg;
+    }
+    if(cur) chunks.push(cur);
+    const out=[];
+    chunks.forEach(c=>{
+      if(c.length<=240) out.push(c);
+      else { for(let i=0;i<c.length;i+=LIMIT) out.push(c.slice(i,i+LIMIT)); }
+    });
+    return out.map(x=>x.trim()).filter(Boolean);
+  }
   async function translateMissing(root){
     if(!root || ACTIVE_LANG==='fa') return;
     const texts=[]; const nodes=[];
@@ -972,16 +993,43 @@
       const raw0=n.nodeValue||'';
       const key=(ACTIVE_LANG==='en'?raw0:baseEnglish(raw0)).trim();
       if(!key||CATALOG[key]||VERBATIM.has(key)) continue;
-      if(key.length>240||/^[\d\s.,:%+\-_/]+$/.test(key)) continue;
+      if(/^[\d\s.,:%+\-_/]+$/.test(key)) continue;
+      if(key.length>240){
+        const chunks=splitLong(key).filter(c=>!CATALOG[c]&&!VERBATIM.has(c));
+        if(chunks.length){ texts.push(...chunks); nodes.push({n,key,chunks:splitLong(key)}); }
+        continue;
+      }
       texts.push(key); nodes.push({n,key});
     }
     if(!texts.length) return;
-    try{
+    const uniqueTexts=[...new Set(texts)].slice(0,50);
+    async function attempt(){
       const h=new Headers({'Content-Type':'application/json','X-Language':ACTIVE_LANG});
       if(tg?.initData) h.set('X-Init-Data',tg.initData);
-      const r=await fetch('/api/i18n/translate-batch',{method:'POST',headers:h,credentials:'include',body:JSON.stringify({language:ACTIVE_LANG,texts:[...new Set(texts)].slice(0,50)})});
-      if(r.ok){ const d=await r.json(); Object.assign(CATALOG,d.catalog||{}); (d.verbatim||[]).forEach(x=>VERBATIM.add(x)); nodes.forEach(x=>{ if(CATALOG[x.key]) x.n.nodeValue=String(x.n.nodeValue).replace(x.key,CATALOG[x.key]); }); }
-    }catch(e){}
+      const r=await fetch('/api/i18n/translate-batch',{method:'POST',headers:h,credentials:'include',body:JSON.stringify({language:ACTIVE_LANG,texts:uniqueTexts})});
+      if(!r.ok) throw new Error('translate-batch status '+r.status);
+      return r.json();
+    }
+    let d=null;
+    try{ d=await attempt(); }
+    catch(e1){
+      // One quiet retry after a short pause: covers transient rate-limit (429)
+      // or upstream provider hiccups instead of permanently showing the
+      // word/fragment fallback for the rest of the session.
+      try{ await new Promise(res=>setTimeout(res,1200)); d=await attempt(); }
+      catch(e2){ d=null; }
+    }
+    if(!d) return;
+    Object.assign(CATALOG,d.catalog||{}); (d.verbatim||[]).forEach(x=>VERBATIM.add(x));
+    nodes.forEach(x=>{
+      if(x.chunks){
+        let value=String(x.n.nodeValue);
+        x.chunks.forEach(c=>{ if(CATALOG[c]) value=value.split(c).join(CATALOG[c]); });
+        x.n.nodeValue=value;
+      } else if(CATALOG[x.key]){
+        x.n.nodeValue=String(x.n.nodeValue).replace(x.key,CATALOG[x.key]);
+      }
+    });
   }
   async function apply(root){
     const lang=localStorage.getItem('sv-lang')||'fa';
