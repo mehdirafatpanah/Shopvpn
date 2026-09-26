@@ -8245,18 +8245,78 @@ async function renderLanguages() {
       ${rows.map(x => {
         const h = healthByCode[x.code] || {};
         const status = x.enabled ? `<span class="badge badge-approved">${T("\u0641\u0639\u0627\u0644")}</span>` : `<span class="badge">${T("\u063a\u06cc\u0631\u0641\u0639\u0627\u0644")}</span>`;
-        const action = (x.code === 'fa' || x.code === 'en') ? `<span class="muted">${T("\u067e\u06cc\u0634\u200c\u0641\u0631\u0636")}</span>` : (x.enabled ? `<button class="btn btn-sm" data-lang-disable="${esc(x.code)}">${T("\u063a\u06cc\u0631\u0641\u0639\u0627\u0644\u200c\u0633\u0627\u0632\u06cc")}</button>` : `<button class="btn btn-sm btn-primary" data-lang-enable="${esc(x.code)}">${T("\u0641\u0639\u0627\u0644\u200c\u0633\u0627\u0632\u06cc \u062e\u0648\u062f\u06a9\u0627\u0631")}</button>`);
-        return `<tr><td>${esc(`${x.flag || ''} ${x.native_name || x.name}`)}</td><td class="mono">${esc(x.code)}</td><td>${x.rtl ? 'RTL' : 'LTR'}</td><td>${status}</td><td>${translationHealthBadge(h)}</td><td>${action}</td></tr>`;
+        const isBuiltin = (x.code === 'fa' || x.code === 'en');
+        const action = isBuiltin ? `<span class="muted">${T("\u067e\u06cc\u0634\u200c\u0641\u0631\u0636")}</span>` : (x.enabled ? `<button class="btn btn-sm" data-lang-disable="${esc(x.code)}">${T("\u063a\u06cc\u0631\u0641\u0639\u0627\u0644\u200c\u0633\u0627\u0632\u06cc")}</button>` : `<button class="btn btn-sm btn-primary" data-lang-enable="${esc(x.code)}">${T("\u0641\u0639\u0627\u0644\u200c\u0633\u0627\u0632\u06cc \u062e\u0648\u062f\u06a9\u0627\u0631")}</button>`);
+        const logBtn = isBuiltin ? '' : ` <button class="btn btn-sm" data-lang-log="${esc(x.code)}" title="${T('\u0644\u0627\u06af \u0632\u0646\u062f\u0647 \u062a\u0631\u062c\u0645\u0647')}">${T('\u0644\u0627\u06af \u0632\u0646\u062f\u0647')}</button>`;
+        return `<tr><td>${esc(`${x.flag || ''} ${x.native_name || x.name}`)}</td><td class="mono">${esc(x.code)}</td><td>${x.rtl ? 'RTL' : 'LTR'}</td><td>${status}</td><td>${translationHealthBadge(h)}</td><td>${action}${logBtn}</td></tr>`;
       }).join('')}
     </tbody></table></div></div>`);
+}
+
+// لاگ زنده‌ی ترجمه: هر بار با فاصله‌ی کوتاه از سرور می‌پرسد چه خط‌های جدیدی
+// اضافه شده (since=آخرین seq)، تا وقتی running=false برگردد و چند بار دیگر
+// برای اطمینان از دریافت آخرین خط‌ها.
+function openTranslationLogModal(code, label) {
+  let since = 0, timer = null, stopped = false, idleTicks = 0;
+  const body = openModal(`${settingsUiText('\u0644\u0627\u06af \u0632\u0646\u062f\u0647 \u062a\u0631\u062c\u0645\u0647')} — ${esc(label || code)}`, `
+    <div id="tlog-bar" style="height:8px;border-radius:20px;background:var(--border-soft);overflow:hidden;margin-bottom:10px">
+      <div id="tlog-bar-fill" style="height:100%;width:0%;background:var(--green,#22c55e);transition:width .3s"></div>
+    </div>
+    <div id="tlog-summary" class="card-sub" style="margin-bottom:10px">${settingsUiText('\u062f\u0631 \u062d\u0627\u0644 \u0627\u062a\u0635\u0627\u0644...')}</div>
+    <div id="tlog-lines" class="mono" style="max-height:340px;overflow:auto;background:var(--bg,#0b0f14);color:#c8f0d0;border-radius:10px;padding:10px 12px;font-size:12.5px;line-height:1.9;direction:ltr;text-align:left"></div>
+  `, (bodyEl, close) => {
+    bodyEl.closest('.modal-backdrop').addEventListener('click', e => {
+      if (e.target.classList.contains('modal-backdrop')) { stopped = true; clearInterval(timer); }
+    });
+    const linesEl = bodyEl.querySelector('#tlog-lines');
+    const fillEl = bodyEl.querySelector('#tlog-bar-fill');
+    const sumEl = bodyEl.querySelector('#tlog-summary');
+    const levelColor = { error: '#ff6b6b', warn: '#f5c26b', done: '#7fd8a0', info: '#c8f0d0' };
+    const tick = async () => {
+      if (stopped) return;
+      let data;
+      try { data = await apiGet(`/i18n/logs/${encodeURIComponent(code)}?since=${since}`); }
+      catch (e) { return; }
+      if (data.entries && data.entries.length) {
+        const atBottom = linesEl.scrollTop + linesEl.clientHeight >= linesEl.scrollHeight - 8;
+        for (const e of data.entries) {
+          since = Math.max(since, e.seq);
+          const div = document.createElement('div');
+          div.style.color = levelColor[e.level] || levelColor.info;
+          const t = new Date(e.ts * 1000).toLocaleTimeString('fa-IR');
+          div.textContent = `[${t}] ${e.message}`;
+          linesEl.appendChild(div);
+        }
+        if (atBottom) linesEl.scrollTop = linesEl.scrollHeight;
+      }
+      const total = data.total || 0;
+      const pct = total ? Math.min(100, Math.round((data.done / total) * 100)) : (data.running ? 0 : 100);
+      fillEl.style.width = pct + '%';
+      sumEl.textContent = total
+        ? `${data.done} / ${total} — ${data.running ? settingsUiText('\u062f\u0631 \u062d\u0627\u0644 \u0627\u0646\u062c\u0627\u0645') : settingsUiText('\u067e\u0627\u06cc\u0627\u0646 \u06cc\u0627\u0641\u062a')}`
+        : (data.running ? settingsUiText('\u062f\u0631 \u062d\u0627\u0644 \u0634\u0631\u0648\u0639...') : settingsUiText('\u0647\u06cc\u0686 \u0639\u0645\u0644\u06cc\u0627\u062a\u06cc \u062f\u0631 \u062c\u0631\u06cc\u0627\u0646 \u0646\u06cc\u0633\u062a.'));
+      if (!data.running) {
+        idleTicks++;
+        if (idleTicks > 2) { clearInterval(timer); }
+      } else {
+        idleTicks = 0;
+      }
+    };
+    tick();
+    timer = setInterval(tick, 900);
+  });
+  return body;
 }
 
 document.addEventListener('click', async e => {
   const en = e.target.closest('[data-lang-enable]');
   const dis = e.target.closest('[data-lang-disable]');
+  const logBtn = e.target.closest('[data-lang-log]');
+  if (logBtn) { openTranslationLogModal(logBtn.dataset.langLog); return; }
   if (!en && !dis) return;
   const code = (en || dis).dataset.langEnable || (en || dis).dataset.langDisable;
   (en || dis).disabled = true;
+  if (en) openTranslationLogModal(code); // درخواست فعال‌سازی تا پایان ترجمه صبر می‌کند؛ لاگ زنده همزمان با آن باز می‌شود
   try {
     const result = await apiPost(`/languages/${encodeURIComponent(code)}/${en ? 'enable' : 'disable'}`);
     toast(en ? `${settingsUiText('\u0632\u0628\u0627\u0646 \u0641\u0639\u0627\u0644 \u0634\u062f')} — ${result.translated || 0} ${settingsUiText('\u062a\u0631\u062c\u0645\u0647 \u062e\u0648\u062f\u06a9\u0627\u0631 \u0633\u0627\u062e\u062a\u0647 \u0634\u062f')}.` : `${settingsUiText('\u0632\u0628\u0627\u0646 \u063a\u06cc\u0631\u0641\u0639\u0627\u0644 \u0634\u062f')}.`);
