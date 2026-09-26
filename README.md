@@ -1,4 +1,4 @@
-[🇬🇧 English](README.md) | [🇮🇷 فارسی](README.fa.md)
+[🇬🇧 English](README.md) | [🇮🇷 فارسی](README.fa.md) | [🇷🇺 Русский](README.ru.md) | [🇨🇳 中文](README.zh.md)
 
 <div align="center">
 
@@ -628,5 +628,7 @@ Created by **Mehdi Rafatpanah**
 
 - 🇬🇧 **English:** `README.md`
 - 🇮🇷 **Persian:** `README.fa.md`
+- 🇷🇺 **Russian:** `README.ru.md`
+- 🇨🇳 **Chinese:** `README.zh.md`
 
-The application supports Persian and English with persisted user language selection and automatic RTL/LTR switching.
+The application supports multiple UI languages with persisted user language selection and automatic RTL/LTR switching. Additional languages (Vietnamese, Urdu, Kazakh, Uzbek, Turkmen, Belarusian and more) can be activated from the admin panel's language manager, which auto-generates the in-app translations; matching README translations can be added the same way on request.

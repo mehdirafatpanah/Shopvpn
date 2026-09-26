@@ -1,4 +1,4 @@
-[🇬🇧 English](README.md) | [🇮🇷 فارسی](README.fa.md)
+[🇬🇧 English](README.md) | [🇮🇷 فارسی](README.fa.md) | [🇷🇺 Русский](README.ru.md) | [🇨🇳 中文](README.zh.md)
 
 <div align="center">
 
@@ -746,12 +746,13 @@ bash <(curl -fsSL https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn/main
 </div>
 
 
-## Bilingual UI (fa / en)
+## پشتیبانی چندزبانه (fa / en / ru / zh / ...)
 
-The project now includes a shared bilingual foundation:
+The project now includes a shared multilingual foundation:
 - per-user language is persisted in SQLite (`users.language_code`)
-- first `/start` follows Telegram's language (`fa`/`en`)
-- `/language` and the main-menu language button switch between Persian and English
+- first `/start` follows Telegram's language, falling back to English (`en`) as the default when the user's Telegram language isn't Persian
+- `/language` and the main-menu language button switch between the languages enabled for the bot
 - Telegram update middleware applies the selected language safely per request
-- bot text overrides continue to work without data loss; translated catalog entries are used for English where available
-- the web admin panel includes a Persian/English toggle and switches document direction
+- bot text overrides continue to work without data loss; translated catalog entries are used where available
+- the web admin panel includes a language toggle and switches document direction (RTL/LTR) automatically
+- admins can enable additional languages (Russian, Chinese, and other filtering-heavy-region languages such as Vietnamese, Urdu, Kazakh, Uzbek, Turkmen and Belarusian) from the admin panel's language manager; the bot auto-generates the translations on activation
