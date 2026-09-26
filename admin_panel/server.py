@@ -1004,6 +1004,19 @@ async def api_i18n_history(language: str, limit: int = Query(20), admin=Depends(
     return [dict(r) for r in rows]
 
 
+@app.get("/api/i18n/logs/{language}")
+async def api_i18n_logs(language: str, since: int = Query(0), admin=Depends(get_current_admin)):
+    """Live progress log for an in-progress (or just-finished) language sync.
+
+    The web panel polls this while a language is enabling/syncing so admins
+    can see it moving instead of a plain unexplained wait; ``since`` is the
+    last ``seq`` the client already has, so only new lines come back.
+    """
+    from translation_engine import get_progress
+    code = normalize_language(language)
+    return await asyncio.to_thread(get_progress, code, since)
+
+
 @app.post("/api/i18n/sync/{language}")
 async def api_i18n_sync(language: str, admin=Depends(require_permission("settings"))):
     tenant = _current_tenant.get()
