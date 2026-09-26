@@ -97,14 +97,6 @@ pip install -r requirements.txt --quiet
 deactivate
 
 # ----------------------------------------------------------------------------
-# ۳-ب. راه‌اندازی کاملاً خودکار ترجمه محلی
-#     Argos + مدل‌های موردنیاز پروژه نصب می‌شوند. هیچ API key لازم نیست.
-# ----------------------------------------------------------------------------
-echo "🌐 راه‌اندازی موتور ترجمه محلی (بدون API خارجی)..."
-chmod +x "$INSTALL_DIR/setup_local_translation.sh"
-"$INSTALL_DIR/setup_local_translation.sh"
-
-# ----------------------------------------------------------------------------
 # ۴. تنظیم فایل .env (فقط دفعه اول، چون این فایل هیچ‌وقت در گیت نیست)
 # ----------------------------------------------------------------------------
 if [ ! -f "$INSTALL_DIR/.env" ]; then
@@ -176,6 +168,25 @@ EOF
     echo "✅ فایل .env ساخته شد."
 else
     echo "✅ فایل .env از قبل موجود است، دست‌نخورده باقی می‌ماند."
+fi
+
+# ----------------------------------------------------------------------------
+# ۴-ب. راه‌اندازی کاملاً خودکار ترجمه محلی
+#      LibreTranslate self-hosted + Argos. هیچ API key لازم نیست.
+#      این مرحله بعد از ساخت .env اجرا می‌شود.
+# ----------------------------------------------------------------------------
+echo "🌐 راه‌اندازی موتور ترجمه محلی (LibreTranslate + Argos)..."
+chmod +x "$INSTALL_DIR/setup_local_translation.sh"
+"$INSTALL_DIR/setup_local_translation.sh"
+
+# Ensure the bot always points to the private/local translation service.
+ENV_FILE="$INSTALL_DIR/.env"
+if [ -f "$ENV_FILE" ]; then
+    if grep -q "^SHOPVPN_LIBRETRANSLATE_URL=" "$ENV_FILE"; then
+        sed -i "s|^SHOPVPN_LIBRETRANSLATE_URL=.*|SHOPVPN_LIBRETRANSLATE_URL=http://127.0.0.1:5050|" "$ENV_FILE"
+    else
+        printf '\nSHOPVPN_LIBRETRANSLATE_URL=http://127.0.0.1:5050\n' >> "$ENV_FILE"
+    fi
 fi
 
 # ----------------------------------------------------------------------------

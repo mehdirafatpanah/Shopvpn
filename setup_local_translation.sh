@@ -85,10 +85,94 @@ if [ -f "$ENV_FILE" ]; then
   fi
 fi
 
-# Verify that the local engine can import Argos without contacting a provider.
+# ---------------------------------------------------------------------------
+# Self-hosted LibreTranslate (free, local, no API key).
+# The bot uses this service first; Argos remains available as a direct
+# in-process fallback. LibreTranslate documents --load-only as the way to
+# limit the installed/loaded model set.
+# ---------------------------------------------------------------------------
+LIBRETRANSLATE_DIR="${SHOPVPN_LIBRETRANSLATE_DIR:-$HOME/.shopvpn-libretranslate}"
+LIBRETRANSLATE_SERVICE="${SHOPVPN_TRANSLATION_SERVICE:-v2raybot-libretranslate}"
+LIBRETRANSLATE_PORT="${SHOPVPN_LIBRETRANSLATE_PORT:-5050}"
+LIBRETRANSLATE_VENV="$LIBRETRANSLATE_DIR/venv"
+LIBRETRANSLATE_BIN="$LIBRETRANSLATE_VENV/bin/libretranslate"
+
+if command -v systemctl >/dev/null 2>&1; then
+  echo "[translation] Installing/updating self-hosted LibreTranslate..."
+  mkdir -p "$LIBRETRANSLATE_DIR"
+  if [ ! -x "$LIBRETRANSLATE_BIN" ]; then
+    python3 -m venv "$LIBRETRANSLATE_VENV"
+  fi
+  "$LIBRETRANSLATE_VENV/bin/python" -m pip install --upgrade pip setuptools wheel >/dev/null
+  "$LIBRETRANSLATE_VENV/bin/pip" install -q --upgrade 'libretranslate>=1.9.6'
+
+  LOAD_ONLY="en,fa,tr,ar,ru,de,fr,es,it,pt,zh,ja,ko,nl,pl,uk"
+  SERVICE_FILE="/etc/systemd/system/${LIBRETRANSLATE_SERVICE}.service"
+  sudo tee "$SERVICE_FILE" >/dev/null <<EOF
+[Unit]
+Description=ShopVPN self-hosted LibreTranslate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$(id -un)
+WorkingDirectory=$LIBRETRANSLATE_DIR
+Environment=HOME=$HOME
+Environment=PYTHONUNBUFFERED=1
+ExecStart=$LIBRETRANSLATE_BIN --host 127.0.0.1 --port $LIBRETRANSLATE_PORT --load-only $LOAD_ONLY --update-models --disable-web-ui --disable-files-translation
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable "$LIBRETRANSLATE_SERVICE" >/dev/null 2>&1 || true
+  sudo systemctl restart "$LIBRETRANSLATE_SERVICE"
+
+  echo -n "[translation] Waiting for LibreTranslate"
+  ready=0
+  for _ in $(seq 1 60); do
+    if curl -fsS "http://127.0.0.1:${LIBRETRANSLATE_PORT}/languages" >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    sleep 2
+    printf '.'
+  done
+  echo
+  if [ "$ready" = "1" ]; then
+    echo "[translation] LibreTranslate: ready on http://127.0.0.1:${LIBRETRANSLATE_PORT}"
+    # If .env already exists (normal install.sh flow), wire the bot to the
+    # local service. If it does not, install.sh will do this after collecting
+    # BOT_TOKEN/OWNER_ID.
+    ENV_FILE="$ROOT_DIR/.env"
+    if [ -f "$ENV_FILE" ]; then
+      if grep -q '^SHOPVPN_LIBRETRANSLATE_URL=' "$ENV_FILE"; then
+        sed -i "s|^SHOPVPN_LIBRETRANSLATE_URL=.*|SHOPVPN_LIBRETRANSLATE_URL=http://127.0.0.1:${LIBRETRANSLATE_PORT}|" "$ENV_FILE"
+      else
+        printf '\nSHOPVPN_LIBRETRANSLATE_URL=http://127.0.0.1:%s\n' "$LIBRETRANSLATE_PORT" >> "$ENV_FILE"
+      fi
+    fi
+  else
+    echo "[translation] WARNING: LibreTranslate did not become ready yet." >&2
+    echo "[translation] The service will keep retrying; cached/Argos translations remain available." >&2
+  fi
+else
+  echo "[translation] systemd is unavailable; skipping the LibreTranslate service setup." >&2
+fi
+
+# Verify that the local engines can import without contacting a public provider.
 "$PYTHON_BIN" - <<'PY'
 import argostranslate
 print("[translation] Argos Translate: ready")
+try:
+    import libretranslate
+    print("[translation] LibreTranslate package: ready")
+except Exception as exc:
+    print(f"[translation] LibreTranslate package unavailable: {exc}")
 PY
 
 echo "[translation] Local translation setup completed."
