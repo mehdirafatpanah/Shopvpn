@@ -11076,6 +11076,59 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         )
         await call.answer()
 
+    @router.callback_query(F.data == "adm_translation_langs")
+    async def cb_admin_translation_langs(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await replace_admin_view(
+            call,
+            "🌍 مدیریت زبان‌ها\n\n"
+            "روی وضعیت هر زبان بزن تا فعال/غیرفعال بشه. فعال‌کردن یک زبان جدید نیاز به تولید خودکار ترجمه‌هاش داره و ممکنه چند ثانیه طول بکشه. "
+            "فارسی و انگلیسی همیشه فعال‌اند و قابل غیرفعال‌سازی نیستند.",
+            reply_markup=kb.translation_languages_kb(db),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_translation_lang_toggle:"))
+    async def cb_admin_translation_lang_toggle(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        code = call.data.split(":", 1)[1].strip().lower()
+        from i18n import LANGUAGE_CATALOG
+        if code in {"fa", "en"} or code not in LANGUAGE_CATALOG:
+            return await call.answer(tr("⚠️ این زبان قابل تغییر نیست."), show_alert=True)
+        row = await asyncio.to_thread(db.get_language, code)
+        currently_enabled = bool(row["enabled"]) if row else False
+        if currently_enabled:
+            await asyncio.to_thread(db.disable_language, code)
+            await asyncio.to_thread(db.log_admin_action, call.from_user.id, "language_disable", code)
+            await call.answer(tr("⚪️ زبان غیرفعال شد."))
+        else:
+            await call.answer(tr("⏳ در حال تولید ترجمه‌ها..."))
+            from translation_engine import generate_language, inspect_language
+            try:
+                await asyncio.to_thread(generate_language, db, code)
+                status = await asyncio.to_thread(inspect_language, db, code)
+                if status.get("missing_count"):
+                    raise RuntimeError(f"{status['missing_count']} ترجمه ناقص باقی ماند")
+                await asyncio.to_thread(db.enable_language, code, True)
+                await asyncio.to_thread(db.log_admin_action, call.from_user.id, "language_enable", code)
+            except Exception as exc:
+                await asyncio.to_thread(db.disable_language, code, automatic=True, error=str(exc)[:500])
+                await replace_admin_view(
+                    call,
+                    tr("⚠️ ترجمه خودکار این زبان کامل نشد؛ زبان فعال نشد. دوباره تلاش کن یا کلید Gemini تنظیم کن."),
+                    reply_markup=kb.translation_languages_kb(db),
+                )
+                return
+        await replace_admin_view(
+            call,
+            "🌍 مدیریت زبان‌ها\n\n"
+            "روی وضعیت هر زبان بزن تا فعال/غیرفعال بشه. فعال‌کردن یک زبان جدید نیاز به تولید خودکار ترجمه‌هاش داره و ممکنه چند ثانیه طول بکشه. "
+            "فارسی و انگلیسی همیشه فعال‌اند و قابل غیرفعال‌سازی نیستند.",
+            reply_markup=kb.translation_languages_kb(db),
+        )
+
     @router.callback_query(F.data == "adm_translation_set_key")
     async def cb_admin_translation_set_key(call: CallbackQuery, state: FSMContext):
         if not full_admin_only(call.from_user.id):

@@ -1058,10 +1058,37 @@ def translation_settings_kb(db) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text=tr(f"🔑 کلید Gemini: {source_label}"), callback_data="noop")],
         [InlineKeyboardButton(text=tr(f"⚙️ ارائه‌دهنده‌های فعال: {providers_label}"), callback_data="noop")],
+        [InlineKeyboardButton(text=tr("🌍 مدیریت زبان‌ها"), callback_data="adm_translation_langs")],
         [InlineKeyboardButton(text=tr("🔑 تنظیم/تغییر کلید Gemini"), callback_data="adm_translation_set_key")],
         [InlineKeyboardButton(text=tr("🔗 ساخت کلید رایگان از Google AI Studio"), url="https://aistudio.google.com/apikey")],
         [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:access")],
     ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def translation_languages_kb(db) -> InlineKeyboardMarkup:
+    """لیست همه‌ی زبان‌های قابل‌پشتیبانی با وضعیت فعال/غیرفعال و دکمه‌ی تغییر وضعیت.
+
+    فارسی/انگلیسی همیشه فعال‌اند و دکمه‌ی تغییر وضعیت ندارند."""
+    from i18n import LANGUAGE_CATALOG
+    known = {r["code"]: r for r in db.list_languages()}
+    rows = []
+    for code, meta in LANGUAGE_CATALOG.items():
+        row = known.get(code)
+        enabled = bool(row["enabled"]) if row else (code in {"fa", "en"})
+        label = f"{meta['flag']} {meta['native_name']}"
+        if code in {"fa", "en"}:
+            rows.append([
+                InlineKeyboardButton(text=label, callback_data="noop"),
+                InlineKeyboardButton(text="🟢 همیشه فعال", callback_data="noop"),
+            ])
+        else:
+            status = "🟢 فعال" if enabled else "⚪️ غیرفعال"
+            rows.append([
+                InlineKeyboardButton(text=label, callback_data="noop"),
+                InlineKeyboardButton(text=status, callback_data=f"adm_translation_lang_toggle:{code}"),
+            ])
+    rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_translation_settings")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
