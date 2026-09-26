@@ -1382,6 +1382,7 @@ ADMIN_PANEL_ITEMS = [
     ("adm_broadcast", "📢 پیام همگانی", "adm_broadcast"),
     ("adm_deeplink_tools", "🔗 دیپ‌لینک و پست کانال", "adm_deeplink_tools"),
     ("adm_stats", "📊 آمار فروش", "adm_stats"),
+    ("adm_user_search", "👥 مدیریت کاربران", "adm_stats_user"),
     ("adm_backup_menu", "🗄 بکاپ و بازیابی", "adm_backup_menu"),
     ("adm_report_group", "📣 گروه گزارش تاپیک‌دار", "adm_report_group"),
     ("adm_bulk_gift", "🎁 هدیه‌ی گروهی", "adm_bulk_gift"),
@@ -1497,6 +1498,7 @@ ADMIN_PANEL_CATEGORIES = [
     ("management", "📊 گزارش و سیستم", [
         "adm_gswitch",
         "adm_stats",
+        "adm_user_search",
         "adm_backup_menu",
         "adm_report_group",
         "adm_spam_settings",
