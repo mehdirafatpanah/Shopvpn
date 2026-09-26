@@ -22,9 +22,11 @@ import time
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
-from fastapi import FastAPI, Request, Response, Depends, HTTPException, UploadFile, File, Form
+from i18n import tr, set_language, reset_language, normalize_language, LANGUAGE_CATALOG
+from notification_i18n import localized_payload
+from fastapi import FastAPI, Request, Response, Depends, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -80,6 +82,20 @@ COOKIE_NAME = "panel_session"
 NOTIFY_POLL_SECONDS = 15
 
 app = FastAPI(title="ShopVPN Admin Panel")
+
+# Backend i18n: every API request gets a language context from the frontend header.
+# The frontend sends X-Language based on its persisted sv-lang setting.
+@app.middleware("http")
+async def _i18n_request_language(request: Request, call_next):
+    language = normalize_language(request.headers.get("x-language") or request.headers.get("accept-language"))
+    token = set_language(language)
+    try:
+        response = await call_next(request)
+        response.headers["Content-Language"] = language
+        return response
+    finally:
+        reset_language(token)
+
 app.add_middleware(ApiNoStoreMiddleware)
 main_db = Database(DB_PATH)
 main_db.init_db(owner_id=OWNER_ID)
@@ -171,7 +187,8 @@ async def _notify_admins(permission: str, payload: dict, category: str | None = 
     if subs:
         gone = []
         for s in subs:
-            result = await send_push(s, payload)
+            localized = localized_payload(db, int(s["admin_id"]), payload)
+            result = await send_push(s, localized)
             if result == "gone":
                 gone.append(s["endpoint"])
         if gone:
@@ -188,10 +205,10 @@ async def _notify_admins(permission: str, payload: dict, category: str | None = 
     # permission="orders" می‌ره (چون همون مجوز رو لازم داره) ولی توی اپ تب
     # جدا با id="topups" داره - قبلاً چون category رو مساوی permission
     # می‌ذاشتیم، خاموش‌کردن سوییچ "شارژ کیف‌پول" هیچ اثری نداشت.
-    fcm_tokens = (await asyncio.to_thread(db.list_fcm_tokens))
+    fcm_tokens = (await asyncio.to_thread(db.list_fcm_tokens_with_admins))
     if fcm_tokens:
-        invalid = await fcm_client.send_to_tokens(
-            db, fcm_tokens, payload.get("title", "ShopVPN"), payload.get("body", ""),
+        invalid = await fcm_client.send_to_admins(
+            db, fcm_tokens, payload,
             data={"tag": payload.get("tag", ""), "category": category or permission},
         )
         for t in invalid:
@@ -508,6 +525,27 @@ async def _server_status_loop():
         await asyncio.sleep(interval_seconds)
 
 
+async def _translation_sync_loop():
+    """Keep enabled language catalogs current without admin intervention."""
+    from translation_engine import prewarm_enabled_languages
+    while True:
+        try:
+            await asyncio.to_thread(prewarm_enabled_languages, main_db)
+            for row in await asyncio.to_thread(main_db.list_reseller_bots, active_only=True):
+                try:
+                    resolved_path = resolve_db_path(row["db_path"])
+                    if not os.path.exists(resolved_path):
+                        continue
+                    tenant_db = Database(resolved_path)
+                    tenant_db.init_db(owner_id=row["owner_telegram_id"])
+                    await asyncio.to_thread(prewarm_enabled_languages, tenant_db)
+                except Exception:
+                    logger.exception("Automatic translation sync failed for reseller %s", row.get("id"))
+        except Exception:
+            logger.exception("Automatic translation sync loop failed")
+        await asyncio.sleep(900)
+
+
 @app.on_event("startup")
 async def _start_notifier():
     # همیشه استارت می‌شود: این تسک هم پوش وب (VAPID) و هم پوش موبایل (FCM) را
@@ -519,6 +557,7 @@ async def _start_notifier():
     # شارژ/تیکت جدید پول می‌کند و اگر چیزی برای فرستادن نباشد کاری نمی‌کند.
     asyncio.create_task(_notifier_loop())
     asyncio.create_task(_notifier_supervisor())
+    asyncio.create_task(_translation_sync_loop())
     asyncio.create_task(_server_status_loop())
 
 
@@ -603,6 +642,9 @@ async def _authenticate_via_mobile_token(bearer_token: str):
     if not admin or not admin["is_active"]:
         return None
     _current_tenant.set(tenant)
+    admin_language = admin["language_code"] if "language_code" in admin.keys() and admin["language_code"] else "fa"
+    catalog = await asyncio.to_thread(tenant.db.translation_catalog, admin_language) if admin_language not in {"fa", "en"} else None
+    set_language(admin_language, catalog)
     await asyncio.to_thread(tenant.db.touch_mobile_token, row["id"])
     return {
         "id": admin["id"],
@@ -620,24 +662,27 @@ async def get_current_admin(request: Request):
         admin = await _authenticate_via_mobile_token(auth_header[7:].strip())
         if admin:
             return admin
-        raise HTTPException(401, "توکن دسترسی نامعتبر یا باطل‌شده است.")
+        raise HTTPException(401, tr("توکن دسترسی نامعتبر یا باطل‌شده است."))
 
     token = request.cookies.get(COOKIE_NAME)
     payload = verify_session_token(ADMIN_PANEL_SECRET, token) if token else None
     if not payload:
-        raise HTTPException(401, "نشست منقضی شده یا نامعتبر است.")
+        raise HTTPException(401, tr("نشست منقضی شده یا نامعتبر است."))
 
     # تننت همیشه از خودِ توکن امضاشده خوانده می‌شود، نه از کوئری URL؛ وگرنه
     # کسی با یک session کوکی معتبر می‌توانست با عوض‌کردن ?b= به دیتابیس تننت
     # دیگری دسترسی بگیرد.
     tenant = resolve_tenant_by_slug(payload.get("b", ""))
     if not tenant:
-        raise HTTPException(401, "پنل وب این نماینده دیگر فعال نیست.")
+        raise HTTPException(401, tr("پنل وب این نماینده دیگر فعال نیست."))
     _current_tenant.set(tenant)
 
     admin = (await asyncio.to_thread(tenant.db.get_web_admin, payload["id"]))
     if not admin or not admin["is_active"]:
-        raise HTTPException(401, "حساب کاربری غیرفعال یا حذف شده است.")
+        raise HTTPException(401, tr("حساب کاربری غیرفعال یا حذف شده است."))
+    admin_language = admin["language_code"] if "language_code" in admin.keys() and admin["language_code"] else "fa"
+    catalog = await asyncio.to_thread(tenant.db.translation_catalog, admin_language) if admin_language not in {"fa", "en"} else None
+    set_language(admin_language, catalog)
     reseller_profile = None
     if tenant.slug and tenant.bot_id:
         rb = await asyncio.to_thread(main_db.get_reseller_bot, tenant.bot_id)
@@ -673,6 +718,7 @@ async def get_current_admin(request: Request):
         "role": admin["role"],
         "permissions": (await asyncio.to_thread(tenant.db.get_web_admin_permissions, admin)),
         "tenant": tenant.slug,
+        "language": await asyncio.to_thread(tenant.db.get_web_admin_language, admin["id"]),
         "reseller_profile": reseller_profile,
     }
 
@@ -693,11 +739,11 @@ TENANT_BLOCKED_PERMISSIONS = {
 def require_permission(permission: str):
     def _dep(admin=Depends(get_current_admin)):
         if admin.get("tenant") and permission in TENANT_BLOCKED_PERMISSIONS:
-            raise HTTPException(403, "این قابلیت برای نمایندگی در دسترس نیست.")
+            raise HTTPException(403, tr("این قابلیت برای نمایندگی در دسترس نیست."))
         if permission in MAIN_TENANT_ONLY_PERMISSIONS and admin["tenant"]:
-            raise HTTPException(403, "این بخش فقط در پنل بات اصلی در دسترس است.")
+            raise HTTPException(403, tr("این بخش فقط در پنل بات اصلی در دسترس است."))
         if admin["role"] != "owner" and permission not in admin["permissions"]:
-            raise HTTPException(403, "دسترسی کافی نیست.")
+            raise HTTPException(403, tr("دسترسی کافی نیست."))
         return admin
     return _dep
 
@@ -709,21 +755,21 @@ def require_any_permission(*permissions: str):
         if admin["role"] == "owner":
             return admin
         if not any(p in admin["permissions"] for p in permissions):
-            raise HTTPException(403, "دسترسی کافی نیست.")
+            raise HTTPException(403, tr("دسترسی کافی نیست."))
         return admin
     return _dep
 
 
 def require_owner(admin=Depends(get_current_admin)):
     if admin["role"] != "owner":
-        raise HTTPException(403, "این بخش فقط برای مالک است.")
+        raise HTTPException(403, tr("این بخش فقط برای مالک است."))
     return admin
 
 
 def require_main_tenant(admin=Depends(get_current_admin)):
     """برای بخش‌هایی که حتی برای owner پنل نماینده هم معنی ندارند (مثلاً منابع سخت‌افزاری سرور)."""
     if admin["tenant"]:
-        raise HTTPException(403, "این بخش فقط در پنل بات اصلی در دسترس است.")
+        raise HTTPException(403, tr("این بخش فقط در پنل بات اصلی در دسترس است."))
     return admin
 
 
@@ -742,10 +788,10 @@ def require_full_access_tenant(admin=Depends(get_current_admin)):
 def api_login(body: LoginBody, response: Response):
     tenant = resolve_tenant_by_slug(body.b or "")
     if not tenant:
-        raise HTTPException(401, "این پنل در دسترس نیست.")
+        raise HTTPException(401, tr("این پنل در دسترس نیست."))
     admin = tenant.db.get_web_admin_by_username(body.username)
     if not admin or not admin["is_active"] or not verify_password(body.password, admin["password_hash"]):
-        raise HTTPException(401, "یوزرنیم یا پسورد اشتباه است.")
+        raise HTTPException(401, tr("یوزرنیم یا پسورد اشتباه است."))
     token = create_session_token(
         ADMIN_PANEL_SECRET, admin["id"], admin["username"], admin["role"], tenant=tenant.slug,
     )
@@ -753,7 +799,7 @@ def api_login(body: LoginBody, response: Response):
     response.set_cookie(
         COOKIE_NAME, token, httponly=True, samesite="lax", max_age=12 * 3600, path="/",
     )
-    return {"id": admin["id"], "username": admin["username"], "role": admin["role"], "tenant": tenant.slug}
+    return {"id": admin["id"], "username": admin["username"], "role": admin["role"], "tenant": tenant.slug, "language": tenant.db.get_web_admin_language(admin["id"])}
 
 
 @app.post("/api/logout")
@@ -779,12 +825,12 @@ class SetupBody(BaseModel):
 def api_setup_info(b: str, t: str):
     row = _lookup_reseller_bot_row(b)
     if not row or not row["web_panel_enabled"] or not row["web_panel_setup_token"]:
-        raise HTTPException(404, "لینک راه‌اندازی نامعتبر یا منقضی‌شده است.")
+        raise HTTPException(404, tr("لینک راه‌اندازی نامعتبر یا منقضی‌شده است."))
     if not hmac.compare_digest(row["web_panel_setup_token"], t):
-        raise HTTPException(404, "لینک راه‌اندازی نامعتبر یا منقضی‌شده است.")
+        raise HTTPException(404, tr("لینک راه‌اندازی نامعتبر یا منقضی‌شده است."))
     tenant_db = Database(resolve_db_path(row["db_path"]))
     if tenant_db.count_web_admins() > 0:
-        raise HTTPException(400, "پنل این نماینده قبلاً راه‌اندازی شده؛ از صفحه‌ی ورود استفاده کن.")
+        raise HTTPException(400, tr("پنل این نماینده قبلاً راه‌اندازی شده؛ از صفحه‌ی ورود استفاده کن."))
     return {"bot_username": row["bot_username"] or "", "owner_name": row["owner_name"] or ""}
 
 
@@ -792,21 +838,21 @@ def api_setup_info(b: str, t: str):
 def api_setup_submit(body: SetupBody, response: Response):
     row = _lookup_reseller_bot_row(body.b)
     if not row or not row["web_panel_enabled"] or not row["web_panel_setup_token"]:
-        raise HTTPException(404, "لینک راه‌اندازی نامعتبر یا منقضی‌شده است.")
+        raise HTTPException(404, tr("لینک راه‌اندازی نامعتبر یا منقضی‌شده است."))
     if not hmac.compare_digest(row["web_panel_setup_token"], body.t):
-        raise HTTPException(404, "لینک راه‌اندازی نامعتبر یا منقضی‌شده است.")
+        raise HTTPException(404, tr("لینک راه‌اندازی نامعتبر یا منقضی‌شده است."))
 
     username = (body.username or "").strip().lower()
     if len(username) < 3:
-        raise HTTPException(400, "یوزرنیم باید حداقل ۳ کاراکتر باشد.")
+        raise HTTPException(400, tr("یوزرنیم باید حداقل ۳ کاراکتر باشد."))
     if len(body.password or "") < 8:
-        raise HTTPException(400, "پسورد باید حداقل ۸ کاراکتر باشد.")
+        raise HTTPException(400, tr("پسورد باید حداقل ۸ کاراکتر باشد."))
 
     tenant_db = Database(resolve_db_path(row["db_path"]))
     if tenant_db.count_web_admins() > 0:
-        raise HTTPException(400, "پنل این نماینده قبلاً راه‌اندازی شده؛ از صفحه‌ی ورود استفاده کن.")
+        raise HTTPException(400, tr("پنل این نماینده قبلاً راه‌اندازی شده؛ از صفحه‌ی ورود استفاده کن."))
     if tenant_db.get_web_admin_by_username(username):
-        raise HTTPException(400, "این یوزرنیم قبلاً استفاده شده.")
+        raise HTTPException(400, tr("این یوزرنیم قبلاً استفاده شده."))
 
     admin_id = tenant_db.create_web_admin(username, hash_password(body.password), role="owner")
     main_db.consume_reseller_web_panel_setup_token(row["id"])
@@ -816,6 +862,206 @@ def api_setup_submit(body: SetupBody, response: Response):
     tenant_db.touch_web_admin_login(admin_id)
     response.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax", max_age=12 * 3600, path="/")
     return {"id": admin_id, "username": username, "role": "owner", "tenant": tenant_slug}
+
+
+class LanguageBody(BaseModel):
+    language: str
+
+
+@app.post("/api/language")
+async def api_language(body: LanguageBody, admin=Depends(get_current_admin)):
+    lang = normalize_language(body.language)
+    tenant = _current_tenant.get()
+    if not await asyncio.to_thread(tenant.db.get_language, lang):
+        raise HTTPException(400, tr("زبان در حال حاضر در این پنل تعریف نشده است."))
+    row = await asyncio.to_thread(tenant.db.get_language, lang)
+    if not row["enabled"]:
+        raise HTTPException(400, tr("این زبان در حال حاضر فعال نیست."))
+    await asyncio.to_thread(tenant.db.set_web_admin_language, admin["id"], lang)
+    return {"language": lang, "admin_id": admin["id"]}
+
+
+@app.get("/api/languages")
+async def api_languages(admin=Depends(get_current_admin)):
+    tenant = _current_tenant.get()
+    rows = await asyncio.to_thread(tenant.db.list_languages)
+    return [{"code": r["code"], "name": r["name"], "native_name": r["native_name"], "flag": r["flag"], "rtl": bool(r["rtl"]), "enabled": bool(r["enabled"]), "generated": bool(r["generated"])} for r in rows]
+
+
+@app.get("/api/i18n/catalog")
+async def api_i18n_catalog(language: str = Query("en"), admin=Depends(get_current_admin)):
+    tenant = _current_tenant.get()
+    code = normalize_language(language)
+    row = await asyncio.to_thread(tenant.db.get_language, code)
+    if not row or not row["enabled"]:
+        raise HTTPException(400, tr("این زبان در حال حاضر فعال نیست."))
+    return {"language": code, "catalog": await asyncio.to_thread(tenant.db.translation_catalog, code) if code not in {"fa", "en"} else {}}
+
+
+@app.post("/api/languages/{language}/enable")
+async def api_enable_language(language: str, admin=Depends(require_permission("settings"))):
+    tenant = _current_tenant.get()
+    code = normalize_language(language)
+    if code not in LANGUAGE_CATALOG or code in {"fa", "en"}:
+        if code in {"fa", "en"}:
+            await asyncio.to_thread(tenant.db.enable_language, code, True)
+            return {"code": code, "enabled": True, "generated": True, "translated": 0}
+        raise HTTPException(400, tr("این زبان در فهرست زبان‌های قابل پشتیبانی نیست."))
+    from translation_engine import generate_language
+    try:
+        translated = await asyncio.to_thread(generate_language, tenant.db, code)
+        status = await asyncio.to_thread(__import__("translation_engine", fromlist=["inspect_language"]).inspect_language, tenant.db, code)
+        if status.get("missing_count"):
+            raise RuntimeError(f"{status['missing_count']} translation(s) are still missing")
+        await asyncio.to_thread(tenant.db.enable_language, code, True)
+    except Exception as exc:
+        await asyncio.to_thread(tenant.db.disable_language, code, automatic=True, error=str(exc)[:500])
+        raise HTTPException(502, tr("ترجمه خودکار این زبان کامل نشد؛ زبان فعال نشد.")) from exc
+    return {"code": code, "enabled": True, "generated": True, "translated": translated}
+
+
+@app.post("/api/languages/{language}/disable")
+async def api_disable_language(language: str, admin=Depends(require_permission("settings"))):
+    tenant = _current_tenant.get()
+    code = normalize_language(language)
+    if code in {"fa", "en"}:
+        raise HTTPException(400, tr("زبان فارسی و انگلیسی قابل غیرفعال‌سازی نیستند."))
+    await asyncio.to_thread(tenant.db.disable_language, code)
+    return {"code": code, "enabled": False}
+
+
+@app.get("/api/i18n/status/{language}")
+async def api_i18n_status(language: str, admin=Depends(get_current_admin)):
+    tenant = _current_tenant.get()
+    from translation_engine import inspect_language
+    return await asyncio.to_thread(inspect_language, tenant.db, normalize_language(language))
+
+
+@app.get("/api/i18n/health")
+async def api_i18n_health(admin=Depends(get_current_admin)):
+    tenant = _current_tenant.get()
+    from translation_engine import translation_health
+    return await asyncio.to_thread(translation_health, tenant.db)
+
+
+@app.get("/api/i18n/health/{language}")
+async def api_i18n_health_language(language: str, admin=Depends(get_current_admin)):
+    tenant = _current_tenant.get()
+    from translation_engine import translation_health
+    return await asyncio.to_thread(translation_health, tenant.db, normalize_language(language))
+
+
+@app.get("/api/i18n/providers")
+def api_i18n_providers(admin=Depends(get_current_admin)):
+    tenant = _current_tenant.get()
+    from translation_engine import provider_status
+    return {"providers": provider_status(tenant.db)}
+
+@app.get("/api/i18n/dashboard")
+async def api_i18n_dashboard(admin=Depends(get_current_admin)):
+    """Compact translation operations dashboard for administrators.
+
+    This is observational only: it never changes language state or translations.
+    """
+    tenant = _current_tenant.get()
+    from translation_engine import translation_health, provider_status, catalog_version, source_catalog
+    health = await asyncio.to_thread(translation_health, tenant.db)
+    languages = await asyncio.to_thread(tenant.db.list_languages, False)
+    manifests = {}
+    histories = {}
+    for row in languages:
+        code = row["code"]
+        manifest = await asyncio.to_thread(tenant.db.get_translation_manifest, code)
+        manifests[code] = dict(manifest) if manifest else None
+        if code not in {"fa", "en"}:
+            histories[code] = [dict(x) for x in await asyncio.to_thread(tenant.db.list_translation_history, code, 5)]
+    enabled_dynamic = [r for r in languages if r["code"] not in {"fa", "en"} and bool(r["enabled"])]
+    warm = sum(1 for h in health if h["healthy"] and h["enabled"])
+    quarantined = sum(1 for h in health if h["auto_quarantined"])
+    pending = sum(1 for h in health if h["enabled"] and not h["healthy"])
+    return {
+        "catalog_version": catalog_version(source_catalog()),
+        "source_count": len(source_catalog()),
+        "providers": provider_status(tenant.db),
+        "summary": {
+            "total_languages": len(languages),
+            "enabled_languages": sum(1 for r in languages if bool(r["enabled"])),
+            "enabled_dynamic": len(enabled_dynamic),
+            "warm_languages": warm,
+            "pending_languages": pending,
+            "quarantined_languages": quarantined,
+        },
+        "languages": health,
+        "manifests": manifests,
+        "history": histories,
+    }
+
+
+@app.get("/api/i18n/history/{language}")
+async def api_i18n_history(language: str, limit: int = Query(20), admin=Depends(get_current_admin)):
+    tenant = _current_tenant.get()
+    rows = await asyncio.to_thread(tenant.db.list_translation_history, normalize_language(language), limit)
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/i18n/sync/{language}")
+async def api_i18n_sync(language: str, admin=Depends(require_permission("settings"))):
+    tenant = _current_tenant.get()
+    from translation_engine import sync_language
+    code = normalize_language(language)
+    if code in {"fa", "en"}:
+        result = await asyncio.to_thread(sync_language, tenant.db, code, allow_network=False)
+        return result
+    try:
+        result = await asyncio.to_thread(sync_language, tenant.db, code, allow_network=True)
+    except Exception as exc:
+        raise HTTPException(502, tr("ترجمه خودکار این زبان کامل نشد؛ زبان فعال نشد.")) from exc
+    if result.get("missing_count"):
+        await asyncio.to_thread(tenant.db.disable_language, code)
+    return result
+
+
+@app.post("/api/i18n/sync-all")
+async def api_i18n_sync_all(admin=Depends(require_permission("settings"))):
+    tenant = _current_tenant.get()
+    from translation_engine import sync_enabled_languages
+    return await asyncio.to_thread(sync_enabled_languages, tenant.db, allow_network=True)
+
+
+@app.post("/api/i18n/translate-batch")
+def api_i18n_translate_batch(payload: Dict[str, Any], auth=Depends(get_current_admin)):
+    from translation_engine import translate_many
+    admin = auth
+    tenant = _current_tenant.get()
+    db = tenant.db
+    language = normalize_language(payload.get("language"))
+    if not is_language_enabled(db, language):
+        raise HTTPException(400, tr("این زبان در حال حاضر فعال نیست."))
+    texts = [str(x) for x in (payload.get("texts") or [])][:50]
+    if not texts:
+        return {"language": language, "catalog": {}, "verbatim": []}
+    if language in {"fa", "en"}:
+        return {"language": language, "catalog": {x: x for x in texts}, "verbatim": []}
+    from translation_engine import split_translatable, runtime_limiter
+    texts, verbatim = split_translatable(texts)
+    catalog = db.translation_catalog(language)
+    missing = [x for x in texts if x not in catalog]
+    if missing:
+        if not runtime_limiter.allow((db.db_path, admin["id"])):
+            raise HTTPException(429, tr("درخواست‌های ترجمه بیش از حد مجاز است؛ کمی بعد دوباره تلاش کنید."))
+        try:
+            generated = translate_many(missing, language, cached=catalog, db=db)
+        except Exception as exc:
+            raise HTTPException(503, tr("ترجمه این زبان در دسترس نیست؛ لطفاً کمی بعد دوباره تلاش کنید.")) from exc
+        unresolved = [x for x in missing if not generated.get(x)]
+        if unresolved:
+            raise HTTPException(503, tr("ترجمه این زبان کامل نیست؛ لطفاً کمی بعد دوباره تلاش کنید."))
+        catalog.update(generated)
+        db.upsert_translations(language, {x: catalog[x] for x in missing}, source="machine-runtime")
+    unresolved = [x for x in texts if not catalog.get(x)]
+    if unresolved:
+        raise HTTPException(503, tr("ترجمه این زبان کامل نیست؛ لطفاً کمی بعد دوباره تلاش کنید."))
+    return {"language": language, "catalog": {x: catalog[x] for x in texts}, "verbatim": verbatim}
 
 
 @app.get("/api/me")
@@ -870,7 +1116,7 @@ async def api_app_revoke_token(token_id: int, admin=Depends(get_current_admin)):
         return {"ok": True, "deleted": False}
     ok = await asyncio.to_thread(tenant.db.delete_mobile_token, token_id, admin["id"])
     if not ok:
-        raise HTTPException(404, "توکن پیدا نشد.")
+        raise HTTPException(404, tr("توکن پیدا نشد."))
     return {"ok": True, "deleted": True}
 
 
@@ -908,13 +1154,13 @@ async def api_app_push_test(admin=Depends(get_current_admin)):
     if not tokens:
         raise HTTPException(
             400,
-            "هیچ دستگاهی برای این حساب ادمین ثبت نشده. یک‌بار از اپ اندروید خارج و دوباره وارد شو.",
+            tr("هیچ دستگاهی برای این حساب ادمین ثبت نشده. یک‌بار از اپ اندروید خارج و دوباره وارد شو."),
         )
-    result = await fcm_client.send_test(tenant.db, tokens[-1])
+    result = await fcm_client.send_test(tenant.db, tokens[-1], admin_id=admin["id"])
     if result.get("reason") == "not_configured":
-        raise HTTPException(400, "سرویس‌اکانت فایربیس روی سرور تنظیم نشده (تنظیمات > اپ موبایل).")
+        raise HTTPException(400, tr("سرویس‌اکانت فایربیس روی سرور تنظیم نشده (تنظیمات > اپ موبایل)."))
     if not result.get("ok"):
-        raise HTTPException(502, f"ارسال ناموفق بود: {result.get('detail') or result.get('reason')}")
+        raise HTTPException(502, tr(f"ارسال ناموفق بود: {result.get('detail') or result.get('reason')}"))
     return {"ok": True}
 
 
@@ -927,7 +1173,7 @@ async def app_webview_bridge(token: str, next: str = "/"):
     ندارد (فقط "/" و "/setup")، پس اینجا همیشه "/" یا "/setup" معتبر است."""
     admin = await _authenticate_via_mobile_token(token)
     if not admin:
-        raise HTTPException(401, "توکن نامعتبر است.")
+        raise HTTPException(401, tr("توکن نامعتبر است."))
     tenant = _current_tenant.get()
     session_token = create_session_token(
         ADMIN_PANEL_SECRET, admin["id"], admin["username"], admin["role"], tenant=tenant.slug,
@@ -1135,14 +1381,18 @@ def api_app_config(admin=Depends(get_current_admin)):
                     {"key": "code", "label": "کد تخفیف", "type": "text"},
                     {"key": "percent", "label": "درصد تخفیف (خالی=استفاده از مبلغ ثابت)", "type": "number", "nullable": True},
                     {"key": "fixed_amount", "label": "مبلغ ثابت تخفیف (تومان، خالی=استفاده از درصد)", "type": "number", "nullable": True},
+                    {"key": "max_discount_amount", "label": "سقف مبلغ تخفیف (تومان، فقط برای تخفیف درصدی، خالی=بدون سقف)",
+                     "type": "number", "nullable": True},
                     {"key": "max_uses", "label": "حداکثر تعداد استفاده (۰=نامحدود)", "type": "number"},
                     {"key": "expires_at", "label": "تاریخ انقضا (خالی=بدون انقضا، فرمت: 2026-12-31T23:59:00)", "type": "text"},
                     {"key": "min_purchase", "label": "حداقل مبلغ خرید (تومان)", "type": "number", "nullable": True},
                     {"key": "max_purchase", "label": "حداکثر مبلغ خرید (تومان)", "type": "number", "nullable": True},
-                    {"key": "product_id", "label": "محدود به محصول (خالی=همه)", "type": "select_remote",
+                    {"key": "product_id", "label": "محدود به یک محصول خاص (خالی=همه)", "type": "select_remote",
                      "options_source": "/api/products", "option_value_key": "id", "option_label_key": "name", "nullable": True},
                     {"key": "category_id", "label": "محدود به دسته‌بندی (خالی=همه)", "type": "select_remote",
                      "options_source": "/api/categories", "option_value_key": "id", "option_label_key": "name", "nullable": True},
+                    {"key": "product_ids", "label": "محدود به چند محصول خاص (خالی=بدون محدودیت)", "type": "select_remote_multi",
+                     "options_source": "/api/products", "option_value_key": "id", "option_label_key": "name", "nullable": True},
                 ],
             },
         })
@@ -1675,11 +1925,11 @@ def api_push_status(endpoint: str, admin=Depends(get_current_admin)):
 @app.post("/api/push/subscribe")
 def api_push_subscribe(body: PushSubscribeBody, admin=Depends(get_current_admin)):
     if not PUSH_ENABLED:
-        raise HTTPException(400, "اعلان Push روی سرور تنظیم نشده است.")
+        raise HTTPException(400, tr("اعلان Push روی سرور تنظیم نشده است."))
     p256dh = (body.keys or {}).get("p256dh")
     auth = (body.keys or {}).get("auth")
     if not p256dh or not auth:
-        raise HTTPException(400, "اطلاعات subscription ناقص است.")
+        raise HTTPException(400, tr("اطلاعات subscription ناقص است."))
     db.save_push_subscription(admin["id"], body.endpoint, p256dh, auth, body.user_agent)
     return {"ok": True}
 
@@ -1693,10 +1943,10 @@ def api_push_unsubscribe(body: PushUnsubscribeBody, admin=Depends(get_current_ad
 @app.post("/api/push/test")
 async def api_push_test(admin=Depends(get_current_admin)):
     if not PUSH_ENABLED:
-        raise HTTPException(400, "اعلان Push روی سرور تنظیم نشده است.")
+        raise HTTPException(400, tr("اعلان Push روی سرور تنظیم نشده است."))
     subs = (await asyncio.to_thread(db.list_push_subscriptions_for_admin, admin["id"]))
     if not subs:
-        raise HTTPException(400, "هنوز روی این دستگاه اعلان را فعال نکرده‌ای.")
+        raise HTTPException(400, tr("هنوز روی این دستگاه اعلان را فعال نکرده‌ای."))
     sent, gone = 0, []
     for s in subs:
         result = await send_push(s, {
@@ -1711,7 +1961,7 @@ async def api_push_test(admin=Depends(get_current_admin)):
     if gone:
         (await asyncio.to_thread(db.delete_push_subscriptions_by_endpoints, gone))
     if not sent:
-        raise HTTPException(502, "ارسال اعلان تست ناموفق بود.")
+        raise HTTPException(502, tr("ارسال اعلان تست ناموفق بود."))
     return {"ok": True, "sent": sent}
 
 
@@ -1749,7 +1999,7 @@ def api_dashboard_advanced(
     کمپین‌ها/نمایندگان داخلی، قیف تبدیل و نقشه‌ی ساعتی فعالیت. مکمل /api/dashboard -
     منبع همین db.get_advanced_stats است که بات و مینی‌اپ هم از آن استفاده می‌کنند."""
     if granularity not in ("day", "week", "month"):
-        raise HTTPException(400, "granularity باید یکی از day/week/month باشد.")
+        raise HTTPException(400, tr("granularity باید یکی از day/week/month باشد."))
     return db.get_advanced_stats(start, end, granularity=granularity)
 
 
@@ -1770,7 +2020,7 @@ def api_get_master_sub(admin=Depends(get_current_admin)):
 def api_set_master_sub(body: MasterSubBody, admin=Depends(require_permission("settings"))):
     link = (body.link or "").strip()
     if link and not (link.startswith("http://") or link.startswith("https://")):
-        raise HTTPException(400, "لینک ساب باید با http:// یا https:// شروع شود.")
+        raise HTTPException(400, tr("لینک ساب باید با http:// یا https:// شروع شود."))
     db.set_setting("master_sub_link", link)
     return {"ok": True}
 
@@ -1795,9 +2045,9 @@ def api_get_server_check_settings(admin=Depends(get_current_admin)):
 @app.post("/api/settings/server-check")
 def api_set_server_check_settings(body: ServerCheckSettingsBody, admin=Depends(require_permission("settings"))):
     if not (_MIN_CHECK_INTERVAL_MIN <= body.interval_min <= _MAX_CHECK_INTERVAL_MIN):
-        raise HTTPException(400, f"بازه‌ی هر دور اسکن باید بین {_MIN_CHECK_INTERVAL_MIN} تا {_MAX_CHECK_INTERVAL_MIN} دقیقه باشد.")
+        raise HTTPException(400, tr(f"بازه‌ی هر دور اسکن باید بین {_MIN_CHECK_INTERVAL_MIN} تا {_MAX_CHECK_INTERVAL_MIN} دقیقه باشد."))
     if not (_MIN_OFFLINE_STREAK <= body.offline_streak <= _MAX_OFFLINE_STREAK):
-        raise HTTPException(400, f"تعداد دور متوالی باید بین {_MIN_OFFLINE_STREAK} تا {_MAX_OFFLINE_STREAK} باشد.")
+        raise HTTPException(400, tr(f"تعداد دور متوالی باید بین {_MIN_OFFLINE_STREAK} تا {_MAX_OFFLINE_STREAK} باشد."))
     db.set_setting("server_check_interval_min", str(body.interval_min))
     db.set_setting("server_offline_streak", str(body.offline_streak))
     db.log_admin_action(
@@ -1853,7 +2103,7 @@ def api_get_ai_support_settings(admin=Depends(require_permission("settings"))):
 @app.post("/api/settings/ai-support")
 def api_set_ai_support_settings(body: AiSupportSettingsBody, admin=Depends(require_permission("settings"))):
     if body.provider is not None and body.provider not in ai_support.PROVIDER_LABELS:
-        raise HTTPException(400, "مسیر انتخاب مدل نامعتبر است.")
+        raise HTTPException(400, tr("مسیر انتخاب مدل نامعتبر است."))
     if body.enabled is not None:
         db.set_setting("ai_support_enabled", "1" if body.enabled else "0")
     if body.provider is not None:
@@ -1892,7 +2142,7 @@ def api_list_ai_faq(admin=Depends(require_permission("settings"))):
 def api_add_ai_faq(body: AiFaqItemBody, admin=Depends(require_permission("settings"))):
     question, answer = body.question.strip(), body.answer.strip()
     if not question or not answer:
-        raise HTTPException(400, "سوال و جواب نمی‌توانند خالی باشند.")
+        raise HTTPException(400, tr("سوال و جواب نمی‌توانند خالی باشند."))
     item_id = db.add_ai_faq_item(question, answer)
     db.log_admin_action(admin["id"], "ai_faq_add", f"سوال متداول دستیار اضافه شد (پنل وب - {admin['username']}).")
     return {"id": item_id, "ok": True}
@@ -1901,7 +2151,7 @@ def api_add_ai_faq(body: AiFaqItemBody, admin=Depends(require_permission("settin
 @app.delete("/api/ai-faq/{item_id}")
 def api_delete_ai_faq(item_id: int, admin=Depends(require_permission("settings"))):
     if not db.get_ai_faq_item(item_id):
-        raise HTTPException(404, "یافت نشد.")
+        raise HTTPException(404, tr("یافت نشد."))
     db.delete_ai_faq_item(item_id)
     db.log_admin_action(admin["id"], "ai_faq_delete", f"سوال متداول دستیار حذف شد (پنل وب - {admin['username']}).")
     return {"ok": True}
@@ -1933,7 +2183,7 @@ def api_system_stats(admin=Depends(require_main_tenant)):
     try:
         import psutil
     except ImportError:
-        raise HTTPException(500, "psutil نصب نیست. دستور: pip install psutil")
+        raise HTTPException(500, tr("psutil نصب نیست. دستور: pip install psutil"))
 
     cpu_percent = psutil.cpu_percent(interval=0.3)
     cpu_count = psutil.cpu_count(logical=True) or 1
@@ -2006,7 +2256,7 @@ async def api_backup_create(admin=Depends(require_permission("backup"))):
     tenant = _current_tenant.get()
     backup_path = await asyncio.to_thread(create_backup, tenant.db_path, _backup_dir(), 14)
     if not backup_path:
-        raise HTTPException(404, "فایل دیتابیس پیدا نشد.")
+        raise HTTPException(404, tr("فایل دیتابیس پیدا نشد."))
 
     size_mb = round(os.path.getsize(backup_path) / (1024 * 1024), 1)
     caption = f"🗄 بکاپ فوری دیتابیس (پنل وب - {admin['username']})"
@@ -2034,9 +2284,9 @@ async def api_backup_restore(
     غیرقابل‌برگشت (به‌جز با بکاپ دیگر) است، علاوه بر تاییدیه‌ی دوگانه‌ی فرانت‌اند،
     سمت سرور هم عبارت تاییدی «RESTORE» را الزامی می‌کند."""
     if confirm_phrase.strip().upper() != "RESTORE":
-        raise HTTPException(400, "برای تایید بازیابی، عبارت RESTORE را دقیقاً وارد کن.")
+        raise HTTPException(400, tr("برای تایید بازیابی، عبارت RESTORE را دقیقاً وارد کن."))
     if not file.filename or not file.filename.lower().endswith((".db", ".sqlite", ".sqlite3")):
-        raise HTTPException(400, "فایل باید پسوند .db یا .sqlite داشته باشد.")
+        raise HTTPException(400, tr("فایل باید پسوند .db یا .sqlite داشته باشد."))
 
     tmp_dir = tempfile.mkdtemp(prefix="restore_")
     tmp_path = os.path.join(tmp_dir, "uploaded.db")
@@ -2047,14 +2297,14 @@ async def api_backup_restore(
     if not is_valid_sqlite_db(tmp_path):
         os.remove(tmp_path)
         os.rmdir(tmp_dir)
-        raise HTTPException(400, "این فایل یک دیتابیس sqlite معتبر نیست.")
+        raise HTTPException(400, tr("این فایل یک دیتابیس sqlite معتبر نیست."))
 
     try:
         pre_restore_path = await asyncio.to_thread(restore_backup, db, _current_tenant.get().db_path, tmp_path)
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
-        raise HTTPException(500, f"بازیابی ناموفق بود: {e}")
+        raise HTTPException(500, tr(f"بازیابی ناموفق بود: {e}"))
     finally:
         try:
             os.remove(tmp_path)
@@ -2077,7 +2327,7 @@ async def api_factory_reset(confirm_phrase: str = Form(""), admin=Depends(requir
     روی بکاپ؛ به همین دلیل یک بکاپ ایمنی خودکار قبل از پاک‌سازی گرفته می‌شود
     و سمت سرور هم عبارت تاییدی الزامی است."""
     if confirm_phrase.strip().upper() != "RESET":
-        raise HTTPException(400, "برای تایید بازگشت به حالت کارخانه، عبارت RESET را دقیقاً وارد کن.")
+        raise HTTPException(400, tr("برای تایید بازگشت به حالت کارخانه، عبارت RESET را دقیقاً وارد کن."))
 
     tenant = _current_tenant.get()
     safety_backup = await asyncio.to_thread(create_backup, tenant.db_path, _backup_dir(), 14)
@@ -2122,10 +2372,10 @@ def api_orders(status: str = "pending", q: str = "", product_id: Optional[int] =
 async def api_order_receipt(order_id: int, admin=Depends(get_current_admin)):
     order = (await asyncio.to_thread(db.get_order, order_id))
     if not order or not order["receipt_file_id"]:
-        raise HTTPException(404, "رسیدی برای این سفارش ثبت نشده است.")
+        raise HTTPException(404, tr("رسیدی برای این سفارش ثبت نشده است."))
     result = await fetch_telegram_file(_bot_token(), order["receipt_file_id"])
     if not result:
-        raise HTTPException(502, "دریافت رسید از تلگرام ناموفق بود.")
+        raise HTTPException(502, tr("دریافت رسید از تلگرام ناموفق بود."))
     content, content_type = result
     return Response(content=content, media_type=content_type)
 
@@ -2143,7 +2393,7 @@ async def api_order_full(order_id: int, admin=Depends(get_current_admin)):
     فیلدهایی که واقعاً برای این کار لازم است ساخته و برگردانده می‌شود."""
     order = (await asyncio.to_thread(db.get_order, order_id))
     if not order:
-        raise HTTPException(404, "سفارش یافت نشد.")
+        raise HTTPException(404, tr("سفارش یافت نشد."))
     o = dict(order)
     product = row_to_dict(db.get_product(o["product_id"])) if o.get("product_id") else None
     user = row_to_dict(db.get_user(o["user_id"])) if o.get("user_id") else None
@@ -2185,12 +2435,12 @@ SURVEY_ERRORS = {
 async def api_send_order_survey(order_id: int, admin=Depends(require_permission("orders"))):
     result = await asyncio.to_thread(db.create_order_survey, order_id, admin["id"])
     if not result["ok"]:
-        raise HTTPException(400, SURVEY_ERRORS.get(result["reason"], "ارسال نظرسنجی ممکن نیست."))
+        raise HTTPException(400, SURVEY_ERRORS.get(result["reason"], tr("ارسال نظرسنجی ممکن نیست.")))
     survey_id = result["survey_id"]
     markup = {"inline_keyboard": [[{"text": f"{n}⭐", "callback_data": f"svy:{survey_id}:{n}"} for n in range(1, 6)]]}
     text = f"🗳 نظرسنجی\n\nکیفیت سرویس سفارش #{order_id} را چطور ارزیابی می‌کنی؟\n(۱ = ضعیف تا ۵ = عالی)"
     if not await tg_send(_bot_token(), result["user_id"], text, reply_markup=markup):
-        raise HTTPException(502, "ارسال پیام به کاربر ناموفق بود (شاید بات را بلاک کرده).")
+        raise HTTPException(502, tr("ارسال پیام به کاربر ناموفق بود (شاید بات را بلاک کرده)."))
     (await asyncio.to_thread(db.log_admin_action,
         admin["id"], "order_survey_send", f"سفارش #{order_id} | کاربر {result['user_id']} (پنل وب - {admin['username']})",
         "order", order_id,
@@ -2210,10 +2460,10 @@ async def api_order_receipt_base64(order_id: int, admin=Depends(get_current_admi
     عکس بارگذاری کند)."""
     order = (await asyncio.to_thread(db.get_order, order_id))
     if not order or not order["receipt_file_id"]:
-        raise HTTPException(404, "رسیدی برای این سفارش ثبت نشده است.")
+        raise HTTPException(404, tr("رسیدی برای این سفارش ثبت نشده است."))
     result = await fetch_telegram_file(_bot_token(), order["receipt_file_id"])
     if not result:
-        raise HTTPException(502, "دریافت رسید از تلگرام ناموفق بود.")
+        raise HTTPException(502, tr("دریافت رسید از تلگرام ناموفق بود."))
     content, content_type = result
     return {"content_type": content_type, "data_base64": base64.b64encode(content).decode("ascii")}
 
@@ -2222,20 +2472,20 @@ async def api_order_receipt_base64(order_id: int, admin=Depends(get_current_admi
 async def api_approve_order(order_id: int, admin=Depends(require_permission("orders"))):
     order = (await asyncio.to_thread(db.get_order, order_id))
     if not order or order["status"] != "pending":
-        raise HTTPException(400, "سفارش یافت نشد یا قبلاً بررسی شده.")
+        raise HTTPException(400, tr("سفارش یافت نشد یا قبلاً بررسی شده."))
     if not (await asyncio.to_thread(db.claim_order, order_id)):
-        raise HTTPException(400, "سفارش یافت نشد یا قبلاً بررسی شده.")
+        raise HTTPException(400, tr("سفارش یافت نشد یا قبلاً بررسی شده."))
 
     if order["is_renewal"]:
         try:
             result_text = await execute_renewal(db, order)
         except RenewalError as e:
             await asyncio.to_thread(db.release_order_claim, order_id)
-            raise HTTPException(400, f"تمدید ناموفق بود: {e}")
+            raise HTTPException(400, tr(f"تمدید ناموفق بود: {e}"))
         except Exception:
             logger.exception("خطای غیرمنتظره در execute_renewal برای سفارش تمدید #%s (پنل وب)", order_id)
             await asyncio.to_thread(db.release_order_claim, order_id)
-            raise HTTPException(400, "خطای غیرمنتظره‌ای در تمدید رخ داد. سفارش برای بررسی دوباره آزاد شد؛ لاگ سرور را بررسی کن.")
+            raise HTTPException(400, tr("خطای غیرمنتظره‌ای در تمدید رخ داد. سفارش برای بررسی دوباره آزاد شد؛ لاگ سرور را بررسی کن."))
         (await asyncio.to_thread(db.approve_renewal_order, order_id))
         (await asyncio.to_thread(db.log_admin_action,
             admin["id"], "renewal_approve",
@@ -2249,7 +2499,7 @@ async def api_approve_order(order_id: int, admin=Depends(require_permission("ord
         server = (await asyncio.to_thread(db.get_panel_server, order["custom_panel_server_id"]))
         if not server or not server["is_active"]:
             await asyncio.to_thread(db.release_order_claim, order_id)
-            raise HTTPException(400, "سرور پنل مربوطه یافت نشد یا غیرفعال است.")
+            raise HTTPException(400, tr("سرور پنل مربوطه یافت نشد یا غیرفعال است."))
 
         try:
             provider = get_provider(server)
@@ -2260,10 +2510,10 @@ async def api_approve_order(order_id: int, admin=Depends(require_permission("ord
             )
         except PanelUsernameTakenError:
             await asyncio.to_thread(db.release_order_claim, order_id)
-            raise HTTPException(400, "این نام کاربری روی پنل تکراری است؛ از کاربر بخواه نام دیگری انتخاب کند.")
+            raise HTTPException(400, tr("این نام کاربری روی پنل تکراری است؛ از کاربر بخواه نام دیگری انتخاب کند."))
         except PanelError as e:
             await asyncio.to_thread(db.release_order_claim, order_id)
-            raise HTTPException(400, f"خطا در ارتباط با پنل: {e}")
+            raise HTTPException(400, tr(f"خطا در ارتباط با پنل: {e}"))
 
         (await asyncio.to_thread(db.approve_custom_config_order, order_id))
         (await asyncio.to_thread(db.add_custom_config, 
@@ -2317,7 +2567,7 @@ async def api_approve_order(order_id: int, admin=Depends(require_permission("ord
     results = (await asyncio.to_thread(db.take_unused_configs, order["product_id"], order["user_id"], quantity))
     if not results:
         await asyncio.to_thread(db.release_order_claim, order_id)
-        raise HTTPException(400, "موجودی این محصول تمام شده است.")
+        raise HTTPException(400, tr("موجودی این محصول تمام شده است."))
     (await asyncio.to_thread(db.approve_order, order_id, [r["id"] for r in results]))
     (await asyncio.to_thread(db.log_admin_action, 
         admin["id"], "order_approve",
@@ -2341,10 +2591,10 @@ async def api_approve_order(order_id: int, admin=Depends(require_permission("ord
 async def api_fake_receipt_order(order_id: int, admin=Depends(require_permission("orders"))):
     order = (await asyncio.to_thread(db.get_order, order_id))
     if not order or order["status"] != "pending":
-        raise HTTPException(400, "سفارش یافت نشد یا قبلاً بررسی شده.")
+        raise HTTPException(400, tr("سفارش یافت نشد یا قبلاً بررسی شده."))
     result = await asyncio.to_thread(db.fake_receipt_order, order_id)
     if not result:
-        raise HTTPException(400, "سفارش یافت نشد یا قبلاً بررسی شده.")
+        raise HTTPException(400, tr("سفارش یافت نشد یا قبلاً بررسی شده."))
     await asyncio.to_thread(
         db.log_admin_action,
         admin["id"],
@@ -2365,9 +2615,9 @@ async def api_fake_receipt_order(order_id: int, admin=Depends(require_permission
 async def api_reject_order(order_id: int, admin=Depends(require_permission("orders"))):
     order = (await asyncio.to_thread(db.get_order, order_id))
     if not order or order["status"] != "pending":
-        raise HTTPException(400, "سفارش یافت نشد یا قبلاً بررسی شده.")
+        raise HTTPException(400, tr("سفارش یافت نشد یا قبلاً بررسی شده."))
     if not (await asyncio.to_thread(db.reject_order, order_id)):
-        raise HTTPException(400, "سفارش یافت نشد یا قبلاً بررسی شده.")
+        raise HTTPException(400, tr("سفارش یافت نشد یا قبلاً بررسی شده."))
     (await asyncio.to_thread(db.log_admin_action, admin["id"], "order_reject", f"سفارش #{order_id} رد شد (پنل وب - {admin['username']})", "order", order_id))
     await notify_user(order["user_id"], "⛔️ سفارش شما رد شد. در صورت کسر از کیف پول، مبلغ برگشت داده شد.")
     return {"ok": True}
@@ -2393,10 +2643,10 @@ def api_topups(status: str = "pending", admin=Depends(get_current_admin)):
 async def api_topup_receipt(topup_id: int, admin=Depends(get_current_admin)):
     topup = (await asyncio.to_thread(db.get_topup, topup_id))
     if not topup or not topup["receipt_file_id"]:
-        raise HTTPException(404, "رسیدی برای این شارژ ثبت نشده است.")
+        raise HTTPException(404, tr("رسیدی برای این شارژ ثبت نشده است."))
     result = await fetch_telegram_file(_bot_token(), topup["receipt_file_id"])
     if not result:
-        raise HTTPException(502, "دریافت رسید از تلگرام ناموفق بود.")
+        raise HTTPException(502, tr("دریافت رسید از تلگرام ناموفق بود."))
     content, content_type = result
     return Response(content=content, media_type=content_type)
 
@@ -2407,7 +2657,7 @@ async def api_topup_full(topup_id: int, admin=Depends(get_current_admin)):
     مشابه /api/orders/{id}/full."""
     topup = (await asyncio.to_thread(db.get_topup, topup_id))
     if not topup:
-        raise HTTPException(404, "درخواست شارژ یافت نشد.")
+        raise HTTPException(404, tr("درخواست شارژ یافت نشد."))
     t = dict(topup)
     user = row_to_dict(db.get_user(t["user_id"])) if t.get("user_id") else None
     return {
@@ -2425,10 +2675,10 @@ async def api_topup_receipt_base64(topup_id: int, admin=Depends(get_current_admi
     """نسخه‌ی JSON/base64 رسید، مخصوص اپ موبایل (مشابه /api/orders/{id}/receipt-base64)."""
     topup = (await asyncio.to_thread(db.get_topup, topup_id))
     if not topup or not topup["receipt_file_id"]:
-        raise HTTPException(404, "رسیدی برای این شارژ ثبت نشده است.")
+        raise HTTPException(404, tr("رسیدی برای این شارژ ثبت نشده است."))
     result = await fetch_telegram_file(_bot_token(), topup["receipt_file_id"])
     if not result:
-        raise HTTPException(502, "دریافت رسید از تلگرام ناموفق بود.")
+        raise HTTPException(502, tr("دریافت رسید از تلگرام ناموفق بود."))
     content, content_type = result
     return {"content_type": content_type, "data_base64": base64.b64encode(content).decode("ascii")}
 
@@ -2437,9 +2687,9 @@ async def api_topup_receipt_base64(topup_id: int, admin=Depends(get_current_admi
 async def api_approve_topup(topup_id: int, admin=Depends(require_permission("orders"))):
     topup = (await asyncio.to_thread(db.get_topup, topup_id))
     if not topup:
-        raise HTTPException(404, "یافت نشد.")
+        raise HTTPException(404, tr("یافت نشد."))
     if not (await asyncio.to_thread(db.approve_topup, topup_id)):
-        raise HTTPException(400, "قبلاً بررسی شده است.")
+        raise HTTPException(400, tr("قبلاً بررسی شده است."))
     (await asyncio.to_thread(db.log_admin_action, admin["id"], "topup_approve", f"شارژ #{topup_id} تایید شد (پنل وب - {admin['username']})", "topup", topup_id))
     await notify_user(topup["user_id"], f"✅ شارژ کیف پول شما به مبلغ {topup['amount']:,} تومان تایید شد.")
     return {"ok": True}
@@ -2449,9 +2699,9 @@ async def api_approve_topup(topup_id: int, admin=Depends(require_permission("ord
 async def api_reject_topup(topup_id: int, admin=Depends(require_permission("orders"))):
     topup = (await asyncio.to_thread(db.get_topup, topup_id))
     if not topup or topup["status"] != "pending":
-        raise HTTPException(400, "یافت نشد یا قبلاً بررسی شده.")
+        raise HTTPException(400, tr("یافت نشد یا قبلاً بررسی شده."))
     if not (await asyncio.to_thread(db.reject_topup, topup_id)):
-        raise HTTPException(400, "یافت نشد یا قبلاً بررسی شده.")
+        raise HTTPException(400, tr("یافت نشد یا قبلاً بررسی شده."))
     (await asyncio.to_thread(db.log_admin_action, admin["id"], "topup_reject", f"شارژ #{topup_id} رد شد (پنل وب - {admin['username']})", "topup", topup_id))
     await notify_user(topup["user_id"], "⛔️ درخواست شارژ کیف پول شما رد شد.")
     return {"ok": True}
@@ -2487,7 +2737,7 @@ def api_users(q: str = "", status: str = "all", page: int = 1, sort: str = "newe
 def api_user_detail(tg_id: int, admin=Depends(get_current_admin)):
     user = db.get_user(tg_id)
     if not user:
-        raise HTTPException(404, "کاربر یافت نشد.")
+        raise HTTPException(404, tr("کاربر یافت نشد."))
     history = db.get_user_full_history(tg_id)
     user_dict = dict(user)
     # همان تبدیل is_blocked به bool واقعی که در /api/users انجام می‌شود، اینجا
@@ -2529,15 +2779,15 @@ async def api_message_user(tg_id: int, body: UserMessageBody, admin=Depends(requ
     """پیام مستقیم به یک کاربر خاص (نه پیام همگانی) - معادل همین قابلیت در مینی‌اپ."""
     text = (body.text or "").strip()
     if not text:
-        raise HTTPException(400, "متن پیام نمی‌تواند خالی باشد.")
+        raise HTTPException(400, tr("متن پیام نمی‌تواند خالی باشد."))
     if len(text) > 4000:
-        raise HTTPException(400, "متن پیام بیش از حد طولانی است.")
+        raise HTTPException(400, tr("متن پیام بیش از حد طولانی است."))
     user = row_to_dict(db.get_user(tg_id))
     if not user:
-        raise HTTPException(404, "کاربری با این آیدی عددی پیدا نشد.")
+        raise HTTPException(404, tr("کاربری با این آیدی عددی پیدا نشد."))
     ok = await tg_send(_bot_token(), tg_id, f"📩 پیام از پشتیبانی:\n\n{text}")
     if not ok:
-        raise HTTPException(502, "ارسال پیام به کاربر ناموفق بود (شاید بات را بلاک کرده).")
+        raise HTTPException(502, tr("ارسال پیام به کاربر ناموفق بود (شاید بات را بلاک کرده)."))
     (await asyncio.to_thread(db.log_admin_action,
         admin["id"], "user_message", f"پیام مستقیم به کاربر {tg_id} ارسال شد (پنل وب - {admin['username']})",
         "user", tg_id,
@@ -2572,9 +2822,9 @@ class CreditLimitBody(BaseModel):
 @app.put("/api/users/{tg_id}/credit-limit")
 async def api_set_user_credit_limit(tg_id: int, body: CreditLimitBody, admin=Depends(require_permission("resellers"))):
     if not 0 <= body.amount <= MAX_CREDIT_LIMIT_TOMAN:
-        raise HTTPException(400, "سقف اعتبار باید بین ۰ تا ۱۰ میلیارد تومان باشد.")
+        raise HTTPException(400, tr("سقف اعتبار باید بین ۰ تا ۱۰ میلیارد تومان باشد."))
     if not await asyncio.to_thread(db.set_credit_limit, tg_id, body.amount):
-        raise HTTPException(404, "کاربر یافت نشد.")
+        raise HTTPException(404, tr("کاربر یافت نشد."))
     (await asyncio.to_thread(db.log_admin_action,
         admin["id"], "reseller_credit_limit", f"کاربر {tg_id} | سقف اعتبار پس‌پرداخت {body.amount:,} تومان (پنل وب - {admin['username']})",
         "user", tg_id,
@@ -2591,7 +2841,7 @@ async def api_set_user_credit_limit(tg_id: int, body: CreditLimitBody, admin=Dep
 def _admin_get_custom_config_or_404(custom_config_id: int):
     row = db.get_custom_config_by_id(custom_config_id)
     if not row:
-        raise HTTPException(404, "کانفیگ یافت نشد.")
+        raise HTTPException(404, tr("کانفیگ یافت نشد."))
     return row
 
 
@@ -2644,7 +2894,7 @@ def api_user_bank_configs(tg_id: int, admin=Depends(get_current_admin)):
 def api_user_config_activity(config_id: int, admin=Depends(get_current_admin)):
     row = db.get_config_by_id(config_id)
     if not row:
-        raise HTTPException(404, "کانفیگ یافت نشد.")
+        raise HTTPException(404, tr("کانفیگ یافت نشد."))
     return [dict(a) for a in db.get_config_activity(config_id)]
 
 
@@ -2656,7 +2906,7 @@ class ConfigDisableBody(BaseModel):
 def api_user_config_disable(config_id: int, body: ConfigDisableBody, admin=Depends(require_permission("users"))):
     row = db.get_config_by_id(config_id)
     if not row:
-        raise HTTPException(404, "کانفیگ یافت نشد.")
+        raise HTTPException(404, tr("کانفیگ یافت نشد."))
     db.set_config_disabled(config_id, body.disabled)
     db.log_admin_action(
         admin["id"], "config_disable" if body.disabled else "config_enable",
@@ -2670,7 +2920,7 @@ def api_user_config_disable(config_id: int, body: ConfigDisableBody, admin=Depen
 def api_user_config_delete(config_id: int, admin=Depends(require_permission("users"))):
     row = db.admin_delete_bank_config(config_id)
     if not row:
-        raise HTTPException(404, "کانفیگ یافت نشد.")
+        raise HTTPException(404, tr("کانفیگ یافت نشد."))
     db.log_admin_action(
         admin["id"], "config_delete_admin",
         f"کانفیگ #{config_id} کاربر {row['assigned_user_id']} حذف شد (پنل وب - {admin['username']})",
@@ -2683,16 +2933,16 @@ def api_user_config_delete(config_id: int, admin=Depends(require_permission("use
 async def api_admin_custom_config_toggle(custom_config_id: int, admin=Depends(require_permission("users"))):
     cc = _admin_get_custom_config_or_404(custom_config_id)
     if cc["source"] == "test":
-        raise HTTPException(403, "این قابلیت برای کانفیگ تست در دسترس نیست.")
+        raise HTTPException(403, tr("این قابلیت برای کانفیگ تست در دسترس نیست."))
     new_enabled = not ((cc["enabled"] if "enabled" in cc.keys() else 1) == 1)
     server = (await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])) if cc["panel_server_id"] else None
     if not server or not server["is_active"]:
-        raise HTTPException(409, "سرور پنل مربوط به این سرویس یافت نشد یا غیرفعال است.")
+        raise HTTPException(409, tr("سرور پنل مربوط به این سرویس یافت نشد یا غیرفعال است."))
     try:
         provider = get_provider(server)
         await provider.set_enabled(cc["username"], new_enabled)
     except PanelError as e:
-        raise HTTPException(502, f"ناموفق بود: {e}")
+        raise HTTPException(502, tr(f"ناموفق بود: {e}"))
     (await asyncio.to_thread(db.set_custom_config_enabled, cc["id"], cc["user_id"], new_enabled))
     (await asyncio.to_thread(db.add_custom_config_history, cc["id"], "toggle",
         f"{'فعال' if new_enabled else 'غیرفعال'} شد (پنل وب - {admin['username']})"))
@@ -2711,15 +2961,15 @@ async def api_admin_custom_config_rename(custom_config_id: int, body: AdminSvcRe
                                           admin=Depends(require_permission("users"))):
     cc = _admin_get_custom_config_or_404(custom_config_id)
     if cc["source"] == "test":
-        raise HTTPException(403, "این قابلیت برای کانفیگ تست در دسترس نیست.")
+        raise HTTPException(403, tr("این قابلیت برای کانفیگ تست در دسترس نیست."))
     new_label = (body.new_name or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_]{3,20}", new_label):
-        raise HTTPException(400, "نامعتبر است. فقط حروف انگلیسی، عدد و آندرلاین، بین ۳ تا ۲۰ کاراکتر.")
+        raise HTTPException(400, tr("نامعتبر است. فقط حروف انگلیسی، عدد و آندرلاین، بین ۳ تا ۲۰ کاراکتر."))
     current_label = cc["display_name"] or cc["username"]
     if new_label == current_label:
-        raise HTTPException(400, "این نام همان نام فعلی است.")
+        raise HTTPException(400, tr("این نام همان نام فعلی است."))
     if (await asyncio.to_thread(db.is_custom_username_taken, new_label)):
-        raise HTTPException(409, "این نام قبلاً استفاده شده. نام دیگری انتخاب کنید.")
+        raise HTTPException(409, tr("این نام قبلاً استفاده شده. نام دیگری انتخاب کنید."))
     server = (await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])) if cc["panel_server_id"] else None
     panel_username = None
     note = "فقط نام نمایشی داخل بات تغییر کرد؛ لینک/کانفیگ فعلی روی پنل بدون تغییر کار می‌کند."
@@ -2749,9 +2999,9 @@ async def api_admin_custom_config_auto_renew(custom_config_id: int, body: AdminS
                                               admin=Depends(require_permission("users"))):
     cc = _admin_get_custom_config_or_404(custom_config_id)
     if cc["source"] == "test":
-        raise HTTPException(403, "این قابلیت برای کانفیگ تست در دسترس نیست.")
+        raise HTTPException(403, tr("این قابلیت برای کانفیگ تست در دسترس نیست."))
     if (cc["duration_days"] or 0) <= 0:
-        raise HTTPException(400, "این کانفیگ نامحدود است و نیازی به تمدید خودکار ندارد.")
+        raise HTTPException(400, tr("این کانفیگ نامحدود است و نیازی به تمدید خودکار ندارد."))
     (await asyncio.to_thread(db.set_custom_config_auto_renew, cc["id"], cc["user_id"], body.enabled))
     (await asyncio.to_thread(db.add_custom_config_history, cc["id"], "auto_renew_toggle",
         f"{'فعال' if body.enabled else 'غیرفعال'} شد (پنل وب - {admin['username']})"))
@@ -2770,17 +3020,17 @@ async def api_admin_custom_config_transfer(custom_config_id: int, body: AdminSvc
                                             admin=Depends(require_permission("users"))):
     cc = _admin_get_custom_config_or_404(custom_config_id)
     if cc["source"] == "test":
-        raise HTTPException(403, "این قابلیت برای کانفیگ تست در دسترس نیست.")
+        raise HTTPException(403, tr("این قابلیت برای کانفیگ تست در دسترس نیست."))
     target_id = body.target_telegram_id
     if target_id == cc["user_id"]:
-        raise HTTPException(400, "این کانفیگ همین الان مال همین کاربر است.")
+        raise HTTPException(400, tr("این کانفیگ همین الان مال همین کاربر است."))
     target_user = (await asyncio.to_thread(db.get_user, target_id))
     if not target_user:
-        raise HTTPException(404, "این کاربر بات را استارت نکرده یا آی‌دی نادرست است.")
+        raise HTTPException(404, tr("این کاربر بات را استارت نکرده یا آی‌دی نادرست است."))
     from_user_id = cc["user_id"]
     ok = (await asyncio.to_thread(db.transfer_custom_config, cc["id"], from_user_id, target_id))
     if not ok:
-        raise HTTPException(409, "انتقال ناموفق بود.")
+        raise HTTPException(409, tr("انتقال ناموفق بود."))
     label = cc["display_name"] or cc["username"]
     (await asyncio.to_thread(db.add_custom_config_history, cc["id"], "transfer",
         f"از {from_user_id} به {target_id} (پنل وب - {admin['username']})"))
@@ -2806,15 +3056,15 @@ def api_admin_custom_config_history(custom_config_id: int, admin=Depends(get_cur
 async def api_admin_custom_config_cut_access(custom_config_id: int, admin=Depends(require_permission("users"))):
     cc = _admin_get_custom_config_or_404(custom_config_id)
     if cc["source"] == "test":
-        raise HTTPException(403, "این قابلیت برای کانفیگ تست در دسترس نیست.")
+        raise HTTPException(403, tr("این قابلیت برای کانفیگ تست در دسترس نیست."))
     server = (await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])) if cc["panel_server_id"] else None
     if not server or not server["is_active"]:
-        raise HTTPException(409, "سرور پنل مربوط به این سرویس یافت نشد یا غیرفعال است.")
+        raise HTTPException(409, tr("سرور پنل مربوط به این سرویس یافت نشد یا غیرفعال است."))
     try:
         provider = get_provider(server)
         result = await provider.revoke_credentials(cc["username"])
     except PanelError as e:
-        raise HTTPException(502, f"قطع دسترسی ناموفق بود: {e}")
+        raise HTTPException(502, tr(f"قطع دسترسی ناموفق بود: {e}"))
     if result.subscription_url:
         (await asyncio.to_thread(db.update_custom_config_subscription_url, cc["id"], result.subscription_url))
     (await asyncio.to_thread(db.add_custom_config_history, cc["id"], "cut_access",
@@ -2832,7 +3082,7 @@ async def api_admin_custom_config_delete(custom_config_id: int, admin=Depends(re
     برگشت‌ناپذیر است و کاربر را کاملاً از این سرویس محروم می‌کند."""
     cc = _admin_get_custom_config_or_404(custom_config_id)
     if cc["source"] == "test":
-        raise HTTPException(403, "این قابلیت برای کانفیگ تست در دسترس نیست.")
+        raise HTTPException(403, tr("این قابلیت برای کانفیگ تست در دسترس نیست."))
     if cc["panel_server_id"]:
         server = await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])
         if server:
@@ -2859,17 +3109,17 @@ async def api_admin_custom_config_delete(custom_config_id: int, admin=Depends(re
 
 def _require_reseller_admin(admin):
     if not admin.get("tenant"):
-        raise HTTPException(403, "این بخش فقط از پنل نمایندگی در دسترس است.")
+        raise HTTPException(403, tr("این بخش فقط از پنل نمایندگی در دسترس است."))
     return admin.get("reseller_profile") or {}
 
 
 def _reseller_owner_id_or_404():
     tenant = _current_tenant.get()
     if not tenant.bot_id:
-        raise HTTPException(403, "نمایندگی معتبر نیست.")
+        raise HTTPException(403, tr("نمایندگی معتبر نیست."))
     row = main_db.get_reseller_bot(tenant.bot_id)
     if not row or not row["is_active"]:
-        raise HTTPException(403, "نمایندگی غیرفعال است.")
+        raise HTTPException(403, tr("نمایندگی غیرفعال است."))
     return int(row["owner_telegram_id"]), row
 
 
@@ -2953,15 +3203,15 @@ class ResellerSelfFixedBody(BaseModel):
 async def _build_reseller_self_config(owner_id: int, product, volume_gb: int, duration_days: int,
                                       username: Optional[str], consume_fixed: bool, quantity: int = 1):
     if volume_gb < 0:
-        raise HTTPException(400, "حجم نامعتبر است.")
+        raise HTTPException(400, tr("حجم نامعتبر است."))
     if duration_days < 0 or duration_days > 3650:
-        raise HTTPException(400, "مدت باید بین ۰ تا ۳۶۵۰ روز باشد؛ ۰ یعنی نامحدود.")
+        raise HTTPException(400, tr("مدت باید بین ۰ تا ۳۶۵۰ روز باشد؛ ۰ یعنی نامحدود."))
     if not username:
         prefix = (await asyncio.to_thread(main_db.get_custom_config_prefix)) or "r"
         username = f"{prefix}-r{secrets.token_hex(4)}" if prefix else f"r{secrets.token_hex(4)}"
     username = username.strip()
     if not re.fullmatch(r"[A-Za-z0-9._-]{3,64}", username):
-        raise HTTPException(400, "نام کاربری فقط می‌تواند شامل حروف انگلیسی، عدد، نقطه، خط تیره و زیرخط باشد (۳ تا ۶۴ کاراکتر).")
+        raise HTTPException(400, tr("نام کاربری فقط می‌تواند شامل حروف انگلیسی، عدد، نقطه، خط تیره و زیرخط باشد (۳ تا ۶۴ کاراکتر)."))
 
     server = None
     if product is not None and product["provision_server_id"]:
@@ -2969,28 +3219,28 @@ async def _build_reseller_self_config(owner_id: int, product, volume_gb: int, du
     if not server or not server["is_active"]:
         server = await asyncio.to_thread(main_db.get_reseller_panel, owner_id)
     if not server or not server["is_active"]:
-        raise HTTPException(400, "هیچ پنل فعالی برای ساخت کانفیگ نمایندگی تنظیم نشده است.")
+        raise HTTPException(400, tr("هیچ پنل فعالی برای ساخت کانفیگ نمایندگی تنظیم نشده است."))
 
     provider = get_provider(server)
     try:
         result = await provider.create_user(username, volume_gb, duration_days)
     except PanelUsernameTakenError:
-        raise HTTPException(400, "این نام کاربری روی پنل وجود دارد؛ نام دیگری انتخاب کنید.")
+        raise HTTPException(400, tr("این نام کاربری روی پنل وجود دارد؛ نام دیگری انتخاب کنید."))
     except PanelError as e:
-        raise HTTPException(400, f"ساخت کانفیگ روی پنل ناموفق بود: {e}")
+        raise HTTPException(400, tr(f"ساخت کانفیگ روی پنل ناموفق بود: {e}"))
 
     # مصرف اعتبار فقط بعد از ساخت موفق؛ اگر مصرف هم‌زمان شکست خورد، اکانت واقعی را rollback کن.
     if consume_fixed:
         if not await asyncio.to_thread(main_db.consume_reseller_product_credit, owner_id, int(product["id"]), quantity):
             try: await provider.delete_user(result.username)
             except Exception: logger.exception("rollback fixed reseller config failed: %s", result.username)
-            raise HTTPException(409, "موجودی محصول هم‌زمان مصرف شد؛ دوباره تلاش کنید.")
+            raise HTTPException(409, tr("موجودی محصول هم‌زمان مصرف شد؛ دوباره تلاش کنید."))
     else:
         if not await asyncio.to_thread(main_db.consume_reseller_credit, owner_id, volume_gb * quantity,
                                        f"ساخت کانفیگ شخصی از پنل وب نماینده"):
             try: await provider.delete_user(result.username)
             except Exception: logger.exception("rollback volume reseller config failed: %s", result.username)
-            raise HTTPException(409, "اعتبار حجمی هم‌زمان مصرف شد؛ دوباره تلاش کنید.")
+            raise HTTPException(409, tr("اعتبار حجمی هم‌زمان مصرف شد؛ دوباره تلاش کنید."))
 
     tenant_db = _current_tenant.get().db
     try:
@@ -3008,7 +3258,7 @@ async def _build_reseller_self_config(owner_id: int, product, volume_gb: int, du
         else:
             await asyncio.to_thread(main_db.adjust_reseller_credit, owner_id, volume_gb * quantity,
                                     reason="rollback ساخت کانفیگ نماینده")
-        raise HTTPException(500, "ثبت سرویس در پنل نماینده ناموفق بود؛ عملیات برگشت داده شد.")
+        raise HTTPException(500, tr("ثبت سرویس در پنل نماینده ناموفق بود؛ عملیات برگشت داده شد."))
     return {"username": result.username, "subscription_url": result.subscription_url,
             "volume_gb": volume_gb, "duration_days": duration_days}
 
@@ -3017,17 +3267,17 @@ async def _build_reseller_self_config(owner_id: int, product, volume_gb: int, du
 async def api_reseller_self_fixed(body: ResellerSelfFixedBody, admin=Depends(get_current_admin)):
     _require_reseller_admin(admin)
     if body.quantity != 1:
-        raise HTTPException(400, "در حال حاضر هر بار فقط یک محصول برای استفاده شخصی دریافت می‌شود.")
+        raise HTTPException(400, tr("در حال حاضر هر بار فقط یک محصول برای استفاده شخصی دریافت می‌شود."))
     owner_id, _ = await asyncio.to_thread(_reseller_owner_id_or_404)
     supply = await asyncio.to_thread(main_db.get_reseller_supply, owner_id)
     if supply["model"] != "fixed_product":
-        raise HTTPException(403, "این محصول به موجودی نمایندگی شما اختصاص داده نشده است.")
+        raise HTTPException(403, tr("این محصول به موجودی نمایندگی شما اختصاص داده نشده است."))
     product = await asyncio.to_thread(main_db.get_product, body.product_id)
     if not product or not product["is_active"] or not product["is_auto_provision"]:
-        raise HTTPException(400, "محصول در دسترس نیست.")
+        raise HTTPException(400, tr("محصول در دسترس نیست."))
     qty = await asyncio.to_thread(main_db.get_reseller_product_credit, owner_id, body.product_id)
     if qty < 1:
-        raise HTTPException(400, "موجودی این محصول تمام شده است.")
+        raise HTTPException(400, tr("موجودی این محصول تمام شده است."))
     result = await _build_reseller_self_config(owner_id, product, int(product["auto_provision_volume_gb"] or 0),
                                                int(product["duration_days"] if product["duration_days"] is not None else 30),
                                                None, True, 1)
@@ -3041,13 +3291,13 @@ async def api_reseller_self_custom(body: ResellerSelfBuildBody, admin=Depends(ge
     profile = _require_reseller_admin(admin)
     owner_id, _ = await asyncio.to_thread(_reseller_owner_id_or_404)
     if profile.get("supply_model") != "volume_credit":
-        raise HTTPException(403, "ساخت آزاد کانفیگ فقط برای نمایندگی دارای اعتبار حجمی فعال است.")
+        raise HTTPException(403, tr("ساخت آزاد کانفیگ فقط برای نمایندگی دارای اعتبار حجمی فعال است."))
     settings = await asyncio.to_thread(main_db.get_custom_config_settings)
     if body.volume_gb < int(settings["min_gb"]) or body.volume_gb > int(settings["max_gb"]):
-        raise HTTPException(400, f"حجم باید بین {settings['min_gb']} تا {settings['max_gb']} گیگابایت باشد.")
+        raise HTTPException(400, tr(f"حجم باید بین {settings['min_gb']} تا {settings['max_gb']} گیگابایت باشد."))
     credit = await asyncio.to_thread(main_db.get_reseller_credit, owner_id)
     if credit < body.volume_gb:
-        raise HTTPException(400, f"اعتبار کافی نیست؛ موجودی فعلی {credit:,} گیگ است.")
+        raise HTTPException(400, tr(f"اعتبار کافی نیست؛ موجودی فعلی {credit:,} گیگ است."))
     result = await _build_reseller_self_config(owner_id, None, body.volume_gb, body.duration_days, body.username, False, 1)
     await asyncio.to_thread(main_db.log_admin_action, admin["id"], "reseller_self_custom",
                             f"نماینده {owner_id} کانفیگ شخصی {body.volume_gb}GB/{body.duration_days}d ساخت (پنل وب)", "reseller", owner_id)
@@ -3066,9 +3316,9 @@ async def api_reseller_self_toggle(config_id: int, admin=Depends(get_current_adm
     _require_reseller_admin(admin)
     owner_id, _ = await asyncio.to_thread(_reseller_owner_id_or_404)
     cc = db.get_custom_config_owned(config_id, owner_id)
-    if not cc or cc["source"] != "reseller": raise HTTPException(404, "سرویس یافت نشد.")
+    if not cc or cc["source"] != "reseller": raise HTTPException(404, tr("سرویس یافت نشد."))
     enabled = not ((cc["enabled"] if "enabled" in cc.keys() else 1) == 1)
-    if not db.set_custom_config_enabled(config_id, owner_id, enabled): raise HTTPException(400, "تغییر وضعیت ناموفق بود.")
+    if not db.set_custom_config_enabled(config_id, owner_id, enabled): raise HTTPException(400, tr("تغییر وضعیت ناموفق بود."))
     return {"ok": True, "enabled": enabled}
 
 
@@ -3077,17 +3327,17 @@ async def api_reseller_self_rename(config_id: int, body: dict, admin=Depends(get
     _require_reseller_admin(admin)
     owner_id, _ = await asyncio.to_thread(_reseller_owner_id_or_404)
     cc = db.get_custom_config_owned(config_id, owner_id)
-    if not cc or cc["source"] != "reseller": raise HTTPException(404, "سرویس یافت نشد.")
+    if not cc or cc["source"] != "reseller": raise HTTPException(404, tr("سرویس یافت نشد."))
     name = str(body.get("name") or "").strip()
-    if not name or len(name) > 80: raise HTTPException(400, "نام نامعتبر است.")
-    if not db.rename_custom_config(config_id, owner_id, name): raise HTTPException(400, "تغییر نام ناموفق بود.")
+    if not name or len(name) > 80: raise HTTPException(400, tr("نام نامعتبر است."))
+    if not db.rename_custom_config(config_id, owner_id, name): raise HTTPException(400, tr("تغییر نام ناموفق بود."))
     return {"ok": True}
 
 
 def _reseller_service_or_404(config_id: int, owner_id: int):
     cc = db.get_custom_config_owned(config_id, owner_id)
     if not cc or cc["source"] != "reseller":
-        raise HTTPException(404, "سرویس یافت نشد.")
+        raise HTTPException(404, tr("سرویس یافت نشد."))
     return cc
 
 
@@ -3119,7 +3369,7 @@ async def api_reseller_self_delete(config_id: int, admin=Depends(get_current_adm
                                  cc["username"], cc["panel_server_id"])
     removed = await asyncio.to_thread(db.delete_owned_custom_config, config_id, owner_id)
     if not removed:
-        raise HTTPException(404, "سرویس یافت نشد.")
+        raise HTTPException(404, tr("سرویس یافت نشد."))
     refunded = await grant_service_refund_credit(main_db, owner_id, quote, panel_deleted, cc["username"])
     await asyncio.to_thread(main_db.log_admin_action, admin["id"], "reseller_self_delete",
                             f"نماینده {owner_id} سرویس «{cc['username']}» را حذف کرد؛ برگشتی: {refunded} (پنل وب)",
@@ -3211,19 +3461,19 @@ def api_reorder_products(body: ProductReorderBody, admin=Depends(require_permiss
 @app.post("/api/products")
 def api_add_product(body: ProductBody, admin=Depends(require_permission("catalog"))):
     if body.duration_days < 0:
-        raise HTTPException(400, "مدت اعتبار نامعتبر است.")
+        raise HTTPException(400, tr("مدت اعتبار نامعتبر است."))
     if body.duration_days == 0 and not body.provision_server_id:
-        raise HTTPException(400, "مدت نامحدود فقط برای محصولات با اتصال مستقیم به پنل ممکن است.")
+        raise HTTPException(400, tr("مدت نامحدود فقط برای محصولات با اتصال مستقیم به پنل ممکن است."))
     if body.provision_server_id:
         if body.auto_provision_volume_gb is None or body.auto_provision_volume_gb < 0:
-            raise HTTPException(400, "برای اتصال مستقیم به پنل باید حجم (گیگابایت) را مشخص کنید.")
+            raise HTTPException(400, tr("برای اتصال مستقیم به پنل باید حجم (گیگابایت) را مشخص کنید."))
     if admin["tenant"]:
         # نمایندگی (بند ۳.۲ اسپک): نه پنل شخصی دارد، نه بانک کانفیگ دستی؛ فقط
         # محصول خودکار از اعتبار حجمی/موجودی خودش مجاز است (مطابق منطق طرف بات).
         if body.provision_server_id:
-            raise HTTPException(403, "اتصال مستقیم به پنل فقط برای بات اصلی مجاز است.")
+            raise HTTPException(403, tr("اتصال مستقیم به پنل فقط برای بات اصلی مجاز است."))
         if not body.is_auto_provision:
-            raise HTTPException(403, "این نمایندگی فقط می‌تواند محصول خودکار (از اعتبار حجمی) بسازد؛ نه بانک کانفیگ دستی.")
+            raise HTTPException(403, tr("این نمایندگی فقط می‌تواند محصول خودکار (از اعتبار حجمی) بسازد؛ نه بانک کانفیگ دستی."))
     pid = db.add_product(
         body.category_id, body.name, body.price, body.description, body.duration_days,
         body.is_auto_provision or bool(body.provision_server_id), body.auto_provision_volume_gb,
@@ -3251,13 +3501,13 @@ class ProductEditBody(BaseModel):
 def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(require_permission("catalog"))):
     old_product = db.get_product(product_id)
     if not old_product:
-        raise HTTPException(status_code=404, detail="محصول یافت نشد.")
+        raise HTTPException(status_code=404, detail=tr("محصول یافت نشد."))
 
     if body.category_id is not None and not db.get_category(body.category_id):
-        raise HTTPException(status_code=404, detail="دسته‌بندی یافت نشد.")
+        raise HTTPException(status_code=404, detail=tr("دسته‌بندی یافت نشد."))
 
     if body.source is not None and body.source not in ("bank", "direct"):
-        raise HTTPException(status_code=400, detail="منبع تأمین نامعتبر است.")
+        raise HTTPException(status_code=400, detail=tr("منبع تأمین نامعتبر است."))
 
     # سنتینل Ellipsis یعنی «بدون تغییر» (به db.edit_product پاس داده می‌شود).
     is_auto_provision = ...
@@ -3266,17 +3516,17 @@ def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(requi
 
     if body.source == "direct":
         if admin["tenant"]:
-            raise HTTPException(status_code=403, detail="اتصال مستقیم به پنل فقط برای بات اصلی مجاز است.")
+            raise HTTPException(status_code=403, detail=tr("اتصال مستقیم به پنل فقط برای بات اصلی مجاز است."))
         if not body.provision_server_id or not db.get_panel_server(body.provision_server_id):
-            raise HTTPException(status_code=404, detail="سرور پنل یافت نشد.")
+            raise HTTPException(status_code=404, detail=tr("سرور پنل یافت نشد."))
         if body.auto_provision_volume_gb is None or body.auto_provision_volume_gb < 0:
-            raise HTTPException(status_code=400, detail="برای اتصال مستقیم به پنل باید حجم (گیگابایت) را مشخص کنید.")
+            raise HTTPException(status_code=400, detail=tr("برای اتصال مستقیم به پنل باید حجم (گیگابایت) را مشخص کنید."))
         is_auto_provision = True
         provision_server_id = body.provision_server_id
         auto_provision_volume_gb = body.auto_provision_volume_gb
     elif body.source == "bank":
         if body.duration_days is None and old_product["duration_days"] == 0:
-            raise HTTPException(status_code=400, detail="برای برگرداندن به «بانک کانفیگ» باید مدت اعتبار (روز) را هم مشخص کنید.")
+            raise HTTPException(status_code=400, detail=tr("برای برگرداندن به «بانک کانفیگ» باید مدت اعتبار (روز) را هم مشخص کنید."))
         is_auto_provision = False
         provision_server_id = None
         auto_provision_volume_gb = None
@@ -3284,16 +3534,16 @@ def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(requi
         # سازگاری با نسخه‌ی قبلی: ویرایش تک‌فیلدیِ سرور/حجم روی محصولی که از قبل
         # «اتصال مستقیم به پنل» بوده (بدون تغییر صریح source).
         if not old_product["is_auto_provision"]:
-            raise HTTPException(status_code=400, detail="این محصول به‌صورت خودکار ساخته نمی‌شود.")
+            raise HTTPException(status_code=400, detail=tr("این محصول به‌صورت خودکار ساخته نمی‌شود."))
         if body.provision_server_id is not None:
             if admin["tenant"]:
-                raise HTTPException(status_code=403, detail="اتصال مستقیم به پنل فقط برای بات اصلی مجاز است.")
+                raise HTTPException(status_code=403, detail=tr("اتصال مستقیم به پنل فقط برای بات اصلی مجاز است."))
             if not db.get_panel_server(body.provision_server_id):
-                raise HTTPException(status_code=404, detail="سرور پنل یافت نشد.")
+                raise HTTPException(status_code=404, detail=tr("سرور پنل یافت نشد."))
             provision_server_id = body.provision_server_id
         if body.auto_provision_volume_gb is not None:
             if body.auto_provision_volume_gb < 0:
-                raise HTTPException(status_code=400, detail="حجم نامعتبر است.")
+                raise HTTPException(status_code=400, detail=tr("حجم نامعتبر است."))
             auto_provision_volume_gb = body.auto_provision_volume_gb
 
     effective_server_id = (
@@ -3302,9 +3552,9 @@ def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(requi
 
     if body.duration_days is not None:
         if body.duration_days < 0:
-            raise HTTPException(status_code=400, detail="مدت اعتبار نامعتبر است.")
+            raise HTTPException(status_code=400, detail=tr("مدت اعتبار نامعتبر است."))
         if body.duration_days == 0 and not effective_server_id:
-            raise HTTPException(status_code=400, detail="مدت نامحدود فقط برای محصولات با اتصال مستقیم به پنل ممکن است.")
+            raise HTTPException(status_code=400, detail=tr("مدت نامحدود فقط برای محصولات با اتصال مستقیم به پنل ممکن است."))
 
     db.edit_product(
         product_id, body.name, body.price, body.description, body.duration_days,
@@ -3374,7 +3624,7 @@ def api_product_used_configs(product_id: int, admin=Depends(require_permission("
 def api_delete_used_config(product_id: int, config_id: int, admin=Depends(require_permission("catalog")), _fa=Depends(require_full_access_tenant)):
     row = db.admin_delete_bank_config(config_id)
     if not row or row["product_id"] != product_id:
-        raise HTTPException(404, "کانفیگ یافت نشد.")
+        raise HTTPException(404, tr("کانفیگ یافت نشد."))
     db.log_admin_action(
         admin["id"], "config_delete_admin",
         f"کانفیگ ناموجود #{config_id} از بانک محصول #{product_id} حذف شد (پنل وب - {admin['username']})",
@@ -3408,12 +3658,14 @@ class DiscountBody(BaseModel):
     code: str
     percent: Optional[int] = None
     fixed_amount: Optional[int] = None
+    max_discount_amount: Optional[int] = None
     max_uses: int = 0
     expires_at: Optional[str] = None
     min_purchase: Optional[int] = None
     max_purchase: Optional[int] = None
     product_id: Optional[int] = None
     category_id: Optional[int] = None
+    product_ids: Optional[List[int]] = None
     per_user_limit: Optional[int] = None
     first_purchase_only: bool = False
     audience: str = "all"
@@ -3421,7 +3673,14 @@ class DiscountBody(BaseModel):
 
 @app.get("/api/discounts")
 def api_discounts(admin=Depends(require_permission("discounts"))):
-    return rows_to_list(db.list_discount_codes())
+    rows = rows_to_list(db.list_discount_codes())
+    for r in rows:
+        raw = r.get("product_ids")
+        try:
+            r["product_ids"] = json.loads(raw) if raw else []
+        except (ValueError, TypeError):
+            r["product_ids"] = []
+    return rows
 
 
 @app.post("/api/discounts")
@@ -3431,7 +3690,8 @@ def api_add_discount(body: DiscountBody, admin=Depends(require_permission("disco
         min_purchase=body.min_purchase, max_purchase=body.max_purchase,
         product_id=body.product_id, category_id=body.category_id,
         per_user_limit=body.per_user_limit, first_purchase_only=body.first_purchase_only,
-        audience=body.audience,
+        audience=body.audience, max_discount_amount=body.max_discount_amount,
+        product_ids=body.product_ids,
     )
     db.log_admin_action(admin["id"], "discount_add", body.code, "discount", code_id)
     return {"id": code_id}
@@ -3467,7 +3727,7 @@ def api_tickets(status: Optional[str] = None, admin=Depends(get_current_admin)):
 def api_ticket_messages(ticket_id: int, admin=Depends(get_current_admin)):
     ticket = db.get_ticket(ticket_id)
     if not ticket:
-        raise HTTPException(404, "یافت نشد.")
+        raise HTTPException(404, tr("یافت نشد."))
     return {"ticket": dict(ticket), "messages": rows_to_list(db.get_ticket_messages(ticket_id))}
 
 
@@ -3479,7 +3739,7 @@ class TicketReplyBody(BaseModel):
 async def api_ticket_reply(ticket_id: int, body: TicketReplyBody, admin=Depends(require_permission("tickets"))):
     ticket = (await asyncio.to_thread(db.get_ticket, ticket_id))
     if not ticket:
-        raise HTTPException(404, "یافت نشد.")
+        raise HTTPException(404, tr("یافت نشد."))
     (await asyncio.to_thread(db.claim_ticket_if_open, ticket_id, admin["id"]))
     (await asyncio.to_thread(db.add_ticket_message, ticket_id, "admin", body.message))
     await notify_user(ticket["user_id"], f"📩 پاسخ پشتیبانی برای تیکت «{ticket['subject']}»:\n\n{body.message}")
@@ -3505,9 +3765,9 @@ class BroadcastBody(BaseModel):
 async def api_broadcast(body: BroadcastBody, admin=Depends(require_permission("broadcast"))):
     text = (body.message or "").strip()
     if not text:
-        raise HTTPException(400, "متن پیام نمی‌تواند خالی باشد.")
+        raise HTTPException(400, tr("متن پیام نمی‌تواند خالی باشد."))
     if len(text) > 4000:
-        raise HTTPException(400, "متن پیام بیش از حد طولانی است.")
+        raise HTTPException(400, tr("متن پیام بیش از حد طولانی است."))
 
     user_ids = (await asyncio.to_thread(db.get_all_user_ids))
     sem = asyncio.Semaphore(20)
@@ -3560,7 +3820,7 @@ def api_support_conversations(admin=Depends(get_current_admin)):
 def api_support_messages(user_id: int, since_id: int = 0, admin=Depends(get_current_admin)):
     user = db.get_user(user_id)
     if not user:
-        raise HTTPException(404, "کاربر یافت نشد.")
+        raise HTTPException(404, tr("کاربر یافت نشد."))
     db.mark_support_read_by_admin(user_id)
     rows = rows_to_list(db.get_support_messages(user_id, since_id=since_id))
     conv = db.get_support_conversation(user_id)
@@ -3590,12 +3850,12 @@ class SupportReplyBody(BaseModel):
 async def api_support_send(user_id: int, body: SupportReplyBody, admin=Depends(get_current_admin)):
     user = (await asyncio.to_thread(db.get_user, user_id))
     if not user:
-        raise HTTPException(404, "کاربر یافت نشد.")
+        raise HTTPException(404, tr("کاربر یافت نشد."))
     text = (body.message or "").strip()
     if not text:
-        raise HTTPException(400, "پیام نمی‌تواند خالی باشد.")
+        raise HTTPException(400, tr("پیام نمی‌تواند خالی باشد."))
     if len(text) > 2000:
-        raise HTTPException(400, "پیام بیش از حد طولانی است.")
+        raise HTTPException(400, tr("پیام بیش از حد طولانی است."))
 
     # قفل مکالمه: چون ادمین‌های وب آیدی تلگرام ندارند، با -admin_id در همان
     # ستون assigned_admin_id ذخیره می‌شود (که با آیدی‌های واقعی تلگرام تداخل ندارد).
@@ -3606,7 +3866,7 @@ async def api_support_send(user_id: int, body: SupportReplyBody, admin=Depends(g
     if assigned and assigned != my_lock_id and not is_owner:
         raise HTTPException(
             403,
-            f"این گفتگو در حال حاضر توسط {_support_lock_label(assigned)} در حال پاسخ‌دهی است.",
+            tr(f"این گفتگو در حال حاضر توسط {_support_lock_label(assigned)} در حال پاسخ‌دهی است."),
         )
     if not is_owner:
         (await asyncio.to_thread(db.set_support_conversation_admin, user_id, my_lock_id))
@@ -3718,7 +3978,7 @@ def api_reseller_bots(admin=Depends(require_permission("resellers"))):
 def api_toggle_reseller_bot(bot_id: int, admin=Depends(require_permission("resellers"))):
     reseller_bot = db.get_reseller_bot(bot_id)
     if not reseller_bot:
-        raise HTTPException(404, "یافت نشد.")
+        raise HTTPException(404, tr("یافت نشد."))
     db.toggle_reseller_bot(bot_id)
     db.log_admin_action(
         admin["id"], "reseller_bot_toggle", f"نماینده #{bot_id} (پنل وب - {admin['username']})", "reseller_bot", bot_id
@@ -3735,7 +3995,7 @@ class ResellerBotEditBody(BaseModel):
 def api_edit_reseller_bot(bot_id: int, body: ResellerBotEditBody, admin=Depends(require_permission("resellers"))):
     reseller_bot = db.get_reseller_bot(bot_id)
     if not reseller_bot:
-        raise HTTPException(404, "یافت نشد.")
+        raise HTTPException(404, tr("یافت نشد."))
     # رفع باگ: قبلاً اینجا فقط edit_reseller_bot صدا زده می‌شد که صرفاً ستون‌های
     # reseller_bots را عوض می‌کرد - یعنی تغییر owner_telegram_id از این مسیر کاملاً
     # ظاهری بود (مالکیت واقعی/اعتبار حجمی همچنان مال مالک قبلی می‌ماند؛ جزئیات در
@@ -3756,7 +4016,7 @@ def api_edit_reseller_bot(bot_id: int, body: ResellerBotEditBody, admin=Depends(
 def api_delete_reseller_bot(bot_id: int, purge_db: bool = False, admin=Depends(require_permission("resellers"))):
     reseller_bot = db.get_reseller_bot(bot_id)
     if not reseller_bot:
-        raise HTTPException(404, "یافت نشد.")
+        raise HTTPException(404, tr("یافت نشد."))
     db.delete_reseller_bot(bot_id)
     db.purge_reseller_leftovers(reseller_bot["owner_telegram_id"])
     if purge_db:
@@ -3797,12 +4057,12 @@ def api_create_inline_reseller(body: CommissionResellerDirectBody, admin=Depends
     قبلی از سمت کاربر) - نمایندگی کمیسیونی نه حجم دارد نه محصول آماده،
     فقط یک درصد کمیسیون دائمی تا زمان غیرفعال‌سازی."""
     if not (1 <= body.percent <= 100):
-        raise HTTPException(400, "درصد باید بین ۱ تا ۱۰۰ باشد.")
+        raise HTTPException(400, tr("درصد باید بین ۱ تا ۱۰۰ باشد."))
     user_row = db.get_user(body.owner_telegram_id)
     if not user_row:
-        raise HTTPException(404, "این کاربر هنوز با بات /start نزده است.")
+        raise HTTPException(404, tr("این کاربر هنوز با بات /start نزده است."))
     if db.is_inline_reseller(body.owner_telegram_id):
-        raise HTTPException(400, "این کاربر همین الان هم نماینده‌ی کمیسیونی فعال است.")
+        raise HTTPException(400, tr("این کاربر همین الان هم نماینده‌ی کمیسیونی فعال است."))
     db.enable_inline_reseller(body.owner_telegram_id, body.percent)
     db.log_admin_action(
         admin["id"], "commission_reseller_direct_create",
@@ -3821,9 +4081,9 @@ def api_create_inline_reseller(body: CommissionResellerDirectBody, admin=Depends
 @app.put("/api/resellers/inline-commissions/{telegram_id}")
 def api_edit_inline_reseller_percent(telegram_id: int, body: CommissionResellerPercentBody, admin=Depends(require_permission("resellers"))):
     if not (1 <= body.percent <= 100):
-        raise HTTPException(400, "درصد باید بین ۱ تا ۱۰۰ باشد.")
+        raise HTTPException(400, tr("درصد باید بین ۱ تا ۱۰۰ باشد."))
     if not db.is_inline_reseller(telegram_id):
-        raise HTTPException(404, "این کاربر نماینده‌ی کمیسیونی فعال نیست.")
+        raise HTTPException(404, tr("این کاربر نماینده‌ی کمیسیونی فعال نیست."))
     db.set_inline_reseller_commission_percent(telegram_id, body.percent)
     db.log_admin_action(
         admin["id"], "commission_reseller_edit_percent",
@@ -3836,7 +4096,7 @@ def api_edit_inline_reseller_percent(telegram_id: int, body: CommissionResellerP
 @app.delete("/api/resellers/inline-commissions/{telegram_id}")
 def api_disable_inline_reseller(telegram_id: int, admin=Depends(require_permission("resellers"))):
     if not db.is_inline_reseller(telegram_id):
-        raise HTTPException(404, "این کاربر نماینده‌ی کمیسیونی فعال نیست.")
+        raise HTTPException(404, tr("این کاربر نماینده‌ی کمیسیونی فعال نیست."))
     db.disable_inline_reseller(telegram_id)
     db.log_admin_action(
         admin["id"], "commission_reseller_disable", f"کاربر {telegram_id} (پنل وب - {admin['username']})",
@@ -3859,10 +4119,10 @@ def api_list_commission_reseller_requests(status: str = "pending", admin=Depends
 def api_approve_commission_reseller_request(request_id: int, admin=Depends(require_permission("resellers"))):
     req = db.get_commission_reseller_request(request_id)
     if not req or req["status"] != "pending":
-        raise HTTPException(404, "این درخواست دیگر معتبر نیست.")
+        raise HTTPException(404, tr("این درخواست دیگر معتبر نیست."))
     approved = db.approve_commission_reseller_request(request_id, req["proposed_percent"], admin["id"])
     if not approved:
-        raise HTTPException(409, "این درخواست همین الان بررسی شد.")
+        raise HTTPException(409, tr("این درخواست همین الان بررسی شد."))
     db.log_admin_action(
         admin["id"], "commission_reseller_approve",
         f"درخواست #{request_id} | کاربر {req['user_id']} | {req['proposed_percent']}٪ (پنل وب - {admin['username']})",
@@ -3881,10 +4141,10 @@ def api_approve_commission_reseller_request(request_id: int, admin=Depends(requi
 def api_reject_commission_reseller_request(request_id: int, body: CommissionResellerRejectBody, admin=Depends(require_permission("resellers"))):
     req = db.get_commission_reseller_request(request_id)
     if not req or req["status"] != "pending":
-        raise HTTPException(404, "این درخواست دیگر معتبر نیست.")
+        raise HTTPException(404, tr("این درخواست دیگر معتبر نیست."))
     rejected = db.reject_commission_reseller_request(request_id, body.reason, admin["id"])
     if not rejected:
-        raise HTTPException(409, "این درخواست همین الان بررسی شد.")
+        raise HTTPException(409, tr("این درخواست همین الان بررسی شد."))
     db.log_admin_action(
         admin["id"], "commission_reseller_reject",
         f"درخواست #{request_id} | کاربر {req['user_id']} | دلیل: {body.reason} (پنل وب - {admin['username']})",
@@ -3946,9 +4206,9 @@ async def api_set_reseller_axis_settings(body: ResellerAxisSettingsBody, admin=D
 async def api_enable_reseller_webpanel(bot_id: int, request: Request, admin=Depends(require_permission("resellers"))):
     reseller_bot = (await asyncio.to_thread(db.get_reseller_bot, bot_id))
     if not reseller_bot:
-        raise HTTPException(404, "یافت نشد.")
+        raise HTTPException(404, tr("یافت نشد."))
     if reseller_bot["web_panel_enabled"]:
-        raise HTTPException(400, "قبلاً فعال است؛ برای لینک جدید از «ساخت لینک جدید» استفاده کنید.")
+        raise HTTPException(400, tr("قبلاً فعال است؛ برای لینک جدید از «ساخت لینک جدید» استفاده کنید."))
     (await asyncio.to_thread(db.enable_reseller_web_panel, bot_id))
     (await asyncio.to_thread(db.log_admin_action, 
         admin["id"], "reseller_webpanel_enable", f"نماینده #{bot_id} (پنل وب - {admin['username']})",
@@ -3962,7 +4222,7 @@ async def api_enable_reseller_webpanel(bot_id: int, request: Request, admin=Depe
 async def api_regen_reseller_webpanel(bot_id: int, request: Request, admin=Depends(require_permission("resellers"))):
     reseller_bot = (await asyncio.to_thread(db.get_reseller_bot, bot_id))
     if not reseller_bot:
-        raise HTTPException(404, "یافت نشد.")
+        raise HTTPException(404, tr("یافت نشد."))
     (await asyncio.to_thread(db.regenerate_reseller_web_panel_token, bot_id))
     (await asyncio.to_thread(db.log_admin_action, 
         admin["id"], "reseller_webpanel_regen", f"نماینده #{bot_id} (پنل وب - {admin['username']})",
@@ -3976,7 +4236,7 @@ async def api_regen_reseller_webpanel(bot_id: int, request: Request, admin=Depen
 def api_disable_reseller_webpanel(bot_id: int, admin=Depends(require_permission("resellers"))):
     reseller_bot = db.get_reseller_bot(bot_id)
     if not reseller_bot:
-        raise HTTPException(404, "یافت نشد.")
+        raise HTTPException(404, tr("یافت نشد."))
     db.disable_reseller_web_panel(bot_id)
     db.log_admin_action(
         admin["id"], "reseller_webpanel_disable", f"نماینده #{bot_id} (پنل وب - {admin['username']})",
@@ -3989,7 +4249,7 @@ def api_disable_reseller_webpanel(bot_id: int, admin=Depends(require_permission(
 def api_reseller_webpanel_login_link(bot_id: int, request: Request, admin=Depends(require_permission("resellers"))):
     reseller_bot = db.get_reseller_bot(bot_id)
     if not reseller_bot:
-        raise HTTPException(404, "یافت نشد.")
+        raise HTTPException(404, tr("یافت نشد."))
     panel_url = _resolved_admin_panel_url(request)
     b_value = reseller_bot["link_slug"] or str(bot_id)
     return {"login_link": f"{panel_url}/?b={b_value}"}
@@ -4054,7 +4314,7 @@ def _tier_view(row):
 def _tier_or_404(code: str):
     row = db.get_reseller_tier(code)
     if not row:
-        raise HTTPException(status_code=404, detail="سطح پیدا نشد.")
+        raise HTTPException(status_code=404, detail=tr("سطح پیدا نشد."))
     return row
 
 
@@ -4075,9 +4335,9 @@ def api_update_reseller_tier(code: str, body: TierBody, admin=Depends(require_pe
     nullable = set(Database.RESELLER_TIER_NULLABLE_FIELDS)
     fields = {k: v for k, v in body.dict(exclude_unset=True).items() if v is not None or k in nullable}
     if "title" in fields and not str(fields["title"]).strip():
-        raise HTTPException(status_code=400, detail="عنوان سطح نمی‌تواند خالی باشد.")
+        raise HTTPException(status_code=400, detail=tr("عنوان سطح نمی‌تواند خالی باشد."))
     if "credit_limit_toman" in fields and not 0 <= int(fields["credit_limit_toman"]) <= MAX_CREDIT_LIMIT_TOMAN:
-        raise HTTPException(status_code=400, detail="سقف اعتبار باید بین ۰ تا ۱۰ میلیارد تومان باشد.")
+        raise HTTPException(status_code=400, detail=tr("سقف اعتبار باید بین ۰ تا ۱۰ میلیارد تومان باشد."))
     try:
         db.update_reseller_tier(code, **fields)
     except ValueError as e:
@@ -4114,7 +4374,7 @@ def api_add_tier_qty_discount(code: str, body: TierQtyDiscountBody, admin=Depend
 @app.delete("/api/reseller-tiers/qty-discounts/{discount_id}")
 def api_delete_tier_qty_discount(discount_id: int, admin=Depends(require_permission("resellers"))):
     if not db.delete_tier_qty_discount(discount_id):
-        raise HTTPException(status_code=404, detail="ردیف پیدا نشد.")
+        raise HTTPException(status_code=404, detail=tr("ردیف پیدا نشد."))
     db.log_admin_action(admin["id"], "reseller_tier_qty_discount_delete", str(discount_id), "reseller_tier", None)
     return {"ok": True}
 
@@ -4134,23 +4394,23 @@ class TierMemberBody(BaseModel):
 async def api_add_tier_member(code: str, body: TierMemberBody, admin=Depends(require_permission("resellers"))):
     tier = _tier_or_404(code)
     if tier["model"] != "discount":
-        raise HTTPException(status_code=400, detail="افزودن مستقیم عضو فقط برای سطح‌های تخفیفی ممکن است.")
+        raise HTTPException(status_code=400, detail=tr("افزودن مستقیم عضو فقط برای سطح‌های تخفیفی ممکن است."))
     tg_id = body.telegram_id
     if not (await asyncio.to_thread(db.get_user, tg_id)):
-        raise HTTPException(status_code=404, detail="کاربر یافت نشد.")
+        raise HTTPException(status_code=404, detail=tr("کاربر یافت نشد."))
     current = await asyncio.to_thread(db.get_agent_tier, tg_id)
     if current == code:
-        raise HTTPException(status_code=400, detail="این کاربر همین الان عضو این سطح است.")
+        raise HTTPException(status_code=400, detail=tr("این کاربر همین الان عضو این سطح است."))
     if current:
-        raise HTTPException(status_code=400, detail="این کاربر همین الان نماینده‌ی سطح دیگری است.")
+        raise HTTPException(status_code=400, detail=tr("این کاربر همین الان نماینده‌ی سطح دیگری است."))
     discount_percent = body.discount_percent
     if code == "silver":
         if discount_percent is None:
-            raise HTTPException(status_code=400, detail="برای نمایندگی نقره‌ای درصد تخفیف را مشخص کنید.")
+            raise HTTPException(status_code=400, detail=tr("برای نمایندگی نقره‌ای درصد تخفیف را مشخص کنید."))
         if not 1 <= int(discount_percent) <= 100:
-            raise HTTPException(status_code=400, detail="درصد تخفیف باید بین ۱ تا ۱۰۰ باشد.")
+            raise HTTPException(status_code=400, detail=tr("درصد تخفیف باید بین ۱ تا ۱۰۰ باشد."))
     elif discount_percent is not None:
-        raise HTTPException(status_code=400, detail="درصد تخفیف فقط برای سطح نقره‌ای قابل تنظیم است.")
+        raise HTTPException(status_code=400, detail=tr("درصد تخفیف فقط برای سطح نقره‌ای قابل تنظیم است."))
     await asyncio.to_thread(db.set_user_reseller_tier, tg_id, code, discount_percent)
     await asyncio.to_thread(db.log_admin_action, admin["id"], "reseller_tier_member_add", f"{code}: {tg_id}", "user", tg_id)
     await notify_user(
@@ -4165,7 +4425,7 @@ async def api_add_tier_member(code: str, body: TierMemberBody, admin=Depends(req
 def api_remove_tier_member(code: str, user_id: int, admin=Depends(require_permission("resellers"))):
     _tier_or_404(code)
     if db.get_user_reseller_tier(user_id) != code:
-        raise HTTPException(status_code=404, detail="این کاربر عضو این سطح نیست.")
+        raise HTTPException(status_code=404, detail=tr("این کاربر عضو این سطح نیست."))
     db.set_user_reseller_tier(user_id, None)
     db.log_admin_action(admin["id"], "reseller_tier_member_remove", f"{code}: {user_id}", "user", user_id)
     return {"ok": True}
@@ -4187,10 +4447,10 @@ def api_tier_requests(status: Optional[str] = "pending", admin=Depends(require_p
 async def _decide_tier_request_web(request_id: int, admin, approve: bool):
     req = db.get_tier_request(request_id)
     if not req:
-        raise HTTPException(status_code=404, detail="درخواست پیدا نشد.")
+        raise HTTPException(status_code=404, detail=tr("درخواست پیدا نشد."))
     done = db.approve_tier_request(request_id, 0) if approve else db.reject_tier_request(request_id, 0)
     if not done:
-        raise HTTPException(status_code=409, detail="این درخواست دیگر در انتظار بررسی نیست.")
+        raise HTTPException(status_code=409, detail=tr("این درخواست دیگر در انتظار بررسی نیست."))
     tier = db.get_reseller_tier(req["tier_code"])
     label = f"{tier['icon']} {tier['title']}" if tier else req["tier_code"]
     db.log_admin_action(
@@ -4223,9 +4483,9 @@ class ResellerCreditBody(BaseModel):
 @app.post("/api/resellers/{tg_id}/credit")
 async def api_adjust_reseller_credit(tg_id: int, body: ResellerCreditBody, admin=Depends(require_permission("resellers"))):
     if body.delta_gb == 0:
-        raise HTTPException(400, "مقدار اعتبار نمی‌تواند صفر باشد.")
+        raise HTTPException(400, tr("مقدار اعتبار نمی‌تواند صفر باشد."))
     if not db.is_reseller(tg_id):
-        raise HTTPException(400, "این کاربر نماینده فعال نیست.")
+        raise HTTPException(400, tr("این کاربر نماینده فعال نیست."))
     try:
         await asyncio.to_thread(
             db.adjust_reseller_credit, tg_id, body.delta_gb,
@@ -4286,7 +4546,7 @@ class ResellerManageBody(BaseModel):
 def api_reseller_manage(tg_id: int, admin=Depends(require_permission("resellers"))):
     user = row_to_dict(db.get_user(tg_id))
     if not user:
-        raise HTTPException(404, "کاربر یافت نشد.")
+        raise HTTPException(404, tr("کاربر یافت نشد."))
     supply = db.get_reseller_supply(tg_id)
     inventory = rows_to_list(db.get_reseller_product_inventory(tg_id))
     bot_rows = [dict(x) for x in db.list_reseller_bots() if x["owner_telegram_id"] == tg_id]
@@ -4299,9 +4559,9 @@ def api_reseller_manage(tg_id: int, admin=Depends(require_permission("resellers"
 def api_edit_reseller(tg_id: int, body: ResellerManageBody, admin=Depends(require_permission("resellers"))):
     user = db.get_user(tg_id)
     if not user:
-        raise HTTPException(404, "کاربر یافت نشد.")
+        raise HTTPException(404, tr("کاربر یافت نشد."))
     if body.supply_model is not None and body.supply_model not in ("volume_credit", "fixed_product"):
-        raise HTTPException(400, "مدل تامین نامعتبر است.")
+        raise HTTPException(400, tr("مدل تامین نامعتبر است."))
     if body.supply_model == "fixed_product":
         items = body.supply_products or []
         if not items and body.supply_product_id:
@@ -4309,18 +4569,18 @@ def api_edit_reseller(tg_id: int, body: ResellerManageBody, admin=Depends(requir
         normalized = []; seen = set()
         for item in items:
             try: pid, qty = int(item.get("product_id")), int(item.get("qty"))
-            except Exception: raise HTTPException(400, "فهرست محصولات نامعتبر است.")
-            if pid in seen or qty < 0: raise HTTPException(400, "محصول تکراری یا تعداد نامعتبر است.")
+            except Exception: raise HTTPException(400, tr("فهرست محصولات نامعتبر است."))
+            if pid in seen or qty < 0: raise HTTPException(400, tr("محصول تکراری یا تعداد نامعتبر است."))
             product = db.get_product(pid)
             if not product or not product["is_active"] or not product["is_auto_provision"]:
-                raise HTTPException(400, f"محصول #{pid} فعال یا خودکار-ساز نیست.")
+                raise HTTPException(400, tr(f"محصول #{pid} فعال یا خودکار-ساز نیست."))
             seen.add(pid); normalized.append((pid, qty))
-        if not normalized: raise HTTPException(400, "حداقل یک محصول را انتخاب کنید.")
+        if not normalized: raise HTTPException(400, tr("حداقل یک محصول را انتخاب کنید."))
     panel_was_sent = "panel_server_id" in getattr(body, "model_fields_set", set())
     if panel_was_sent and body.panel_server_id is not None:
         panel = db.get_panel_server(body.panel_server_id)
         if not panel or not panel["is_active"] or not panel["used_for_reseller"]:
-            raise HTTPException(400, "پنل انتخاب‌شده فعال نیست یا برای نمایندگی مجاز نشده است.")
+            raise HTTPException(400, tr("پنل انتخاب‌شده فعال نیست یا برای نمایندگی مجاز نشده است."))
     if body.owner_name is not None:
         db.update_user_profile(tg_id, first_name=body.owner_name)
     if body.enabled is not None:
@@ -4354,10 +4614,10 @@ class ResellerProductInventoryBody(BaseModel):
 @app.post("/api/resellers/{tg_id}/products/{product_id}/inventory")
 def api_adjust_reseller_product_inventory(tg_id: int, product_id: int, body: ResellerProductInventoryBody, admin=Depends(require_permission("resellers"))):
     if not db.is_reseller(tg_id):
-        raise HTTPException(400, "این کاربر نماینده فعال نیست.")
+        raise HTTPException(400, tr("این کاربر نماینده فعال نیست."))
     product = db.get_product(product_id)
     if not product or not product["is_active"] or not product["is_auto_provision"]:
-        raise HTTPException(400, "محصول معتبر یا خودکار-ساز نیست.")
+        raise HTTPException(400, tr("محصول معتبر یا خودکار-ساز نیست."))
     try:
         qty = db.adjust_reseller_product_credit(tg_id, product_id, body.delta, admin_id=admin["id"], reason=body.reason)
     except ValueError as e:
@@ -4369,7 +4629,7 @@ def api_adjust_reseller_product_inventory(tg_id: int, product_id: int, body: Res
 @app.delete("/api/resellers/{tg_id}")
 def api_delete_reseller(tg_id: int, admin=Depends(require_permission("resellers"))):
     if not db.get_user(tg_id):
-        raise HTTPException(404, "کاربر یافت نشد.")
+        raise HTTPException(404, tr("کاربر یافت نشد."))
     # حذف کامل باید دقیقاً از همان موتور مرکزی حذف نمایندگی استفاده کند تا
     # فایل DB اختصاصی، اعتبار، پنل، بات و لینک/کمیسیون همگی پاک شوند.
     db.wipe_agent_state(tg_id)
@@ -4405,7 +4665,7 @@ def api_purge_reseller_leftovers(tg_id: int, admin=Depends(require_permission("r
 def api_reseller_payment_methods(code: str, admin=Depends(require_permission("resellers"))):
     tier = db.get_reseller_tier(code)
     if not tier:
-        raise HTTPException(404, "سطح نمایندگی پیدا نشد.")
+        raise HTTPException(404, tr("سطح نمایندگی پیدا نشد."))
     allowed = db.get_reseller_payment_methods(code)
     catalog = [x for x in db.get_payment_methods_catalog() if x["key"] != "wallet"]
     keys = {x["key"] for x in catalog}
@@ -4419,12 +4679,12 @@ class ResellerPaymentMethodsBody(BaseModel):
 def api_set_reseller_payment_methods(code: str, body: ResellerPaymentMethodsBody, admin=Depends(require_permission("resellers"))):
     tier = db.get_reseller_tier(code)
     if not tier:
-        raise HTTPException(404, "سطح نمایندگی پیدا نشد.")
+        raise HTTPException(404, tr("سطح نمایندگی پیدا نشد."))
     catalog = [x for x in db.get_payment_methods_catalog() if x["key"] != "wallet"]
     valid = {x["key"] for x in catalog}
     methods = [m for m in body.methods if m in valid]
     if not methods:
-        raise HTTPException(400, "حداقل یک روش پرداخت انتخاب کنید.")
+        raise HTTPException(400, tr("حداقل یک روش پرداخت انتخاب کنید."))
     db.set_reseller_payment_methods(code, methods)
     db.log_admin_action(admin["id"], "reseller_payment_methods_update", f"سطح {code}: {', '.join(methods)}")
     return {"ok": True, "selected": methods}
@@ -4451,10 +4711,10 @@ def api_reseller_requests(status: Optional[str] = None, admin=Depends(require_pe
 async def api_reseller_request_receipt(request_id: int, admin=Depends(require_permission("resellers"))):
     req = (await asyncio.to_thread(db.get_reseller_request, request_id))
     if not req or not req["receipt_file_id"]:
-        raise HTTPException(404, "رسیدی برای این درخواست ثبت نشده است.")
+        raise HTTPException(404, tr("رسیدی برای این درخواست ثبت نشده است."))
     result = await fetch_telegram_file(_bot_token(), req["receipt_file_id"])
     if not result:
-        raise HTTPException(502, "دریافت رسید از تلگرام ناموفق بود.")
+        raise HTTPException(502, tr("دریافت رسید از تلگرام ناموفق بود."))
     content, content_type = result
     return Response(content=content, media_type=content_type)
 
@@ -4464,10 +4724,10 @@ async def api_reseller_request_receipt_base64(request_id: int, admin=Depends(req
     """نسخه‌ی JSON/base64 رسید، مخصوص اپ موبایل (مشابه /api/orders/{id}/receipt-base64)."""
     req = (await asyncio.to_thread(db.get_reseller_request, request_id))
     if not req or not req["receipt_file_id"]:
-        raise HTTPException(404, "رسیدی برای این درخواست ثبت نشده است.")
+        raise HTTPException(404, tr("رسیدی برای این درخواست ثبت نشده است."))
     result = await fetch_telegram_file(_bot_token(), req["receipt_file_id"])
     if not result:
-        raise HTTPException(502, "دریافت رسید از تلگرام ناموفق بود.")
+        raise HTTPException(502, tr("دریافت رسید از تلگرام ناموفق بود."))
     content, content_type = result
     return {"content_type": content_type, "data_base64": base64.b64encode(content).decode("ascii")}
 
@@ -4484,28 +4744,28 @@ class ResellerRequestQuoteBody(BaseModel):
 async def api_quote_reseller_request(request_id: int, body: ResellerRequestQuoteBody, admin=Depends(require_permission("resellers"))):
     req = (await asyncio.to_thread(db.get_reseller_request, request_id))
     if not req or req["status"] != "pending_review":
-        raise HTTPException(400, "این درخواست دیگر معتبر نیست.")
+        raise HTTPException(400, tr("این درخواست دیگر معتبر نیست."))
     if body.price_toman <= 0:
-        raise HTTPException(400, "هزینه باید عددی مثبت باشد.")
+        raise HTTPException(400, tr("هزینه باید عددی مثبت باشد."))
     tier = (await asyncio.to_thread(db.get_reseller_tier, req["tier_code"])) if req["tier_code"] else None
     if tier and tier["model"] == "commission":
         low = int(tier["commission_min"] or 1)
         high = int(tier["commission_max"] or 100)
         if body.commission_percent is None:
-            raise HTTPException(400, "برای نمایندگی برنزی درصد کمیسیون را مشخص کنید.")
+            raise HTTPException(400, tr("برای نمایندگی برنزی درصد کمیسیون را مشخص کنید."))
         if not (low <= body.commission_percent <= high):
-            raise HTTPException(400, f"درصد کمیسیون باید بین {low} تا {high} باشد.")
+            raise HTTPException(400, tr(f"درصد کمیسیون باید بین {low} تا {high} باشد."))
     if tier and tier["model"] == "discount":
         if body.discount_percent is None:
-            raise HTTPException(400, "برای نمایندگی نقره‌ای درصد تخفیف را مشخص کنید.")
+            raise HTTPException(400, tr("برای نمایندگی نقره‌ای درصد تخفیف را مشخص کنید."))
         if not (1 <= body.discount_percent <= 100):
-            raise HTTPException(400, "درصد تخفیف باید بین ۱ تا ۱۰۰ باشد.")
+            raise HTTPException(400, tr("درصد تخفیف باید بین ۱ تا ۱۰۰ باشد."))
     payment_methods = None
     if body.payment_methods is not None:
         valid = {x["key"] for x in (await asyncio.to_thread(db.get_payment_methods_catalog)) if x["key"] != "wallet"}
         payment_methods = [m for m in body.payment_methods if m in valid]
         if not payment_methods:
-            raise HTTPException(400, "حداقل یک روش پرداخت انتخاب کنید.")
+            raise HTTPException(400, tr("حداقل یک روش پرداخت انتخاب کنید."))
     try:
         await asyncio.to_thread(db.quote_reseller_request, request_id, body.price_toman, body.panel_server_id, admin["id"], body.commission_percent, body.discount_percent, payment_methods)
     except ValueError as e:
@@ -4532,12 +4792,12 @@ async def api_quote_reseller_request(request_id: int, body: ResellerRequestQuote
 async def api_approve_reseller_request_payment(request_id: int, request: Request, admin=Depends(require_permission("resellers"))):
     req = (await asyncio.to_thread(db.get_reseller_request, request_id))
     if not req or req["status"] != "awaiting_payment_review":
-        raise HTTPException(400, "این درخواست دیگر معتبر نیست.")
+        raise HTTPException(400, tr("این درخواست دیگر معتبر نیست."))
     # رفع باگ ریس‌کاندیشن: approve_reseller_request_payment حالا اتمیک است؛ اگر
     # هم‌زمان از یک سطح دیگر (بات/مینی‌اپ) همین درخواست تایید شده باشد، False
     # برمی‌گردد و اینجا متوقف می‌شویم تا اعتبار/بات نماینده دوبار ساخته نشود.
     if not (await asyncio.to_thread(db.approve_reseller_request_payment, request_id, admin["id"])):
-        raise HTTPException(400, "این درخواست همین الان از جای دیگری تایید شد.")
+        raise HTTPException(400, tr("این درخواست همین الان از جای دیگری تایید شد."))
     (await asyncio.to_thread(db.log_admin_action, 
         admin["id"], "reseller_request_payment_approve",
         f"درخواست #{request_id} | کاربر {req['user_id']} | هزینه: {(req['price_toman'] or 0):,} (پنل وب - {admin['username']})",
@@ -4740,7 +5000,7 @@ async def _provision_reseller_tier(tg_id: int, tier, body: "MakeResellerBody", r
         low = tier["commission_min"] or 1
         high = tier["commission_max"] or 100
         if not (low <= percent <= high):
-            raise HTTPException(400, f"درصد کمیسیون باید بین {low} تا {high} باشد.")
+            raise HTTPException(400, tr(f"درصد کمیسیون باید بین {low} تا {high} باشد."))
         (await asyncio.to_thread(db.enable_inline_reseller, tg_id, percent))
         (await asyncio.to_thread(db.set_user_reseller_tier, tg_id, tier["code"]))
         (await asyncio.to_thread(db.log_admin_action,
@@ -4760,11 +5020,11 @@ async def _provision_reseller_tier(tg_id: int, tier, body: "MakeResellerBody", r
         discount_percent = body.discount_percent
         if tier["code"] == "silver":
             if discount_percent is None:
-                raise HTTPException(400, "برای نمایندگی نقره‌ای درصد تخفیف را مشخص کنید.")
+                raise HTTPException(400, tr("برای نمایندگی نقره‌ای درصد تخفیف را مشخص کنید."))
             if not 1 <= int(discount_percent) <= 100:
-                raise HTTPException(400, "درصد تخفیف نقره‌ای باید بین ۱ تا ۱۰۰ باشد.")
+                raise HTTPException(400, tr("درصد تخفیف نقره‌ای باید بین ۱ تا ۱۰۰ باشد."))
         elif discount_percent is not None:
-            raise HTTPException(400, "درصد تخفیف فقط برای سطح نقره‌ای قابل تنظیم است.")
+            raise HTTPException(400, tr("درصد تخفیف فقط برای سطح نقره‌ای قابل تنظیم است."))
         (await asyncio.to_thread(db.set_user_reseller_tier, tg_id, tier["code"], discount_percent))
         (await asyncio.to_thread(db.log_admin_action,
             admin["id"], "reseller_change_tier" if is_change else "reseller_make_direct",
@@ -4778,7 +5038,7 @@ async def _provision_reseller_tier(tg_id: int, tier, body: "MakeResellerBody", r
         )
         return {"ok": True}
     if tier["model"] not in ("volume_credit", "fixed_product"):
-        raise HTTPException(400, "مدل این سطح پشتیبانی نمی‌شود.")
+        raise HTTPException(400, tr("مدل این سطح پشتیبانی نمی‌شود."))
 
     body.supply_model = tier["model"]
     body.bot_choice = "dedicated" if tier["has_dedicated_bot"] else "none"
@@ -4805,11 +5065,11 @@ async def _provision_reseller_tier(tg_id: int, tier, body: "MakeResellerBody", r
         elif body.supply_product_id and body.supply_qty and body.supply_qty > 0:
             fixed_items = [{"product_id": int(body.supply_product_id), "quantity": int(body.supply_qty)}]
         if not fixed_items:
-            raise HTTPException(400, "حداقل یک محصول و تعداد آن را انتخاب کنید.")
+            raise HTTPException(400, tr("حداقل یک محصول و تعداد آن را انتخاب کنید."))
         for item in fixed_items:
             product = db.get_product(item["product_id"])
             if not product or not product["is_active"] or not product["is_auto_provision"]:
-                raise HTTPException(400, f"محصول #{item['product_id']} فعال یا خودکار-ساز نیست.")
+                raise HTTPException(400, tr(f"محصول #{item['product_id']} فعال یا خودکار-ساز نیست."))
         # ستون‌های فعلی درخواست فقط یک محصول را نگه می‌دارند؛ اولین محصول primary است
         # و لیست کامل در marker متنی برای ادامه‌ی flow ذخیره می‌شود.
         body.supply_product_id = fixed_items[0]["product_id"]
@@ -4817,13 +5077,13 @@ async def _provision_reseller_tier(tg_id: int, tier, body: "MakeResellerBody", r
         volume_gb = 0
     else:
         if body.volume_gb <= 0:
-            raise HTTPException(400, "حجم اعتبار اولیه باید عددی مثبت باشد.")
+            raise HTTPException(400, tr("حجم اعتبار اولیه باید عددی مثبت باشد."))
         volume_gb = body.volume_gb
 
     if body.panel_server_id is not None:
         panel = db.get_panel_server(body.panel_server_id)
         if not panel or not panel["is_active"] or not panel["used_for_reseller"]:
-            raise HTTPException(400, "پنل انتخاب‌شده فعال نیست یا برای نمایندگی مجاز نشده است.")
+            raise HTTPException(400, tr("پنل انتخاب‌شده فعال نیست یا برای نمایندگی مجاز نشده است."))
 
     request_text = (body.note or "").strip() or "ثبت مستقیم توسط ادمین از پنل وب"
     if fixed_items:
@@ -4875,18 +5135,18 @@ async def api_make_user_reseller(tg_id: int, body: MakeResellerBody, request: Re
     جدا بیفتد."""
     tier = (await asyncio.to_thread(db.get_reseller_tier, body.tier_code))
     if not tier or not tier["is_enabled"]:
-        raise HTTPException(400, "سطح نمایندگی نامعتبر یا غیرفعال است.")
+        raise HTTPException(400, tr("سطح نمایندگی نامعتبر یا غیرفعال است."))
     user = (await asyncio.to_thread(db.get_user, tg_id))
     if not user:
-        raise HTTPException(404, "کاربر یافت نشد.")
+        raise HTTPException(404, tr("کاربر یافت نشد."))
     if (
         (await asyncio.to_thread(db.is_reseller, tg_id))
         or (await asyncio.to_thread(db.is_inline_reseller, tg_id))
         or (await asyncio.to_thread(db.get_agent_tier, tg_id))
     ):
-        raise HTTPException(400, "این کاربر همین الان هم نماینده است.")
+        raise HTTPException(400, tr("این کاربر همین الان هم نماینده است."))
     if (await asyncio.to_thread(db.get_open_reseller_request, tg_id)):
-        raise HTTPException(400, "این کاربر یک درخواست نمایندگی باز دارد؛ ابتدا از تب «درخواست‌های نمایندگی» آن را ببندید.")
+        raise HTTPException(400, tr("این کاربر یک درخواست نمایندگی باز دارد؛ ابتدا از تب «درخواست‌های نمایندگی» آن را ببندید."))
     return await _provision_reseller_tier(tg_id, tier, body, request, admin, is_change=False)
 
 
@@ -4900,17 +5160,17 @@ async def api_change_user_reseller_tier(tg_id: int, body: MakeResellerBody, requ
     دست‌نخورده باقی می‌مانند."""
     tier = (await asyncio.to_thread(db.get_reseller_tier, body.tier_code))
     if not tier or not tier["is_enabled"]:
-        raise HTTPException(400, "سطح نمایندگی نامعتبر یا غیرفعال است.")
+        raise HTTPException(400, tr("سطح نمایندگی نامعتبر یا غیرفعال است."))
     user = (await asyncio.to_thread(db.get_user, tg_id))
     if not user:
-        raise HTTPException(404, "کاربر یافت نشد.")
+        raise HTTPException(404, tr("کاربر یافت نشد."))
     current_tier = await asyncio.to_thread(db.get_agent_tier, tg_id)
     if not current_tier:
-        raise HTTPException(400, "این کاربر در حال حاضر نماینده‌ی هیچ سطحی نیست؛ از گزینه‌ی «نماینده کردن» استفاده کنید.")
+        raise HTTPException(400, tr("این کاربر در حال حاضر نماینده‌ی هیچ سطحی نیست؛ از گزینه‌ی «نماینده کردن» استفاده کنید."))
     if current_tier == tier["code"]:
-        raise HTTPException(400, "این کاربر همین الان هم در همین سطح است.")
+        raise HTTPException(400, tr("این کاربر همین الان هم در همین سطح است."))
     if (await asyncio.to_thread(db.get_open_reseller_request, tg_id)):
-        raise HTTPException(400, "این کاربر یک درخواست نمایندگی باز دارد؛ ابتدا از تب «درخواست‌های نمایندگی» آن را ببندید.")
+        raise HTTPException(400, tr("این کاربر یک درخواست نمایندگی باز دارد؛ ابتدا از تب «درخواست‌های نمایندگی» آن را ببندید."))
     await asyncio.to_thread(db.wipe_agent_state, tg_id)
     return await _provision_reseller_tier(tg_id, tier, body, request, admin, is_change=True)
 
@@ -4923,13 +5183,13 @@ class ResellerRequestRejectBody(BaseModel):
 @app.post("/api/reseller-requests/{request_id}/reject")
 async def api_reject_reseller_request(request_id: int, body: ResellerRequestRejectBody, admin=Depends(require_permission("resellers"))):
     if body.kind not in ("rejected", "payment_rejected"):
-        raise HTTPException(400, "نوع رد نامعتبر است.")
+        raise HTTPException(400, tr("نوع رد نامعتبر است."))
     req = (await asyncio.to_thread(db.get_reseller_request, request_id))
     if not req or not (await asyncio.to_thread(db.is_reseller_request_open, req["status"])):
-        raise HTTPException(400, "این درخواست دیگر باز نیست.")
+        raise HTTPException(400, tr("این درخواست دیگر باز نیست."))
     reason = (body.reason or "").strip()
     if not reason:
-        raise HTTPException(400, "دلیل رد الزامی است.")
+        raise HTTPException(400, tr("دلیل رد الزامی است."))
     (await asyncio.to_thread(db.reject_reseller_request, request_id, body.kind, admin["id"], reason))
     (await asyncio.to_thread(db.log_admin_action, 
         admin["id"], "reseller_request_reject",
@@ -4944,7 +5204,7 @@ async def api_reject_reseller_request(request_id: int, body: ResellerRequestReje
 async def api_cancel_reseller_request(request_id: int, admin=Depends(require_permission("resellers"))):
     req = (await asyncio.to_thread(db.get_reseller_request, request_id))
     if not req or not (await asyncio.to_thread(db.is_reseller_request_open, req["status"])):
-        raise HTTPException(400, "این درخواست دیگر باز نیست.")
+        raise HTTPException(400, tr("این درخواست دیگر باز نیست."))
     (await asyncio.to_thread(db.admin_cancel_reseller_request, request_id, admin["id"]))
     if req["status"] == "awaiting_bot_info":
         _set_main_bot_fsm_state(req["user_id"], None, {})
@@ -5053,9 +5313,9 @@ def api_panel_server_types(admin=Depends(require_permission("panels")), _fa=Depe
 @app.post("/api/panel-servers")
 async def api_add_panel_server(body: PanelServerBody, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
     if not body.name.strip() or not body.api_url.strip() or not body.api_password.strip():
-        raise HTTPException(400, "نام، آدرس و پسورد/توکن الزامی هستند.")
+        raise HTTPException(400, tr("نام، آدرس و پسورد/توکن الزامی هستند."))
     if body.panel_type not in PROVIDERS:
-        raise HTTPException(400, "نوع پنل پشتیبانی نمی‌شود.")
+        raise HTTPException(400, tr("نوع پنل پشتیبانی نمی‌شود."))
 
     username = body.api_username.strip()
     if body.panel_type in TOKEN_ONLY_PANEL_TYPES:
@@ -5072,7 +5332,7 @@ async def api_add_panel_server(body: PanelServerBody, admin=Depends(require_perm
             raise HTTPException(400, str(e))
         if not inbounds:
             db.delete_panel_server(server_id)
-            raise HTTPException(400, "این پنل هیچ inbound ای ندارد. اول از داخل پنل یک inbound بساز.")
+            raise HTTPException(400, tr("این پنل هیچ inbound ای ندارد. اول از داخل پنل یک inbound بساز."))
         db.log_admin_action(admin["id"], "panel_add", f"سرور «{body.name}» (3X-UI، #{server_id}) از پنل وب")
         return {"id": server_id, "inbounds": inbounds, "needs_inbound_select": True}
 
@@ -5084,7 +5344,7 @@ async def api_add_panel_server(body: PanelServerBody, admin=Depends(require_perm
 
     # خانواده‌ی PasarGuard/Marzban/Marzneshin: با «کاربر نمونه» قالب گرفته می‌شود
     if not body.template_username or not body.template_username.strip():
-        raise HTTPException(400, "نام کاربری نمونه (برای دریافت قالب) الزامی است.")
+        raise HTTPException(400, tr("نام کاربری نمونه (برای دریافت قالب) الزامی است."))
     server_id = db.add_panel_server(body.name.strip(), body.panel_type, body.api_url.strip(), username, body.api_password, body.default_group)
     server = db.get_panel_server(server_id)
     try:
@@ -5105,7 +5365,7 @@ async def api_add_panel_server(body: PanelServerBody, admin=Depends(require_perm
 async def api_panel_server_inbounds(server_id: int, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
     server = (await asyncio.to_thread(db.get_panel_server, server_id))
     if not server:
-        raise HTTPException(404, "یافت نشد.")
+        raise HTTPException(404, tr("یافت نشد."))
     try:
         provider = get_provider(server)
         inbounds = await provider.list_inbounds()
@@ -5119,16 +5379,16 @@ async def api_set_panel_server_xui_config(server_id: int, body: PanelServerXuiCo
     """تکمیل ساخت سرور برای پنل‌های نیازمند «آدرس پایه‌ی Subscription» (3X-UI/Hiddify)."""
     server = db.get_panel_server(server_id)
     if not server:
-        raise HTTPException(404, "یافت نشد.")
+        raise HTTPException(404, tr("یافت نشد."))
     if server["panel_type"] not in SUB_BASE_URL_PANEL_TYPES:
-        raise HTTPException(400, "این سرور به این تنظیمات نیاز ندارد.")
+        raise HTTPException(400, tr("این سرور به این تنظیمات نیاز ندارد."))
     if server["panel_type"] in INBOUND_SELECT_PANEL_TYPES and not body.inbound_ids:
-        raise HTTPException(400, "انتخاب حداقل یک inbound برای این نوع پنل الزامی است.")
+        raise HTTPException(400, tr("انتخاب حداقل یک inbound برای این نوع پنل الزامی است."))
     if server["panel_type"] in SINGLE_INBOUND_PANEL_TYPES and len(body.inbound_ids or []) > 1:
-        raise HTTPException(400, "برای این نوع پنل فقط یک inbound قابل انتخاب است.")
+        raise HTTPException(400, tr("برای این نوع پنل فقط یک inbound قابل انتخاب است."))
     url = body.sub_base_url.strip()
     if not url.startswith("http://") and not url.startswith("https://"):
-        raise HTTPException(400, "آدرس Subscription باید با http:// یا https:// شروع شود.")
+        raise HTTPException(400, tr("آدرس Subscription باید با http:// یا https:// شروع شود."))
     update_kwargs = {"xui_sub_base_url": url}
     if body.inbound_ids:
         update_kwargs["xui_inbound_ids"] = json.dumps(body.inbound_ids)
@@ -5143,7 +5403,7 @@ async def api_set_panel_server_template(server_id: int, body: PanelServerTemplat
     دیگر روی پنل - برای پنل‌های خانواده‌ی PasarGuard/Marzban/Marzneshin."""
     server = db.get_panel_server(server_id)
     if not server:
-        raise HTTPException(404, "یافت نشد.")
+        raise HTTPException(404, tr("یافت نشد."))
     try:
         provider = get_provider(server)
         template = await provider.fetch_template_from_user(body.template_username.strip())
@@ -5161,7 +5421,7 @@ async def api_set_panel_server_template(server_id: int, body: PanelServerTemplat
 def api_toggle_panel_server(server_id: int, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
     server = db.get_panel_server(server_id)
     if not server:
-        raise HTTPException(404, "یافت نشد.")
+        raise HTTPException(404, tr("یافت نشد."))
     db.update_panel_server(server_id, is_active=0 if server["is_active"] else 1)
     db.log_admin_action(admin["id"], "panel_toggle", f"سرور #{server_id} (پنل وب)", "panel", server_id)
     return {"ok": True}
@@ -5172,10 +5432,10 @@ def api_toggle_panel_server_usage(server_id: int, kind: str, admin=Depends(requi
     """مشخص‌کردن این‌که این سرور برای «کانفیگ شخصی» و/یا «کانفیگ تست» استفاده شود؛
     قبلاً این کلیدها فقط از داخل ربات/مینی‌اپ قابل تنظیم بودند."""
     if kind not in ("custom", "test"):
-        raise HTTPException(400, "نوع مصرف نامعتبر است.")
+        raise HTTPException(400, tr("نوع مصرف نامعتبر است."))
     server = db.get_panel_server(server_id)
     if not server:
-        raise HTTPException(404, "یافت نشد.")
+        raise HTTPException(404, tr("یافت نشد."))
     field = "used_for_custom_config" if kind == "custom" else "used_for_test_config"
     db.update_panel_server(server_id, **{field: 0 if server[field] else 1})
     db.log_admin_action(admin["id"], "panel_usage_toggle", f"سرور #{server_id} | {field} (پنل وب)", "panel", server_id)
@@ -5186,10 +5446,10 @@ def api_toggle_panel_server_usage(server_id: int, kind: str, admin=Depends(requi
 def api_update_panel_server(server_id: int, body: PanelServerUpdateBody, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
     server = db.get_panel_server(server_id)
     if not server:
-        raise HTTPException(404, "یافت نشد.")
+        raise HTTPException(404, tr("یافت نشد."))
     fields = {k: v for k, v in body.dict().items() if v is not None}
     if server["panel_type"] in SINGLE_INBOUND_PANEL_TYPES and len(fields.get("xui_inbound_ids") or []) > 1:
-        raise HTTPException(400, "برای این نوع پنل فقط یک inbound قابل انتخاب است.")
+        raise HTTPException(400, tr("برای این نوع پنل فقط یک inbound قابل انتخاب است."))
     if "xui_inbound_ids" in fields:
         fields["xui_inbound_ids"] = json.dumps(fields["xui_inbound_ids"])
     if fields:
@@ -5216,7 +5476,7 @@ def api_delete_panel_server(server_id: int, force: bool = False, admin=Depends(r
 async def api_test_panel_server(server_id: int, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
     server = (await asyncio.to_thread(db.get_panel_server, server_id))
     if not server:
-        raise HTTPException(404, "یافت نشد.")
+        raise HTTPException(404, tr("یافت نشد."))
     try:
         provider = get_provider(server)
         ok = await provider.test_connection()
@@ -5337,7 +5597,7 @@ def api_reset_text(body: TextResetBody, admin=Depends(require_permission("settin
 def _gw_load(gateway_id: int = None, gateway_key: str = None):
     row = db.get_custom_gateway(gateway_id) if gateway_id else db.get_custom_gateway_by_key(gateway_key)
     if not row:
-        raise HTTPException(status_code=404, detail="این درگاه پیدا نشد.")
+        raise HTTPException(status_code=404, detail=tr("این درگاه پیدا نشد."))
     try:
         config = json.loads(row["config_json"])
     except Exception:
@@ -5397,9 +5657,9 @@ def api_get_gateway(gateway_id: int, admin=Depends(require_permission("settings"
 def api_create_gateway(body: CustomGatewayIn, admin=Depends(require_permission("settings"))):
     key = "".join(ch for ch in body.key.strip().lower() if ch.isalnum() or ch in ("-", "_"))
     if not key:
-        raise HTTPException(status_code=400, detail="کلید درگاه نامعتبر است (فقط حروف/عدد انگلیسی، - و _).")
+        raise HTTPException(status_code=400, detail=tr("کلید درگاه نامعتبر است (فقط حروف/عدد انگلیسی، - و _)."))
     if db.get_custom_gateway_by_key(key):
-        raise HTTPException(status_code=400, detail="درگاهی با همین کلید قبلاً ثبت شده.")
+        raise HTTPException(status_code=400, detail=tr("درگاهی با همین کلید قبلاً ثبت شده."))
     gateway_id = db.create_custom_gateway(key, body.name.strip() or key, body.config, body.enabled, max(0, body.min_amount or 0))
     db.log_admin_action(admin["id"], "custom_gateway_create", f"درگاه سفارشی «{body.name}» ({key}) اضافه شد (پنل وب - {admin['username']}).")
     row, config = _gw_load(gateway_id=gateway_id)
@@ -5494,7 +5754,7 @@ def api_set_payment_method_min_amount(method_key: str, body: PaymentMethodMinAmo
     if method_key.startswith("custom:"):
         gw = db.get_custom_gateway_by_key(method_key.split(":", 1)[1])
         if not gw:
-            raise HTTPException(status_code=404, detail="این درگاه پیدا نشد.")
+            raise HTTPException(status_code=404, detail=tr("این درگاه پیدا نشد."))
         db.update_custom_gateway(gw["id"], min_amount=value)
     else:
         db.set_setting(f"min_amount_{method_key}", str(value))
@@ -5513,7 +5773,7 @@ def api_set_payment_method_push(method_key: str, body: PaymentMethodPushBody,
     """روشن/خاموش‌کردن پوش نوتیف ادمین برای یک روش پرداخت (داخلی یا
     درگاه سفارشی با کلید 'custom:<key>') - مستقل از بقیه‌ی روش‌ها."""
     if method_key.startswith("custom:") and not db.get_custom_gateway_by_key(method_key.split(":", 1)[1]):
-        raise HTTPException(status_code=404, detail="این درگاه پیدا نشد.")
+        raise HTTPException(status_code=404, detail=tr("این درگاه پیدا نشد."))
     db.set_payment_method_push_enabled(method_key, body.enabled)
     db.log_admin_action(admin["id"], "payment_method_push",
                          f"{method_key} push={'on' if body.enabled else 'off'} (پنل وب - {admin['username']})",
@@ -5531,7 +5791,7 @@ def api_set_payment_method_notify_timeout(method_key: str, body: PaymentMethodNo
     """مهلت (دقیقه) برای درگاه‌های «تایید آنی»: اگر فاکتور بیش از این مدت هنوز
     تایید نشده باشد، یک پوش «معطل‌مانده» جدا برای ادمین می‌رود. صفر یعنی خاموش."""
     if method_key.startswith("custom:") and not db.get_custom_gateway_by_key(method_key.split(":", 1)[1]):
-        raise HTTPException(status_code=404, detail="این درگاه پیدا نشد.")
+        raise HTTPException(status_code=404, detail=tr("این درگاه پیدا نشد."))
     minutes = max(0, int(body.minutes or 0))
     db.set_payment_method_notify_timeout(method_key, minutes)
     db.log_admin_action(admin["id"], "payment_method_notify_timeout",
@@ -5551,7 +5811,7 @@ async def api_test_gateway(gateway_id: int, body: CustomGatewayTestRequest, admi
     به API درگاه است، ممکن است یک فاکتور واقعی نزد آن درگاه بسازد."""
     row, config = _gw_load(gateway_id=gateway_id)
     if not API_BASE_URL:
-        return {"success": False, "error": "آدرس مینی‌اپ (MINIAPP_URL) روی سرور تنظیم نشده است."}
+        return {"success": False, "error": tr("آدرس مینی‌اپ (MINIAPP_URL) روی سرور تنظیم نشده است.")}
     try:
         computed = await custom_gateway_payment.compute_send_amount(db, config, body.amount_toman)
     except custom_gateway_payment.CustomGatewayPaymentError as e:
@@ -5590,7 +5850,7 @@ class CardToCardCardIn(BaseModel):
 def _clean_card_number(raw: str) -> str:
     number = re.sub(r"\D", "", raw or "")
     if len(number) != 16:
-        raise HTTPException(status_code=400, detail="شماره کارت باید ۱۶ رقم باشد.")
+        raise HTTPException(status_code=400, detail=tr("شماره کارت باید ۱۶ رقم باشد."))
     return number
 
 
@@ -5611,7 +5871,7 @@ def api_create_c2c_card(body: CardToCardCardIn, admin=Depends(require_permission
 @app.put("/api/card-to-card/cards/{card_id}")
 def api_update_c2c_card(card_id: int, body: CardToCardCardIn, admin=Depends(require_permission("settings"))):
     if not db.get_card_to_card_card(card_id):
-        raise HTTPException(status_code=404, detail="این کارت پیدا نشد.")
+        raise HTTPException(status_code=404, detail=tr("این کارت پیدا نشد."))
     number = _clean_card_number(body.card_number)
     db.update_card_to_card_card(card_id, card_number=number, holder_name=body.holder_name.strip(),
                                  bank_name=body.bank_name.strip(), sort_order=body.sort_order)
@@ -5623,7 +5883,7 @@ def api_update_c2c_card(card_id: int, body: CardToCardCardIn, admin=Depends(requ
 @app.post("/api/card-to-card/cards/{card_id}/toggle")
 def api_toggle_c2c_card(card_id: int, admin=Depends(require_permission("settings"))):
     if not db.get_card_to_card_card(card_id):
-        raise HTTPException(status_code=404, detail="این کارت پیدا نشد.")
+        raise HTTPException(status_code=404, detail=tr("این کارت پیدا نشد."))
     db.toggle_card_to_card_card(card_id)
     return {"ok": True}
 
@@ -5631,7 +5891,7 @@ def api_toggle_c2c_card(card_id: int, admin=Depends(require_permission("settings
 @app.delete("/api/card-to-card/cards/{card_id}")
 def api_delete_c2c_card(card_id: int, admin=Depends(require_permission("settings"))):
     if not db.get_card_to_card_card(card_id):
-        raise HTTPException(status_code=404, detail="این کارت پیدا نشد.")
+        raise HTTPException(status_code=404, detail=tr("این کارت پیدا نشد."))
     db.delete_card_to_card_card(card_id)
     db.log_admin_action(admin["id"], "card_to_card_card_delete",
                          f"کارت #{card_id} حذف شد (پنل وب - {admin['username']}).")
@@ -5704,23 +5964,23 @@ def api_get_referral_settings(admin=Depends(require_permission("settings"))):
 @app.post("/api/settings/referral")
 def api_set_referral_settings(body: ReferralSettingsBody, admin=Depends(require_permission("settings"))):
     if body.percent < 0 or body.percent > 100:
-        raise HTTPException(400, "درصد باید بین ۰ تا ۱۰۰ باشد.")
+        raise HTTPException(400, tr("درصد باید بین ۰ تا ۱۰۰ باشد."))
     if body.commission_max_count < 0:
-        raise HTTPException(400, "سقف تعداد نفرات نمی‌تواند منفی باشد.")
+        raise HTTPException(400, tr("سقف تعداد نفرات نمی‌تواند منفی باشد."))
     if body.free_config_threshold < 0 or body.invite_bonus_amount < 0 or body.invite_bonus_max_count < 0:
-        raise HTTPException(400, "مقادیر عددی نمی‌توانند منفی باشند.")
+        raise HTTPException(400, tr("مقادیر عددی نمی‌توانند منفی باشند."))
 
     product = None
     if body.free_config_product_id:
         product = db.get_product(body.free_config_product_id)
         if not product:
-            raise HTTPException(400, "محصول جایزه یافت نشد.")
+            raise HTTPException(400, tr("محصول جایزه یافت نشد."))
         if not product["is_auto_provision"] or not product["provision_server_id"]:
-            raise HTTPException(400, "محصول جایزه باید «تحویل خودکار» داشته باشد و به یک پنل وصل باشد.")
+            raise HTTPException(400, tr("محصول جایزه باید «تحویل خودکار» داشته باشد و به یک پنل وصل باشد."))
     if body.free_config_enabled and (not body.free_config_product_id or body.free_config_threshold < 1):
-        raise HTTPException(400, "برای فعال‌سازی کانفیگ رایگان، محصول جایزه و آستانه‌ی معتبر (حداقل ۱) لازم است.")
+        raise HTTPException(400, tr("برای فعال‌سازی کانفیگ رایگان، محصول جایزه و آستانه‌ی معتبر (حداقل ۱) لازم است."))
     if body.invite_bonus_enabled and body.invite_bonus_amount <= 0:
-        raise HTTPException(400, "برای فعال‌سازی شارژ به‌ازای دعوت، مبلغ باید بزرگ‌تر از صفر باشد.")
+        raise HTTPException(400, tr("برای فعال‌سازی شارژ به‌ازای دعوت، مبلغ باید بزرگ‌تر از صفر باشد."))
 
     db.set_setting("referral_enabled", "1" if body.enabled else "0")
     db.set_setting("referral_percent", str(body.percent))
@@ -5765,11 +6025,11 @@ def api_get_referral_fraud_settings(admin=Depends(require_permission("settings")
 @app.post("/api/settings/referral-fraud")
 def api_set_referral_fraud_settings(body: ReferralFraudSettingsBody, admin=Depends(require_permission("settings"))):
     if body.burst_count < 1 or body.min_invites < 1:
-        raise HTTPException(400, "تعداد دعوت انبوه و حداقل تعداد دعوت باید حداقل ۱ باشند.")
+        raise HTTPException(400, tr("تعداد دعوت انبوه و حداقل تعداد دعوت باید حداقل ۱ باشند."))
     if body.burst_minutes < 1:
-        raise HTTPException(400, "بازه‌ی زمانی دعوت انبوه باید حداقل ۱ دقیقه باشد.")
+        raise HTTPException(400, tr("بازه‌ی زمانی دعوت انبوه باید حداقل ۱ دقیقه باشد."))
     if body.zero_purchase_ratio < 1 or body.zero_purchase_ratio > 100:
-        raise HTTPException(400, "درصد نرخ بی‌خریدی باید بین ۱ تا ۱۰۰ باشد.")
+        raise HTTPException(400, tr("درصد نرخ بی‌خریدی باید بین ۱ تا ۱۰۰ باشد."))
 
     db.set_setting("referral_fraud_detection_enabled", "1" if body.detection_enabled else "0")
     db.set_setting("referral_fraud_burst_count", str(body.burst_count))
@@ -5791,7 +6051,7 @@ def api_list_referral_fraud_flags(resolved: bool = False, admin=Depends(require_
 def api_resolve_referral_fraud_flag(flag_id: int, admin=Depends(require_permission("users"))):
     resolved = db.resolve_referral_fraud_flag(flag_id, admin["id"])
     if not resolved:
-        raise HTTPException(404, "این هشدار یافت نشد یا قبلاً رفع شده است.")
+        raise HTTPException(404, tr("این هشدار یافت نشد یا قبلاً رفع شده است."))
     db.log_admin_action(
         admin["id"], "referral_fraud_resolve",
         f"فلگ #{flag_id} | دعوت‌کننده {resolved['referrer_id']} (پنل وب - {admin['username']})",
@@ -5815,11 +6075,11 @@ def api_get_wheel_settings(admin=Depends(require_permission("settings"))):
 @app.post("/api/settings/wheel")
 def api_set_wheel_settings(body: WheelSettingsBody, admin=Depends(require_permission("settings"))):
     if body.win_percent < 0 or body.win_percent > 100:
-        raise HTTPException(400, "درصد برد باید بین ۰ تا ۱۰۰ باشد.")
+        raise HTTPException(400, tr("درصد برد باید بین ۰ تا ۱۰۰ باشد."))
     if not body.prizes or any(p <= 0 for p in body.prizes):
-        raise HTTPException(400, "حداقل یک جایزه‌ی معتبر (بزرگ‌تر از صفر) لازم است.")
+        raise HTTPException(400, tr("حداقل یک جایزه‌ی معتبر (بزرگ‌تر از صفر) لازم است."))
     if body.expiry_hours <= 0 or body.cooldown_hours <= 0:
-        raise HTTPException(400, "مقادیر ساعت باید بزرگ‌تر از صفر باشند.")
+        raise HTTPException(400, tr("مقادیر ساعت باید بزرگ‌تر از صفر باشند."))
     db.set_setting("wheel_enabled", "1" if body.enabled else "0")
     db.set_setting("wheel_win_percent", str(body.win_percent))
     db.set_wheel_prizes(body.prizes)
@@ -5847,9 +6107,9 @@ def api_get_renewal_settings(admin=Depends(require_permission("settings"))):
 @app.post("/api/settings/renewal")
 def api_set_renewal_settings(body: RenewalSettingsBody, admin=Depends(require_permission("settings"))):
     if body.discount_percent < 0 or body.discount_percent > 100:
-        raise HTTPException(400, "درصد تخفیف باید بین ۰ تا ۱۰۰ باشد.")
+        raise HTTPException(400, tr("درصد تخفیف باید بین ۰ تا ۱۰۰ باشد."))
     if body.days_before <= 0 or body.discount_expiry_hours <= 0:
-        raise HTTPException(400, "مقادیر روز/ساعت باید بزرگ‌تر از صفر باشند.")
+        raise HTTPException(400, tr("مقادیر روز/ساعت باید بزرگ‌تر از صفر باشند."))
     db.set_setting("renewal_reminder_enabled", "1" if body.enabled else "0")
     db.set_setting("renewal_reminder_days_before", str(body.days_before))
     db.set_setting("renewal_discount_percent", str(body.discount_percent))
@@ -5875,15 +6135,15 @@ def api_get_volume_reminder_settings(admin=Depends(require_permission("settings"
 @app.post("/api/settings/volume-reminder")
 def api_set_volume_reminder_settings(body: VolumeReminderSettingsBody, admin=Depends(require_permission("settings"))):
     if body.mode not in ("percent", "gb"):
-        raise HTTPException(400, "مبنای آستانه باید percent یا gb باشد.")
+        raise HTTPException(400, tr("مبنای آستانه باید percent یا gb باشد."))
     if body.discount_percent < 0 or body.discount_percent > 100:
-        raise HTTPException(400, "درصد تخفیف باید بین ۰ تا ۱۰۰ باشد.")
+        raise HTTPException(400, tr("درصد تخفیف باید بین ۰ تا ۱۰۰ باشد."))
     if not (0 < body.percent < 100):
-        raise HTTPException(400, "درصد آستانه باید بین ۱ تا ۹۹ باشد.")
+        raise HTTPException(400, tr("درصد آستانه باید بین ۱ تا ۹۹ باشد."))
     if body.gb_left <= 0:
-        raise HTTPException(400, "آستانه‌ی گیگابایت باید بزرگ‌تر از صفر باشد.")
+        raise HTTPException(400, tr("آستانه‌ی گیگابایت باید بزرگ‌تر از صفر باشد."))
     if body.discount_expiry_hours <= 0:
-        raise HTTPException(400, "اعتبار کد تخفیف باید بزرگ‌تر از صفر باشد.")
+        raise HTTPException(400, tr("اعتبار کد تخفیف باید بزرگ‌تر از صفر باشد."))
     db.set_setting("volume_reminder_enabled", "1" if body.enabled else "0")
     db.set_setting("volume_reminder_mode", body.mode)
     db.set_setting("volume_reminder_percent", str(body.percent))
@@ -5917,15 +6177,15 @@ def api_get_connect_alert_settings(admin=Depends(require_permission("settings"))
 @app.post("/api/settings/connect-alert")
 def api_set_connect_alert_settings(body: ConnectAlertSettingsBody, admin=Depends(require_permission("settings"))):
     if body.connect_threshold_mb is not None and body.connect_threshold_mb <= 0:
-        raise HTTPException(400, "آستانه‌ی مصرف باید بزرگ‌تر از صفر باشد.")
+        raise HTTPException(400, tr("آستانه‌ی مصرف باید بزرگ‌تر از صفر باشد."))
     if body.no_connect_threshold_mb is not None and body.no_connect_threshold_mb <= 0:
-        raise HTTPException(400, "آستانه‌ی مصرف باید بزرگ‌تر از صفر باشد.")
+        raise HTTPException(400, tr("آستانه‌ی مصرف باید بزرگ‌تر از صفر باشد."))
     if body.no_connect_hours is not None and body.no_connect_hours <= 0:
-        raise HTTPException(400, "مهلت هشدار عدم‌اتصال باید بزرگ‌تر از صفر باشد.")
+        raise HTTPException(400, tr("مهلت هشدار عدم‌اتصال باید بزرگ‌تر از صفر باشد."))
     if body.connect_text is not None and not body.connect_text.strip():
-        raise HTTPException(400, "متن پیام نمی‌تواند خالی باشد.")
+        raise HTTPException(400, tr("متن پیام نمی‌تواند خالی باشد."))
     if body.no_connect_text is not None and not body.no_connect_text.strip():
-        raise HTTPException(400, "متن پیام نمی‌تواند خالی باشد.")
+        raise HTTPException(400, tr("متن پیام نمی‌تواند خالی باشد."))
     db.set_connect_alert_settings(**body.dict(exclude_none=True))
     db.log_admin_action(admin["id"], "setting_change", "connect alert settings updated (پنل وب)", "setting", "connect_alert")
     return {"ok": True}
@@ -5945,9 +6205,9 @@ def api_get_early_renewal_discount_settings(admin=Depends(require_permission("se
 @app.post("/api/settings/early-renewal-discount")
 def api_set_early_renewal_discount_settings(body: EarlyRenewalDiscountBody, admin=Depends(require_permission("settings"))):
     if body.days_before <= 0:
-        raise HTTPException(400, "تعداد روز باید بزرگ‌تر از صفر باشد.")
+        raise HTTPException(400, tr("تعداد روز باید بزرگ‌تر از صفر باشد."))
     if not (0 < body.percent <= 100):
-        raise HTTPException(400, "درصد تخفیف باید بین ۱ تا ۱۰۰ باشد.")
+        raise HTTPException(400, tr("درصد تخفیف باید بین ۱ تا ۱۰۰ باشد."))
     db.set_early_full_renewal_discount_settings(body.enabled, body.days_before, body.percent)
     db.log_admin_action(admin["id"], "setting_change", "early renewal discount settings updated (پنل وب)", "setting", "early_renewal_discount")
     return {"ok": True}
@@ -6020,14 +6280,14 @@ def api_list_test_plans(admin=Depends(require_permission("settings"))):
 @app.post("/api/test-config/plans")
 def api_create_test_plan(body: TestPlanBody, admin=Depends(require_permission("settings"))):
     if not body.name.strip():
-        raise HTTPException(400, "نام پلن الزامی است.")
+        raise HTTPException(400, tr("نام پلن الزامی است."))
     if not re.fullmatch(r"[A-Za-z0-9_]+", body.name_prefix.strip()):
-        raise HTTPException(400, "پیشوند نام کاربری فقط باید شامل حروف/عدد انگلیسی و آندرلاین باشد.")
+        raise HTTPException(400, tr("پیشوند نام کاربری فقط باید شامل حروف/عدد انگلیسی و آندرلاین باشد."))
     if body.volume_mb <= 0 or body.duration_hours <= 0:
-        raise HTTPException(400, "حجم و مدت باید بزرگ‌تر از صفر باشند.")
+        raise HTTPException(400, tr("حجم و مدت باید بزرگ‌تر از صفر باشند."))
     server = db.get_panel_server(body.panel_server_id)
     if not server or not server["is_active"]:
-        raise HTTPException(400, "پنل انتخاب‌شده یافت نشد یا غیرفعال است.")
+        raise HTTPException(400, tr("پنل انتخاب‌شده یافت نشد یا غیرفعال است."))
     plan_id = db.create_test_config_plan(
         body.name.strip(), body.name_prefix.strip(), body.panel_server_id, body.volume_mb, body.duration_hours,
     )
@@ -6038,16 +6298,16 @@ def api_create_test_plan(body: TestPlanBody, admin=Depends(require_permission("s
 @app.put("/api/test-config/plans/{plan_id}")
 def api_update_test_plan(plan_id: int, body: TestPlanBody, admin=Depends(require_permission("settings"))):
     if not db.get_test_config_plan(plan_id):
-        raise HTTPException(404, "این پلن یافت نشد.")
+        raise HTTPException(404, tr("این پلن یافت نشد."))
     if not body.name.strip():
-        raise HTTPException(400, "نام پلن الزامی است.")
+        raise HTTPException(400, tr("نام پلن الزامی است."))
     if not re.fullmatch(r"[A-Za-z0-9_]+", body.name_prefix.strip()):
-        raise HTTPException(400, "پیشوند نام کاربری فقط باید شامل حروف/عدد انگلیسی و آندرلاین باشد.")
+        raise HTTPException(400, tr("پیشوند نام کاربری فقط باید شامل حروف/عدد انگلیسی و آندرلاین باشد."))
     if body.volume_mb <= 0 or body.duration_hours <= 0:
-        raise HTTPException(400, "حجم و مدت باید بزرگ‌تر از صفر باشند.")
+        raise HTTPException(400, tr("حجم و مدت باید بزرگ‌تر از صفر باشند."))
     server = db.get_panel_server(body.panel_server_id)
     if not server or not server["is_active"]:
-        raise HTTPException(400, "پنل انتخاب‌شده یافت نشد یا غیرفعال است.")
+        raise HTTPException(400, tr("پنل انتخاب‌شده یافت نشد یا غیرفعال است."))
     db.update_test_config_plan(
         plan_id, name=body.name.strip(), name_prefix=body.name_prefix.strip(),
         panel_server_id=body.panel_server_id, volume_mb=body.volume_mb, duration_hours=body.duration_hours,
@@ -6059,7 +6319,7 @@ def api_update_test_plan(plan_id: int, body: TestPlanBody, admin=Depends(require
 @app.post("/api/test-config/plans/{plan_id}/toggle")
 def api_toggle_test_plan(plan_id: int, admin=Depends(require_permission("settings"))):
     if not db.get_test_config_plan(plan_id):
-        raise HTTPException(404, "این پلن یافت نشد.")
+        raise HTTPException(404, tr("این پلن یافت نشد."))
     db.toggle_test_config_plan(plan_id)
     db.log_admin_action(admin["id"], "test_plan_toggle", f"پلن #{plan_id} (پنل وب)", "test_config_plan", str(plan_id))
     return _serialize_test_plan(db.get_test_config_plan(plan_id))
@@ -6068,7 +6328,7 @@ def api_toggle_test_plan(plan_id: int, admin=Depends(require_permission("setting
 @app.delete("/api/test-config/plans/{plan_id}")
 def api_delete_test_plan(plan_id: int, admin=Depends(require_permission("settings"))):
     if not db.get_test_config_plan(plan_id):
-        raise HTTPException(404, "این پلن یافت نشد.")
+        raise HTTPException(404, tr("این پلن یافت نشد."))
     db.delete_test_config_plan(plan_id)
     db.log_admin_action(admin["id"], "test_plan_delete", f"پلن #{plan_id} (پنل وب)", "test_config_plan", str(plan_id))
     return {"ok": True}
@@ -6090,7 +6350,7 @@ def api_get_force_join_settings(admin=Depends(require_permission("settings"))):
 def api_set_force_join_settings(body: ForceJoinSettingsBody, admin=Depends(require_permission("settings"))):
     channel = (body.channel or "").strip()
     if body.enabled and not channel:
-        raise HTTPException(400, "برای فعال‌سازی، آیدی کانال الزامی است.")
+        raise HTTPException(400, tr("برای فعال‌سازی، آیدی کانال الزامی است."))
     db.set_setting("force_join_enabled", "1" if body.enabled else "0")
     db.set_setting("force_join_channel", channel)
     db.log_admin_action(admin["id"], "setting_change", f"force_join_channel={channel} (پنل وب - {admin['username']})", "setting", "force_join")
@@ -6109,7 +6369,7 @@ def api_get_stock_alert_settings(admin=Depends(require_permission("settings"))):
 @app.post("/api/settings/stock-alert")
 def api_set_stock_alert_settings(body: StockAlertSettingsBody, admin=Depends(require_permission("settings"))):
     if body.threshold < 0:
-        raise HTTPException(400, "آستانه نمی‌تواند منفی باشد.")
+        raise HTTPException(400, tr("آستانه نمی‌تواند منفی باشد."))
     db.set_setting("stock_alert_threshold", str(body.threshold))
     db.log_admin_action(admin["id"], "setting_change", f"stock_alert_threshold={body.threshold} (پنل وب - {admin['username']})", "setting", "stock_alert")
     return {"ok": True}
@@ -6136,10 +6396,10 @@ def api_get_banners(admin=Depends(require_permission("settings"))):
 @app.post("/api/banners/upload-image")
 async def api_upload_banner_image(photo: UploadFile = File(...), admin=Depends(require_permission("settings"))):
     if not photo.content_type or not photo.content_type.startswith("image/"):
-        raise HTTPException(400, "فقط فایل تصویری مجاز است.")
+        raise HTTPException(400, tr("فقط فایل تصویری مجاز است."))
     content = await photo.read()
     if len(content) > 2 * 1024 * 1024:
-        raise HTTPException(400, "حجم تصویر نباید بیشتر از ۲ مگابایت باشد.")
+        raise HTTPException(400, tr("حجم تصویر نباید بیشتر از ۲ مگابایت باشد."))
     ext = os.path.splitext(photo.filename or "")[1].lower() or ".jpg"
     if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
         ext = ".jpg"
@@ -6154,7 +6414,7 @@ async def api_upload_banner_image(photo: UploadFile = File(...), admin=Depends(r
 @app.post("/api/banners")
 def api_save_banners(body: BannersUpdateBody, admin=Depends(require_permission("settings"))):
     if len(body.banners) > 20:
-        raise HTTPException(400, "حداکثر ۲۰ بنر مجاز است.")
+        raise HTTPException(400, tr("حداکثر ۲۰ بنر مجاز است."))
     clean = []
     for b in body.banners:
         text = (b.text or "").strip()
@@ -6193,9 +6453,9 @@ def api_get_custom_config_settings(admin=Depends(require_permission("panels")), 
 @app.post("/api/custom-config/settings")
 def api_set_custom_config_settings(body: CustomConfigSettingsBody, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
     if body.min_gb <= 0 or body.max_gb <= 0 or body.min_gb > body.max_gb:
-        raise HTTPException(400, "بازه‌ی حجم نامعتبر است.")
+        raise HTTPException(400, tr("بازه‌ی حجم نامعتبر است."))
     if body.duration_days <= 0:
-        raise HTTPException(400, "مدت باید بزرگ‌تر از صفر باشد.")
+        raise HTTPException(400, tr("مدت باید بزرگ‌تر از صفر باشد."))
     db.set_setting("custom_config_enabled", "1" if body.enabled else "0")
     db.set_setting("custom_config_min_gb", str(body.min_gb))
     db.set_setting("custom_config_max_gb", str(body.max_gb))
@@ -6218,9 +6478,9 @@ class PricingTierBody(BaseModel):
 @app.post("/api/custom-config/pricing-tiers")
 def api_add_pricing_tier(body: PricingTierBody, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
     if body.from_gb < 0 or body.price_per_gb <= 0:
-        raise HTTPException(400, "مقادیر نامعتبر است.")
+        raise HTTPException(400, tr("مقادیر نامعتبر است."))
     if body.to_gb is not None and body.to_gb <= body.from_gb:
-        raise HTTPException(400, "سقف بازه باید بزرگ‌تر از کف بازه باشد.")
+        raise HTTPException(400, tr("سقف بازه باید بزرگ‌تر از کف بازه باشد."))
     tier_id = db.add_pricing_tier(body.from_gb, body.to_gb, body.price_per_gb)
     db.log_admin_action(admin["id"], "pricing_tier_add", f"{body.from_gb}-{body.to_gb} = {body.price_per_gb} (پنل وب)")
     return {"id": tier_id}
@@ -6240,7 +6500,7 @@ def api_set_custom_config_payment_methods(body: CustomConfigPaymentMethodsBody, 
     valid = {x["key"] for x in db.get_payment_methods_catalog()}
     methods = [m for m in (body.methods or []) if m in valid]
     if body.methods and not methods:
-        raise HTTPException(400, "روش پرداخت نامعتبر است.")
+        raise HTTPException(400, tr("روش پرداخت نامعتبر است."))
     db.set_custom_config_payment_methods(methods or None)
     db.log_admin_action(admin["id"], "custom_config_payment_methods",
                         f"{methods or 'همه'} (پنل وب - {admin['username']})",
@@ -6424,9 +6684,9 @@ def api_main_menu_display_set(body: MainMenuDisplayBody, admin=Depends(require_p
     # قانون محافظتی: هردو منو همزمان نباید خاموش باشند وگرنه کاربر هیچ راهی
     # برای پیمایش منو نخواهد داشت (همان چکی که در ربات هم هست).
     if not body.reply_enabled and not body.inline_enabled:
-        raise HTTPException(400, "حداقل یکی از منوی پایین یا منوی شیشه‌ای بالا باید فعال باشد.")
+        raise HTTPException(400, tr("حداقل یکی از منوی پایین یا منوی شیشه‌ای بالا باید فعال باشد."))
     if body.columns not in (1, 2):
-        raise HTTPException(400, "چیدمان باید ۱ یا ۲ ستون باشد.")
+        raise HTTPException(400, tr("چیدمان باید ۱ یا ۲ ستون باشد."))
 
     db.set_setting("main_menu_reply_enabled", "1" if body.reply_enabled else "0")
     db.set_setting("main_menu_inline_enabled", "1" if body.inline_enabled else "0")
@@ -6488,9 +6748,9 @@ def api_web_admin_permission_keys(admin=Depends(require_owner)):
 @app.post("/api/web-admins")
 def api_create_web_admin(body: WebAdminCreateBody, admin=Depends(require_owner)):
     if db.get_web_admin_by_username(body.username):
-        raise HTTPException(400, "این یوزرنیم قبلاً استفاده شده.")
+        raise HTTPException(400, tr("این یوزرنیم قبلاً استفاده شده."))
     if len(body.password) < 8:
-        raise HTTPException(400, "پسورد باید حداقل ۸ کاراکتر باشد.")
+        raise HTTPException(400, tr("پسورد باید حداقل ۸ کاراکتر باشد."))
     new_id = db.create_web_admin(body.username, hash_password(body.password), body.role, body.permissions)
     db.log_admin_action(admin["id"], "web_admin_add", f"{body.username} ({body.role})", "webadmin", new_id)
     return {"id": new_id}
@@ -6503,7 +6763,7 @@ class WebAdminRoleBody(BaseModel):
 @app.post("/api/web-admins/{admin_id}/role")
 def api_set_web_admin_role(admin_id: int, body: WebAdminRoleBody, admin=Depends(require_owner)):
     if not db.set_web_admin_role(admin_id, body.role):
-        raise HTTPException(400, "امکان تغییر نقش این حساب نیست.")
+        raise HTTPException(400, tr("امکان تغییر نقش این حساب نیست."))
     return {"ok": True}
 
 
@@ -6514,7 +6774,7 @@ class WebAdminPermissionsBody(BaseModel):
 @app.post("/api/web-admins/{admin_id}/permissions")
 def api_set_web_admin_permissions(admin_id: int, body: WebAdminPermissionsBody, admin=Depends(require_owner)):
     if not db.set_web_admin_permissions(admin_id, body.permissions):
-        raise HTTPException(400, "امکان تغییر مجوزهای این حساب نیست.")
+        raise HTTPException(400, tr("امکان تغییر مجوزهای این حساب نیست."))
     db.log_admin_action(admin["id"], "web_admin_permissions", f"admin#{admin_id} -> {body.permissions}", "webadmin", admin_id)
     return {"ok": True}
 
@@ -6526,7 +6786,7 @@ class WebAdminActiveBody(BaseModel):
 @app.post("/api/web-admins/{admin_id}/active")
 def api_set_web_admin_active(admin_id: int, body: WebAdminActiveBody, admin=Depends(require_owner)):
     if not db.set_web_admin_active(admin_id, body.active):
-        raise HTTPException(400, "امکان تغییر وضعیت این حساب نیست.")
+        raise HTTPException(400, tr("امکان تغییر وضعیت این حساب نیست."))
     db.log_admin_action(admin["id"], "web_admin_active", f"admin#{admin_id} -> {body.active}", "webadmin", admin_id)
     return {"ok": True}
 
@@ -6534,7 +6794,7 @@ def api_set_web_admin_active(admin_id: int, body: WebAdminActiveBody, admin=Depe
 @app.delete("/api/web-admins/{admin_id}")
 def api_delete_web_admin(admin_id: int, admin=Depends(require_owner)):
     if not db.delete_web_admin(admin_id):
-        raise HTTPException(400, "امکان حذف این حساب نیست.")
+        raise HTTPException(400, tr("امکان حذف این حساب نیست."))
     db.log_admin_action(admin["id"], "web_admin_delete", f"admin#{admin_id}", "webadmin", admin_id)
     return {"ok": True}
 
@@ -6559,9 +6819,9 @@ class TelegramAdminAddBody(BaseModel):
 @app.post("/api/telegram-admins")
 def api_add_telegram_admin(body: TelegramAdminAddBody, admin=Depends(require_owner)):
     if body.role not in TG_ADMIN_ROLES:
-        raise HTTPException(400, "نقش نامعتبر است.")
+        raise HTTPException(400, tr("نقش نامعتبر است."))
     if db.get_admin_role(body.telegram_id):
-        raise HTTPException(400, "این کاربر از قبل ادمین است.")
+        raise HTTPException(400, tr("این کاربر از قبل ادمین است."))
     db.add_admin(body.telegram_id, body.role)
     db.log_admin_action(admin["id"], "tg_admin_add", f"{body.telegram_id} ({body.role})", "tg_admin", str(body.telegram_id))
     return {"ok": True}
@@ -6574,9 +6834,9 @@ class TelegramAdminRoleBody(BaseModel):
 @app.post("/api/telegram-admins/{telegram_id}/role")
 def api_set_telegram_admin_role(telegram_id: int, body: TelegramAdminRoleBody, admin=Depends(require_owner)):
     if body.role not in TG_ADMIN_ROLES:
-        raise HTTPException(400, "نقش نامعتبر است.")
+        raise HTTPException(400, tr("نقش نامعتبر است."))
     if not db.set_admin_role(telegram_id, body.role):
-        raise HTTPException(400, "امکان تغییر نقش این کاربر نیست (شاید مالک اصلی باشد یا اصلاً ادمین نباشد).")
+        raise HTTPException(400, tr("امکان تغییر نقش این کاربر نیست (شاید مالک اصلی باشد یا اصلاً ادمین نباشد)."))
     db.log_admin_action(admin["id"], "tg_admin_role", f"{telegram_id} -> {body.role}", "tg_admin", str(telegram_id))
     return {"ok": True}
 
@@ -6584,7 +6844,7 @@ def api_set_telegram_admin_role(telegram_id: int, body: TelegramAdminRoleBody, a
 @app.delete("/api/telegram-admins/{telegram_id}")
 def api_remove_telegram_admin(telegram_id: int, admin=Depends(require_owner)):
     if not db.remove_admin(telegram_id, protected_owner_id=OWNER_ID):
-        raise HTTPException(400, "امکان حذف این کاربر نیست (شاید مالک اصلی باشد یا اصلاً ادمین نباشد).")
+        raise HTTPException(400, tr("امکان حذف این کاربر نیست (شاید مالک اصلی باشد یا اصلاً ادمین نباشد)."))
     db.log_admin_action(admin["id"], "tg_admin_remove", str(telegram_id), "tg_admin", str(telegram_id))
     return {"ok": True}
 
@@ -6631,15 +6891,15 @@ def api_delete_orphan_db_file(filename: str, admin=Depends(require_permission("s
     # ضدضربه: فقط اجازه‌ی حذف فایل مستقیماً داخل پوشه‌ی reseller_dbs را بده،
     # نه هر مسیر دلخواهی (جلوگیری از path traversal).
     if "/" in filename or "\\" in filename or filename in (".", ".."):
-        raise HTTPException(400, "نام فایل نامعتبر است.")
+        raise HTTPException(400, tr("نام فایل نامعتبر است."))
     orphan_names = {o["filename"] for o in _find_orphan_reseller_db_files()}
     if filename not in orphan_names:
-        raise HTTPException(400, "این فایل یتیم نیست یا وجود ندارد.")
+        raise HTTPException(400, tr("این فایل یتیم نیست یا وجود ندارد."))
     full_path = os.path.join(RESELLER_DBS_DIR, filename)
     try:
         os.remove(full_path)
     except OSError as e:
-        raise HTTPException(500, f"حذف فایل ناموفق بود: {e}")
+        raise HTTPException(500, tr(f"حذف فایل ناموفق بود: {e}"))
     db.log_admin_action(admin["id"], "orphan_db_delete", filename, "orphan_db", filename)
     return {"ok": True}
 
@@ -6653,9 +6913,9 @@ class MyPasswordBody(BaseModel):
 def api_change_my_password(body: MyPasswordBody, admin=Depends(get_current_admin)):
     row = db.get_web_admin(admin["id"])
     if not verify_password(body.current_password, row["password_hash"]):
-        raise HTTPException(400, "پسورد فعلی اشتباه است.")
+        raise HTTPException(400, tr("پسورد فعلی اشتباه است."))
     if len(body.new_password) < 8:
-        raise HTTPException(400, "پسورد جدید باید حداقل ۸ کاراکتر باشد.")
+        raise HTTPException(400, tr("پسورد جدید باید حداقل ۸ کاراکتر باشد."))
     db.set_web_admin_password(admin["id"], hash_password(body.new_password))
     return {"ok": True}
 
