@@ -1,3 +1,4 @@
+from i18n import tr
 # -*- coding: utf-8 -*-
 """مسیریابی گزارش‌ها به گروه فوروم تاپیک‌دار؛ بدون گروه یا هنگام خطا، ارسال مستقیم به مدیران."""
 
@@ -282,7 +283,7 @@ class ReportGroupGuardMiddleware(BaseMiddleware):
             user = event.from_user
             if message is not None and message.chat.id == chat_id and (user is None or not self.db.is_admin(user.id)):
                 try:
-                    await event.answer("⛔️ این دکمه‌ها فقط برای مدیران فعال است.", show_alert=True)
+                    await event.answer(tr("⛔️ این دکمه‌ها فقط برای مدیران فعال است."), show_alert=True)
                 except Exception:
                     logger.warning("پاسخ به دکمه‌ی غیرمجاز در گروه گزارش ناموفق بود.", exc_info=True)
                 return None

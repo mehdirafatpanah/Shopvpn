@@ -1,6 +1,8 @@
 import asyncio
 import logging
 
+from i18n import tr
+
 from panel_providers import get_provider
 
 GB = 1024 ** 3
@@ -88,27 +90,27 @@ def refund_result_text(quote: dict, refunded: int) -> str:
     if refunded <= 0:
         return ""
     if quote["kind"] == "wallet":
-        return f"{refunded:,} تومان به کیف پول شما برگشت."
+        return tr(f"{refunded:,} تومان به کیف پول شما برگشت.")
     if quote["kind"] == "credit_unit":
-        return f"{refunded} عدد به موجودی محصول نمایندگی شما برگشت."
-    return f"{refunded:,} گیگ به اعتبار نمایندگی شما برگشت."
+        return tr(f"{refunded} عدد به موجودی محصول نمایندگی شما برگشت.")
+    return tr(f"{refunded:,} گیگ به اعتبار نمایندگی شما برگشت.")
 
 
 def refund_quote_text(quote: dict) -> str:
     if quote["eligible"]:
         usage = f"(مصرف تا این لحظه: {quote['used_gb']:.2f} از {quote['volume_gb']} گیگ)"
         if quote["kind"] == "wallet":
-            return (
+            return tr(
                 f"💰 مبلغ پرداختی: {quote['paid']:,} تومان\n"
                 f"♻️ مبلغ برگشتی به کیف پول: {quote['amount']:,} تومان\n{usage}"
             )
         if quote["kind"] == "credit_unit":
             if quote["amount"] > 0:
-                return f"♻️ موجودی برگشتی به محصول نمایندگی شما: {quote['amount']} عدد\n{usage}"
-            return f"ℹ️ این کانفیگ مصرف داشته و موجودی محصول برنمی‌گردد.\n{usage}"
-        return f"♻️ اعتبار برگشتی به نمایندگی شما: {quote['amount']:,} گیگ\n{usage}"
+                return tr(f"♻️ موجودی برگشتی به محصول نمایندگی شما: {quote['amount']} عدد\n{usage}")
+            return tr(f"ℹ️ این کانفیگ مصرف داشته و موجودی محصول برنمی‌گردد.\n{usage}")
+        return tr(f"♻️ اعتبار برگشتی به نمایندگی شما: {quote['amount']:,} گیگ\n{usage}")
     if quote["reason"] == "window":
-        return f"ℹ️ مهلت بازگشت وجه/اعتبار ({quote['window_hours']} ساعت پس از ساخت) گذشته است؛ با حذف، چیزی برگردانده نمی‌شود."
+        return tr(f"ℹ️ مهلت بازگشت وجه/اعتبار ({quote['window_hours']} ساعت پس از ساخت) گذشته است؛ با حذف، چیزی برگردانده نمی‌شود.")
     if quote["reason"] == "usage":
-        return "ℹ️ در حال حاضر محاسبه‌ی مقدار برگشتی ممکن نیست (خطا در دریافت مصرف)؛ با حذف، چیزی برگردانده نمی‌شود."
+        return tr("ℹ️ در حال حاضر محاسبه‌ی مقدار برگشتی ممکن نیست (خطا در دریافت مصرف)؛ با حذف، چیزی برگردانده نمی‌شود.")
     return ""

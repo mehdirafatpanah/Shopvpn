@@ -3,6 +3,8 @@
 import asyncio
 import html
 import logging
+
+from i18n import tr
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
@@ -47,10 +49,11 @@ async def _report_result(bot, db, result):
             logger.info("F18: ارسال گزارش قرعه‌کشی به %s ناموفق بود: %s", target, exc)
     for w in winners:
         try:
+            lang = db.get_user_language(w["user_id"]) if hasattr(db, "get_user_language") else "fa"
             if result.get("prize_type") == "discount" and w.get("code"):
-                msg = f"🎉 تبریک! شما نفر {w['rank']} قرعه‌کشی شبانه شدید.\n🎟 کد تخفیف: <code>{w['code']}</code>\n⏳ اعتبار: {w.get('expires_at', '')}"
+                msg = tr(f"🎉 تبریک! شما نفر {w['rank']} قرعه‌کشی شبانه شدید.\n🎟 کد تخفیف: <code>{w['code']}</code>\n⏳ اعتبار: {w.get('expires_at', '')}", lang)
             elif result.get("prize_type") == "wallet":
-                msg = f"🎉 تبریک! شما نفر {w['rank']} قرعه‌کشی شبانه شدید و {w['prize']:,} تومان به کیف پولتان اضافه شد."
+                msg = tr(f"🎉 تبریک! شما نفر {w['rank']} قرعه‌کشی شبانه شدید و {w['prize']:,} تومان به کیف پولتان اضافه شد.", lang)
             else:
                 continue
             await bot.send_message(w["user_id"], msg, parse_mode="HTML")
@@ -64,10 +67,11 @@ async def lottery_once(bot, db, lottery_date=None):
     return result
 
 
-async def _notify_expired(bot, rows, template):
+async def _notify_expired(bot, db, rows, template):
     for user_id, amount in rows:
         try:
-            await bot.send_message(user_id, template.format(amount=f"{amount:,}"))
+            lang = db.get_user_language(user_id) if hasattr(db, "get_user_language") else "fa"
+            await bot.send_message(user_id, tr(template.format(amount=f"{amount:,}"), lang))
         except Exception:
             pass
 
@@ -79,9 +83,9 @@ async def lottery_loop(bot, db):
         try:
             await asyncio.sleep(min(600, _seconds_to_next_midnight()))
             coins = await asyncio.to_thread(db.expire_coins)
-            await _notify_expired(bot, coins, "⌛️ {amount} سکه‌ی شما منقضی شد.")
+            await _notify_expired(bot, db, coins, "⌛️ {amount} سکه‌ی شما منقضی شد.")
             credits = await asyncio.to_thread(db.expire_wallet_credits)
-            await _notify_expired(bot, credits, "⌛️ {amount} تومان از موجودی کیف پول شما که از تبدیل سکه به دست آمده بود منقضی شد.")
+            await _notify_expired(bot, db, credits, "⌛️ {amount} تومان از موجودی کیف پول شما که از تبدیل سکه به دست آمده بود منقضی شد.")
             today = datetime.now().date()
             if today != last_date:
                 last_date = today

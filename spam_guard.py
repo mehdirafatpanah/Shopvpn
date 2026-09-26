@@ -23,6 +23,7 @@ from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message
 
 from blocked_user import BLOCKED_MESSAGE
+from i18n import tr
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +141,7 @@ class ThrottleMiddleware(BaseMiddleware):
         except Exception:
             logger.exception("مسدودسازی کاربر اسپمر %s ناموفق بود.", user.id)
             return
-        await self._reply(event, BLOCKED_MESSAGE)
+        await self._reply(event, tr(BLOCKED_MESSAGE))
         await self._notify_admins(data.get("bot") or event.bot, user)
 
     async def _reply(self, event, text: str):

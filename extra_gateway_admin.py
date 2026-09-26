@@ -1,3 +1,4 @@
+from i18n import tr
 # -*- coding: utf-8 -*-
 """پنل ادمین بات اصلی برای درگاه‌های افزوده‌شده: تنظیمات، فهرست فاکتورها، بررسی و لغو."""
 
@@ -27,7 +28,7 @@ def gateway_settings_kb(db, key: str) -> InlineKeyboardMarkup:
     meta = registry.GATEWAYS[key]
     enabled = db.get_setting(registry.enable_setting(key), "0") == "1"
     rows = [
-        [InlineKeyboardButton(text=f"وضعیت: {'🟢 فعال' if enabled else '🔴 غیرفعال'}", callback_data="noop")],
+        [InlineKeyboardButton(text=tr(f"وضعیت: {'🟢 فعال' if enabled else '🔴 غیرفعال'}"), callback_data="noop")],
         [InlineKeyboardButton(
             text="🔴 غیرفعال کردن" if enabled else "🟢 فعال کردن", callback_data=f"adm_xgw_toggle:{key}",
         )],
@@ -41,8 +42,8 @@ def gateway_settings_kb(db, key: str) -> InlineKeyboardMarkup:
         else:
             shown = value or "❌ تنظیم نشده"
         label = field["label"] if len(field["label"]) <= 28 else field["label"][:26] + "…"
-        rows.append([InlineKeyboardButton(text=f"{label}: {shown} (تغییر)", callback_data=f"adm_xgw_set:{key}:{idx}")])
-    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:finance")])
+        rows.append([InlineKeyboardButton(text=tr(f"{label}: {shown} (تغییر)"), callback_data=f"adm_xgw_set:{key}:{idx}")])
+    rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:finance")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -76,8 +77,8 @@ def invoices_kb(invoices, gateway: str) -> InlineKeyboardMarkup:
                 row.append(InlineKeyboardButton(text="🔄", callback_data=f"check_xgw_invoice:{inv['id']}"))
             row.append(InlineKeyboardButton(text="❌", callback_data=f"cancel_xgw_invoice:{inv['id']}"))
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="🔄 بروزرسانی", callback_data=f"adm_xgw_payments:{gateway}")])
-    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:daily")])
+    rows.append([InlineKeyboardButton(text=tr("🔄 بروزرسانی"), callback_data=f"adm_xgw_payments:{gateway}")])
+    rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:daily")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -98,8 +99,8 @@ def register(router, db, is_main_bot: bool, admin_only, full_admin_only, deny_su
             await replace_admin_view(
                 call, f"{meta['icon']} پرداخت‌های {meta['title']}\n\nهیچ پرداختی ثبت نشده است.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="🔄 بروزرسانی", callback_data=f"adm_xgw_payments:{key}")],
-                    [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="adm_cat:daily")],
+                    [InlineKeyboardButton(text=tr("🔄 بروزرسانی"), callback_data=f"adm_xgw_payments:{key}")],
+                    [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:daily")],
                 ]),
             )
             return
@@ -121,7 +122,7 @@ def register(router, db, is_main_bot: bool, admin_only, full_admin_only, deny_su
             return await deny_support(call)
         key = call.data.split(":", 1)[1]
         if key not in registry.GATEWAYS:
-            await call.answer("درگاه نامعتبر.", show_alert=True)
+            await call.answer(tr("درگاه نامعتبر."), show_alert=True)
             return
         await _show_gateway(call, key)
         await call.answer()
@@ -132,7 +133,7 @@ def register(router, db, is_main_bot: bool, admin_only, full_admin_only, deny_su
             return await deny_support(call)
         key = call.data.split(":", 1)[1]
         if key not in registry.GATEWAYS:
-            await call.answer("درگاه نامعتبر.", show_alert=True)
+            await call.answer(tr("درگاه نامعتبر."), show_alert=True)
             return
         setting = registry.enable_setting(key)
         enabled = (await asyncio.to_thread(db.get_setting, setting, "0")) == "1"
@@ -142,7 +143,7 @@ def register(router, db, is_main_bot: bool, admin_only, full_admin_only, deny_su
                 await call.answer("⚠️ اول این موارد را تنظیم کن: " + "، ".join(missing), show_alert=True)
                 return
             if not egp.is_configured(db, key):
-                await call.answer("⚠️ MINIAPP_URL روی سرور تنظیم نشده است.", show_alert=True)
+                await call.answer(tr("⚠️ MINIAPP_URL روی سرور تنظیم نشده است."), show_alert=True)
                 return
         new_value = "0" if enabled else "1"
         await asyncio.to_thread(db.set_setting, setting, new_value)
@@ -150,7 +151,7 @@ def register(router, db, is_main_bot: bool, admin_only, full_admin_only, deny_su
             db.log_admin_action, call.from_user.id, f"xgw_toggle_{key}", f"وضعیت درگاه {key}: {new_value}",
         )
         await safe_edit(call, call.message.text, reply_markup=gateway_settings_kb(db, key))
-        await call.answer("✅ به‌روزرسانی شد.")
+        await call.answer(tr("✅ به‌روزرسانی شد."))
 
     @router.callback_query(F.data.startswith("adm_xgw_set:"))
     async def cb_xgw_set(call: CallbackQuery, state: FSMContext):
@@ -160,7 +161,7 @@ def register(router, db, is_main_bot: bool, admin_only, full_admin_only, deny_su
             _, key, idx_text = call.data.split(":")
             field = registry.GATEWAYS[key]["fields"][int(idx_text)]
         except (ValueError, KeyError, IndexError):
-            await call.answer("درخواست نامعتبر.", show_alert=True)
+            await call.answer(tr("درخواست نامعتبر."), show_alert=True)
             return
         current = (await asyncio.to_thread(db.get_setting, field["setting"], "")).strip()
         if field["secret"]:
@@ -174,7 +175,7 @@ def register(router, db, is_main_bot: bool, admin_only, full_admin_only, deny_su
             f"✏️ {field['label']}\n\nمقدار جدید را ارسال کن.\nوضعیت فعلی: {shown}\n\n"
             "برای پاک‌کردن، عبارت «حذف» را بفرست.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="⬅️ انصراف", callback_data=f"adm_xgw:{key}"),
+                InlineKeyboardButton(text=tr("⬅️ انصراف"), callback_data=f"adm_xgw:{key}"),
             ]]),
         )
         await call.answer()
@@ -190,7 +191,7 @@ def register(router, db, is_main_bot: bool, admin_only, full_admin_only, deny_su
         try:
             field = registry.GATEWAYS[key]["fields"][int(data.get("xgw_idx"))]
         except (KeyError, IndexError, TypeError, ValueError):
-            await message.answer("❌ درخواست منقضی شد؛ دوباره از منو اقدام کن.")
+            await message.answer(tr("❌ درخواست منقضی شد؛ دوباره از منو اقدام کن."))
             return
         text = (message.text or "").strip()
         if field["secret"]:
@@ -202,11 +203,11 @@ def register(router, db, is_main_bot: bool, admin_only, full_admin_only, deny_su
         if not clear and field["numeric"]:
             number = egp._to_float(text)
             if number < 0 or (field["required"] and number <= 0):
-                await message.answer("❌ یک عدد معتبر (بزرگ‌تر از صفر) بفرست.", reply_markup=gateway_settings_kb(db, key))
+                await message.answer(tr("❌ یک عدد معتبر (بزرگ‌تر از صفر) بفرست."), reply_markup=gateway_settings_kb(db, key))
                 return
             text = str(int(number)) if number == int(number) else str(number)
         if not clear and not text:
-            await message.answer("❌ مقدار خالی است.", reply_markup=gateway_settings_kb(db, key))
+            await message.answer(tr("❌ مقدار خالی است."), reply_markup=gateway_settings_kb(db, key))
             return
         value = ("0" if field["numeric"] else "") if clear else text
         await asyncio.to_thread(db.set_setting, field["setting"], value)
@@ -227,7 +228,7 @@ def register(router, db, is_main_bot: bool, admin_only, full_admin_only, deny_su
             return await call.answer()
         key = call.data.split(":", 1)[1]
         if key not in registry.GATEWAYS:
-            await call.answer("درگاه نامعتبر.", show_alert=True)
+            await call.answer(tr("درگاه نامعتبر."), show_alert=True)
             return
         await _show_invoices(call, key)
         await call.answer()
@@ -239,7 +240,7 @@ def register(router, db, is_main_bot: bool, admin_only, full_admin_only, deny_su
         invoice_id = callback_id(call.data, "view_xgw_invoice")
         invoice = await asyncio.to_thread(db.get_extra_invoice, invoice_id) if invoice_id else None
         if not invoice:
-            await call.answer("فاکتور یافت نشد.", show_alert=True)
+            await call.answer(tr("فاکتور یافت نشد."), show_alert=True)
             return
         meta = registry.GATEWAYS.get(invoice["gateway"], {"icon": "💠", "title": invoice["gateway"]})
         text = (
@@ -261,12 +262,12 @@ def register(router, db, is_main_bot: bool, admin_only, full_admin_only, deny_su
         rows = []
         active = invoice["status"] in ("new", "pending")
         if invoice["payment_url"] and active:
-            rows.append([InlineKeyboardButton(text="🔗 باز کردن فاکتور", url=invoice["payment_url"])])
+            rows.append([InlineKeyboardButton(text=tr("🔗 باز کردن فاکتور"), url=invoice["payment_url"])])
         if active:
             if invoice["gateway"] != "tgstars":
-                rows.append([InlineKeyboardButton(text="🔄 بررسی وضعیت", callback_data=f"check_xgw_invoice:{invoice['id']}")])
-            rows.append([InlineKeyboardButton(text="❌ لغو و حذف فاکتور", callback_data=f"cancel_xgw_invoice:{invoice['id']}")])
-        rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data=f"adm_xgw_payments:{invoice['gateway']}")])
+                rows.append([InlineKeyboardButton(text=tr("🔄 بررسی وضعیت"), callback_data=f"check_xgw_invoice:{invoice['id']}")])
+            rows.append([InlineKeyboardButton(text=tr("❌ لغو و حذف فاکتور"), callback_data=f"cancel_xgw_invoice:{invoice['id']}")])
+        rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data=f"adm_xgw_payments:{invoice['gateway']}")])
         await replace_admin_view(call, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
         await call.answer()
 
@@ -277,20 +278,20 @@ def register(router, db, is_main_bot: bool, admin_only, full_admin_only, deny_su
         invoice_id = callback_id(call.data, "check_xgw_invoice")
         invoice = await asyncio.to_thread(db.get_extra_invoice, invoice_id) if invoice_id else None
         if not invoice:
-            await call.answer("فاکتور یافت نشد.", show_alert=True)
+            await call.answer(tr("فاکتور یافت نشد."), show_alert=True)
             return
-        await call.answer("در حال بررسی...")
+        await call.answer(tr("در حال بررسی..."))
         result, text = await egp.process_invoice(db, bot, invoice)
         if result == "verified_now":
             await call.message.answer(text or "✅ پرداخت تایید و تحویل داده شد.")
         elif result == "not_paid_yet":
-            await call.message.answer("⏳ هنوز پرداختی برای این فاکتور تایید نشده.")
+            await call.message.answer(tr("⏳ هنوز پرداختی برای این فاکتور تایید نشده."))
         elif result == "already_delivered":
-            await call.message.answer("✅ این پرداخت قبلاً تایید و تحویل داده شده است.")
+            await call.message.answer(tr("✅ این پرداخت قبلاً تایید و تحویل داده شده است."))
         elif result == "expired":
-            await call.message.answer("❌ اعتبار این فاکتور تمام شده یا لغو شده است.")
+            await call.message.answer(tr("❌ اعتبار این فاکتور تمام شده یا لغو شده است."))
         elif result.startswith("error:"):
-            await call.message.answer(f"⚠️ خطا در بررسی وضعیت: {result[6:]}")
+            await call.message.answer(tr(f"⚠️ خطا در بررسی وضعیت: {result[6:]}"))
 
     @router.callback_query(F.data.startswith("cancel_xgw_invoice:"))
     async def cb_cancel_xgw_invoice(call: CallbackQuery):
@@ -299,8 +300,8 @@ def register(router, db, is_main_bot: bool, admin_only, full_admin_only, deny_su
         invoice_id = callback_id(call.data, "cancel_xgw_invoice")
         invoice = await asyncio.to_thread(db.get_extra_invoice, invoice_id) if invoice_id else None
         if not invoice:
-            await call.answer("فاکتور یافت نشد یا قبلاً حذف شده.", show_alert=True)
+            await call.answer(tr("فاکتور یافت نشد یا قبلاً حذف شده."), show_alert=True)
             return
         await asyncio.to_thread(db.cancel_and_delete_extra_invoice, invoice_id)
-        await call.answer("✅ فاکتور لغو و حذف شد.")
+        await call.answer(tr("✅ فاکتور لغو و حذف شد."))
         await _show_invoices(call, invoice["gateway"])

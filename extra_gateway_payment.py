@@ -1,3 +1,4 @@
+from i18n import tr
 # -*- coding: utf-8 -*-
 """منطق مشترک ساخت، بررسی و تحویل فاکتور درگاه‌های زرین‌پال، آقای پرداخت، تترا۹۸، کیوب‌پی، NowPayments و استارز داخلی تلگرام (فقط بات اصلی)."""
 
@@ -283,12 +284,12 @@ async def _finalize_reseller(db, bot, invoice) -> str:
     markup = None
     if req["status"] == "awaiting_bot_info":
         markup = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🚀 ادامه فعال‌سازی نمایندگی", callback_data=f"resreq_continue:{request_id}"),
+            InlineKeyboardButton(text=tr("🚀 ادامه فعال‌سازی نمایندگی"), callback_data=f"resreq_continue:{request_id}"),
         ]])
     try:
         await bot.send_message(
             req["user_id"],
-            f"✅ پرداخت هزینه {label} تایید شد!\n\nحالا توکن بات نمایندگی خودتان را از @BotFather ارسال کنید تا فعال‌سازی ادامه پیدا کند:",
+            tr(f"✅ پرداخت هزینه {label} تایید شد!\n\nحالا توکن بات نمایندگی خودتان را از @BotFather ارسال کنید تا فعال‌سازی ادامه پیدا کند:"),
             reply_markup=markup,
         )
     except Exception:

@@ -1,3 +1,4 @@
+from i18n import tr
 # -*- coding: utf-8 -*-
 """صفحه‌های مدیریت داخل بات: سکه و قرعه‌کشی، کش‌بک، هدیه‌ی گروهی و ضداسپم."""
 
@@ -192,7 +193,7 @@ def register(router: Router, db, is_main_bot, full_admin_only, senior_admin_only
         if not field or not field["lo"] <= value <= field["hi"]:
             return await call.answer()
         await _save_num(call, state, code, value)
-        await call.answer("ذخیره شد.")
+        await call.answer(tr("ذخیره شد."))
 
     @router.message(AdminSettingInput.waiting_value)
     async def msg_num_value(message: Message, state: FSMContext):
@@ -209,7 +210,7 @@ def register(router: Router, db, is_main_bot, full_admin_only, senior_admin_only
             if not field["lo"] <= value <= field["hi"]:
                 raise ValueError
         except ValueError:
-            await message.answer(f"❌ یک عدد صحیح بین {field['lo']} تا {field['hi']} بفرست.")
+            await message.answer(tr(f"❌ یک عدد صحیح بین {field['lo']} تا {field['hi']} بفرست."))
             return
         await _save_num(message, state, code, value)
 
@@ -341,7 +342,7 @@ def register(router: Router, db, is_main_bot, full_admin_only, senior_admin_only
             return await call.answer()
         text, markup = await _lottery_view(note)
         await replace_admin_view(call, text, reply_markup=markup)
-        await call.answer("ذخیره شد.")
+        await call.answer(tr("ذخیره شد."))
 
     @router.callback_query(F.data == "adm_lt_prizes")
     async def cb_lottery_prizes(call: CallbackQuery, state: FSMContext):
@@ -372,7 +373,7 @@ def register(router: Router, db, is_main_bot, full_admin_only, senior_admin_only
         if len(parts) != 3 or not all(p.isdigit() and 0 < int(p) <= limit for p in parts):
             unit = "درصد بین ۱ تا ۱۰۰" if prize_type == "discount" else "مبلغ مثبت"
             example = DEFAULT_LOTTERY_PRIZES["discount" if prize_type == "discount" else "wallet"]
-            await message.answer(f"❌ دقیقاً سه عدد ({unit}) بفرست؛ مثال: {example}")
+            await message.answer(tr(f"❌ دقیقاً سه عدد ({unit}) بفرست؛ مثال: {example}"))
             return
         await asyncio.to_thread(db.set_setting, "lottery_prizes", ",".join(str(int(p)) for p in parts))
         await state.clear()
@@ -408,7 +409,7 @@ def register(router: Router, db, is_main_bot, full_admin_only, senior_admin_only
         await state.clear()
         text, markup = await _lottery_view("✅ گزارش قرعه‌کشی برای ادمین‌ها ارسال می‌شود.")
         await replace_admin_view(call, text, reply_markup=markup)
-        await call.answer("ذخیره شد.")
+        await call.answer(tr("ذخیره شد."))
 
     @router.message(AdminSettingInput.waiting_report_chat)
     async def msg_lottery_report(message: Message, state: FSMContext):
@@ -418,7 +419,7 @@ def register(router: Router, db, is_main_bot, full_admin_only, senior_admin_only
         try:
             chat_id = int(raw)
         except ValueError:
-            await message.answer("❌ آیدی گروه باید عددی باشد؛ مثال: -1001234567890")
+            await message.answer(tr("❌ آیدی گروه باید عددی باشد؛ مثال: -1001234567890"))
             return
         await asyncio.to_thread(db.set_setting, "lottery_report_chat_id", "" if chat_id == 0 else str(chat_id))
         await state.clear()
@@ -563,7 +564,7 @@ def register(router: Router, db, is_main_bot, full_admin_only, senior_admin_only
         await asyncio.to_thread(db.set_setting, "topup_cashback_percent", "0")
         text, markup = await _cashback_view("✅ کش‌بک تمدید و شارژ خاموش شد.")
         await replace_admin_view(call, text, reply_markup=markup)
-        await call.answer("ذخیره شد.")
+        await call.answer(tr("ذخیره شد."))
 
     # ------------------------------------------------------------------
     # ضداسپم
@@ -620,7 +621,7 @@ def register(router: Router, db, is_main_bot, full_admin_only, senior_admin_only
         await asyncio.to_thread(db.set_setting, "spam_guard_enabled", "0" if cur == "1" else "1")
         text, markup = await _spam_view()
         await replace_admin_view(call, text, reply_markup=markup)
-        await call.answer("ذخیره شد.")
+        await call.answer(tr("ذخیره شد."))
 
     @router.callback_query(F.data == "adm_spam_reset")
     async def cb_spam_reset(call: CallbackQuery):
@@ -630,7 +631,7 @@ def register(router: Router, db, is_main_bot, full_admin_only, senior_admin_only
         await asyncio.to_thread(db.set_setting, "spam_window", "60")
         text, markup = await _spam_view("✅ تنظیمات ضداسپم به پیش‌فرض برگشت.")
         await replace_admin_view(call, text, reply_markup=markup)
-        await call.answer("ذخیره شد.")
+        await call.answer(tr("ذخیره شد."))
 
     # ------------------------------------------------------------------
     # سوئیچ سراسری ربات (خاموش/روشن کردن ربات برای کاربران عادی)
@@ -697,7 +698,7 @@ def register(router: Router, db, is_main_bot, full_admin_only, senior_admin_only
         note = "🟢 ربات دوباره روشن شد." if turn_on else "🔴 ربات برای کاربران عادی خاموش شد."
         text, markup = await _gswitch_view(note)
         await replace_admin_view(call, text, reply_markup=markup)
-        await call.answer("ذخیره شد.")
+        await call.answer(tr("ذخیره شد."))
 
     card_renderers.update({"lottery": _lottery_view, "cashback": _cashback_view, "spam": _spam_view})
 
@@ -833,7 +834,7 @@ def register(router: Router, db, is_main_bot, full_admin_only, senior_admin_only
             return
         tokens = [t for t in re.split(r"[\s,،;]+", _num(message.text)) if t]
         if not tokens or not all(t.isdigit() for t in tokens):
-            await message.answer("❌ فقط آیدی‌های عددی را بفرست؛ مثال: 123456789 987654321")
+            await message.answer(tr("❌ فقط آیدی‌های عددی را بفرست؛ مثال: 123456789 987654321"))
             return
         users = sorted({int(t) for t in tokens})
         await state.set_state(None)
@@ -883,7 +884,7 @@ def register(router: Router, db, is_main_bot, full_admin_only, senior_admin_only
             if volume < 0 or volume > 100000:
                 raise ValueError
         except ValueError:
-            await message.answer("❌ یک عدد بین ۰ تا ۱۰۰۰۰۰ بفرست؛ مثال: 5 یا 2.5")
+            await message.answer(tr("❌ یک عدد بین ۰ تا ۱۰۰۰۰۰ بفرست؛ مثال: 5 یا 2.5"))
             return
         await state.set_state(None)
         await state.update_data(bg_volume=volume)
@@ -928,7 +929,7 @@ def register(router: Router, db, is_main_bot, full_admin_only, senior_admin_only
             if days < 0 or days > 3650:
                 raise ValueError
         except ValueError:
-            await message.answer("❌ یک عدد صحیح بین ۰ تا ۳۶۵۰ بفرست.")
+            await message.answer(tr("❌ یک عدد صحیح بین ۰ تا ۳۶۵۰ بفرست."))
             return
         await state.set_state(None)
         await state.update_data(bg_days=days)
@@ -941,12 +942,12 @@ def register(router: Router, db, is_main_bot, full_admin_only, senior_admin_only
             return await deny_support(call)
         d = await _bg_data(state)
         if d["volume"] <= 0 and d["days"] <= 0:
-            return await call.answer("حجم یا زمان هدیه را مشخص کن.", show_alert=True)
+            return await call.answer(tr("حجم یا زمان هدیه را مشخص کن."), show_alert=True)
         if not d["panel"] and not d["users"]:
-            return await call.answer("یک پنل یا چند کاربر را انتخاب کن.", show_alert=True)
+            return await call.answer(tr("یک پنل یا چند کاربر را انتخاب کن."), show_alert=True)
         count = await asyncio.to_thread(db.count_bulk_gift_targets, d["panel"] or None, d["users"])
         if count <= 0:
-            return await call.answer("هیچ سرویس فعالی برای این هدف پیدا نشد.", show_alert=True)
+            return await call.answer(tr("هیچ سرویس فعالی برای این هدف پیدا نشد."), show_alert=True)
         volume, days = _bg_amounts(d)
         users_txt = f"{len(d['users'])} کاربر مشخص" if d["users"] else "همه‌ی کاربران"
         await replace_admin_view(
@@ -977,7 +978,7 @@ def register(router: Router, db, is_main_bot, full_admin_only, senior_admin_only
                 volume_gb=d["volume"], days=d["days"],
             )
         except Exception as exc:
-            await call.answer(f"ایجاد عملیات ناموفق بود: {exc}", show_alert=True)
+            await call.answer(tr(f"ایجاد عملیات ناموفق بود: {exc}"), show_alert=True)
             return
         await state.clear()
         volume, days = _bg_amounts(d)
@@ -992,7 +993,7 @@ def register(router: Router, db, is_main_bot, full_admin_only, senior_admin_only
                 [_btn("⬅️ بازگشت", "adm_cat:marketing")],
             ]),
         )
-        await call.answer("عملیات شروع شد.")
+        await call.answer(tr("عملیات شروع شد."))
 
     async def _bg_jobs_view():
         jobs = await asyncio.to_thread(db.list_bulk_gift_jobs, 8)
@@ -1034,7 +1035,7 @@ def register(router: Router, db, is_main_bot, full_admin_only, senior_admin_only
         try:
             job_id = int(call.data.split(":", 1)[1])
         except ValueError:
-            return await call.answer("شناسه نامعتبر", show_alert=True)
+            return await call.answer(tr("شناسه نامعتبر"), show_alert=True)
         ok = await asyncio.to_thread(db.cancel_bulk_gift_job, job_id)
         text, markup = await _bg_jobs_view()
         await replace_admin_view(call, text, reply_markup=markup)

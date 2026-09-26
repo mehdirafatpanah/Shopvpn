@@ -1,3 +1,5 @@
+from i18n import tr
+from notification_i18n import send_telegram
 # -*- coding: utf-8 -*-
 """
 یادآوری خودکار اتمام سرویس + کد تخفیف تشویقی تمدید
@@ -121,7 +123,7 @@ async def _send_single_reminder(bot, db, row, mark_fn, cache) -> bool:
     )
 
     try:
-        await bot.send_message(user_id, text, parse_mode="Markdown")
+        await send_telegram(bot, db, user_id, text, parse_mode="Markdown")
     except Exception:
         logger.warning("ارسال یادآوری تمدید به کاربر %s ناموفق بود.", user_id)
 
@@ -211,7 +213,7 @@ async def _send_single_volume_reminder(bot, db, row, mark_fn, cache) -> bool:
     )
 
     try:
-        await bot.send_message(user_id, text, parse_mode="Markdown")
+        await send_telegram(bot, db, user_id, text, parse_mode="Markdown")
     except Exception:
         logger.warning("ارسال یادآوری اتمام حجم به کاربر %s ناموفق بود.", user_id)
 
@@ -278,11 +280,11 @@ async def check_and_process_auto_renewals(bot, db) -> int:
         if price <= 0 or plan["wallet_used"] < price:
             if row["auto_renew_alert_date"] != today:
                 try:
-                    await bot.send_message(
-                        user_id,
-                        f"⚠️ تمدید خودکار کانفیگ «{label}» به‌دلیل کمبود موجودی کیف پول انجام نشد.\n"
+                    await send_telegram(
+                        bot, db, user_id,
+                        tr(f"⚠️ تمدید خودکار کانفیگ «{label}» به‌دلیل کمبود موجودی کیف پول انجام نشد.\n"
                         f"مبلغ لازم: {price:,} تومان — موجودی فعلی: {wallet_credit:,} تومان.\n"
-                        "لطفاً کیف پول خود را شارژ کنید یا تمدید خودکار را از صفحه‌ی سرویس خاموش کنید.",
+                        "لطفاً کیف پول خود را شارژ کنید یا تمدید خودکار را از صفحه‌ی سرویس خاموش کنید."),
                     )
                 except Exception:
                     logger.warning("ارسال هشدار کمبود موجودی تمدید خودکار به کاربر %s ناموفق بود.", user_id)
@@ -293,10 +295,10 @@ async def check_and_process_auto_renewals(bot, db) -> int:
         if not server or not server["is_active"]:
             if row["auto_renew_alert_date"] != today:
                 try:
-                    await bot.send_message(
-                        user_id,
-                        f"⚠️ تمدید خودکار کانفیگ «{label}» انجام نشد؛ سرور پنل این سرویس غیرفعال یا حذف شده است.\n"
-                        "لطفاً با پشتیبانی تماس بگیرید.",
+                    await send_telegram(
+                        bot, db, user_id,
+                        tr(f"⚠️ تمدید خودکار کانفیگ «{label}» انجام نشد؛ سرور پنل این سرویس غیرفعال یا حذف شده است.\n"
+                        "لطفاً با پشتیبانی تماس بگیرید."),
                     )
                 except Exception:
                     logger.warning("ارسال هشدار تمدید خودکار (سرور غیرفعال) به کاربر %s ناموفق بود.", user_id)
@@ -330,9 +332,9 @@ async def check_and_process_auto_renewals(bot, db) -> int:
         )
         renewed += 1
         try:
-            await bot.send_message(
-                user_id,
-                f"🔄 کانفیگ «{label}» با موفقیت به‌صورت خودکار تمدید شد و {price:,} تومان از کیف پول شما کسر شد.",
+            await send_telegram(
+                bot, db, user_id,
+                tr(f"🔄 کانفیگ «{label}» با موفقیت به‌صورت خودکار تمدید شد و {price:,} تومان از کیف پول شما کسر شد."),
             )
         except Exception:
             logger.warning("ارسال تاییدیه‌ی تمدید خودکار به کاربر %s ناموفق بود.", user_id)

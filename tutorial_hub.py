@@ -18,6 +18,7 @@ from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import extra_gateway_registry
+from i18n import tr
 
 log = logging.getLogger("tutorial_hub")
 
@@ -249,7 +250,7 @@ class TutorialRequestMiddleware:
         self.db = db
 
     def _button(self, key: str) -> InlineKeyboardButton:
-        text = self.db.get_setting(BUTTON_TEXT_SETTING, DEFAULT_BUTTON_TEXT) or DEFAULT_BUTTON_TEXT
+        text = tr(self.db.get_setting(BUTTON_TEXT_SETTING, DEFAULT_BUTTON_TEXT) or DEFAULT_BUTTON_TEXT)
         return InlineKeyboardButton(text=text, callback_data=f"{BUTTON_PREFIX}{key}")
 
     def prepare(self, ctx, method):
@@ -297,7 +298,7 @@ class TutorialRequestMiddleware:
         result = await make_request(bot, method)
         if companion is not None:
             try:
-                await bot.send_message(ctx["chat_id"], COMPANION_TEXT, reply_markup=companion)
+                await bot.send_message(ctx["chat_id"], tr(COMPANION_TEXT), reply_markup=companion)
             except Exception:
                 log.exception("ارسال پیام همراه دکمه‌ی آموزش ناموفق بود.")
         return result

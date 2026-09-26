@@ -115,7 +115,7 @@ async def provision_auto_config(
 
     provider = get_provider(server)
     order = local_db.get_order(order_id) if order_id is not None else None
-    extra_kwargs = provider_kwargs(provider, order_user_limit(order))
+    extra_kwargs = provider_kwargs(provider, order_user_limit(order, product))
     built = []
 
     async def _rollback_built():

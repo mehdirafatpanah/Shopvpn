@@ -71,7 +71,7 @@ async def provision_direct(db, product, quantity: int = 1, user_id: int = None, 
     order = db.get_order(order_id) if order_id is not None else None
     if order and order["config_name"]:
         planned = planned_usernames(order["config_name"], quantity)
-    extra_kwargs = provider_kwargs(provider, order_user_limit(order))
+    extra_kwargs = provider_kwargs(provider, order_user_limit(order, product))
     built = []
 
     async def _rollback_built():

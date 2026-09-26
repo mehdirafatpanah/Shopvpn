@@ -1,3 +1,4 @@
+from i18n import tr
 # -*- coding: utf-8 -*-
 """
 سوئیچ سراسری خاموش/روشن ربات.
@@ -64,7 +65,7 @@ class GlobalBotSwitchMiddleware(BaseMiddleware):
 
         if cmd == "bot_status":
             state = "🟢 روشن" if self._is_enabled() else "🔴 خاموش"
-            await event.answer(f"وضعیت ربات: {state}")
+            await event.answer(tr(f"وضعیت ربات: {state}"))
             return True
 
         try:
@@ -72,18 +73,18 @@ class GlobalBotSwitchMiddleware(BaseMiddleware):
         except Exception:
             allowed = False
         if not allowed:
-            await event.answer("⛔️ فقط مالک و مدیر کامل می‌توانند ربات را خاموش/روشن کنند.")
+            await event.answer(tr("⛔️ فقط مالک و مدیر کامل می‌توانند ربات را خاموش/روشن کنند."))
             return True
 
         new_value = "0" if cmd == "bot_off" else "1"
         await asyncio.to_thread(self.db.set_setting, SETTING_KEY, new_value)
         if new_value == "0":
             await event.answer(
-                "🔴 ربات برای کاربران عادی خاموش شد.\n"
-                "ادمین‌ها همچنان دسترسی دارند. برای روشن کردن: /bot_on"
+                tr("🔴 ربات برای کاربران عادی خاموش شد.\n"
+                "ادمین‌ها همچنان دسترسی دارند. برای روشن کردن: /bot_on")
             )
         else:
-            await event.answer("🟢 ربات دوباره روشن شد.")
+            await event.answer(tr("🟢 ربات دوباره روشن شد."))
         return True
 
     async def __call__(self, handler, event: TelegramObject, data: dict):
@@ -99,7 +100,7 @@ class GlobalBotSwitchMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         # --- ربات خاموش است و کاربر عادی است ---
-        off_text = (self.db.get_setting(TEXT_KEY, "") or "").strip() or DEFAULT_OFF_TEXT
+        off_text = (self.db.get_setting(TEXT_KEY, "") or "").strip() or tr(DEFAULT_OFF_TEXT)
 
         if isinstance(event, CallbackQuery):
             try:

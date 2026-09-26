@@ -2,13 +2,13 @@
 """
 کلاینت سبک برای درگاه پرداخت NoapayBot/StarBot (https://noapay.mirname.xyz)
 ساخت فاکتور (خرید استارز تلگرام) و استعلام وضعیت.
-مستندات: StarBot-API-Docs.md (ارائه‌شده توسط ادمین فروشگاه)
+مستندات: Payment-API-Docs.md (ارائه‌شده توسط ادمین فروشگاه)
 
-نکته‌ی مهم درباره‌ی مبلغ: این API بر اساس «تعداد استارز» (stars_count) کار می‌کند نه
-مبلغ تومانی مستقیم؛ نرخ تبدیل واقعی (total_toman) را خودِ NoapayBot در پاسخ برمی‌گرداند
-و ثابت نیست. تبدیل مبلغ تومانی سفارش به stars_count (با نرخ تقریبی‌ای که ادمین تنظیم
-می‌کند) وظیفه‌ی ماژول noapay_payment.py است، نه این فایل؛ این فایل فقط خام با API صحبت
-می‌کند.
+نکته‌ی مهم درباره‌ی مبلغ: این API بر اساس «تعداد» (فیلد quantity در بدنه‌ی درخواست؛
+طبق مستندات جدید، قبلاً stars_count بود) کار می‌کند نه مبلغ تومانی مستقیم؛ نرخ تبدیل
+واقعی (total_toman) را خودِ NoapayBot در پاسخ برمی‌گرداند و ثابت نیست. تبدیل مبلغ
+تومانی سفارش به quantity (با نرخ تقریبی‌ای که ادمین تنظیم می‌کند) وظیفه‌ی ماژول
+noapay_payment.py است، نه این فایل؛ این فایل فقط خام با API صحبت می‌کند.
 """
 
 import logging
@@ -36,6 +36,21 @@ class NoapayPendingApproval(NoapayError):
 
 class NoapayPhoneRequired(NoapayError):
     """422 PHONE_VERIFICATION_REQUIRED: خریدار باید ابتدا شماره‌اش را در بات NoapayBot ثبت کند."""
+    pass
+
+
+class NoapayKeyDisabled(NoapayError):
+    """401 API_KEY_DISABLED: کلید تأیید شده ولی توسط صاحبش خاموش شده."""
+    pass
+
+
+class NoapayKeyRejected(NoapayError):
+    """403 API_KEY_REJECTED: درخواست کلید رد شده؛ باید کلید جدید درخواست شود."""
+    pass
+
+
+class NoapayFeeWalletInsufficient(NoapayError):
+    """402 FEE_WALLET_INSUFFICIENT: موجودی کیف پول کارمزد برای کسر کارمزد این فاکتور کافی نیست."""
     pass
 
 
@@ -75,6 +90,12 @@ async def _request(method: str, api_key: str, path: str, json_body: dict = None,
             raise NoapayPendingApproval(err, code=code, http_status=status)
         if code == "PHONE_VERIFICATION_REQUIRED":
             raise NoapayPhoneRequired(err, code=code, http_status=status)
+        if code == "API_KEY_DISABLED":
+            raise NoapayKeyDisabled(err, code=code, http_status=status)
+        if code == "API_KEY_REJECTED":
+            raise NoapayKeyRejected(err, code=code, http_status=status)
+        if code == "FEE_WALLET_INSUFFICIENT":
+            raise NoapayFeeWalletInsufficient(err, code=code, http_status=status)
         raise NoapayError(err, code=code, http_status=status)
 
     return data.get("data") if isinstance(data, dict) and "data" in data else data
@@ -87,12 +108,16 @@ async def create_invoice(
     callback_url: str = None,
     metadata: str = None,
     fee_on_user: bool = None,
+    split_fee: bool = None,
     base_url: str = None,
 ) -> dict:
     """یک فاکتور خرید استارز می‌سازد و دیکشنری کامل داده‌ی پاسخ (شامل invoice_token،
-    payment_url، total_toman و ...) را برمی‌گرداند."""
+    payment_url، total_toman و ...) را برمی‌گرداند.
+    توجه: طبق مستندات جدید، نام فیلد بدنه‌ی درخواست از stars_count به quantity تغییر
+    کرده؛ آرگومان ورودی همین تابع (stars_count) برای سازگاری با فراخوانی‌های موجود
+    همان نام قبلی را حفظ کرده، فقط روی سیم به‌صورت quantity فرستاده می‌شود."""
     body = {
-        "stars_count": int(stars_count),
+        "quantity": int(stars_count),
         "user_telegram_id": int(user_telegram_id),
     }
     if callback_url is not None:
@@ -101,6 +126,8 @@ async def create_invoice(
         body["metadata"] = str(metadata)[:255]
     if fee_on_user is not None:
         body["fee_on_user"] = bool(fee_on_user)
+    if split_fee is not None:
+        body["split_fee"] = bool(split_fee)
 
     return await _request("POST", api_key, "/invoice/create", json_body=body, base_url=base_url)
 

@@ -1,3 +1,5 @@
+from i18n import tr
+from notification_i18n import send_telegram
 # -*- coding: utf-8 -*-
 """هدیه‌ی عضویت (بند ۴۶ اسپک).
 
@@ -13,11 +15,11 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-async def _notify(bot, user_id: int, amount: int):
+async def _notify(bot, db, user_id: int, amount: int):
     try:
-        await bot.send_message(
-            user_id,
-            f"🎁 هدیه‌ی عضویت شما فعال شد!\n{amount:,} تومان به کیف پولت اضافه شد، همین حالا سرویس بگیر.",
+        await send_telegram(
+            bot, db, user_id,
+            tr(f"🎁 هدیه‌ی عضویت شما فعال شد!\n{amount:,} تومان به کیف پولت اضافه شد، همین حالا سرویس بگیر."),
         )
     except Exception as exc:
         logger.info("ارسال پیام هدیه‌ی عضویت به کاربر %s ناموفق بود: %s", user_id, exc)
@@ -26,7 +28,7 @@ async def _notify(bot, user_id: int, amount: int):
 async def signup_gift_once(bot, db) -> list:
     granted = await asyncio.to_thread(db.grant_pending_signup_gifts)
     for item in granted:
-        await _notify(bot, item["user_id"], item["amount"])
+        await _notify(bot, db, item["user_id"], item["amount"])
     return granted
 
 

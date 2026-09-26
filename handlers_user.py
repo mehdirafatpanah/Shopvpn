@@ -59,6 +59,7 @@ from panel_providers import get_provider, PanelError, PanelUsernameTakenError
 from reseller_auto_provision import provision_auto_config, provision_test_config, provision_reseller_fixed_product, ProvisionError
 from direct_panel_provision import provision_direct, planned_usernames, ProvisionError as DirectProvisionError
 from test_config_provision import provision_test_plan, format_plan_amount, ProvisionError as TestPlanProvisionError
+from i18n import set_language, reset_language, language_label, normalize_language, is_language_enabled, tr
 
 
 async def _send_admin_notification(bot, admin_id, send_coro_factory, context_label: str, ref_id: int):
@@ -183,6 +184,39 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         return f"\nسقف موجودی کیف پول: {max_balance:,} تومان (حداکثر مبلغ قابل شارژ فعلی: {remaining:,} تومان)"
 
     router = Router()
+
+
+    @router.message(Command("language"))
+    async def language_command(message: Message):
+        await message.answer(
+            db.get_text("handlers_user.language.choose", "لطفاً زبان موردنظر را انتخاب کنید:"),
+            reply_markup=kb.language_kb(db),
+        )
+
+    @router.callback_query(F.data.startswith("language:"))
+    async def cb_language(call: CallbackQuery):
+        lang = normalize_language(call.data.split(":", 1)[1])
+        if not await asyncio.to_thread(is_language_enabled, db, lang):
+            await call.answer(tr("زبان در حال حاضر فعال نیست."), show_alert=True)
+            return
+        user_id = call.from_user.id
+        await asyncio.to_thread(db.set_user_language, user_id, lang)
+        # The current update still has the previous ContextVar value; switch it
+        # immediately so the confirmation and menu are rendered in the new language.
+        catalog = await asyncio.to_thread(db.translation_catalog, lang) if lang not in {"fa", "en"} else None
+        token = set_language(lang, catalog)
+        try:
+            await call.answer(language_label(lang))
+            await call.message.answer(
+                db.get_text("handlers_user.language.changed", "زبان با موفقیت تغییر کرد.")
+            )
+            await call.message.answer(
+                db.get_text("handlers_user.language.choose", "لطفاً زبان موردنظر را انتخاب کنید:"),
+                reply_markup=kb.menu_for_user(db, user_id, is_main_bot),
+            )
+        finally:
+            reset_language(token)
+
     extra_gateway_user.register_early(router, db, is_main_bot)
 
     async def _safe_edit(message: Message, text: str, reply_markup=None, parse_mode=None) -> None:
@@ -295,7 +329,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         sent = await target.answer(
             text, parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="🔄 بررسی وضعیت پرداخت", callback_data=f"check_c2c:{invoice['invoice_id']}"),
+                InlineKeyboardButton(text=tr("🔄 بررسی وضعیت پرداخت"), callback_data=f"check_c2c:{invoice['invoice_id']}"),
             ]]),
         )
         await _schedule_card_msg_autodelete(sent.chat.id, sent.message_id)
@@ -313,8 +347,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await state.update_data(customgw_gateway_id=gw_row["id"])
         await state.set_state(phone_state)
         await target_message.answer(
-            f"{prompt_prefix}\n\n📱 درگاه «{gw_row['name']}» به شماره موبایلت نیاز داره. "
-            "با زدن دکمه‌ی زیر شماره‌ات رو به اشتراک بذار:",
+            tr(f"{prompt_prefix}\n\n📱 درگاه «{gw_row['name']}» به شماره موبایلت نیاز داره. "
+            "با زدن دکمه‌ی زیر شماره‌ات رو به اشتراک بذار:"),
             reply_markup=kb.share_phone_kb(),
         )
         return True
@@ -336,16 +370,16 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
         if not result.get("invoice_url"):
             await target_message.answer(
-                f"💠 فاکتور «{gw_row['name']}» ساخته شد ولی این درگاه لینک پرداخت برنگرداند.\n"
+                f"{tr('💠 فاکتور')} «{gw_row['name']}» {tr('ساخته شد ولی این درگاه لینک پرداخت برنگرداند.')}\n"
                 f"پس از انجام پرداخت، {noun} به‌محض تایید درگاه به‌صورت خودکار {verb}.",
                 reply_markup=ReplyKeyboardRemove(),
             )
             return
         await target_message.answer(
-            f"💠 فاکتور پرداخت «{gw_row['name']}» ساخته شد. روی دکمه‌ی زیر بزن و پرداخت رو تکمیل کن.\n"
+            f"{tr('💠 فاکتور پرداخت')} «{gw_row['name']}» {tr('ساخته شد. روی دکمه‌ی زیر بزن و پرداخت رو تکمیل کن.')}\n"
             f"به‌محض تایید پرداخت توسط درگاه، {noun} شما به‌صورت خودکار {verb}.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["invoice_url"]),
+                InlineKeyboardButton(text=tr("🔗 رفتن به صفحه‌ی پرداخت"), url=result["invoice_url"]),
             ]]),
         )
 
@@ -383,7 +417,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if result == "ok":
             await call.answer(db.get_text('handlers_user.auto_549daa0f', '🙏 ممنون از نظرت!'), show_alert=True)
             try:
-                await call.message.edit_text(f"🗳 نظر شما ثبت شد: {rating} از ۵ ⭐\nممنون که وقت گذاشتی.")
+                await call.message.edit_text(tr(f"🗳 نظر شما ثبت شد: {rating} از ۵ ⭐\nممنون که وقت گذاشتی."))
             except Exception:
                 logging.getLogger("handlers_user").debug("ویرایش پیام نظرسنجی ناموفق بود", exc_info=True)
         elif result == "already":
@@ -443,8 +477,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         cap_line = await _wallet_topup_cap_line(message.from_user.id)
         await state.set_state(WalletTopup.waiting_amount)
         await message.answer(
-            f"💰 چه مبلغی (به تومان) می‌خواهید به کیف پول خود شارژ کنید؟ فقط عدد ارسال کنید (مثال: 100000):\n"
-            f"حداقل مبلغ شارژ: {min_topup:,} تومان{cap_line}",
+            tr(f"💰 چه مبلغی (به تومان) می‌خواهید به کیف پول خود شارژ کنید؟ فقط عدد ارسال کنید (مثال: 100000):\n"
+            f"حداقل مبلغ شارژ: {min_topup:,} تومان{cap_line}"),
             reply_markup=kb.cancel_kb(),
         )
 
@@ -467,7 +501,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         base=(db.get_setting("smart_subscription_base_url","") or API_BASE_URL).rstrip("/")
         if not base:
             await message.answer(db.get_text('handlers_user.auto_c76802fa', '⛔️ آدرس عمومی API تنظیم نشده است.')); return
-        await message.answer(f"🔗 لینک اشتراک هوشمند شما:\n{base}/sub/smart/{token}")
+        await message.answer(tr(f"🔗 لینک اشتراک هوشمند شما:\n{base}/sub/smart/{token}"))
 
     # -----------------------------------------------------------------------
     # شروع
@@ -476,9 +510,16 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     @router.message(CommandStart())
     async def cmd_start(message: Message, state: FSMContext, bot: Bot):
         await state.clear()
-        (await asyncio.to_thread(db.add_or_update_user, 
+        existing_user = await asyncio.to_thread(db.get_user, message.from_user.id)
+        (await asyncio.to_thread(db.add_or_update_user,
             message.from_user.id, message.from_user.username or "", message.from_user.first_name or ""
         ))
+        if not existing_user:
+            await asyncio.to_thread(
+                db.set_user_language,
+                message.from_user.id,
+                normalize_language(getattr(message.from_user, "language_code", None)),
+            )
 
         # پردازش پارامتر دیپ‌لینک: /start <param>
         # چند بخش با "-" قابل ترکیب هستند، مثلاً: nofj-disc_SUMMER10
@@ -671,9 +712,16 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     # مینی‌اپ (دکمه‌ی متنی -> پیام با دکمه‌ی inline واقعی وب‌اپ)
     # -----------------------------------------------------------------------
 
-    @router.message(F.text == kb.MINIAPP_BTN_TEXT)
+    @router.message(F.text.func(lambda t: t in (kb.LANGUAGE_BTN_TEXT, tr(kb.LANGUAGE_BTN_TEXT, "en"))))
+    async def language_button(message: Message):
+        await message.answer(
+            db.get_text("handlers_user.language.choose", "لطفاً زبان موردنظر را انتخاب کنید:"),
+            reply_markup=kb.language_kb(db),
+        )
+
+    @router.message(F.text.func(lambda t: t in (kb.MINIAPP_BTN_TEXT, tr(kb.MINIAPP_BTN_TEXT, "en"))))
     async def open_miniapp(message: Message):
-        miniapp_url = kb._miniapp_url(db)
+        miniapp_url = kb._miniapp_url(db, db.get_user_language(message.from_user.id))
         if not miniapp_url:
             return
         await message.answer(
@@ -685,7 +733,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     # خرید کانفیگ
     # -----------------------------------------------------------------------
 
-    @router.message(F.text.func(lambda t: t == db.get_setting("btn_buy")))
+    @router.message(F.text.func(lambda t: t in (db.get_setting("btn_buy"), tr(db.get_setting("btn_buy")))))
     async def show_categories(message: Message, state: FSMContext):
         await state.clear()
         categories = (await asyncio.to_thread(db.get_categories, active_only=True))
@@ -763,7 +811,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return 0
         return int(data.get("buy_users") or 0)
 
-    def _product_confirm_text(product, quantity: int, stock: int, wallet_credit: int, discount_amount: int = 0, discount_label: str = "", tier_info: dict = None, users: int = 0) -> str:
+    def _product_confirm_text(product, quantity: int, stock: int, wallet_credit: int, discount_amount: int = 0, discount_label: str = "", tier_info: dict = None, users: int = 0, included_users: int = 0) -> str:
         unit_price = ul.price_for_users(product, users)
         stock_line = (
             db.get_text(
@@ -786,8 +834,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             if duration_days:
                 spec_parts.append(db.get_text("handlers_user.product.spec_duration", "⏳ مدت: {duration} روز").format(duration=duration_days))
             text += " | ".join(spec_parts) + "\n"
-        if users:
-            text += db.get_text("handlers_user.product.users_line", "👥 تعداد کاربر همزمان: {users}\n").format(users=users)
+        if users or included_users:
+            text += db.get_text("handlers_user.product.users_line", "👥 تعداد کاربر همزمان: {users}\n").format(users=users or included_users)
         total_price = unit_price * quantity
         if quantity > 1:
             text += db.get_text(
@@ -877,12 +925,13 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     async def _show_product_confirm(call: CallbackQuery, state: FSMContext, product, quantity: int, stock: int):
         data = await state.get_data()
         users = _chosen_users(data, product)
+        included = 0 if users else await asyncio.to_thread(ul.included_users, db, product)
         wallet_credit = (await asyncio.to_thread(db.get_wallet_credit, call.from_user.id))
         tier_info = await _tier_info(call.from_user.id, ul.price_for_users(product, users), quantity)
         discount_amount, discount_label = await _apply_pending_discount(
             state, tier_info["total_after"], product["id"], user_id=call.from_user.id
         )
-        text = _product_confirm_text(product, quantity, stock, wallet_credit, discount_amount, discount_label, tier_info, users)
+        text = _product_confirm_text(product, quantity, stock, wallet_credit, discount_amount, discount_label, tier_info, users, included)
         await _safe_edit(call.message, text, reply_markup=kb.product_confirm_kb(
             db, product["id"], quantity, stock, 10 if tier_info["title"] else 0, users_change=bool(users),
         ))
@@ -977,7 +1026,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         ))
         if invalid_reason:
             await message.answer(
-                f"❌ {invalid_reason}\nدوباره تلاش کنید یا بدون کد ادامه دهید.",
+                tr(f"❌ {invalid_reason}\nدوباره تلاش کنید یا بدون کد ادامه دهید."),
                 reply_markup=kb.cancel_kb(),
             )
             return
@@ -1254,7 +1303,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await call.message.answer(db.get_text("handlers_user.payment.already_confirmed", "✅ این پرداخت قبلاً تایید و تحویل داده شده است."))
             return
         if result.startswith("error:"):
-            await call.message.answer(f"⚠️ خطا در بررسی وضعیت: {result[6:]}")
+            await call.message.answer(tr(f"⚠️ خطا در بررسی وضعیت: {result[6:]}"))
             return
 
         # result == "verified_now"
@@ -1291,7 +1340,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await call.message.answer(db.get_text("handlers_user.payment.already_confirmed", "✅ این پرداخت قبلاً تایید و تحویل داده شده است."))
             return
         if result.startswith("error:"):
-            await call.message.answer(f"⚠️ خطا در بررسی وضعیت: {result[6:]}")
+            await call.message.answer(tr(f"⚠️ خطا در بررسی وضعیت: {result[6:]}"))
             return
 
         # result == "verified_now"
@@ -1328,7 +1377,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await call.message.answer(db.get_text("handlers_user.payment.already_confirmed", "✅ این پرداخت قبلاً تایید و تحویل داده شده است."))
             return
         if result.startswith("error:"):
-            await call.message.answer(f"⚠️ خطا در بررسی وضعیت: {result[6:]}")
+            await call.message.answer(tr(f"⚠️ خطا در بررسی وضعیت: {result[6:]}"))
             return
 
         # result == "verified_now"
@@ -1354,7 +1403,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if quantity < 1:
             quantity = 1
         if quantity > stock:
-            await call.answer(f"موجودی کافی نیست. فقط {stock} عدد موجود است.", show_alert=True)
+            await call.answer(tr(f"موجودی کافی نیست. فقط {stock} عدد موجود است."), show_alert=True)
             return
 
         if config_name is None and product["is_auto_provision"] and product["provision_server_id"]:
@@ -1383,6 +1432,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if users:
             max_users = await _users_option(product)
             users = min(users, max_users) if max_users else 0
+        else:
+            # محصول با تعداد کاربر ثابت (base_users): همان عدد روی سفارش و سرویس اعمال می‌شود
+            users = await asyncio.to_thread(ul.included_users, db, product)
 
         allowed_methods = (await asyncio.to_thread(db.get_product_payment_methods, product_id))
         wallet_allowed = allowed_methods is None or "wallet" in allowed_methods
@@ -1480,8 +1532,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                     try:
                         await bot.send_message(
                             referrer_id,
-                            f"🤝 تبریک! یکی از زیرمجموعه‌های شما اولین خرید خود را انجام داد.\n"
-                            f"💰 {reward_amount:,} تومان به کیف پول شما اضافه شد.",
+                            tr(f"🤝 تبریک! یکی از زیرمجموعه‌های شما اولین خرید خود را انجام داد.\n"
+                            f"💰 {reward_amount:,} تومان به کیف پول شما اضافه شد."),
                         )
                     except Exception:
                         pass
@@ -1600,7 +1652,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         max_len = 20 if quantity == 1 else 16
         suffix = (message.text or "").strip()
         if not re.fullmatch(r"[A-Za-z0-9_]{3,%d}" % max_len, suffix):
-            await message.answer(f"❌ نام نامعتبر است. فقط حروف انگلیسی، عدد و آندرلاین، بین ۳ تا {max_len} کاراکتر.")
+            await message.answer(tr(f"❌ نام نامعتبر است. فقط حروف انگلیسی، عدد و آندرلاین، بین ۳ تا {max_len} کاراکتر."))
             return
         prefix = (await asyncio.to_thread(db.get_custom_config_prefix))
         base = f"{prefix}-{suffix}" if prefix else suffix
@@ -1700,7 +1752,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await call.message.answer(
             db.get_text('handlers_user.auto_bed9e374', '🪙 فاکتور پرداخت ساخته شد. روی دکمه\u200cی زیر بزن، ارز و مبلغ رو انتخاب کن و پرداخت رو تکمیل کن.\n⏳ اعتبار این فاکتور فقط ۸۰ دقیقه است.\nبه\u200cمحض تایید تراکنش روی بلاک\u200cچین، سفارش شما به\u200cصورت خودکار تحویل داده می\u200cشود.'),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["invoice_url"]),
+                InlineKeyboardButton(text=tr("🔗 رفتن به صفحه‌ی پرداخت"), url=result["invoice_url"]),
             ]]),
         )
 
@@ -1731,8 +1783,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await call.message.answer(
             db.get_text('handlers_user.auto_12ea9cde', '💳 فاکتور پرداخت ساخته شد. روی دکمه\u200cی زیر بزن و پرداخت رو تکمیل کن.\n⏳ اعتبار این فاکتور محدود است.\nمعمولاً به\u200cمحض واریز، سفارش خودکار تحویل داده می\u200cشود؛ اگر چند دقیقه طول کشید، دکمه\u200cی «بررسی وضعیت پرداخت» را بزن.'),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["payment_url"])],
-                [InlineKeyboardButton(text="🔄 بررسی وضعیت پرداخت", callback_data=f"check_aban:{invoice_row['id']}")],
+                [InlineKeyboardButton(text=tr("🔗 رفتن به صفحه‌ی پرداخت"), url=result["payment_url"])],
+                [InlineKeyboardButton(text=tr("🔄 بررسی وضعیت پرداخت"), callback_data=f"check_aban:{invoice_row['id']}")],
             ]),
         )
 
@@ -1763,8 +1815,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await call.message.answer(
             db.get_text('handlers_user.auto_64b8f84a', '💳 فاکتور پرداخت ساخته شد. روی دکمه\u200cی زیر بزن و پرداخت رو تکمیل کن.\n⏳ اعتبار این فاکتور حدود ۳۰ دقیقه است.\nمعمولاً به\u200cمحض واریز، سفارش خودکار تحویل داده می\u200cشود؛ اگر چند دقیقه طول کشید، دکمه\u200cی «بررسی وضعیت پرداخت» را بزن.'),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["payment_url"])],
-                [InlineKeyboardButton(text="🔄 بررسی وضعیت پرداخت", callback_data=f"check_blupal:{invoice_row['id']}")],
+                [InlineKeyboardButton(text=tr("🔗 رفتن به صفحه‌ی پرداخت"), url=result["payment_url"])],
+                [InlineKeyboardButton(text=tr("🔄 بررسی وضعیت پرداخت"), callback_data=f"check_blupal:{invoice_row['id']}")],
             ]),
         )
 
@@ -1795,8 +1847,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await call.message.answer(
             db.get_text('handlers_user.auto_2fae0081', '⭐ فاکتور پرداخت (NoapayBot) ساخته شد. روی دکمه\u200cی زیر بزن و پرداخت رو تکمیل کن.\n⏳ اعتبار این فاکتور محدود است.\nمعمولاً به\u200cمحض واریز، سفارش خودکار تحویل داده می\u200cشود؛ اگر چند دقیقه طول کشید، دکمه\u200cی «بررسی وضعیت پرداخت» را بزن.'),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["payment_url"])],
-                [InlineKeyboardButton(text="🔄 بررسی وضعیت پرداخت", callback_data=f"check_noapay:{invoice_row['id']}")],
+                [InlineKeyboardButton(text=tr("🔗 رفتن به صفحه‌ی پرداخت"), url=result["payment_url"])],
+                [InlineKeyboardButton(text=tr("🔄 بررسی وضعیت پرداخت"), callback_data=f"check_noapay:{invoice_row['id']}")],
             ]),
         )
 
@@ -1986,10 +2038,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         prefix = (await asyncio.to_thread(db.get_custom_config_prefix))
         if prefix:
             await message.answer(
-                "🛠 ساخت کانفیگ شخصی\n\n"
+                tr("🛠 ساخت کانفیگ شخصی\n\n"
                 f"نام هر کانفیگ با پیش‌وند ثابت «{prefix}-» شروع می‌شود. لطفاً فقط ادامه‌ی نام "
                 "(بعد از خط تیره) را ارسال کنید، یا از دکمه‌ی زیر یک نام تصادفی بگیر.\n"
-                "فقط حروف انگلیسی، عدد و آندرلاین مجاز است (بین ۳ تا ۲۰ کاراکتر).",
+                "فقط حروف انگلیسی، عدد و آندرلاین مجاز است (بین ۳ تا ۲۰ کاراکتر)."),
                 reply_markup=kb.custom_config_username_kb(),
             )
         else:
@@ -2040,22 +2092,22 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 else _format_pricing_table((await asyncio.to_thread(db.get_custom_config_product_tiers, product_id)))
             )
             await message.answer(
-                f"✅ نام کاربری: {username}\n\n"
+                tr(f"✅ نام کاربری: {username}\n\n"
                 f"{pricing_note}\n\n"
                 f"📶 حالا حجم مورد نظر خود را به گیگابایت وارد کنید.\n"
                 f"حداقل: {product['min_gb']} گیگ — حداکثر: {product['max_gb']} گیگ\n"
-                f"{duration_note}",
+                f"{duration_note}"),
                 reply_markup=kb.cancel_kb(),
             )
         else:
             settings = (await asyncio.to_thread(db.get_custom_config_settings))
             tiers = (await asyncio.to_thread(db.get_pricing_tiers))
             await message.answer(
-                f"✅ نام کاربری: {username}\n\n"
+                tr(f"✅ نام کاربری: {username}\n\n"
                 f"{_format_pricing_table(tiers)}\n\n"
                 f"📶 حالا حجم مورد نظر خود را به گیگابایت وارد کنید.\n"
                 f"حداقل: {settings['min_gb']} گیگ — حداکثر: {settings['max_gb']} گیگ\n"
-                f"⏳ مدت اعتبار: {settings['duration_days']} روز (ثابت)",
+                f"⏳ مدت اعتبار: {settings['duration_days']} روز (ثابت)"),
                 reply_markup=kb.cancel_kb(),
             )
 
@@ -2070,7 +2122,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
         min_days, max_days = product["min_days"] or 1, product["max_days"] or 90
         if not text.isdigit() or int(text) < min_days or int(text) > max_days:
-            await message.answer(f"❌ مدت باید بین {min_days} تا {max_days} روز باشد.")
+            await message.answer(tr(f"❌ مدت باید بین {min_days} تا {max_days} روز باشد."))
             return
         await _custom_config_finalize_order(message, state, int(text))
 
@@ -2088,13 +2140,13 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
         if product:
             if volume_gb < product["min_gb"] or volume_gb > product["max_gb"]:
-                await message.answer(f"❌ حجم باید بین {product['min_gb']} تا {product['max_gb']} گیگابایت باشد.")
+                await message.answer(tr(f"❌ حجم باید بین {product['min_gb']} تا {product['max_gb']} گیگابایت باشد."))
                 return
             price = (await asyncio.to_thread(db.calc_custom_config_product_price, product_id, volume_gb))
         else:
             settings = (await asyncio.to_thread(db.get_custom_config_settings))
             if volume_gb < settings["min_gb"] or volume_gb > settings["max_gb"]:
-                await message.answer(f"❌ حجم باید بین {settings['min_gb']} تا {settings['max_gb']} گیگابایت باشد.")
+                await message.answer(tr(f"❌ حجم باید بین {settings['min_gb']} تا {settings['max_gb']} گیگابایت باشد."))
                 return
             price = (await asyncio.to_thread(db.calc_custom_config_price, volume_gb))
 
@@ -2108,7 +2160,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if product and product["duration_mode"] == "user_choice":
             await state.set_state(CustomConfigFlow.waiting_duration)
             min_days, max_days = product["min_days"] or 1, product["max_days"] or 90
-            await message.answer(f"⏳ مدت اعتبار را به روز وارد کن (بین {min_days} تا {max_days} روز):")
+            await message.answer(tr(f"⏳ مدت اعتبار را به روز وارد کن (بین {min_days} تا {max_days} روز):"))
             return
 
         duration_days = product["duration_days"] if product else (await asyncio.to_thread(db.get_custom_config_settings))["duration_days"]
@@ -2140,7 +2192,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         capacity_ok = await asyncio.to_thread(db.panel_has_capacity, server["id"], 1)
         if not capacity_ok:
             cap = await asyncio.to_thread(db.get_panel_capacity_info, server["id"])
-            await message.answer(f"⛔️ ظرفیت پنل تکمیل است ({cap['active_services']}/{cap['max_services']} سرویس فعال).")
+            await message.answer(tr(f"⛔️ ظرفیت پنل تکمیل است ({cap['active_services']}/{cap['max_services']} سرویس فعال)."))
             await state.clear()
             return
 
@@ -2171,7 +2223,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                     return
                 except Exception as e:
                     (await asyncio.to_thread(db.reject_order, order_id))
-                    await message.answer(f"⛔️ خطا در ساخت کانفیگ روی پنل: {e}\nمبلغ به کیف پول بازگردانده شد.")
+                    await message.answer(tr(f"⛔️ خطا در ساخت کانفیگ روی پنل: {e}\nمبلغ به کیف پول بازگردانده شد."))
                     return
                 (await asyncio.to_thread(db.approve_custom_config_order, order_id))
                 (await asyncio.to_thread(db.add_custom_config, 
@@ -2330,7 +2382,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await call.message.answer(
             db.get_text('handlers_user.auto_c7ac1436', '🪙 فاکتور پرداخت ساخته شد. روی دکمه\u200cی زیر بزن، ارز و مبلغ رو انتخاب کن و پرداخت رو تکمیل کن.\n⏳ اعتبار این فاکتور فقط ۸۰ دقیقه است.\nبه\u200cمحض تایید تراکنش روی بلاک\u200cچین، کانفیگ شما به\u200cصورت خودکار ساخته می\u200cشود.'),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["invoice_url"]),
+                InlineKeyboardButton(text=tr("🔗 رفتن به صفحه‌ی پرداخت"), url=result["invoice_url"]),
             ]]),
         )
 
@@ -2360,8 +2412,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await call.message.answer(
             db.get_text('handlers_user.auto_117e923b', '💳 فاکتور پرداخت ساخته شد. روی دکمه\u200cی زیر بزن و پرداخت رو تکمیل کن.\nمعمولاً به\u200cمحض واریز، کانفیگ خودکار ساخته می\u200cشود؛ اگر چند دقیقه طول کشید، دکمه\u200cی «بررسی وضعیت پرداخت» را بزن.'),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["payment_url"])],
-                [InlineKeyboardButton(text="🔄 بررسی وضعیت پرداخت", callback_data=f"check_aban:{invoice_row['id']}")],
+                [InlineKeyboardButton(text=tr("🔗 رفتن به صفحه‌ی پرداخت"), url=result["payment_url"])],
+                [InlineKeyboardButton(text=tr("🔄 بررسی وضعیت پرداخت"), callback_data=f"check_aban:{invoice_row['id']}")],
             ]),
         )
 
@@ -2391,8 +2443,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await call.message.answer(
             db.get_text('handlers_user.auto_117e923b', '💳 فاکتور پرداخت ساخته شد. روی دکمه\u200cی زیر بزن و پرداخت رو تکمیل کن.\nمعمولاً به\u200cمحض واریز، کانفیگ خودکار ساخته می\u200cشود؛ اگر چند دقیقه طول کشید، دکمه\u200cی «بررسی وضعیت پرداخت» را بزن.'),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["payment_url"])],
-                [InlineKeyboardButton(text="🔄 بررسی وضعیت پرداخت", callback_data=f"check_blupal:{invoice_row['id']}")],
+                [InlineKeyboardButton(text=tr("🔗 رفتن به صفحه‌ی پرداخت"), url=result["payment_url"])],
+                [InlineKeyboardButton(text=tr("🔄 بررسی وضعیت پرداخت"), callback_data=f"check_blupal:{invoice_row['id']}")],
             ]),
         )
 
@@ -2422,8 +2474,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await call.message.answer(
             db.get_text('handlers_user.auto_2f92e15c', '⭐ فاکتور پرداخت (NoapayBot) ساخته شد. روی دکمه\u200cی زیر بزن و پرداخت رو تکمیل کن.\nمعمولاً به\u200cمحض واریز، کانفیگ خودکار ساخته می\u200cشود؛ اگر چند دقیقه طول کشید، دکمه\u200cی «بررسی وضعیت پرداخت» را بزن.'),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["payment_url"])],
-                [InlineKeyboardButton(text="🔄 بررسی وضعیت پرداخت", callback_data=f"check_noapay:{invoice_row['id']}")],
+                [InlineKeyboardButton(text=tr("🔗 رفتن به صفحه‌ی پرداخت"), url=result["payment_url"])],
+                [InlineKeyboardButton(text=tr("🔄 بررسی وضعیت پرداخت"), callback_data=f"check_noapay:{invoice_row['id']}")],
             ]),
         )
 
@@ -2455,15 +2507,14 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
         if not result.get("invoice_url"):
             await call.message.answer(
-                f"💠 فاکتور «{gw_row['name']}» ساخته شد ولی این درگاه لینک پرداخت برنگرداند.\n"
-                "پس از انجام پرداخت، کانفیگ به‌محض تایید درگاه به‌صورت خودکار ساخته می‌شود."
-            )
+                f"{tr('💠 فاکتور')} «{gw_row['name']}» {tr('ساخته شد ولی این درگاه لینک پرداخت برنگرداند.')}\n"
+                "پس از انجام پرداخت، کانفیگ به‌محض تایید درگاه به‌صورت خودکار ساخته می‌شود.")
             return
         await call.message.answer(
-            f"💠 فاکتور پرداخت «{gw_row['name']}» ساخته شد. روی دکمه‌ی زیر بزن و پرداخت رو تکمیل کن.\n"
+            f"{tr('💠 فاکتور پرداخت')} «{gw_row['name']}» {tr('ساخته شد. روی دکمه‌ی زیر بزن و پرداخت رو تکمیل کن.')}\n"
             "به‌محض تایید پرداخت توسط درگاه، کانفیگ شما به‌صورت خودکار ساخته می‌شود.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["invoice_url"]),
+                InlineKeyboardButton(text=tr("🔗 رفتن به صفحه‌ی پرداخت"), url=result["invoice_url"]),
             ]]),
         )
 
@@ -2530,7 +2581,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             if individual_links:
                 await send_individual_configs(message.bot, message.from_user.id, individual_links)
 
-    @router.message(F.text.func(lambda t: t == db.get_setting("btn_test")))
+    @router.message(F.text.func(lambda t: t in (db.get_setting("btn_test"), tr(db.get_setting("btn_test")))))
     async def get_test_config(message: Message):
         if (await asyncio.to_thread(db.get_setting, "test_enabled", "1")) != "1":
             await message.answer(db.get_text('handlers_user.auto_e61183a5', 'در حال حاضر امکان دریافت کانفیگ تست غیرفعال است.'))
@@ -2644,7 +2695,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     # پنل نمایندگی (ساخت کانفیگ از استخر حجم بدون پرداخت جداگانه)
     # -----------------------------------------------------------------------
 
-    @router.message(F.text.func(lambda t: t == db.get_setting("btn_reseller_panel", "🧑‍💼 پنل نمایندگی")))
+    @router.message(F.text.func(lambda t: t in (db.get_setting("btn_reseller_panel", "🧑‍💼 پنل نمایندگی"), tr(db.get_setting("btn_reseller_panel", "🧑‍💼 پنل نمایندگی")))))
     async def reseller_panel_open(message: Message, state: FSMContext):
         if not (await asyncio.to_thread(db.is_reseller, message.from_user.id)):
             return
@@ -2663,24 +2714,24 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await message.answer("\n".join(lines), reply_markup=kb.reseller_panel_kb(fixed))
         else:
             await message.answer(
-                f"🧑‍💼 پنل نمایندگی\n\n📦 اعتبار باقی‌مانده: {credit:,} گیگابایت\n\n"
-                f"می‌تونی از این اعتبار مستقیم کانفیگ بسازی.",
+                tr(f"🧑‍💼 پنل نمایندگی\n\n📦 اعتبار باقی‌مانده: {credit:,} گیگابایت\n\n"
+                f"می‌تونی از این اعتبار مستقیم کانفیگ بسازی."),
                 reply_markup=kb.reseller_panel_kb(),
             )
 
     @router.callback_query(F.data == "reseller_stats")
     async def cb_reseller_stats(call: CallbackQuery):
         if not (await asyncio.to_thread(db.is_reseller, call.from_user.id)):
-            await call.answer("دسترسی نداری.", show_alert=True)
+            await call.answer(tr("دسترسی نداری."), show_alert=True)
             return
         stats = await asyncio.to_thread(db.get_reseller_overview_stats)
         await call.message.answer(
-            "📊 آمار کلی نمایندگی\n\n"
+            tr("📊 آمار کلی نمایندگی\n\n"
             f"👥 کاربران: {stats['users']:,}\n"
             f"🛒 خریداران: {stats['buyers']:,}\n"
             f"🧪 اکانت تست: {stats['test_accounts']:,}\n"
             f"📦 تعداد فروش: {stats['sales']:,}\n"
-            f"💰 جمع فروش: {stats['revenue']:,} تومان"
+            f"💰 جمع فروش: {stats['revenue']:,} تومان")
         )
         await call.answer()
 
@@ -2713,7 +2764,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await state.update_data(fixed_product_id=product_id, panel_server_id=server["id"])
         await call.answer()
         await call.message.answer(
-            f"📦 محصول: {item['name']}\n"
+            f"{tr('📦 محصول:')} {item['name']}\n"
             f"موجودی: {item['qty_remaining']:,} عدد\n\n"
             "یک نام کاربری برای کانفیگ وارد کن یا از دکمه نام تصادفی استفاده کن.",
             reply_markup=kb.custom_config_username_kb(),
@@ -2753,7 +2804,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await state.clear(); await call.answer(db.get_text('handlers_user.auto_545dc373', 'ثبت کانفیگ ناموفق بود.'), show_alert=True); return
         remaining=await asyncio.to_thread(reseller_backend.get_reseller_product_credit, call.from_user.id, product_id)
         await state.clear(); await call.answer(db.get_text('handlers_user.auto_d056c989', 'کانفیگ ساخته شد.'))
-        await call.message.answer(f"✅ کانفیگ ساخته شد!\n\n🛠 نام کاربری: {escape_md(result['username'])}\n📦 محصول: {escape_md(result['product_name'])}\n📶 حجم: {result['volume_gb']} گیگ | ⏳ مدت: {result['duration_days']} روز\n\n`{result['subscription_url']}`\n\n📦 موجودی باقی‌مانده: {remaining:,} عدد", parse_mode="Markdown", reply_markup=kb.menu_for_user(db, call.from_user.id, is_main_bot))
+        await call.message.answer(tr(f"✅ کانفیگ ساخته شد!\n\n🛠 نام کاربری: {escape_md(result['username'])}\n📦 محصول: {escape_md(result['product_name'])}\n📶 حجم: {result['volume_gb']} گیگ | ⏳ مدت: {result['duration_days']} روز\n\n`{result['subscription_url']}`\n\n📦 موجودی باقی‌مانده: {remaining:,} عدد"), parse_mode="Markdown", reply_markup=kb.menu_for_user(db, call.from_user.id, is_main_bot))
 
     @router.message(ResellerFlow.waiting_fixed_product_username)
     async def reseller_fixed_product_username(message: Message, state: FSMContext):
@@ -2793,10 +2844,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         remaining=await asyncio.to_thread(reseller_backend.get_reseller_product_credit, message.from_user.id, product_id)
         await state.clear()
         await message.answer(
-            f"✅ کانفیگ محصول آماده ساخته شد!\n\n🛠 نام کاربری: {escape_md(result['username'])}\n"
+            tr(f"✅ کانفیگ محصول آماده ساخته شد!\n\n🛠 نام کاربری: {escape_md(result['username'])}\n"
             f"📦 محصول: {escape_md(result['product_name'])}\n"
             f"📶 حجم: {result['volume_gb']} گیگ | ⏳ مدت: {result['duration_days']} روز\n\n`{result['subscription_url']}`\n\n"
-            f"📦 موجودی باقی‌مانده: {remaining:,} عدد", parse_mode="Markdown",
+            f"📦 موجودی باقی‌مانده: {remaining:,} عدد"), parse_mode="Markdown",
             reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
         )
 
@@ -2819,9 +2870,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await call.answer()
         if prefix:
             await call.message.answer(
-                f"نام هر کانفیگ با پیش‌وند ثابت «{prefix}-» شروع می‌شود. فقط ادامه‌ی نام (بعد از خط تیره) را "
+                tr(f"نام هر کانفیگ با پیش‌وند ثابت «{prefix}-» شروع می‌شود. فقط ادامه‌ی نام (بعد از خط تیره) را "
                 "وارد کن، یا از دکمه‌ی زیر یک نام تصادفی بگیر.\n"
-                "فقط حروف انگلیسی، عدد و آندرلاین (بین ۳ تا ۲۰ کاراکتر).",
+                "فقط حروف انگلیسی، عدد و آندرلاین (بین ۳ تا ۲۰ کاراکتر)."),
                 reply_markup=kb.custom_config_username_kb(),
             )
         else:
@@ -2859,9 +2910,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await state.update_data(reseller_username=username)
         await state.set_state(ResellerFlow.waiting_volume)
         await message.answer(
-            f"✅ نام کاربری: {username}\n\n"
+            tr(f"✅ نام کاربری: {username}\n\n"
             f"📦 اعتبار باقی‌مانده: {credit:,} گیگابایت\n"
-            f"حالا حجم مورد نظر برای این کانفیگ را به گیگابایت وارد کن:",
+            f"حالا حجم مورد نظر برای این کانفیگ را به گیگابایت وارد کن:"),
             reply_markup=kb.cancel_kb(),
         )
 
@@ -2874,7 +2925,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         volume_gb = int(text)
         credit = (await asyncio.to_thread(reseller_backend.get_reseller_credit, message.from_user.id))
         if volume_gb > credit:
-            await message.answer(f"❌ اعتبار شما کافی نیست. اعتبار باقی‌مانده: {credit:,} گیگ.")
+            await message.answer(tr(f"❌ اعتبار شما کافی نیست. اعتبار باقی‌مانده: {credit:,} گیگ."))
             return
 
         data = await state.get_data()
@@ -2892,7 +2943,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await message.answer(db.get_text('handlers_user.auto_69d7d6ca', '❌ این نام کاربری روی پنل تکراری است. دوباره از ابتدا با نام دیگری امتحان کن.'))
             return
         except PanelError as e:
-            await message.answer(f"⛔️ خطا در ساخت کانفیگ: {e}")
+            await message.answer(tr(f"⛔️ خطا در ساخت کانفیگ: {e}"))
             return
 
         # کسر اتمیک، نه فقط یک UPDATE بدون قید: اگر بین چک بالا و همین لحظه یک
@@ -2938,11 +2989,11 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         new_credit = (await asyncio.to_thread(reseller_backend.get_reseller_credit, message.from_user.id))
         await state.clear()
         await message.answer(
-            f"✅ کانفیگ ساخته شد!\n\n"
+            tr(f"✅ کانفیگ ساخته شد!\n\n"
             f"🛠 نام کاربری: {escape_md(result.username)}\n"
             f"📶 حجم: {volume_gb} گیگ | ⏳ مدت: {duration_days} روز\n\n"
             f"`{result.subscription_url}`\n\n"
-            f"📦 اعتبار باقی‌مانده: {new_credit:,} گیگابایت",
+            f"📦 اعتبار باقی‌مانده: {new_credit:,} گیگابایت"),
             parse_mode="Markdown",
             reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
         )
@@ -2957,28 +3008,29 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             f"💳 سقف اعتبار: {st['limit']:,} تومان | بدهی: {st['debt']:,} تومان\n"
             if (st["limit"] > 0 or st["debt"] > 0) else ""
         )
+        credit_line = tr(credit_line.rstrip("\n")) + "\n" if credit_line else ""
         return (
-            "🧾 حساب کاربری من\n\n"
-            f"🆔 شناسه کاربری: `{user_tg_id}`\n"
-            f"👤 نام کاربری: {username}\n"
-            f"👛 موجودی کیف پول: {st['balance']:,} تومان\n"
-            f"{credit_line}"
-            f"📦 تعداد سفارش‌ها: {len(orders)}"
+            tr("🧾 حساب کاربری من") + "\n\n"
+            + tr(f"🆔 شناسه کاربری: `{user_tg_id}`") + "\n"
+            + tr(f"👤 نام کاربری: {username}") + "\n"
+            + tr(f"👛 موجودی کیف پول: {st['balance']:,} تومان") + "\n"
+            + credit_line
+            + tr(f"📦 تعداد سفارش‌ها: {len(orders)}")
         )
 
-    @router.message(F.text.func(lambda t: t == db.get_setting("btn_my_orders")))
+    @router.message(F.text.func(lambda t: t in (db.get_setting("btn_my_orders"), tr(db.get_setting("btn_my_orders")))))
     async def my_orders(message: Message):
         text = await _account_hub_text(message.from_user.id)
         await message.answer(text, parse_mode="Markdown", reply_markup=kb.account_hub_kb(db))
 
-    @router.message(F.text.func(lambda t: t == db.get_setting("btn_tutorial")))
+    @router.message(F.text.func(lambda t: t in (db.get_setting("btn_tutorial"), tr(db.get_setting("btn_tutorial")))))
     async def tutorial_menu_entry(message: Message):
         tutorials = await asyncio.to_thread(db.get_tutorials_for_target, tutorial_hub.GENERAL)
         if not tutorials:
             await message.answer(db.get_text('handlers_user.auto_tut_none', 'فعلاً آموزشی ثبت نشده.'))
             return
         await message.answer(
-            "📚 یک آموزش را انتخاب کنید:",
+            tr("📚 یک آموزش را انتخاب کنید:"),
             reply_markup=kb.tutorial_devices_user_kb(tutorials),
         )
 
@@ -2986,6 +3038,15 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     async def cb_account_hub(call: CallbackQuery):
         text = await _account_hub_text(call.from_user.id)
         await _safe_edit(call.message, text, parse_mode="Markdown", reply_markup=kb.account_hub_kb(db))
+        await call.answer()
+
+    @router.callback_query(F.data == "acct:language")
+    async def cb_account_language(call: CallbackQuery):
+        await _safe_edit(
+            call.message,
+            db.get_text("handlers_user.language.choose", "لطفاً زبان موردنظر را انتخاب کنید:"),
+            reply_markup=kb.language_kb(db, back_callback="acct:hub"),
+        )
         await call.answer()
 
     @router.callback_query(F.data == "acct:orders")
@@ -3397,7 +3458,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
         await call.answer()
         await call.message.answer(
-            "📚 یک آموزش را انتخاب کنید:",
+            tr("📚 یک آموزش را انتخاب کنید:"),
             reply_markup=kb.tutorial_devices_user_kb(tutorials),
         )
 
@@ -3406,14 +3467,14 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         target_key = call.data[len(tutorial_hub.BUTTON_PREFIX):]
         tutorials = await asyncio.to_thread(db.get_tutorials_for_target, target_key)
         if not tutorials:
-            await call.answer('فعلاً آموزشی برای این بخش ثبت نشده.', show_alert=True)
+            await call.answer(tr('فعلاً آموزشی برای این بخش ثبت نشده.'), show_alert=True)
             return
         await call.answer()
         if len(tutorials) == 1:
             await tutorial.send_device_steps(call.bot, call.from_user.id, db, tutorials[0]["id"])
             return
         await call.message.answer(
-            "📚 یک آموزش را انتخاب کنید:",
+            tr("📚 یک آموزش را انتخاب کنید:"),
             reply_markup=kb.tutorial_devices_user_kb(tutorials),
         )
 
@@ -3534,7 +3595,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                         f"🗑 حذف کانفیگ\n\n👤 کاربر: {user_tg_id}\n🔗 سرویس #{item_id}\n📌 نام کاربری پنل: {cc_row['username']}\n📌 نوع: کانفیگ پنلی"
                     )
                 if refunded > 0:
-                    await call.answer(f"✅ کانفیگ برای همیشه حذف شد و {refund_result_text(quote, refunded)}", show_alert=True)
+                    await call.answer(tr(f"✅ کانفیگ برای همیشه حذف شد و {refund_result_text(quote, refunded)}"), show_alert=True)
                 else:
                     await call.answer(db.get_text('handlers_user.auto_67b7397c', '✅ کانفیگ برای همیشه حذف شد.'), show_alert=True)
         else:
@@ -3571,7 +3632,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
         await call.answer()
         photo = BufferedInputFile(build_qr_bytes(link, db=db), filename="config_qr.png")
-        await bot.send_photo(call.from_user.id, photo, caption="⬜ کیوآر کانفیگ شما")
+        await bot.send_photo(call.from_user.id, photo, caption=tr("⬜ کیوآر کانفیگ شما"))
 
     @router.callback_query(F.data.startswith("svc_cut:"))
     async def cb_service_cut_ask(call: CallbackQuery):
@@ -3683,7 +3744,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             provider = get_provider(server)
             await provider.set_enabled(cc["username"], new_enabled)
         except PanelError as e:
-            await call.answer(f"⛔️ ناموفق بود: {e}", show_alert=True)
+            await call.answer(tr(f"⛔️ ناموفق بود: {e}"), show_alert=True)
             return
         (await asyncio.to_thread(db.set_custom_config_enabled, cc["id"], user_tg_id, new_enabled))
         (await asyncio.to_thread(
@@ -3846,7 +3907,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if all(not p.get("ok") for p in policies.values()):
             first = next(iter(policies.values()))
             if first.get("reason") == "user_limit":
-                await call.answer(f"⛔️ سقف انتقال شما تکمیل شده است ({first.get('count',0)}/{first.get('limit')}).", show_alert=True)
+                await call.answer(tr(f"⛔️ سقف انتقال شما تکمیل شده است ({first.get('count',0)}/{first.get('limit')})."), show_alert=True)
             else:
                 await call.answer(db.get_text('handlers_user.auto_82c337fc', 'هیچ مقصد مجازی برای انتقال وجود ندارد.'), show_alert=True)
             return
@@ -3876,7 +3937,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         policy = await asyncio.to_thread(db.get_location_transfer_policy, call.from_user.id, target_id)
         if not policy.get("ok"):
             if policy.get("reason") == "user_limit":
-                await call.answer(f"⛔️ سقف انتقال شما تکمیل شده است ({policy.get('count',0)}/{policy.get('limit')}).", show_alert=True)
+                await call.answer(tr(f"⛔️ سقف انتقال شما تکمیل شده است ({policy.get('count',0)}/{policy.get('limit')})."), show_alert=True)
             else:
                 await call.answer(db.get_text('handlers_user.auto_7fef7f50', 'امکان انتقال به این مقصد وجود ندارد.'), show_alert=True)
             return
@@ -3957,7 +4018,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await call.message.answer(db.get_text('handlers_user.auto_ca2aa6c8', '⛔️ نام کاربری این سرویس روی لوکیشن مقصد از قبل وجود دارد؛ سرویس قدیمی دست\u200cنخورده باقی ماند.'))
             return
         except PanelError as e:
-            await call.message.answer(f"⛔️ ساخت سرویس روی لوکیشن مقصد ناموفق بود؛ سرویس قدیمی دست‌نخورده باقی ماند.\n{e}")
+            await call.message.answer(tr(f"⛔️ ساخت سرویس روی لوکیشن مقصد ناموفق بود؛ سرویس قدیمی دست‌نخورده باقی ماند.\n{e}"))
             return
         except Exception:
             logging.getLogger("handlers_user").exception("location transfer create failed")
@@ -4075,8 +4136,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
         await state.clear()
         await message.answer(
-            f"⚠️ آیا مطمئن هستید که این کانفیگ به کاربر با آی‌دی {target_id} منتقل شود؟\n"
-            "این عملیات **غیرقابل بازگشت** است.",
+            tr(f"⚠️ آیا مطمئن هستید که این کانفیگ به کاربر با آی‌دی {target_id} منتقل شود؟\n"
+            "این عملیات **غیرقابل بازگشت** است."),
             parse_mode="Markdown",
             reply_markup=kb.service_transfer_confirm_kb(cb_id, target_id),
         )
@@ -4109,8 +4170,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         try:
             await call.bot.send_message(
                 target_id,
-                f"📦 یک کانفیگ («{cc['display_name'] or cc['username']}») از طرف کاربر دیگری به حساب شما منتقل شد.\n"
-                "برای مشاهده، حساب کاربری ← سرویس‌ها و سفارش‌های من را ببینید.",
+                tr(f"📦 یک کانفیگ («{cc['display_name'] or cc['username']}») از طرف کاربر دیگری به حساب شما منتقل شد.\n"
+                "برای مشاهده، حساب کاربری ← سرویس‌ها و سفارش‌های من را ببینید."),
             )
         except Exception:
             pass
@@ -4197,8 +4258,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                     try:
                         await bot.send_message(
                             renewal_referrer_id,
-                            f"🤝 تبریک! یکی از زیرمجموعه‌های شما سرویسش را تمدید کرد.\n"
-                            f"💰 {renewal_reward_amount:,} تومان پورسانت به کیف پول شما اضافه شد.",
+                            tr(f"🤝 تبریک! یکی از زیرمجموعه‌های شما سرویسش را تمدید کرد.\n"
+                            f"💰 {renewal_reward_amount:,} تومان پورسانت به کیف پول شما اضافه شد."),
                         )
                     except Exception:
                         pass
@@ -4448,6 +4509,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 return
             if not max_users or users > max_users:
                 users = 0
+            if not max_users:
+                # محصول با تعداد کاربر ثابت: تعداد فعلی سرویس (بعد از ارتقاهای قبلی) حفظ و قیمت‌گذاری می‌شود
+                users = await asyncio.to_thread(ul.renewal_users, db, product, item["custom"])
             if users:
                 price = ul.price_for_users(product, users)
                 product_label = f"{product['name']} - {users} کاربر"
@@ -4678,7 +4742,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await call.message.answer(
             db.get_text('handlers_user.auto_d456f435', '🪙 فاکتور پرداخت ساخته شد. روی دکمه\u200cی زیر بزن، ارز و مبلغ رو انتخاب کن و پرداخت رو تکمیل کن.\n⏳ اعتبار این فاکتور فقط ۸۰ دقیقه است.\nبه\u200cمحض تایید تراکنش روی بلاک\u200cچین، سرویس شما به\u200cصورت خودکار تمدید می\u200cشود.'),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["invoice_url"]),
+                InlineKeyboardButton(text=tr("🔗 رفتن به صفحه‌ی پرداخت"), url=result["invoice_url"]),
             ]]),
         )
 
@@ -4704,8 +4768,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await call.message.answer(
             db.get_text('handlers_user.auto_c5283e58', '💳 فاکتور پرداخت ساخته شد. روی دکمه\u200cی زیر بزن و پرداخت رو تکمیل کن.\nمعمولاً به\u200cمحض واریز، سرویس خودکار تمدید می\u200cشود؛ اگر چند دقیقه طول کشید، دکمه\u200cی «بررسی وضعیت پرداخت» را بزن.'),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["payment_url"])],
-                [InlineKeyboardButton(text="🔄 بررسی وضعیت پرداخت", callback_data=f"check_aban:{invoice_row['id']}")],
+                [InlineKeyboardButton(text=tr("🔗 رفتن به صفحه‌ی پرداخت"), url=result["payment_url"])],
+                [InlineKeyboardButton(text=tr("🔄 بررسی وضعیت پرداخت"), callback_data=f"check_aban:{invoice_row['id']}")],
             ]),
         )
 
@@ -4731,8 +4795,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await call.message.answer(
             db.get_text('handlers_user.auto_c5283e58', '💳 فاکتور پرداخت ساخته شد. روی دکمه\u200cی زیر بزن و پرداخت رو تکمیل کن.\nمعمولاً به\u200cمحض واریز، سرویس خودکار تمدید می\u200cشود؛ اگر چند دقیقه طول کشید، دکمه\u200cی «بررسی وضعیت پرداخت» را بزن.'),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["payment_url"])],
-                [InlineKeyboardButton(text="🔄 بررسی وضعیت پرداخت", callback_data=f"check_blupal:{invoice_row['id']}")],
+                [InlineKeyboardButton(text=tr("🔗 رفتن به صفحه‌ی پرداخت"), url=result["payment_url"])],
+                [InlineKeyboardButton(text=tr("🔄 بررسی وضعیت پرداخت"), callback_data=f"check_blupal:{invoice_row['id']}")],
             ]),
         )
 
@@ -4758,8 +4822,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await call.message.answer(
             db.get_text('handlers_user.auto_3090acc2', '⭐ فاکتور پرداخت (NoapayBot) ساخته شد. روی دکمه\u200cی زیر بزن و پرداخت رو تکمیل کن.\nمعمولاً به\u200cمحض واریز، سرویس خودکار تمدید می\u200cشود؛ اگر چند دقیقه طول کشید، دکمه\u200cی «بررسی وضعیت پرداخت» را بزن.'),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["payment_url"])],
-                [InlineKeyboardButton(text="🔄 بررسی وضعیت پرداخت", callback_data=f"check_noapay:{invoice_row['id']}")],
+                [InlineKeyboardButton(text=tr("🔗 رفتن به صفحه‌ی پرداخت"), url=result["payment_url"])],
+                [InlineKeyboardButton(text=tr("🔄 بررسی وضعیت پرداخت"), callback_data=f"check_noapay:{invoice_row['id']}")],
             ]),
         )
 
@@ -4858,7 +4922,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     # زیرمجموعه‌گیری (رفرال)
     # -----------------------------------------------------------------------
 
-    @router.message(F.text.func(lambda t: t == db.get_setting("btn_referral")))
+    @router.message(F.text.func(lambda t: t in (db.get_setting("btn_referral"), tr(db.get_setting("btn_referral")))))
     async def referral_menu(message: Message, bot: Bot):
         settings = (await asyncio.to_thread(db.get_all_settings))
         if settings.get("referral_button_enabled", "1") != "1":
@@ -4916,12 +4980,12 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         stats = (await asyncio.to_thread(db.get_inline_reseller_stats, message.from_user.id))
         percent = stats["percent"]
         await message.answer(
-            "🔗 نمایندگی کمیسیونی شما (لینک اختصاصی داخل بات)\n\n"
+            tr("🔗 نمایندگی کمیسیونی شما (لینک اختصاصی داخل بات)\n\n"
             f"لینک فروش شما:\n{link}\n\n"
             f"روی هر خرید مشتریانی که با این لینک وارد شده‌اند، {percent}٪ کارمزد به کیف پول شما اضافه می‌شود.\n\n"
             f"👥 تعداد مشتریان شما: {stats['customers']}\n"
             f"🧾 تعداد خریدهای تسویه‌شده: {stats['paid_orders']}\n"
-            f"👛 مجموع کارمزد دریافتی: {stats['total_commission']:,} تومان"
+            f"👛 مجموع کارمزد دریافتی: {stats['total_commission']:,} تومان")
         )
 
     # -----------------------------------------------------------------------
@@ -4941,8 +5005,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         pending = (await asyncio.to_thread(db.get_pending_commission_reseller_request_for_user, message.from_user.id))
         if pending:
             await message.answer(
-                f"شما همین الان یک درخواست نمایندگی کمیسیونی باز دارید (درصد پیشنهادی: {pending['proposed_percent']}٪)؛ "
-                "منتظر بررسی ادمین بمانید."
+                tr(f"شما همین الان یک درخواست نمایندگی کمیسیونی باز دارید (درصد پیشنهادی: {pending['proposed_percent']}٪)؛ "
+                "منتظر بررسی ادمین بمانید.")
             )
             return
         await state.set_state(CommissionResellerRequestFlow.waiting_percent)
@@ -5015,7 +5079,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             text += f"\n⏳ {amount:,} تومان از موجودی شما (حاصل از تبدیل سکه) تا {to_jalali_str(day)} معتبر است."
         return text
 
-    @router.message(F.text.func(lambda t: t == db.get_setting("btn_wallet")))
+    @router.message(F.text.func(lambda t: t in (db.get_setting("btn_wallet"), tr(db.get_setting("btn_wallet")))))
     async def wallet_menu(message: Message):
         await message.answer(await _wallet_text(message.from_user.id), reply_markup=kb.wallet_menu_kb(db))
 
@@ -5048,7 +5112,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     @router.callback_query(F.data == "coins_menu")
     async def cb_coins_menu(call: CallbackQuery, state: FSMContext):
         if (await asyncio.to_thread(db.get_setting, "score_enabled", "1")) != "1":
-            await call.answer("سیستم سکه در حال حاضر غیرفعال است.", show_alert=True)
+            await call.answer(tr("سیستم سکه در حال حاضر غیرفعال است."), show_alert=True)
             return
         await state.clear()
         text, markup = await _coins_view(call.from_user.id)
@@ -5066,7 +5130,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await asyncio.to_thread(db.set_user_coin_mode, call.from_user.id, call.data.split(":", 1)[1])
         text, markup = await _coins_view(call.from_user.id)
         await _safe_edit(call.message, text, reply_markup=markup)
-        await call.answer("ذخیره شد.")
+        await call.answer(tr("ذخیره شد."))
 
     @router.callback_query(F.data == "coins_convert")
     async def cb_coins_convert(call: CallbackQuery, state: FSMContext):
@@ -5074,7 +5138,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         coins = await asyncio.to_thread(db.get_user_score, call.from_user.id)
         mode = await asyncio.to_thread(db.get_user_coin_mode, call.from_user.id)
         if not s["enabled"] or s["value"] <= 0 or mode != "wallet" or coins < s["convert_min"]:
-            await call.answer("در حال حاضر امکان تبدیل سکه وجود ندارد.", show_alert=True)
+            await call.answer(tr("در حال حاضر امکان تبدیل سکه وجود ندارد."), show_alert=True)
             return
         limit = f"{s['convert_max']:,}" if s["convert_max"] else "بدون سقف"
         await state.set_state(CoinConvert.waiting_amount)
@@ -5092,12 +5156,12 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     async def process_coin_convert(message: Message, state: FSMContext):
         text = (message.text or "").strip().replace(",", "").replace("٬", "")
         if not text.isdigit() or int(text) <= 0:
-            await message.answer("⚠️ یک عدد صحیح مثبت ارسال کنید.", reply_markup=kb.cancel_kb())
+            await message.answer(tr("⚠️ یک عدد صحیح مثبت ارسال کنید."), reply_markup=kb.cancel_kb())
             return
         try:
             result = await asyncio.to_thread(db.convert_coins_to_wallet, message.from_user.id, int(text))
         except ValueError as e:
-            await message.answer(f"❌ {e}\nدوباره تلاش کنید یا انصراف بدهید.", reply_markup=kb.cancel_kb())
+            await message.answer(tr(f"❌ {e}\nدوباره تلاش کنید یا انصراف بدهید."), reply_markup=kb.cancel_kb())
             return
         await state.clear()
         balance = await asyncio.to_thread(db.get_wallet_credit, message.from_user.id)
@@ -5113,7 +5177,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     # گردونه شانس
     # -----------------------------------------------------------------------
 
-    @router.message(F.text.func(lambda t: t == db.get_setting("btn_wheel")))
+    @router.message(F.text.func(lambda t: t in (db.get_setting("btn_wheel"), tr(db.get_setting("btn_wheel")))))
     async def wheel_of_fortune(message: Message, bot: Bot):
         if (await asyncio.to_thread(db.get_setting, "wheel_enabled", "1")) != "1":
             await message.answer(db.get_text('handlers_user.auto_ea150277', 'در حال حاضر گردونه شانس غیرفعال است.'))
@@ -5122,7 +5186,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         can_spin, remaining_hours = (await asyncio.to_thread(db.can_spin_wheel, message.from_user.id))
         if not can_spin:
             hours = int(remaining_hours) + 1
-            await message.answer(f"⏳ فردا دوباره امتحان کن! حدود {hours} ساعت دیگر می‌توانی دوباره گردونه را بچرخانی.")
+            await message.answer(tr(f"⏳ فردا دوباره امتحان کن! حدود {hours} ساعت دیگر می‌توانی دوباره گردونه را بچرخانی."))
             return
 
         # افکت چرخش: انیمیشن اسلات‌ماشین بومی تلگرام
@@ -5141,10 +5205,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             percent = random.choice(settings["prizes"])
             code, expires_at = (await asyncio.to_thread(db.generate_wheel_prize_code, message.from_user.id, percent))
             await message.answer(
-                f"🎉 تبریک! برنده شدی!\n\n"
+                tr(f"🎉 تبریک! برنده شدی!\n\n"
                 f"🎟 کد تخفیف {percent}٪ شما:\n`{code}`\n\n"
                 f"⏳ اعتبار: تا {settings['expiry_hours']} ساعت آینده\n"
-                f"این کد یکبارمصرف است و در خرید بعدی‌ات قابل استفاده است.",
+                f"این کد یکبارمصرف است و در خرید بعدی‌ات قابل استفاده است."),
                 parse_mode="Markdown",
             )
         else:
@@ -5169,12 +5233,12 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         try:
             result = await asyncio.to_thread(db.redeem_wallet_gift_code, message.from_user.id, code)
         except ValueError as e:
-            await message.answer(f"❌ {e}\nدوباره تلاش کنید یا انصراف بدهید.", reply_markup=kb.cancel_kb())
+            await message.answer(tr(f"❌ {e}\nدوباره تلاش کنید یا انصراف بدهید."), reply_markup=kb.cancel_kb())
             return
         await state.clear()
         await message.answer(
-            f"✅ {result['amount']:,} تومان به کیف پول شما اضافه شد.\n"
-            f"موجودی فعلی: {result['new_balance']:,} تومان",
+            tr(f"✅ {result['amount']:,} تومان به کیف پول شما اضافه شد.\n"
+            f"موجودی فعلی: {result['new_balance']:,} تومان"),
             reply_markup=kb.wallet_menu_kb(db),
         )
 
@@ -5196,7 +5260,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await state.update_data(transfer_receiver=int(text))
         await state.set_state(WalletTransfer.waiting_amount)
         balance = await asyncio.to_thread(db.get_wallet_credit, message.from_user.id)
-        await message.answer(f"مبلغ انتقال (تومان) را ارسال کنید.\nموجودی شما: {balance:,} تومان", reply_markup=kb.cancel_kb())
+        await message.answer(tr(f"مبلغ انتقال (تومان) را ارسال کنید.\nموجودی شما: {balance:,} تومان"), reply_markup=kb.cancel_kb())
 
     @router.message(WalletTransfer.waiting_amount)
     async def process_wallet_transfer_amount(message: Message, state: FSMContext):
@@ -5213,10 +5277,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await message.answer(db.get_text('handlers_user.auto_3c6c92ee', '⛔️ انتقال ناموفق بود؛ موجودی یا کاربر مقصد را بررسی کنید.'), reply_markup=kb.wallet_menu_kb(db))
             return
         balance = await asyncio.to_thread(db.get_wallet_credit, message.from_user.id)
-        await message.answer(f"✅ {amount:,} تومان منتقل شد.\nموجودی فعلی: {balance:,} تومان", reply_markup=kb.wallet_menu_kb(db))
+        await message.answer(tr(f"✅ {amount:,} تومان منتقل شد.\nموجودی فعلی: {balance:,} تومان"), reply_markup=kb.wallet_menu_kb(db))
         await _notify_admins_wallet_transfer(message.bot, message.from_user.id, receiver, amount)
         try:
-            await message.bot.send_message(receiver, f"💸 {amount:,} تومان از طرف یک کاربر به کیف پول شما منتقل شد.")
+            await message.bot.send_message(receiver, tr(f"💸 {amount:,} تومان از طرف یک کاربر به کیف پول شما منتقل شد."))
         except Exception:
             pass
 
@@ -5238,7 +5302,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         min_topup = int((await asyncio.to_thread(db.get_setting, "min_amount_wallet_topup", "1000")) or "1000")
         text = message.text.strip().replace(",", "")
         if not text.isdigit() or int(text) < min_topup:
-            await message.answer(f"لطفاً یک عدد معتبر و حداقل {min_topup:,} تومان ارسال کنید.")
+            await message.answer(tr(f"لطفاً یک عدد معتبر و حداقل {min_topup:,} تومان ارسال کنید."))
             return
 
         amount = int(text)
@@ -5249,8 +5313,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             if current_balance + amount > max_balance:
                 remaining = max(max_balance - current_balance, 0)
                 await message.answer(
-                    f"⛔️ با این شارژ، موجودی کیف پول شما از سقف مجاز ({max_balance:,} تومان) بیشتر می‌شود.\n"
-                    f"حداکثر مبلغ قابل شارژ فعلی: {remaining:,} تومان."
+                    tr(f"⛔️ با این شارژ، موجودی کیف پول شما از سقف مجاز ({max_balance:,} تومان) بیشتر می‌شود.\n"
+                    f"حداکثر مبلغ قابل شارژ فعلی: {remaining:,} تومان.")
                 )
                 return
 
@@ -5343,7 +5407,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await call.message.answer(
             db.get_text('handlers_user.auto_18b31b92', '🪙 فاکتور پرداخت ساخته شد. روی دکمه\u200cی زیر بزن، ارز و مبلغ رو انتخاب کن و پرداخت رو تکمیل کن.\n⏳ اعتبار این فاکتور فقط ۸۰ دقیقه است.\nبه\u200cمحض تایید تراکنش روی بلاک\u200cچین، کیف پول شما به\u200cصورت خودکار شارژ می\u200cشود.'),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["invoice_url"]),
+                InlineKeyboardButton(text=tr("🔗 رفتن به صفحه‌ی پرداخت"), url=result["invoice_url"]),
             ]]),
         )
 
@@ -5373,8 +5437,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await call.message.answer(
             db.get_text('handlers_user.auto_463bed92', '💳 فاکتور پرداخت ساخته شد. روی دکمه\u200cی زیر بزن و پرداخت رو تکمیل کن.\nمعمولاً به\u200cمحض واریز، کیف پول خودکار شارژ می\u200cشود؛ اگر چند دقیقه طول کشید، دکمه\u200cی «بررسی وضعیت پرداخت» را بزن.'),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["payment_url"])],
-                [InlineKeyboardButton(text="🔄 بررسی وضعیت پرداخت", callback_data=f"check_aban:{invoice_row['id']}")],
+                [InlineKeyboardButton(text=tr("🔗 رفتن به صفحه‌ی پرداخت"), url=result["payment_url"])],
+                [InlineKeyboardButton(text=tr("🔄 بررسی وضعیت پرداخت"), callback_data=f"check_aban:{invoice_row['id']}")],
             ]),
         )
 
@@ -5404,8 +5468,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await call.message.answer(
             db.get_text('handlers_user.auto_463bed92', '💳 فاکتور پرداخت ساخته شد. روی دکمه\u200cی زیر بزن و پرداخت رو تکمیل کن.\nمعمولاً به\u200cمحض واریز، کیف پول خودکار شارژ می\u200cشود؛ اگر چند دقیقه طول کشید، دکمه\u200cی «بررسی وضعیت پرداخت» را بزن.'),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["payment_url"])],
-                [InlineKeyboardButton(text="🔄 بررسی وضعیت پرداخت", callback_data=f"check_blupal:{invoice_row['id']}")],
+                [InlineKeyboardButton(text=tr("🔗 رفتن به صفحه‌ی پرداخت"), url=result["payment_url"])],
+                [InlineKeyboardButton(text=tr("🔄 بررسی وضعیت پرداخت"), callback_data=f"check_blupal:{invoice_row['id']}")],
             ]),
         )
 
@@ -5435,8 +5499,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await call.message.answer(
             db.get_text('handlers_user.auto_205c37e7', '⭐ فاکتور پرداخت (NoapayBot) ساخته شد. روی دکمه\u200cی زیر بزن و پرداخت رو تکمیل کن.\nمعمولاً به\u200cمحض واریز، کیف پول خودکار شارژ می\u200cشود؛ اگر چند دقیقه طول کشید، دکمه\u200cی «بررسی وضعیت پرداخت» را بزن.'),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔗 رفتن به صفحه‌ی پرداخت", url=result["payment_url"])],
-                [InlineKeyboardButton(text="🔄 بررسی وضعیت پرداخت", callback_data=f"check_noapay:{invoice_row['id']}")],
+                [InlineKeyboardButton(text=tr("🔗 رفتن به صفحه‌ی پرداخت"), url=result["payment_url"])],
+                [InlineKeyboardButton(text=tr("🔄 بررسی وضعیت پرداخت"), callback_data=f"check_noapay:{invoice_row['id']}")],
             ]),
         )
 
@@ -5603,7 +5667,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     async def _start_discount_tier_request(message: Message, tier):
         user_id = message.from_user.id
         if (await asyncio.to_thread(db.get_agent_tier, user_id)) == tier["code"]:
-            await message.answer(f"شما همین الان در سطح {tier['icon']} {tier['title']} هستید.")
+            await message.answer(tr(f"شما همین الان در سطح {tier['icon']} {tier['title']} هستید."))
             return
         if (await asyncio.to_thread(db.get_pending_tier_request, user_id, tier["code"])):
             await message.answer(db.get_text('handlers_user.auto_25035b09', 'درخواست شما برای این سطح در انتظار بررسی است.'))
@@ -5612,7 +5676,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if tier["auto_approve"]:
             await asyncio.to_thread(db.approve_tier_request, request_id, 0)
             await message.answer(
-                f"✅ سطح {tier['icon']} {tier['title']} برای شما فعال شد. تخفیف‌ها هنگام «خرید کانفیگ» خودکار اعمال می‌شود."
+                tr(f"✅ سطح {tier['icon']} {tier['title']} برای شما فعال شد. تخفیف‌ها هنگام «خرید کانفیگ» خودکار اعمال می‌شود.")
             )
             return
         user_row = await asyncio.to_thread(db.get_user, user_id)
@@ -5638,7 +5702,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         else:
             await message.answer(db.get_text('handlers_user.auto_63037d6b', 'ثبت درخواست برای این سطح هنوز فعال نشده است.'))
 
-    @router.message(F.text.func(lambda t: t == db.get_setting("btn_reseller_tiers", "🤝 نمایندگی")))
+    @router.message(F.text.func(lambda t: t in (db.get_setting("btn_reseller_tiers", "🤝 نمایندگی"), tr(db.get_setting("btn_reseller_tiers", "🤝 نمایندگی")))))
     async def reseller_tiers_menu(message: Message):
         if not is_main_bot:
             return
@@ -5720,9 +5784,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         tier = await asyncio.to_thread(db.get_reseller_tier, req["tier_code"]) if req["tier_code"] else None
         label = f"{tier['icon']} {tier['title']}" if tier else "نمایندگی"
         await target.answer(
-            f"💳 <b>پرداخت هزینه {escape_html(label)}</b>\n\n"
+            tr(f"💳 <b>پرداخت هزینه {escape_html(label)}</b>\n\n"
             f"💰 مبلغ: <b>{req['price_toman']:,} تومان</b>\n\n"
-            "روش پرداخت را انتخاب کنید:",
+            "روش پرداخت را انتخاب کنید:"),
             reply_markup=kb.reseller_payment_choice_kb(db, methods), parse_mode="HTML",
         )
 
@@ -5750,9 +5814,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             else:
                 question = f"چند درصد تخفیف دائمی برای خرید خودتان پیشنهاد می‌کنید؟ (بین {low} تا {high})"
             await message.answer(
-                f"{tier['icon']} درخواست نمایندگی {tier['title']}\n\n"
+                tr(f"{tier['icon']} درخواست نمایندگی {tier['title']}\n\n"
                 f"پیشنهاد خودتان را ارسال کنید؛ مدیر بررسی می‌کند و نتیجه را اعلام می‌کند.\n"
-                f"{question}\nفقط عدد ارسال کنید:",
+                f"{question}\nفقط عدد ارسال کنید:"),
                 reply_markup=kb.cancel_kb(),
             )
             return
@@ -5764,8 +5828,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         title = f"{tier['icon']} درخواست نمایندگی {tier['title']}" if tier else "🏪 درخواست نمایندگی"
         min_hint = f"\nحداقل خرید این سطح: {tier['min_volume_gb']:,} گیگ" if tier and tier["min_volume_gb"] else ""
         await message.answer(
-            f"{title}\n\n"
-            f"چند گیگ حجم برای شروع نیاز دارید؟ فقط عدد ارسال کنید (مثلاً 500):{min_hint}",
+            tr(f"{title}\n\n"
+            f"چند گیگ حجم برای شروع نیاز دارید؟ فقط عدد ارسال کنید (مثلاً 500):{min_hint}"),
             reply_markup=kb.cancel_kb(),
         )
 
@@ -5784,7 +5848,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         low, high = _resreq_percent_bounds(tier)
         text = (message.text or "").strip().replace("%", "").replace("٪", "")
         if not text.isdigit() or not (low <= int(text) <= high):
-            await message.answer(f"لطفاً یک عدد صحیح بین {low} تا {high} ارسال کنید.")
+            await message.answer(tr(f"لطفاً یک عدد صحیح بین {low} تا {high} ارسال کنید."))
             return
         await state.update_data(resreq_proposed_percent=int(text))
         await _resreq_after_basics(message, state)
@@ -5797,7 +5861,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
         tier = await _resreq_tier(state)
         if tier is not None and tier["min_volume_gb"] and int(text) < tier["min_volume_gb"]:
-            await message.answer(f"حداقل خرید سطح {tier['title']} برابر {tier['min_volume_gb']:,} گیگ است.")
+            await message.answer(f"{tr('حداقل خرید سطح')} {tier['title']} {tr('برابر')} {tier['min_volume_gb']:,} {tr('گیگ است.')}")
             return
         await state.update_data(resreq_volume=int(text))
         if tier is not None:
@@ -6085,7 +6149,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
         tier = await _resreq_tier(state)
         if tier is not None and tier["min_qty"] and int(text) < tier["min_qty"]:
-            await message.answer(f"حداقل خرید سطح {tier['title']} برابر {tier['min_qty']:,} عدد است.")
+            await message.answer(f"{tr('حداقل خرید سطح')} {tier['title']} {tr('برابر')} {tier['min_qty']:,} {tr('عدد است.')}")
             return
         await state.update_data(resreq_supply_qty=int(text))
         await _resreq_finalize(message, state)
@@ -6135,21 +6199,21 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             elif method == "card_auto":
                 inv = card_to_card_payment.create_invoice(db, "reseller_request", req["id"], call.from_user.id, amount)
                 await call.message.answer(
-                    f"💳 مبلغ دقیق برای واریز: `{inv['amount_toman']:,}` تومان\n"
+                    tr(f"💳 مبلغ دقیق برای واریز: `{inv['amount_toman']:,}` تومان\n"
                     f"💳 کارت: `{inv['card_number']}`\n👤 به نام: {escape_md(inv['card_holder'] or '')}\n\n"
-                    "بعد از واریز، پرداخت به‌صورت خودکار بررسی می‌شود.", parse_mode="Markdown")
+                    "بعد از واریز، پرداخت به‌صورت خودکار بررسی می‌شود."), parse_mode="Markdown")
             elif method == "abangateway":
                 inv = await abangateway_payment.create_invoice_for(db, tenant_id, call.from_user.id, "reseller_request", req["id"], amount, label)
-                await call.message.answer(db.get_text('handlers_user.auto_e2a9ed99', '💳 فاکتور آبان\u200cگیت\u200cوی ساخته شد.'), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 پرداخت", url=inv["payment_url"])]]))
+                await call.message.answer(db.get_text('handlers_user.auto_e2a9ed99', '💳 فاکتور آبان\u200cگیت\u200cوی ساخته شد.'), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=tr("🔗 پرداخت"), url=inv["payment_url"])]]))
             elif method == "blupal":
                 inv = await blupal_payment.create_invoice_for(db, tenant_id, call.from_user.id, "reseller_request", req["id"], amount, label)
-                await call.message.answer(db.get_text('handlers_user.auto_135a2053', '💳 فاکتور بلوپال ساخته شد.'), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 پرداخت", url=inv["payment_url"])]]))
+                await call.message.answer(db.get_text('handlers_user.auto_135a2053', '💳 فاکتور بلوپال ساخته شد.'), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=tr("🔗 پرداخت"), url=inv["payment_url"])]]))
             elif method == "noapay":
                 inv = await noapay_payment.create_invoice_for(db, tenant_id, call.from_user.id, "reseller_request", req["id"], amount, label)
-                await call.message.answer(db.get_text('handlers_user.auto_89c1ac87', '⭐ فاکتور NoapayBot ساخته شد.'), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 پرداخت", url=inv["payment_url"])]]))
+                await call.message.answer(db.get_text('handlers_user.auto_89c1ac87', '⭐ فاکتور NoapayBot ساخته شد.'), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=tr("🔗 پرداخت"), url=inv["payment_url"])]]))
             elif method == "crypto":
                 inv = await crypto_payment.create_invoice_for(db, tenant_id, call.from_user.id, "reseller_request", req["id"], amount, label)
-                await call.message.answer(db.get_text('handlers_user.auto_96a35ab8', '🪙 فاکتور کریپتو ساخته شد.'), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 پرداخت", url=inv["invoice_url"])]]))
+                await call.message.answer(db.get_text('handlers_user.auto_96a35ab8', '🪙 فاکتور کریپتو ساخته شد.'), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=tr("🔗 پرداخت"), url=inv["invoice_url"])]]))
             elif method.startswith("custom:"):
                 key = method.split(":", 1)[1]
                 if custom_gateway_payment.gateway_requires_phone(db, key):
@@ -6158,7 +6222,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                     await call.message.answer(db.get_text('handlers_user.auto_355c0932', '📱 این درگاه برای ساخت فاکتور شماره موبایل می\u200cخواهد. شماره موبایل را ارسال کنید:'))
                     return
                 inv = await custom_gateway_payment.create_invoice_for(db, tenant_id, call.from_user.id, key, "reseller_request", req["id"], amount, label)
-                await call.message.answer(db.get_text('handlers_user.auto_8815c25a', '💠 فاکتور درگاه سفارشی ساخته شد.'), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 پرداخت", url=inv["invoice_url"])]]))
+                await call.message.answer(db.get_text('handlers_user.auto_8815c25a', '💠 فاکتور درگاه سفارشی ساخته شد.'), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=tr("🔗 پرداخت"), url=inv["invoice_url"])]]))
             elif method in extra_gateway_registry.GATEWAYS:
                 inv = await extra_gateway_payment.create_invoice_for(db, tenant_id, call.from_user.id, method, "reseller_request", req["id"], amount, label)
                 await extra_gateway_user.present_invoice(call.message, bot, method, inv, "reseller_request", label, amount)
@@ -6188,7 +6252,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             label = f"هزینه نمایندگی #{req['id']}"
             inv = await custom_gateway_payment.create_invoice_for(db, tenant_id, message.from_user.id, key, "reseller_request", req["id"], int(req["price_toman"]), label, customer_phone=phone)
             await state.clear()
-            await message.answer(db.get_text('handlers_user.auto_8815c25a', '💠 فاکتور درگاه سفارشی ساخته شد.'), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 پرداخت", url=inv["invoice_url"])]]))
+            await message.answer(db.get_text('handlers_user.auto_8815c25a', '💠 فاکتور درگاه سفارشی ساخته شد.'), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=tr("🔗 پرداخت"), url=inv["invoice_url"])]]))
         except Exception as e:
             logging.getLogger("handlers_user").exception("reseller custom gateway phone invoice failed")
             await message.answer(str(e)[:180])
@@ -6386,8 +6450,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await state.update_data(resreq_bot_token=token, resreq_bot_username=me.username)
         await state.set_state(ResellerRequestFlow.waiting_owner_id)
         await message.answer(
-            f"✅ توکن معتبر است: @{me.username}\n\n"
-            f"حالا آیدی عددی تلگرام خودتان (که مالک این بات خواهد بود) را ارسال کنید:"
+            tr(f"✅ توکن معتبر است: @{me.username}\n\n"
+            f"حالا آیدی عددی تلگرام خودتان (که مالک این بات خواهد بود) را ارسال کنید:")
         )
 
     @router.message(ResellerRequestFlow.waiting_owner_id)
@@ -6413,9 +6477,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await state.update_data(resreq_owner_id=owner_id)
             await state.set_state(ResellerRequestFlow.waiting_owner_id_confirm)
             await message.answer(
-                f"آیدی عددی وارد‌شده: `{owner_id}`\n\n"
+                tr(f"آیدی عددی وارد‌شده: `{owner_id}`\n\n"
                 "این عدد از این به بعد مالکِ بات نمایندگی و صاحبِ اعتبار/موجودی آن خواهد بود. "
-                "آیا تایید می‌کنید؟",
+                "آیا تایید می‌کنید؟"),
                 parse_mode="Markdown",
                 reply_markup=kb.reseller_owner_id_confirm_kb(),
             )
@@ -6432,10 +6496,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         try:
             await message.bot.send_message(
                 owner_id,
-                f"🏪 کاربری با آیدی عددی {message.from_user.id} درخواست کرده که شما مالکِ یک بات "
+                tr(f"🏪 کاربری با آیدی عددی {message.from_user.id} درخواست کرده که شما مالکِ یک بات "
                 f"نمایندگی (@{req['bot_username']}) با {req['volume_gb']:,} گیگ اعتبار حجمی اولیه باشید.\n\n"
                 "با تایید، این بات و کلِ اعتبار/موجودیِ آن از این پس متعلق به آیدی شما (همین چت) "
-                "خواهد بود. آیا تایید می‌کنید؟",
+                "خواهد بود. آیا تایید می‌کنید؟"),
                 reply_markup=kb.reseller_owner_external_confirm_kb(request_id),
             )
             sent_ok = True
@@ -6444,8 +6508,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
         if sent_ok:
             await message.answer(
-                f"✅ درخواست تاییدِ مالکیت برای آیدی {owner_id} ارسال شد. تا وقتی خودشان تایید نکنند، "
-                "نمایندگی نهایی نمی‌شود.",
+                tr(f"✅ درخواست تاییدِ مالکیت برای آیدی {owner_id} ارسال شد. تا وقتی خودشان تایید نکنند، "
+                "نمایندگی نهایی نمی‌شود."),
                 reply_markup=kb.reseller_request_owner_wait_kb(request_id),
             )
         else:
@@ -6530,8 +6594,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             try:
                 await bot.send_message(
                     requester_id,
-                    "⛔️ این توکن همین الان توسط یک ثبت‌نام دیگر مصرف شد؛ لطفاً یک توکن جدید از @BotFather "
-                    "بگیرید و دوباره ارسال کنید.",
+                    tr("⛔️ این توکن همین الان توسط یک ثبت‌نام دیگر مصرف شد؛ لطفاً یک توکن جدید از @BotFather "
+                    "بگیرید و دوباره ارسال کنید."),
                 )
             except Exception:
                 pass
@@ -6622,11 +6686,11 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         try:
             await bot.send_message(
                 owner_id,
-                f"{status_text}\n\n"
+                tr(f"{status_text}\n\n"
                 f"🤖 بات: @{username}\n"
                 f"📦 اعتبار حجمی تخصیص‌یافته: {req['volume_gb']:,} گیگ\n\n"
                 f"برای شروع، با /start به بات خودتان (@{username}) وارد شوید."
-                f"{web_panel_note}",
+                f"{web_panel_note}"),
                 reply_markup=kb.menu_for_user(db, owner_id, is_main_bot),
             )
         except Exception:
@@ -6635,8 +6699,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             try:
                 await bot.send_message(
                     requester_id,
-                    f"✅ آیدی {owner_id} مالکیت نمایندگی #{req['id']} شما را تایید کرد و راه‌اندازی تکمیل شد.\n"
-                    f"🤖 بات: @{username}",
+                    tr(f"✅ آیدی {owner_id} مالکیت نمایندگی #{req['id']} شما را تایید کرد و راه‌اندازی تکمیل شد.\n"
+                    f"🤖 بات: @{username}"),
                 )
             except Exception:
                 pass
@@ -6644,7 +6708,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             for admin_id in _senior_admin_ids():
                 await bot.send_message(
                     admin_id,
-                    f"✅ نمایندگی #{req['id']} تکمیل شد.\n🤖 بات: @{username}\n👤 مالک: {owner_id}",
+                    tr(f"✅ نمایندگی #{req['id']} تکمیل شد.\n🤖 بات: @{username}\n👤 مالک: {owner_id}"),
                 )
         except Exception:
             pass
@@ -6707,8 +6771,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await user_state.set_state(ResellerRequestFlow.waiting_owner_id)
             await bot.send_message(
                 req["user_id"],
-                f"❌ آیدی {rejected_owner_id} مالکیت نمایندگی #{request_id} شما را نپذیرفت.\n\n"
-                "لطفاً یک آیدی عددی دیگر (یا آیدی عددی خودتان) را ارسال کنید:",
+                tr(f"❌ آیدی {rejected_owner_id} مالکیت نمایندگی #{request_id} شما را نپذیرفت.\n\n"
+                "لطفاً یک آیدی عددی دیگر (یا آیدی عددی خودتان) را ارسال کنید:"),
             )
         except Exception:
             pass
@@ -6717,7 +6781,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     # ارتباط با پشتیبانی
     # -----------------------------------------------------------------------
 
-    @router.message(F.text.func(lambda t: t == db.get_setting("btn_contact")))
+    @router.message(F.text.func(lambda t: t in (db.get_setting("btn_contact"), tr(db.get_setting("btn_contact")))))
     async def contact_start(message: Message, state: FSMContext):
         await state.clear()
         await message.answer(db.get_text('handlers_user.auto_1071350a', 'چطور می\u200cخواهید با پشتیبانی در ارتباط باشید؟'), reply_markup=kb.contact_menu_kb(db))
@@ -7006,7 +7070,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 except (ProvisionError, DirectProvisionError) as e:
                     await asyncio.to_thread(db.reject_order, order_id)
                     await _notify_admins_of_order(bot, order_id)
-                    await message.answer(f"⛔️ {e}\nمبلغ کسرشده از کیف پول شما به‌طور کامل بازگردانده شد.")
+                    await message.answer(tr(f"⛔️ {e}\nمبلغ کسرشده از کیف پول شما به‌طور کامل بازگردانده شد."))
                     return
                 await asyncio.to_thread(db.approve_order_auto, order_id)
                 links = [r["subscription_url"] for r in prov_results]
@@ -7029,8 +7093,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 try:
                     await bot.send_message(
                         referrer_id,
-                        f"🤝 تبریک! یکی از زیرمجموعه‌های شما اولین خرید خود را انجام داد.\n"
-                        f"💰 {reward_amount:,} تومان به کیف پول شما اضافه شد.",
+                        tr(f"🤝 تبریک! یکی از زیرمجموعه‌های شما اولین خرید خود را انجام داد.\n"
+                        f"💰 {reward_amount:,} تومان به کیف پول شما اضافه شد."),
                     )
                 except Exception:
                     pass
@@ -7153,7 +7217,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await message.answer(db.get_text('handlers_user.auto_1e7d994f', '⛔️ لینکی برای ساخت کیوآر پیدا نشد.'))
             return
         photo = BufferedInputFile(build_qr_bytes(link, db=db), filename="config_qr.png")
-        await bot.send_photo(user_id, photo, caption="⬜ کیوآر کانفیگ شما")
+        await bot.send_photo(user_id, photo, caption=tr("⬜ کیوآر کانفیگ شما"))
 
     async def _ai_send_individual_configs(message: Message, bot: Bot, service_id) -> None:
         user_id = message.from_user.id
@@ -7196,7 +7260,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             provider = get_provider(server)
             await provider.set_enabled(cc["username"], new_enabled)
         except PanelError as e:
-            await message.answer(f"⛔️ ناموفق بود: {e}")
+            await message.answer(tr(f"⛔️ ناموفق بود: {e}"))
             return
         (await asyncio.to_thread(db.set_custom_config_enabled, cc["id"], user_id, new_enabled))
         (await asyncio.to_thread(
@@ -7293,8 +7357,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await message.answer(db.get_text('handlers_user.auto_600977af', '⛔️ آن کاربر بات را استارت نکرده یا آی\u200cدی نادرست است.'))
             return
         await message.answer(
-            f"⚠️ این عملیات غیرقابل‌بازگشت است: سرویس برای همیشه به کاربر با آی‌دی "
-            f"{target_telegram_id} منتقل می‌شود.\nبرای تایید نهایی روی دکمه‌ی زیر بزن:",
+            tr(f"⚠️ این عملیات غیرقابل‌بازگشت است: سرویس برای همیشه به کاربر با آی‌دی "
+            f"{target_telegram_id} منتقل می‌شود.\nبرای تایید نهایی روی دکمه‌ی زیر بزن:"),
             reply_markup=kb.service_transfer_confirm_kb(str(service_id), target_telegram_id),
         )
 
@@ -7326,10 +7390,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         ticket_text = (f"کاربر گزارش اختلال سرویس را ثبت کرد.\n\nنام کاربری پنل: {cc['username']}\n"
                        f"شناسه سرویس: {cc['id']}\nپنل: {cc['panel_server_id'] or '-'}")
         ticket_id = await asyncio.to_thread(db.create_ticket, call.from_user.id, subject, ticket_text, dep["id"] if dep else None)
-        await call.message.answer(f"✅ گزارش اختلال ثبت شد. شماره تیکت: #{ticket_id}\nبخش فنی در حال بررسی است.")
+        await call.message.answer(tr(f"✅ گزارش اختلال ثبت شد. شماره تیکت: #{ticket_id}\nبخش فنی در حال بررسی است."))
         for admin_id in await asyncio.to_thread(db.list_ticket_admin_ids_for_department, dep["id"] if dep else None):
             try:
-                await bot.send_message(admin_id, f"⚠️ گزارش اختلال جدید #{ticket_id}\n👤 {call.from_user.id}\n📌 {subject}\n\n{ticket_text}", reply_markup=kb.ticket_admin_notify_kb(ticket_id))
+                await bot.send_message(admin_id, tr(f"⚠️ گزارش اختلال جدید #{ticket_id}\n👤 {call.from_user.id}\n📌 {subject}\n\n{ticket_text}"), reply_markup=kb.ticket_admin_notify_kb(ticket_id))
             except Exception:
                 logging.getLogger("handlers_user").exception("اعلان اختلال #%s به ادمین %s ناموفق بود", ticket_id, admin_id)
         await call.answer(db.get_text('handlers_user.auto_82dd141f', 'گزارش ثبت شد'))
@@ -7362,7 +7426,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         cc = item["custom"]
         rating = int(value_s)
         await asyncio.to_thread(db.rate_service, call.from_user.id, cc["id"], cc["panel_server_id"], rating)
-        await call.answer(f"⭐ امتیاز {rating}/۵ ثبت شد. ممنون از بازخوردت!", show_alert=True)
+        await call.answer(tr(f"⭐ امتیاز {rating}/۵ ثبت شد. ممنون از بازخوردت!"), show_alert=True)
         await _safe_edit(
             call.message,
             f"⭐ امتیاز شما برای «{cc['display_name'] or cc['username']}»: {rating}/۵ ثبت شد.",
@@ -7439,7 +7503,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                     "ارسال اطلاع تیکت #%s کاربر %s به ادمین %s ناموفق بود.", ticket_id, user.id, admin_id
                 )
         await message.answer(
-            f"✅ تیکت شما با شماره #{ticket_id} ثبت شد. به زودی پاسخ داده می‌شود.",
+            tr(f"✅ تیکت شما با شماره #{ticket_id} ثبت شد. به زودی پاسخ داده می‌شود."),
             reply_markup=kb.menu_for_user(db, user.id, is_main_bot),
         )
         await _send_inline_main_menu(message, user.id)
@@ -7574,7 +7638,12 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         # زیر که message.from_user.id می‌خوانند درست کار کنند
         fake_message = call.message.model_copy(update={"from_user": call.from_user})
 
-        if key == "btn_buy":
+        if key == "language":
+            await fake_message.answer(
+                db.get_text("handlers_user.language.choose", "لطفاً زبان موردنظر را انتخاب کنید:"),
+                reply_markup=kb.language_kb(db),
+            )
+        elif key == "btn_buy":
             await show_categories(fake_message, state)
         elif key == "btn_test":
             await get_test_config(fake_message)

@@ -13,6 +13,8 @@ import logging
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject, Message, CallbackQuery
 
+from i18n import tr
+
 logger = logging.getLogger(__name__)
 
 BLOCKED_MESSAGE = "⛔️ حساب شما توسط مدیریت مسدود شده است. برای پیگیری با پشتیبانی تماس بگیرید."
@@ -59,7 +61,7 @@ class BlockedUserMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         if isinstance(event, CallbackQuery):
-            await event.answer(BLOCKED_MESSAGE, show_alert=True)
+            await event.answer(tr(BLOCKED_MESSAGE), show_alert=True)
         elif isinstance(event, Message):
-            await event.answer(BLOCKED_MESSAGE)
+            await event.answer(tr(BLOCKED_MESSAGE))
         return  # هندلر اصلی اجرا نمی‌شود

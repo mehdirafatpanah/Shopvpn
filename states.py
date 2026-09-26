@@ -94,6 +94,10 @@ class AdminSetOpenRouterKey(StatesGroup):
     waiting_key = State()
 
 
+class AdminSetTranslationGeminiKey(StatesGroup):
+    waiting_key = State()
+
+
 class AdminAddCategory(StatesGroup):
     waiting_name = State()
 
@@ -109,6 +113,9 @@ class AdminAddProduct(StatesGroup):
     waiting_provision_duration_mode = State()
     waiting_auto_provision_volume_mode = State()
     waiting_auto_provision_volume = State()
+    waiting_base_users = State()
+    waiting_user_extra_price = State()
+    waiting_user_max = State()
     waiting_payment_methods = State()
 
 
@@ -203,6 +210,13 @@ class AdminBroadcast(StatesGroup):
     waiting_no_purchase_days = State()
 
 
+class AdminBulkDiscount(StatesGroup):
+    picking_filters = State()
+    waiting_no_purchase_days = State()
+    waiting_type_value = State()
+    waiting_expiry = State()
+
+
 class AdminXuiInbound(StatesGroup):
     waiting_protocol = State()
     waiting_network = State()
@@ -258,12 +272,14 @@ class AdminCreateWalletGift(StatesGroup):
 class AdminCreateDiscount(StatesGroup):
     waiting_code = State()
     waiting_type_value = State()
+    waiting_max_discount_amount = State()
     waiting_maxuses = State()
     waiting_min_purchase = State()
     waiting_max_purchase = State()
     waiting_scope = State()
     waiting_scope_category = State()
     waiting_scope_product = State()
+    waiting_scope_products_multi = State()
     waiting_expiry = State()
     waiting_per_user = State()
     waiting_first_only = State()
@@ -444,6 +460,7 @@ class AdminAddPanelServer(StatesGroup):
 class AdminEditProduct(StatesGroup):
     waiting_volume = State()
     waiting_sub_base_url = State()
+    waiting_user_base = State()
     waiting_user_extra_price = State()
     waiting_user_max = State()
 
@@ -483,6 +500,18 @@ class AdminLocationTransferSettings(StatesGroup):
 
 class AdminUserFullStats(StatesGroup):
     waiting_identifier = State()
+
+
+class AdminUserManage(StatesGroup):
+    waiting_message_text = State()
+    waiting_wallet_amount = State()
+    waiting_discount_type_value = State()
+    waiting_discount_expiry = State()
+
+
+class AdminConfigManage(StatesGroup):
+    waiting_rename = State()
+    waiting_transfer_target = State()
 
 
 class AdminSetPanelTemplate(StatesGroup):

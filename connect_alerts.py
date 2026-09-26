@@ -22,6 +22,7 @@ import logging
 from datetime import datetime, timezone
 
 from sub_info import fetch_sub_info
+from notification_i18n import send_telegram
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,7 @@ async def _process_row(bot, db, row, is_custom: bool, settings: dict) -> tuple:
                 settings["connect_text"], used_gb, settings["connect_threshold_mb"] / 1024,
             )
             try:
-                await bot.send_message(user_id, text)
+                await send_telegram(bot, db, user_id, text)
             except Exception:
                 logger.warning("ارسال هشدار اتصال به کاربر %s ناموفق بود.", user_id)
             await _db(db.mark_connect_alert_sent, config_id, is_custom)
@@ -118,7 +119,7 @@ async def _process_row(bot, db, row, is_custom: bool, settings: dict) -> tuple:
                         settings["no_connect_text"], used_gb, settings["no_connect_threshold_mb"] / 1024,
                     )
                     try:
-                        await bot.send_message(user_id, text)
+                        await send_telegram(bot, db, user_id, text)
                     except Exception:
                         logger.warning("ارسال هشدار عدم‌اتصال به کاربر %s ناموفق بود.", user_id)
                     await _db(db.mark_no_connect_alert_sent, config_id, is_custom)

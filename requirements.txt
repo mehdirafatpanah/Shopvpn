@@ -13,3 +13,6 @@ asyncssh>=2.14.0
 google-genai>=0.5.0
 PyJWT>=2.8.0
 cryptography>=41.0.0
+
+# Automatic multi-language translation
+deep-translator>=1.11.4

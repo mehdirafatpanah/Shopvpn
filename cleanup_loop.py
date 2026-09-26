@@ -1,3 +1,4 @@
+from i18n import tr
 # -*- coding: utf-8 -*-
 """پاکسازی دوره‌ای سرویس‌های منقضی (F14).
 
@@ -14,6 +15,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
+from notification_i18n import send_telegram
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 import report_router
@@ -50,10 +52,10 @@ async def _notify_user(bot: Bot, user_id: int, text: str, product_id=None):
     markup = None
     if product_id:
         markup = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🛒 خرید سرویس جدید", callback_data=f"prod:{int(product_id)}")
+            InlineKeyboardButton(text=tr("🛒 خرید سرویس جدید"), callback_data=f"prod:{int(product_id)}")
         ]])
     try:
-        await bot.send_message(user_id, text, reply_markup=markup)
+        await send_telegram(bot, db, user_id, text, reply_markup=markup)
     except Exception as exc:
         logger.info("ارسال پیام پاکسازی به کاربر %s ناموفق بود: %s", user_id, exc)
 

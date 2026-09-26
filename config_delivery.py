@@ -1,3 +1,4 @@
+from i18n import tr
 # -*- coding: utf-8 -*-
 """
 تحویل حرفه‌ای کانفیگ به کاربر
@@ -27,6 +28,7 @@ from aiogram.types import BufferedInputFile
 import config
 from jalali import to_jalali_str
 from sub_info import fetch_individual_links
+from notification_i18n import localized, user_language
 
 # -----------------------------------------------------------------------
 # تصویر پس‌زمینه‌ی سفارشی برای کد QR کانفیگ (فعلاً فقط از داخل خودِ بات اصلی
@@ -195,17 +197,17 @@ def build_summary_text(final_price: int, total: int) -> str:
     return summary
 
 
-async def send_individual_configs(bot: Bot, user_tg_id: int, links: list) -> None:
+async def send_individual_configs(bot: Bot, user_tg_id: int, links: list, db=None) -> None:
     """نسخه‌ی عمومی، برای استفاده از خارج این ماژول (مثلاً فلوی کانفیگ تست در handlers_user.py)."""
-    await _send_individual_configs(bot, user_tg_id, links)
+    await _send_individual_configs(bot, user_tg_id, links, db=db)
 
 
-async def _send_individual_configs(bot: Bot, user_tg_id: int, links: list) -> None:
+async def _send_individual_configs(bot: Bot, user_tg_id: int, links: list, db=None) -> None:
     """کانفیگ‌های تکی داخل یک اشتراک را در قالب یک یا چند پیام (با رعایت سقف
     ۴۰۹۶ کاراکتری تلگرام) ارسال می‌کند. خطای احتمالی (مثلاً پارس مارک‌داون)
     نباید مانع تحویل اصلی سفارش شود، پس کاملاً silent-fail است.
     """
-    header = "📋 کانفیگ‌های تکی این اشتراک (اگه لینک اشتراک رو نتونستی مستقیم اضافه کنی، هرکدوم از این‌ها رو تکی وارد کن):\n\n"
+    header = localized("📋 کانفیگ‌های تکی این اشتراک (اگه لینک اشتراک رو نتونستی مستقیم اضافه کنی، هرکدوم از این‌ها رو تکی وارد کن):\n\n", db, user_tg_id)
     chunk = header
     chunks = []
     for c in links:
@@ -219,10 +221,10 @@ async def _send_individual_configs(bot: Bot, user_tg_id: int, links: list) -> No
 
     for part in chunks:
         try:
-            await bot.send_message(user_tg_id, part, parse_mode="Markdown")
+            await bot.send_message(user_tg_id, localized(part, db, user_tg_id), parse_mode="Markdown")
         except Exception:
             try:
-                await bot.send_message(user_tg_id, part)
+                await bot.send_message(user_tg_id, localized(part, db, user_tg_id))
             except Exception:
                 pass
 
@@ -290,8 +292,9 @@ async def deliver_config_to_user(
             category_name = None
 
     for idx, link in enumerate(links, start=1):
-        caption = build_delivery_caption(
-            product_name, idx, total, order_id, category_name=category_name
+        caption = localized(
+            build_delivery_caption(product_name, idx, total, order_id, category_name=category_name),
+            db, user_tg_id,
         )
 
         try:
@@ -299,19 +302,19 @@ async def deliver_config_to_user(
             await bot.send_photo(user_tg_id, qr_photo, caption=caption)
         except Exception:
             # اگر ساخت/ارسال QR به هر دلیلی ناموفق بود، حداقل متن اطلاعات برای کاربر ارسال شود
-            await bot.send_message(user_tg_id, caption)
+            await bot.send_message(user_tg_id, localized(caption, db, user_tg_id))
 
         if sub_link_on:
             await bot.send_message(
                 user_tg_id,
-                f"🔗 لینک اشتراک شما (برای کپی):\n`{link}`",
+                localized(f"🔗 لینک اشتراک شما (برای کپی):\n`{link}`", db, user_tg_id),
                 parse_mode="Markdown",
             )
             alternates = await asyncio.to_thread(db.get_alternate_sub_urls, link) if db is not None else []
             if alternates:
                 await bot.send_message(
                     user_tg_id,
-                    "🔁 لینک‌های جایگزین (اگر لینک بالا باز نشد):\n" + "\n".join(f"`{u}`" for u in alternates),
+                    localized("🔁 لینک‌های جایگزین (اگر لینک بالا باز نشد):\n", db, user_tg_id) + "\n".join(f"`{u}`" for u in alternates),
                     parse_mode="Markdown",
                 )
 
@@ -321,10 +324,10 @@ async def deliver_config_to_user(
             except Exception:
                 individual_links = []
             if individual_links:
-                await _send_individual_configs(bot, user_tg_id, individual_links)
+                await _send_individual_configs(bot, user_tg_id, individual_links, db=db)
 
     if final_price is not None:
-        await bot.send_message(user_tg_id, build_summary_text(final_price, total))
+        await bot.send_message(user_tg_id, localized(build_summary_text(final_price, total), db, user_tg_id))
 
     post_text = get_post_delivery_text(db)
     if post_text:

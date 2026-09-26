@@ -1,3 +1,4 @@
+from i18n import tr
 # -*- coding: utf-8 -*-
 """
 Middleware عضویت اجباری در کانال.
@@ -27,8 +28,8 @@ def _join_keyboard(channel: str) -> InlineKeyboardMarkup:
     link = f"https://t.me/{channel_display}"
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📢 عضویت در کانال", url=link)],
-            [InlineKeyboardButton(text="✅ بررسی مجدد عضویت", callback_data=CHECK_CALLBACK)],
+            [InlineKeyboardButton(text=tr("📢 عضویت در کانال"), url=link)],
+            [InlineKeyboardButton(text=tr("✅ بررسی مجدد عضویت"), callback_data=CHECK_CALLBACK)],
         ]
     )
 
@@ -93,7 +94,7 @@ class ForceJoinMiddleware(BaseMiddleware):
         text = "برای استفاده از بات، ابتدا باید در کانال زیر عضو شوید؛ سپس دکمه‌ی «بررسی مجدد عضویت» را بزنید:"
         markup = _join_keyboard(settings["channel"])
         if isinstance(event, CallbackQuery):
-            await event.answer("هنوز عضو کانال نشده‌اید.", show_alert=True)
+            await event.answer(tr("هنوز عضو کانال نشده‌اید."), show_alert=True)
             try:
                 await event.message.answer(text, reply_markup=markup)
             except Exception:

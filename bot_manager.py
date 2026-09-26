@@ -46,6 +46,8 @@ from report_router import ReportGroupGuardMiddleware
 from global_switch import GlobalBotSwitchMiddleware
 import keyboards as kb
 import tutorial_hub
+from i18n import tr, set_language, reset_language, normalize_language
+from broadcast_i18n import send_scheduled_broadcast
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +62,7 @@ async def scheduled_broadcast_loop(bot, db):
                 sent=failed=0
                 for uid in user_ids:
                     try:
-                        await bot.send_message(uid, job["message_text"])
+                        await send_scheduled_broadcast(bot, uid, job["message_text"])
                         sent+=1
                     except Exception:
                         failed+=1
@@ -71,6 +73,30 @@ async def scheduled_broadcast_loop(bot, db):
         except Exception:
             logger.exception("scheduled broadcast loop failed")
         await asyncio.sleep(20)
+
+
+class LanguageMiddleware:
+    """Loads the user's persisted language for every Telegram update."""
+    def __init__(self, db):
+        self.db = db
+
+    async def __call__(self, handler, event, data: dict):
+        user = data.get("event_from_user")
+        token = None
+        try:
+            if user is not None:
+                try:
+                    row = await asyncio.to_thread(self.db.get_user, user.id)
+                except Exception:
+                    row = None
+                language = (row["language_code"] if row and "language_code" in row.keys() else None)
+                language = normalize_language(language or getattr(user, "language_code", None))
+                catalog = await asyncio.to_thread(self.db.translation_catalog, language) if language not in {"fa", "en"} and await asyncio.to_thread(self.db.get_language, language) else None
+                token = set_language(language, catalog)
+            return await handler(event, data)
+        finally:
+            if token is not None:
+                reset_language(token)
 
 
 class AdminPresenceMiddleware:
@@ -126,7 +152,7 @@ async def _global_error_handler(event: ErrorEvent) -> bool:
     cq = event.update.callback_query
     if cq is not None:
         try:
-            await cq.answer("⚠️ خطایی رخ داد، دوباره تلاش کنید.", show_alert=False)
+            await cq.answer(tr("⚠️ خطایی رخ داد، دوباره تلاش کنید."), show_alert=False)
         except Exception:
             pass
         return True
@@ -139,7 +165,7 @@ async def _global_error_handler(event: ErrorEvent) -> bool:
     msg = event.update.message
     if msg is not None:
         try:
-            await msg.answer("⚠️ در پردازش پیام شما خطایی رخ داد. لطفاً دوباره تلاش کنید یا با پشتیبانی تماس بگیرید.")
+            await msg.answer(tr("⚠️ در پردازش پیام شما خطایی رخ داد. لطفاً دوباره تلاش کنید یا با پشتیبانی تماس بگیرید."))
         except Exception:
             pass
     return True
@@ -213,7 +239,7 @@ class BotManager:
         try:
             if miniapp_url:
                 await bot.set_chat_menu_button(
-                    menu_button=MenuButtonWebApp(text="فروشگاه", web_app=WebAppInfo(url=miniapp_url))
+                    menu_button=MenuButtonWebApp(text=tr("فروشگاه"), web_app=WebAppInfo(url=miniapp_url))
                 )
             else:
                 await bot.set_chat_menu_button(menu_button=MenuButtonDefault())
@@ -250,6 +276,10 @@ class BotManager:
             fsm_storage = MemoryStorage()
         dp = Dispatcher(storage=fsm_storage)
         dp.errors.register(_global_error_handler)
+        language_mw = LanguageMiddleware(db)
+        dp.message.outer_middleware(language_mw)
+        dp.callback_query.outer_middleware(language_mw)
+
 
         report_guard_mw = ReportGroupGuardMiddleware(db)
         dp.message.outer_middleware(report_guard_mw)

@@ -33,6 +33,7 @@ import os
 import time
 
 import aiohttp
+from notification_i18n import localized_payload
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +191,21 @@ async def send_to_tokens(db, tokens: list, title: str, body: str, data: dict = N
     return invalid_tokens
 
 
-async def send_test(db, token: str) -> dict:
+async def send_to_admins(db, token_rows: list, payload: dict, data: dict = None) -> list:
+    """Send one localized FCM payload per admin/device. Returns invalid tokens."""
+    invalid = []
+    for row in token_rows or []:
+        token = row["fcm_token"] if isinstance(row, dict) or hasattr(row, "keys") else row
+        admin_id = row["admin_id"] if isinstance(row, dict) or hasattr(row, "keys") else None
+        localized = localized_payload(db, int(admin_id), payload) if admin_id is not None else payload
+        bad = await send_to_tokens(
+            db, [token], localized.get("title", "ShopVPN"), localized.get("body", ""), data=data
+        )
+        invalid.extend(bad)
+    return invalid
+
+
+async def send_test(db, token: str, admin_id: int | None = None) -> dict:
     """یک پوش تک‌توکنی می‌فرستد و به‌جای فقط لاگ‌کردن، جزئیات خام پاسخ گوگل را
     برمی‌گرداند - برای دکمه‌ی «تست پوش» در پنل. بدون این، وقتی پوشی نمی‌رسد
     راهی برای تشخیص علت (سرویس‌اکانت نامعتبر؟ توکن مال پروژه‌ی دیگری‌ست؟ خودِ
@@ -217,8 +232,8 @@ async def send_test(db, token: str) -> dict:
         "message": {
             "token": token,
             "data": {
-                "title": "🔔 اعلان تست",
-                "body": "این یک پیام آزمایشی از پنل مدیریت ShopVPN است.",
+                "title": localized_payload(db, admin_id, {"title": "🔔 اعلان تست"}).get("title", "🔔 اعلان تست") if admin_id is not None else "🔔 اعلان تست",
+                "body": localized_payload(db, admin_id, {"body": "این یک پیام آزمایشی از پنل مدیریت ShopVPN است."}).get("body", "این یک پیام آزمایشی از پنل مدیریت ShopVPN است.") if admin_id is not None else "این یک پیام آزمایشی از پنل مدیریت ShopVPN است.",
             },
             "android": {"priority": "high"},
         }
