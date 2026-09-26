@@ -11151,9 +11151,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             _bg_lang_tasks.add(code)
             asyncio.create_task(_bg_generate_language(call.bot, code, call.from_user.id))
             await call.answer(
-                tr("⏳ تولید ترجمه در پس‌زمینه شروع شد؛ هرچقدر طول بکشد (حتی چند ساعت) ادامه می‌یابد "
-                   "و با ترکیب همه‌ی ارائه‌دهنده‌های فعال (از جمله LibreTranslate) تا اتمام کامل تلاش می‌کند. "
-                   "بعد از تکمیل، پیام تأیید برایت ارسال می‌شود."),
+                tr("⏳ تولید ترجمه در پس‌زمینه شروع شد؛ هرچقدر طول بکشد ادامه می‌یابد "
+                   "و پس از تکمیل، پیام تأیید برایت ارسال می‌شود."),
                 show_alert=True,
             )
         await replace_admin_view(
