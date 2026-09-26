@@ -2,6 +2,29 @@
 from .constants import *
 
 class UsersMixin:
+    def get_user_language(self, tg_id: int) -> str:
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT language_code FROM users WHERE telegram_id=?", (tg_id,)).fetchone()
+        code = (row["language_code"] if row and row["language_code"] else "fa")
+        try:
+            from i18n import is_language_enabled, normalize_language
+            code = normalize_language(code)
+            if not is_language_enabled(self, code):
+                return "fa"
+        except Exception:
+            return "fa"
+        return code
+
+    def set_user_language(self, tg_id: int, language_code: str) -> bool:
+        from i18n import normalize_language
+        lang = normalize_language(language_code)
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "UPDATE users SET language_code=? WHERE telegram_id=?",
+                (lang, tg_id),
+            )
+        return cur.rowcount > 0
+
     def set_user_phone(self, tg_id: int, phone: str) -> bool:
         phone = (phone or "").strip()
         if len(phone) < 7:

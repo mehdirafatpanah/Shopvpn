@@ -1249,6 +1249,27 @@ class OrdersMixin:
         return updated
 
 
+    def admin_adjust_wallet(self, tg_id: int, amount: int, note: str = None):
+        """موجودی کیف‌پول یک کاربر مشخص را به‌صورت دستی توسط ادمین تغییر می‌دهد
+        (amount می‌تواند مثبت یا منفی باشد؛ بدون سقف، می‌تواند کاربر را بدهکار
+        کند). موجودی جدید را برمی‌گرداند، یا None اگر کاربر یافت نشد."""
+        amount = int(amount)
+        if amount == 0:
+            return None
+        with self._get_conn() as conn:
+            with _wallet_tag(conn, tg_id, "admin_adjust", note):
+                cur = conn.execute(
+                    "UPDATE users SET referral_credit = referral_credit + ? WHERE telegram_id=?",
+                    (amount, tg_id),
+                )
+                if cur.rowcount == 0:
+                    return None
+            row = conn.execute(
+                "SELECT referral_credit FROM users WHERE telegram_id=?", (tg_id,)
+            ).fetchone()
+            return row["referral_credit"] if row else None
+
+
     def get_wallet_transactions(self, user_tg_id: int, limit: int = 10):
         with self._get_conn() as conn:
             return conn.execute(
@@ -1403,18 +1424,22 @@ class OrdersMixin:
         expires_at: str = None, source: str = "admin", min_purchase: int = None,
         max_purchase: int = None, product_id: int = None, category_id: int = None,
         per_user_limit: int = None, first_purchase_only: bool = False, audience: str = "all",
+        max_discount_amount: int = None, product_ids: list = None,
     ) -> int:
         per_user_limit = int(per_user_limit) if per_user_limit and int(per_user_limit) > 0 else None
         audience = audience if audience in ("all", "normal", "reseller") else "all"
+        product_ids_value = json.dumps([int(p) for p in product_ids], ensure_ascii=False) if product_ids else None
         with self._get_conn() as conn:
             cur = conn.execute(
                 "INSERT INTO discount_codes (code, percent, fixed_amount, max_uses, expires_at, source, "
-                "min_purchase, max_purchase, product_id, category_id, per_user_limit, first_purchase_only, audience) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "min_purchase, max_purchase, product_id, category_id, per_user_limit, first_purchase_only, audience, "
+                "max_discount_amount, product_ids) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     code.strip().upper(), percent, fixed_amount, max_uses, expires_at, source,
                     min_purchase or None, max_purchase or None, product_id or None, category_id or None,
                     per_user_limit, 1 if first_purchase_only else 0, audience,
+                    max_discount_amount or None, product_ids_value,
                 ),
             )
             return cur.lastrowid
@@ -1423,14 +1448,20 @@ class OrdersMixin:
     def update_discount_code(
         self, code_id: int, min_purchase: int = None, max_purchase: int = None,
         product_id: int = None, category_id: int = None, expires_at: str = None,
+        max_discount_amount: int = None, product_ids: list = None,
     ) -> None:
-        """ویرایش محدودیت‌های یک کد تخفیف موجود (حداقل/حداکثر خرید، محصول/دسته‌ی
-        اختصاصی، تاریخ انقضا). مقادیر None یعنی «بدون محدودیت» برای همان فیلد."""
+        """ویرایش محدودیت‌های یک کد تخفیف موجود (حداقل/حداکثر خرید، سقف مبلغ
+        تخفیف، محصول/دسته‌ی اختصاصی یا چند محصول خاص، تاریخ انقضا). مقادیر
+        None یعنی «بدون محدودیت» برای همان فیلد."""
+        product_ids_value = json.dumps([int(p) for p in product_ids], ensure_ascii=False) if product_ids else None
         with self._get_conn() as conn:
             conn.execute(
                 "UPDATE discount_codes SET min_purchase=?, max_purchase=?, product_id=?, "
-                "category_id=?, expires_at=? WHERE id=?",
-                (min_purchase or None, max_purchase or None, product_id or None, category_id or None, expires_at, code_id),
+                "category_id=?, expires_at=?, max_discount_amount=?, product_ids=? WHERE id=?",
+                (
+                    min_purchase or None, max_purchase or None, product_id or None, category_id or None,
+                    expires_at, max_discount_amount or None, product_ids_value, code_id,
+                ),
             )
 
 
@@ -1446,8 +1477,16 @@ class OrdersMixin:
             return conn.execute("SELECT * FROM discount_codes WHERE id=?", (code_id,)).fetchone()
 
 
-    def list_discount_codes(self):
+    def list_discount_codes(self, exclude_source: str = None):
+        """لیست کدهای تخفیف. exclude_source برای پنهان‌کردن کدهای گروهیِ تک‌کاربره
+        (source='bulk_admin') از صفحات مدیریتی که هر کد را با دکمه‌ی جدا نشان
+        می‌دهند - چون تعدادشان می‌تواند صدها/هزاران باشد و کیبورد تلگرام را
+        بشکند؛ خودِ کدها در دیتابیس و در گزارش‌ها/API دست‌نخورده می‌مانند."""
         with self._get_conn() as conn:
+            if exclude_source:
+                return conn.execute(
+                    "SELECT * FROM discount_codes WHERE source IS NOT ? ORDER BY id DESC", (exclude_source,)
+                ).fetchall()
             return conn.execute("SELECT * FROM discount_codes ORDER BY id DESC").fetchall()
 
 
@@ -1553,7 +1592,15 @@ class OrdersMixin:
 
         row_product_id = row["product_id"] if "product_id" in row.keys() else None
         row_category_id = row["category_id"] if "category_id" in row.keys() else None
-        if row_product_id:
+        row_product_ids_raw = row["product_ids"] if "product_ids" in row.keys() else None
+        if row_product_ids_raw:
+            try:
+                allowed_product_ids = {int(p) for p in json.loads(row_product_ids_raw)}
+            except (ValueError, TypeError):
+                allowed_product_ids = set()
+            if product_id is None or int(product_id) not in allowed_product_ids:
+                return "این کد تخفیف فقط برای چند محصول خاص معتبر است."
+        elif row_product_id:
             if product_id is None or int(product_id) != int(row_product_id):
                 return "این کد تخفیف فقط برای یک محصول خاص معتبر است."
         elif row_category_id:
@@ -1584,10 +1631,35 @@ class OrdersMixin:
 
     def compute_discount_amount(self, row, price: int) -> int:
         if row["percent"]:
-            return min((price * row["percent"]) // 100, price)
+            amount = (price * row["percent"]) // 100
+            max_discount_amount = row["max_discount_amount"] if "max_discount_amount" in row.keys() else None
+            if max_discount_amount:
+                amount = min(amount, max_discount_amount)
+            return min(amount, price)
         if row["fixed_amount"]:
             return min(row["fixed_amount"], price)
         return 0
+
+
+    def get_discount_product_ids(self, row) -> list:
+        """لیست شناسه‌ی محصولاتِ حالت «چند محصول خاص» یک کد تخفیف (ستون
+        product_ids، JSON)؛ اگر تنظیم نشده باشد لیست خالی برمی‌گرداند."""
+        raw = row["product_ids"] if "product_ids" in row.keys() else None
+        if not raw:
+            return []
+        try:
+            return [int(p) for p in json.loads(raw)]
+        except (ValueError, TypeError):
+            return []
+
+
+    def get_discount_product_names(self, row) -> list:
+        names = []
+        for pid in self.get_discount_product_ids(row):
+            product = self.get_product(pid)
+            if product:
+                names.append(product["name"])
+        return names
 
     # -----------------------------------------------------------------------
     # شارژ کیف پول
@@ -2156,6 +2228,31 @@ class OrdersMixin:
             code, percent=percent, max_uses=1, expires_at=expires_at, source="wheel"
         )
         return code, expires_at
+
+    def generate_bulk_discount_codes(
+        self, user_ids: list, percent: int = None, fixed_amount: int = None, expires_at: str = None,
+    ) -> list:
+        """برای هر کاربر در user_ids یک کد تخفیف یکبارمصرف و یکتا می‌سازد (کد تخفیف
+        گروهی بر اساس فیلتر، پنل مدیریت). هر کد فقط برای همان کاربر و فقط یک‌بار
+        قابل استفاده است (max_uses=1, per_user_limit=1). خروجی: [(user_id, code), ...]
+        - user_id هایی که به هر دلیل کد برایشان ساخته نشد (برخورد نام تصادفی پس از
+        چند تلاش) در خروجی نمی‌آیند."""
+        results = []
+        for uid in user_ids:
+            code = None
+            for _ in range(5):
+                candidate = f"BULK{uid}{secrets.randbelow(9000) + 1000}"
+                if not self.get_discount_code(candidate):
+                    code = candidate
+                    break
+            if not code:
+                continue
+            self.create_discount_code(
+                code, percent=percent, fixed_amount=fixed_amount, max_uses=1,
+                expires_at=expires_at, source="bulk_admin", per_user_limit=1,
+            )
+            results.append((uid, code))
+        return results
 
     # -----------------------------------------------------------------------
     # یادآوری اتمام سرویس + کد تخفیف تشویقی تمدید

@@ -1,3 +1,5 @@
+from i18n import tr
+from notification_i18n import send_telegram
 # -*- coding: utf-8 -*-
 from .constants import *
 
@@ -250,21 +252,21 @@ class ResellersMixin:
                         try:
                             tier = await asyncio.to_thread(self.get_reseller_tier, item["tier_code"])
                             label = f"{tier['icon']} {tier['title']}" if tier else item["tier_code"]
-                            await bot.send_message(item["user_id"], f"⏳ یادآوری انقضای نمایندگی\n\nسطح: {label}\nفقط {item['days']} روز تا پایان عضویت باقی مانده است.\nتاریخ انقضا: {item['expires_at']}\n\nبرای تمدید، هزینه‌ی دوره‌ی بعدی از کیف پول اعتباری کسر می‌شود.")
+                            await send_telegram(bot, db, item["user_id"], tr(f"⏳ یادآوری انقضای نمایندگی\n\nسطح: {label}\nفقط {item['days']} روز تا پایان عضویت باقی مانده است.\nتاریخ انقضا: {item['expires_at']}\n\nبرای تمدید، هزینه‌ی دوره‌ی بعدی از کیف پول اعتباری کسر می‌شود."))
                         except Exception:
                             logger.exception("ارسال یادآوری نمایندگی به %s ناموفق بود", item["user_id"])
                 expired = await asyncio.to_thread(self.process_reseller_expiries)
                 if bot is not None:
                     for item in expired:
                         try:
-                            await bot.send_message(item["user_id"], "⚠️ عضویت نمایندگی شما منقضی شد. تنظیمات و دسترسی‌های نمایندگی غیرفعال شدند؛ سرویس‌های ساخته‌شده‌ی شما حذف نشده‌اند. برای ادامه، دوباره درخواست/تمدید نمایندگی ثبت کنید.")
+                            await send_telegram(bot, db, item["user_id"], tr("⚠️ عضویت نمایندگی شما منقضی شد. تنظیمات و دسترسی‌های نمایندگی غیرفعال شدند؛ سرویس‌های ساخته‌شده‌ی شما حذف نشده‌اند. برای ادامه، دوباره درخواست/تمدید نمایندگی ثبت کنید."))
                         except Exception:
                             logger.exception("ارسال پیام انقضای نمایندگی به %s ناموفق بود", item["user_id"])
                     report_chat_id = self.get_setting("report_chat_id", "")
                     if report_chat_id:
                         for item in expired:
                             try:
-                                await bot.send_message(report_chat_id, f"⏰ انقضای نمایندگی | کاربر {item['user_id']} | سطح {item['tier_code']}")
+                                await bot.send_message(report_chat_id, tr(f"⏰ انقضای نمایندگی | کاربر {item['user_id']} | سطح {item['tier_code']}"))
                             except Exception:
                                 pass
             except Exception:

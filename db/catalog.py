@@ -251,17 +251,29 @@ class CatalogMixin:
 
     def add_product(self, category_id: int, name: str, price: int, description: str = "", duration_days: int = 30,
                      is_auto_provision: bool = False, auto_provision_volume_gb: int = None,
-                     provision_server_id: int = None, payment_methods=None) -> int:
+                     provision_server_id: int = None, payment_methods=None,
+                     base_users: int = 0, extra_user_price: int = 0, max_users: int = 0) -> int:
         """payment_methods: None/[] یعنی «همه‌ی روش‌های پرداخت مجازند» (پیش‌فرض)،
-        در غیر این صورت لیستی از کلیدهای مجاز - همان قراردادِ set_product_payment_methods."""
+        در غیر این صورت لیستی از کلیدهای مجاز - همان قراردادِ set_product_payment_methods.
+
+        base_users/extra_user_price/max_users: محدودیت کاربر همزمان (فقط محصولات خودکار).
+        base_users=0 یعنی بدون محدودیت؛ ارتقا فقط وقتی فعال است که extra_user_price>0 و
+        max_users>base_users باشد."""
         pm_value = json.dumps(payment_methods, ensure_ascii=False) if payment_methods else None
+        base_users = max(int(base_users or 0), 0) if is_auto_provision else 0
+        extra_user_price = max(int(extra_user_price or 0), 0)
+        max_users = max(int(max_users or 0), 0)
+        if not base_users or extra_user_price <= 0 or max_users <= base_users:
+            extra_user_price, max_users = 0, 0
         with self._get_conn() as conn:
             cur = conn.execute(
                 "INSERT INTO products (category_id, name, price, description, duration_days, "
-                "is_auto_provision, auto_provision_volume_gb, provision_server_id, payment_methods) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "is_auto_provision, auto_provision_volume_gb, provision_server_id, payment_methods, "
+                "base_users, extra_user_price, max_users) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (category_id, name, price, description, duration_days,
-                 1 if is_auto_provision else 0, auto_provision_volume_gb, provision_server_id, pm_value),
+                 1 if is_auto_provision else 0, auto_provision_volume_gb, provision_server_id, pm_value,
+                 base_users, extra_user_price, max_users),
             )
             return cur.lastrowid
 
@@ -350,16 +362,29 @@ class CatalogMixin:
             conn.execute(f"UPDATE products SET {', '.join(fields)} WHERE id=?", values)
 
 
-    def set_product_user_limit(self, product_id: int, extra_user_price: int, max_users: int):
+    def set_product_user_limit(self, product_id: int, extra_user_price: int, max_users: int,
+                               base_users: int = None):
+        """base_users=None: ستون base_users دست نمی‌خورد (رفتار قدیمی).
+        base_users=0: محدودیت کاربر کاملاً غیرفعال. base_users>=1: تعداد ثابتِ گنجانده‌شده در قیمت پایه."""
         extra_user_price = max(int(extra_user_price or 0), 0)
         max_users = max(int(max_users or 0), 0)
-        if extra_user_price <= 0 or max_users < 2:
+        floor = 1
+        if base_users is not None:
+            base_users = max(int(base_users or 0), 0)
+            floor = max(base_users, 1)
+        if extra_user_price <= 0 or max_users < 2 or max_users <= floor:
             extra_user_price, max_users = 0, 0
         with self._get_conn() as conn:
-            conn.execute(
-                "UPDATE products SET extra_user_price=?, max_users=? WHERE id=?",
-                (extra_user_price, max_users, product_id),
-            )
+            if base_users is None:
+                conn.execute(
+                    "UPDATE products SET extra_user_price=?, max_users=? WHERE id=?",
+                    (extra_user_price, max_users, product_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE products SET extra_user_price=?, max_users=?, base_users=? WHERE id=?",
+                    (extra_user_price, max_users, base_users, product_id),
+                )
 
 
     def delete_product(self, product_id: int):

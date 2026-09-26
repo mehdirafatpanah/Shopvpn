@@ -340,6 +340,57 @@ class DatabaseBase:
                     value TEXT
                 );
 
+                CREATE TABLE IF NOT EXISTS languages (
+                    code TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    native_name TEXT NOT NULL,
+                    flag TEXT DEFAULT '',
+                    rtl INTEGER DEFAULT 0,
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    generated INTEGER NOT NULL DEFAULT 0,
+                    translation_auto_quarantined INTEGER NOT NULL DEFAULT 0,
+                    translation_retry_count INTEGER NOT NULL DEFAULT 0,
+                    translation_last_failure TEXT,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS translations (
+                    language_code TEXT NOT NULL,
+                    source_text TEXT NOT NULL,
+                    translated_text TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'machine',
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(language_code, source_text),
+                    FOREIGN KEY(language_code) REFERENCES languages(code) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_translations_language ON translations(language_code);
+
+                CREATE TABLE IF NOT EXISTS translation_manifests (
+                    language_code TEXT PRIMARY KEY,
+                    catalog_version TEXT NOT NULL DEFAULT '',
+                    source_count INTEGER NOT NULL DEFAULT 0,
+                    translated_count INTEGER NOT NULL DEFAULT 0,
+                    missing_count INTEGER NOT NULL DEFAULT 0,
+                    obsolete_count INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    last_sync_at TEXT,
+                    last_error TEXT,
+                    FOREIGN KEY(language_code) REFERENCES languages(code) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS translation_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    language_code TEXT NOT NULL,
+                    catalog_version TEXT NOT NULL,
+                    source_count INTEGER NOT NULL,
+                    translated_count INTEGER NOT NULL,
+                    generated_count INTEGER NOT NULL DEFAULT 0,
+                    obsolete_count INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(language_code) REFERENCES languages(code) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_translation_history_lang ON translation_history(language_code, id);
+
                 -- قابلیت ۵۰: رجیستری متن‌های ربات، خودکار با اسکن کد (نگاه کن:
                 -- text_scanner.py) در _sync_text_registry پر می‌شود. مقدار
                 -- ویرایش‌شده (override) در همین جدول settings با پیشوند
@@ -356,10 +407,12 @@ class DatabaseBase:
                     code TEXT UNIQUE NOT NULL,
                     percent INTEGER,
                     fixed_amount INTEGER,
+                    max_discount_amount INTEGER,
                     max_uses INTEGER DEFAULT 0,
                     used_count INTEGER DEFAULT 0,
                     is_active INTEGER DEFAULT 1,
                     sort_order INTEGER DEFAULT 0,
+                    product_ids TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 );
 
@@ -1082,7 +1135,8 @@ class DatabaseBase:
                     role TEXT NOT NULL DEFAULT 'admin',
                     is_active INTEGER DEFAULT 1,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    last_login TEXT
+                    last_login TEXT,
+                    language_code TEXT DEFAULT 'fa'
                 );
                 CREATE INDEX IF NOT EXISTS idx_web_admins_username ON web_admins(username);
 
@@ -1146,12 +1200,27 @@ class DatabaseBase:
                 """
             )
 
+            from i18n import LANGUAGE_CATALOG
+            for _code, _meta in LANGUAGE_CATALOG.items():
+                c.execute(
+                    "INSERT OR IGNORE INTO languages (code,name,native_name,flag,rtl,enabled,generated) VALUES (?,?,?,?,?,?,?)",
+                    (_code, _meta["name"], _meta["native_name"], _meta["flag"], int(_meta["rtl"]), 1 if _code in ("fa", "en") else 0, 1 if _code in ("fa", "en") else 0),
+                )
+
             c.execute("INSERT OR IGNORE INTO admins (telegram_id) VALUES (?)", (owner_id,))
 
             for k, v in DEFAULT_SETTINGS.items():
                 c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
 
             self._migrate_columns(conn)
+
+            # Keep a manifest row for every known language. The manifest is the
+            # versioned source-of-truth for automatic translation synchronization.
+            for _code in LANGUAGE_CATALOG:
+                c.execute(
+                    "INSERT OR IGNORE INTO translation_manifests(language_code) VALUES (?)",
+                    (_code,),
+                )
 
             # رفع باگ: این ایندکس قبلا داخل executescript بالا بود، اما روی
             # دیتابیس‌های قدیمی (قبل از اضافه‌شدن ستون owner_reseller_id) جدول
@@ -1227,7 +1296,15 @@ class DatabaseBase:
             # چه در نصب تازه و چه در ارتقای نصب‌های قدیمی‌تر که این ستون را نداشتند.
             conn.execute("UPDATE admins SET role='owner' WHERE telegram_id=?", (owner_id,))
 
-        # قابلیت ۵۰: هر بار این نمونه از بات بالا می‌آید، کد را برای فراخوانی‌های
+                # مهاجرت زبان کاربران برای نصب‌های قدیمی.
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN language_code TEXT DEFAULT 'fa'")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
+        conn.execute("UPDATE users SET language_code='fa' WHERE language_code IS NULL OR language_code=''")
+
+# قابلیت ۵۰: هر بار این نمونه از بات بالا می‌آید، کد را برای فراخوانی‌های
         # get_text(...) اسکن می‌کند تا متن‌های جدید خودکار در پنل وب ظاهر شوند
         # (نگاه کن: text_scanner.py، _sync_text_registry).
         self._sync_text_registry()
@@ -1306,6 +1383,31 @@ class DatabaseBase:
 
 
     def _migrate_columns(self, conn):
+        conn.execute("""CREATE TABLE IF NOT EXISTS translation_manifests (
+            language_code TEXT PRIMARY KEY, catalog_version TEXT NOT NULL DEFAULT '',
+            source_count INTEGER NOT NULL DEFAULT 0, translated_count INTEGER NOT NULL DEFAULT 0,
+            missing_count INTEGER NOT NULL DEFAULT 0, obsolete_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending', last_sync_at TEXT, last_error TEXT,
+            FOREIGN KEY(language_code) REFERENCES languages(code) ON DELETE CASCADE
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS translation_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, language_code TEXT NOT NULL,
+            catalog_version TEXT NOT NULL, source_count INTEGER NOT NULL, translated_count INTEGER NOT NULL,
+            generated_count INTEGER NOT NULL DEFAULT 0, obsolete_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(language_code) REFERENCES languages(code) ON DELETE CASCADE
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_translation_history_lang ON translation_history(language_code, id)")
+        # Translation health/recovery state. These columns are additive so
+        # existing installations keep their language data untouched.
+        for _col, _typ in [
+            ("translation_auto_quarantined", "INTEGER NOT NULL DEFAULT 0"),
+            ("translation_retry_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("translation_last_failure", "TEXT"),
+        ]:
+            if not self._column_exists(conn, "languages", _col):
+                conn.execute(f"ALTER TABLE languages ADD COLUMN {_col} {_typ}")
+
         migrations = [
             ("users", "referred_by", "INTEGER"),
             ("users", "owner_reseller_id", "INTEGER"),
@@ -1349,6 +1451,8 @@ class DatabaseBase:
             ("discount_codes", "per_user_limit", "INTEGER"),
             ("discount_codes", "first_purchase_only", "INTEGER DEFAULT 0"),
             ("discount_codes", "audience", "TEXT DEFAULT 'all'"),
+            ("discount_codes", "max_discount_amount", "INTEGER"),
+            ("discount_codes", "product_ids", "TEXT"),
             ("products", "duration_days", "INTEGER DEFAULT 30"),
             ("configs", "expires_at", "TEXT"),
             ("configs", "renewal_reminder_sent", "INTEGER DEFAULT 0"),
@@ -1408,6 +1512,7 @@ class DatabaseBase:
             ("products", "provision_server_id", "INTEGER"),
             ("products", "extra_user_price", "INTEGER DEFAULT 0"),
             ("products", "max_users", "INTEGER DEFAULT 0"),
+            ("products", "base_users", "INTEGER DEFAULT 0"),
             ("orders", "user_limit", "INTEGER"),
             ("orders", "renewal_user_limit", "INTEGER"),
             ("custom_configs", "user_limit", "INTEGER"),
@@ -1547,6 +1652,10 @@ class DatabaseBase:
         # مهاجرت نقش‌های ثابت قدیمی (owner/admin/mid/support) به مجموعه
         # مجوزهای granular. فقط رکوردهایی که هنوز permissions ندارند پر می‌شوند
         # تا override دستی مالک روی حساب‌های موجود دست‌نخورده بماند.
+        if not self._column_exists(conn, "web_admins", "language_code"):
+            conn.execute("ALTER TABLE web_admins ADD COLUMN language_code TEXT DEFAULT 'fa'")
+            conn.execute("UPDATE web_admins SET language_code='fa' WHERE language_code IS NULL OR language_code=''")
+
         if self._column_exists(conn, "web_admins", "permissions"):
             legacy_rows = conn.execute(
                 "SELECT id, role FROM web_admins WHERE permissions IS NULL"

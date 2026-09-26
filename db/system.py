@@ -135,7 +135,16 @@ class SystemMixin:
 
 
     def get_text(self, key: str, default: str = "") -> str:
-        return self.get_setting(f"{self._TEXT_KEY_PREFIX}{key}", default)
+        """Return the configured text in the active user language.
+
+        Existing Persian overrides remain the source of truth for Persian.
+        English uses the bilingual catalog first, then the configured/default
+        Persian text as a safe fallback.
+        """
+        from i18n import get_language
+        from db_text_policy import localize_system_text
+        value = self.get_setting(f"{self._TEXT_KEY_PREFIX}{key}", default)
+        return localize_system_text(value, get_language())
 
 
     def set_text(self, key: str, value: str):
@@ -432,6 +441,111 @@ class SystemMixin:
             return [r["fcm_token"] for r in rows]
 
 
+    def list_fcm_tokens_with_admins(self, admin_id: int = None):
+        """Return FCM token rows including admin_id so push text can be localized per recipient."""
+        with self._get_conn() as conn:
+            if admin_id is not None:
+                return conn.execute(
+                    "SELECT * FROM mobile_fcm_tokens WHERE admin_id=?", (admin_id,)
+                ).fetchall()
+            return conn.execute("SELECT * FROM mobile_fcm_tokens").fetchall()
+
+
+    def get_translation_manifest(self, language: str):
+        with self._get_conn() as conn:
+            return conn.execute("SELECT * FROM translation_manifests WHERE language_code=?", (language.lower(),)).fetchone()
+
+    def upsert_translation_manifest(self, language: str, catalog_version: str, source_count: int,
+                                    translated_count: int, missing_count: int, obsolete_count: int,
+                                    status: str, last_error: str = None):
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO translation_manifests(language_code,catalog_version,source_count,translated_count,missing_count,obsolete_count,status,last_sync_at,last_error) "
+                "VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP,?) "
+                "ON CONFLICT(language_code) DO UPDATE SET catalog_version=excluded.catalog_version,source_count=excluded.source_count,translated_count=excluded.translated_count,missing_count=excluded.missing_count,obsolete_count=excluded.obsolete_count,status=excluded.status,last_sync_at=excluded.last_sync_at,last_error=excluded.last_error",
+                (language.lower(), catalog_version, int(source_count), int(translated_count), int(missing_count), int(obsolete_count), status, last_error),
+            )
+
+    def add_translation_history(self, language: str, catalog_version: str, source_count: int,
+                                translated_count: int, generated_count: int, obsolete_count: int, status: str):
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO translation_history(language_code,catalog_version,source_count,translated_count,generated_count,obsolete_count,status) VALUES(?,?,?,?,?,?,?)",
+                (language.lower(), catalog_version, int(source_count), int(translated_count), int(generated_count), int(obsolete_count), status),
+            )
+
+    def list_translation_history(self, language: str, limit: int = 20):
+        limit = max(1, min(int(limit), 100))
+        with self._get_conn() as conn:
+            return conn.execute("SELECT * FROM translation_history WHERE language_code=? ORDER BY id DESC LIMIT ?", (language.lower(), limit)).fetchall()
+
+    def list_languages(self, enabled_only: bool = False):
+        with self._get_conn() as conn:
+            sql = "SELECT * FROM languages"
+            if enabled_only:
+                sql += " WHERE enabled=1"
+            sql += " ORDER BY CASE code WHEN 'fa' THEN 0 WHEN 'en' THEN 1 ELSE 2 END, native_name"
+            return conn.execute(sql).fetchall()
+
+    def get_language(self, code: str):
+        with self._get_conn() as conn:
+            return conn.execute("SELECT * FROM languages WHERE code=?", (code.lower(),)).fetchone()
+
+    def enable_language(self, code: str, generated: bool = False, *, automatic: bool = False) -> bool:
+        code = code.lower()
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "UPDATE languages SET enabled=1, generated=?, translation_auto_quarantined=0, translation_last_failure=NULL, updated_at=CURRENT_TIMESTAMP WHERE code=?",
+                (1 if generated else 0, code),
+            )
+        return cur.rowcount > 0
+
+    def disable_language(self, code: str, *, automatic: bool = False, error: str = None) -> bool:
+        code = code.lower()
+        if code in {"fa", "en"}:
+            return False
+        with self._get_conn() as conn:
+            if automatic:
+                cur = conn.execute(
+                    "UPDATE languages SET enabled=0, translation_auto_quarantined=1, translation_retry_count=COALESCE(translation_retry_count,0)+1, translation_last_failure=?, updated_at=CURRENT_TIMESTAMP WHERE code=?",
+                    ((error or "Translation health check failed")[:500], code),
+                )
+            else:
+                # A manual disable is an explicit admin choice; clear any
+                # recovery marker so the health worker never re-enables it.
+                cur = conn.execute(
+                    "UPDATE languages SET enabled=0, translation_auto_quarantined=0, translation_last_failure=NULL, updated_at=CURRENT_TIMESTAMP WHERE code=?",
+                    (code,),
+                )
+        return cur.rowcount > 0
+
+    def list_translation_recovery_languages(self):
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM languages WHERE code NOT IN ('fa','en') AND (enabled=1 OR translation_auto_quarantined=1) ORDER BY native_name"
+            ).fetchall()
+
+    def get_translations(self, language: str):
+        with self._get_conn() as conn:
+            rows = conn.execute("SELECT source_text, translated_text FROM translations WHERE language_code=?", (language.lower(),)).fetchall()
+        return {r["source_text"]: r["translated_text"] for r in rows}
+
+    def upsert_translations(self, language: str, values: dict, source: str = "machine") -> int:
+        if not values:
+            return 0
+        with self._get_conn() as conn:
+            conn.executemany(
+                "INSERT INTO translations(language_code,source_text,translated_text,source,updated_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP) "
+                "ON CONFLICT(language_code,source_text) DO UPDATE SET translated_text=excluded.translated_text, source=excluded.source, updated_at=CURRENT_TIMESTAMP",
+                [(language.lower(), str(k), str(v), source) for k, v in values.items() if str(k).strip() and str(v).strip()],
+            )
+        return len(values)
+
+    def translation_catalog(self, language: str):
+        if language.lower() in {"fa", "en"}:
+            return {}
+        return self.get_translations(language)
+
     def create_web_admin(self, username: str, password_hash: str, role: str = "admin",
                           permissions=None) -> int:
         if role not in ("owner", "admin", "mid", "support"):
@@ -459,6 +573,18 @@ class SystemMixin:
         with self._get_conn() as conn:
             return conn.execute("SELECT * FROM web_admins WHERE id=?", (admin_id,)).fetchone()
 
+
+    def get_web_admin_language(self, admin_id: int) -> str:
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT language_code FROM web_admins WHERE id=?", (admin_id,)).fetchone()
+        return (row["language_code"] if row and row["language_code"] else "fa")
+
+    def set_web_admin_language(self, admin_id: int, language_code: str) -> bool:
+        from i18n import normalize_language
+        lang = normalize_language(language_code)
+        with self._get_conn() as conn:
+            cur = conn.execute("UPDATE web_admins SET language_code=? WHERE id=?", (lang, admin_id))
+        return cur.rowcount > 0
 
     def list_web_admins(self):
         with self._get_conn() as conn:
