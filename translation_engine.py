@@ -34,6 +34,70 @@ _SHARED_CACHE: Dict[tuple, str] = {}
 _PROVIDER_RUNTIME: Dict[str, dict] = {}
 _SYNC_LOCKS: Dict[tuple, threading.Lock] = {}
 _SYNC_LOCKS_GUARD = threading.Lock()
+
+# --- Live progress/log feed for the admin panel ----------------------------
+# One entry per language, holding a bounded rolling log of what the sync is
+# doing right now (which provider, which batch, how many succeeded) plus a
+# done/total counter. This is in-memory only (per-process), which is fine
+# since sync_language already only ever runs one job per language at a time
+# (see _SYNC_LOCKS above) and the admin panel polls the same process.
+_PROGRESS: Dict[str, dict] = {}
+_PROGRESS_LOCK = threading.Lock()
+_PROGRESS_LOG_MAX = 300
+
+
+def _progress_state(language: str) -> dict:
+    return _PROGRESS.setdefault(language, {
+        "run_id": 0, "running": False, "total": 0, "done": 0,
+        "started_at": None, "finished_at": None, "seq": 0,
+        "entries": deque(maxlen=_PROGRESS_LOG_MAX),
+    })
+
+
+def _progress_start(language: str, total: int) -> None:
+    with _PROGRESS_LOCK:
+        state = _progress_state(language)
+        state["run_id"] += 1
+        state["running"] = True
+        state["total"] = total
+        state["done"] = 0
+        state["started_at"] = time.time()
+        state["finished_at"] = None
+        state["entries"].clear()
+    _progress_log(language, f"شروع همگام‌سازی: {total} مورد ناقص", level="info")
+
+
+def _progress_log(language: str, message: str, *, level: str = "info", done_delta: int = 0) -> None:
+    with _PROGRESS_LOCK:
+        state = _progress_state(language)
+        state["seq"] += 1
+        if done_delta:
+            state["done"] = min(state.get("total", 0) or (state["done"] + done_delta), state["done"] + done_delta)
+        state["entries"].append({
+            "seq": state["seq"], "ts": time.time(), "level": level, "message": str(message),
+        })
+
+
+def _progress_finish(language: str, status: str) -> None:
+    with _PROGRESS_LOCK:
+        state = _progress_state(language)
+        state["running"] = False
+        state["finished_at"] = time.time()
+    _progress_log(language, f"پایان همگام‌سازی — وضعیت: {status}", level=("error" if status == "error" else "done"))
+
+
+def get_progress(language: str, since: int = 0) -> dict:
+    """Snapshot of the live sync log for one language, for the admin panel to poll."""
+    language = _normalize_target(language)
+    with _PROGRESS_LOCK:
+        state = _PROGRESS.get(language)
+        if not state:
+            return {"running": False, "total": 0, "done": 0, "seq": 0, "entries": [], "run_id": 0}
+        entries = [dict(e) for e in state["entries"] if e["seq"] > since]
+        return {
+            "running": state["running"], "total": state["total"], "done": state["done"],
+            "seq": state["seq"], "run_id": state["run_id"], "entries": entries,
+        }
 # deep-translator's GoogleTranslator accepts bare ISO codes; MyMemory's free API
 # only recognizes locale-qualified codes for most non-English targets.
 _MYMEMORY_LANG = {
@@ -754,8 +818,13 @@ def _normalize_target(target: str) -> str:
     return (target or "").lower().split("-", 1)[0]
 
 
-def translate_many_partial(texts: Iterable[str], target: str, *, cached: Dict[str, str] | None = None, db=None, local_only: bool = False) -> tuple[Dict[str, str], list[str]]:
-    """Translate as many strings as possible; return (translations, failure messages)."""
+def translate_many_partial(texts: Iterable[str], target: str, *, cached: Dict[str, str] | None = None, db=None, local_only: bool = False, progress: bool = False) -> tuple[Dict[str, str], list[str]]:
+    """Translate as many strings as possible; return (translations, failure messages).
+
+    When ``progress`` is true (only ``sync_language`` sets this), each step is
+    also appended to that language's live log (see ``get_progress``) so the
+    admin panel can show what is happening instead of a plain "please wait".
+    """
     target = _normalize_target(target)
     if target in {"fa", "en"}:
         return {str(x): str(x) for x in texts}, []
@@ -770,15 +839,21 @@ def translate_many_partial(texts: Iterable[str], target: str, *, cached: Dict[st
                 result[value] = str(candidate)
                 break
     remaining = [x for x in values if x not in result]
+    if progress and (len(values) - len(remaining)):
+        _progress_log(target, f"{len(values) - len(remaining)} مورد از قبل در حافظه موجود بود", done_delta=len(values) - len(remaining))
     if not remaining:
         return result, []
     providers = _providers(target, db, local_only=local_only)
     if not providers:
+        if progress:
+            _progress_log(target, "هیچ ارائه‌دهنده‌ی ترجمه‌ای در دسترس نیست", level="error")
         raise RuntimeError("No local translation provider is configured. Install Argos model packages or configure a self-hosted LibreTranslate. Public APIs are disabled by default; set SHOPVPN_TRANSLATION_ALLOW_PUBLIC_APIS=1 only if you explicitly want them.")
     failures: list[str] = []
     for provider in providers:
         if not remaining:
             break
+        if progress:
+            _progress_log(target, f"تلاش با ارائه‌دهنده «{provider.name}» برای {len(remaining)} مورد باقی‌مانده")
         protected = {value: protect(value) for value in remaining}
         contexts = {}
         for value in remaining:
@@ -787,11 +862,15 @@ def translate_many_partial(texts: Iterable[str], target: str, *, cached: Dict[st
                 contexts[protected[value][0]] = found[0]["context"]
         still: list[str] = []
         provider_failed = False
+        batch_count = (len(remaining) + BATCH_SIZE - 1) // BATCH_SIZE
         for i in range(0, len(remaining), BATCH_SIZE):
             batch = remaining[i:i + BATCH_SIZE]
+            batch_no = i // BATCH_SIZE + 1
             if provider_failed:
                 still.extend(batch)
                 continue
+            if progress:
+                _progress_log(target, f"دسته {batch_no}/{batch_count} — ارسال {len(batch)} مورد به «{provider.name}»")
             try:
                 translated = provider.translate_batch([protected[v][0] for v in batch], target, contexts)
                 if not translated or len(translated) != len(batch):
@@ -800,9 +879,13 @@ def translate_many_partial(texts: Iterable[str], target: str, *, cached: Dict[st
                 failures.append(str(exc))
                 _mark_provider(provider.name, ok=False, error=exc)
                 log.warning("Translation provider %s failed for %s: %s", provider.name, target, exc)
+                if progress:
+                    _progress_log(target, f"ارائه‌دهنده «{provider.name}» متوقف شد: {exc}", level="warn")
                 provider_failed = True
                 still.extend(batch)
                 continue
+            batch_ok = 0
+            batch_rejected = 0
             for src, dst in zip(batch, translated):
                 restored = restore(str(dst or ""), protected[src][1])
                 ok, reason = validate(src, restored, target)
@@ -810,10 +893,19 @@ def translate_many_partial(texts: Iterable[str], target: str, *, cached: Dict[st
                     result[src] = restored
                     _SHARED_CACHE[(target, src)] = restored
                     _mark_provider(provider.name, ok=True)
+                    batch_ok += 1
                 else:
                     failures.append(f"{provider.name}: rejected {src!r}: {reason}")
                     still.append(src)
+                    batch_rejected += 1
+            if progress:
+                msg = f"دسته {batch_no}/{batch_count} — {batch_ok} مورد موفق"
+                if batch_rejected:
+                    msg += f"، {batch_rejected} مورد رد شد"
+                _progress_log(target, msg, done_delta=batch_ok)
         remaining = still
+    if progress and remaining:
+        _progress_log(target, f"{len(remaining)} مورد پس از تمام ارائه‌دهندگان همچنان ترجمه نشد", level="warn")
     return result, failures
 
 
@@ -891,14 +983,17 @@ def sync_language(db, language: str, *, allow_network: bool = True) -> dict:
         info["generated_count"] = 0
         info["status"] = "busy"
         return info
+    _progress_start(language, info["missing_count"])
     try:
         try:
-            generated, failures = translate_many_partial(info["missing"], language, cached=db.translation_catalog(language), db=db, local_only=not allow_network)
+            generated, failures = translate_many_partial(info["missing"], language, cached=db.translation_catalog(language), db=db, local_only=not allow_network, progress=True)
         except Exception as exc:
             db.upsert_translation_manifest(language, info["catalog_version"], info["source_count"],
                                            info["translated_count"], info["missing_count"], info["obsolete_count"], "error", str(exc)[:500])
             db.add_translation_history(language, info["catalog_version"], info["source_count"],
                                        info["translated_count"], 0, info["obsolete_count"], "error")
+            _progress_log(language, f"خطا: {exc}", level="error")
+            _progress_finish(language, "error")
             raise
         if generated:
             db.upsert_translations(language, generated, source="machine")
@@ -912,6 +1007,8 @@ def sync_language(db, language: str, *, allow_network: bool = True) -> dict:
                                        info["translated_count"], info["missing_count"], info["obsolete_count"], info["status"], error)
         db.add_translation_history(language, info["catalog_version"], info["source_count"],
                                    info["translated_count"], len(generated), info["obsolete_count"], info["status"])
+        _progress_log(language, f"{len(generated)} مورد ترجمه شد، {info['missing_count']} مورد باقی‌مانده")
+        _progress_finish(language, info["status"])
         return info
     finally:
         lock.release()
