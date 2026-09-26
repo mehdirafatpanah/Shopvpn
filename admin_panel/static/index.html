@@ -73,7 +73,16 @@
       const w=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
       const nodes=[]; while(w.nextNode()) nodes.push(w.currentNode);
       nodes.forEach(n=>{ const t=n.nodeValue.trim(); if(dict[t]) n.nodeValue=n.nodeValue.replace(t,dict[t]); });
-    } else location.reload();
+    }
+    // نکته: قبلاً اینجا برای حالت غیر-انگلیسی location.reload() می‌زدیم تا
+    // اگر قبلاً متن‌ها به انگلیسی جایگزین شده بودن، با رفرش به فارسیِ اصلیِ
+    // سرور برگردیم. اما apply() همینجا، بدون قید و شرط، تو هر DOMContentLoaded
+    // صدا زده میشه - و چون lang() پیش‌فرضش "fa" هست، یعنی برای تقریبا همه‌ی
+    // کاربرها (که هیچوقت زبان رو دستی عوض نکردن) هر بار صفحه لود میشد،
+    // بلافاصله reload می‌خورد، و از اول... یعنی یک حلقه‌ی بی‌نهایت رفرش.
+    // سوییچ واقعی از انگلیسی به فارسی از قبل با reload خودش تو
+    // ShopVPNSetLanguage هندل میشه، پس این reload اینجا هم اضافه بود و هم
+    // مخرب - حذفش کردیم.
   }
   window.ShopVPNSetLanguage=async function(l){
     localStorage.setItem("sv-lang",l);
