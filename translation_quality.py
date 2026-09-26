@@ -25,12 +25,30 @@ _URL_RE = re.compile(r"https?://[^\s)<>]+|tg://[^\s)<>]+|mailto:[^\s)<>]+", re.I
 _HTML_RE = re.compile(r"</?[A-Za-z][^>]*>|<!--.*?-->", re.S)
 _CODE_RE = re.compile(r"`[^`\n]+`")
 _MARKDOWN_LINK_URL_RE = re.compile(r"\]\(([^)]+)\)")
+# Single emoji code point, used only to *detect* emoji for the post-hoc mismatch
+# check below. Covers the ranges ShopVPN actually uses (pictographs, misc
+# symbols, dingbats, transport, flags) - the old range (1F000-1FAFF only)
+# missed common symbols like the warning/check/cross marks used throughout
+# the bot's own UI text (⚠️ ✅ ❌ ✨), silently letting those slip past the
+# mismatch check even when a provider dropped them.
+_EMOJI_RE = re.compile(
+    "[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\u2190-\u21FF\u2300-\u23FF]"
+)
+# Same code points, but grouped into whole *sequences* (flag pairs, and a base
+# emoji plus its optional variation selector / ZWJ-joined parts) so protect()
+# can replace an entire emoji as one atomic sentinel instead of one code point
+# at a time - splitting a ZWJ sequence across separate sentinels would let a
+# provider reorder or partially translate its pieces.
+_EMOJI_SEQUENCE_RE = re.compile(
+    "(?:[\U0001F1E6-\U0001F1FF]{2}"
+    "|[\U0001F300-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\u2190-\u21FF\u2300-\u23FF]\uFE0F?"
+    "(?:\u200D[\U0001F300-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\u2190-\u21FF\u2300-\u23FF]\uFE0F?)*)"
+)
 _PROTECT_RE = re.compile(
-    "|".join(f"(?:{p.pattern})" for p in (_URL_RE, _HTML_RE, _CODE_RE, _PLACEHOLDER_RE)),
+    "|".join(f"(?:{p.pattern})" for p in (_URL_RE, _HTML_RE, _CODE_RE, _PLACEHOLDER_RE, _EMOJI_SEQUENCE_RE)),
     re.S | re.I,
 )
 _SENTINEL_RE = re.compile(r"_{1,2}\s*SHOPVPN\s*_?\s*TOKEN\s*_?\s*(\d+)\s*_{1,2}", re.I)
-_EMOJI_RE = re.compile(r"[\U0001F000-\U0001FAFF]")
 _PERSIAN_LETTERS_RE = re.compile(r"[\u067e\u0686\u0698\u06af\u06a9\u06cc]")
 _LETTER_RE = re.compile(r"[^\W\d_]", re.U)
 _PERSIAN_TARGETS = {"fa", "ar", "ur", "ps"}
