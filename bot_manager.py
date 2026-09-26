@@ -46,7 +46,10 @@ from report_router import ReportGroupGuardMiddleware
 from global_switch import GlobalBotSwitchMiddleware
 import keyboards as kb
 import tutorial_hub
-from i18n import tr, set_language, reset_language, normalize_language
+from i18n import (
+    tr, set_language, reset_language, normalize_language, get_language,
+    start_missing_tracking, stop_missing_tracking, pop_missing_lookups, merge_language_catalog,
+)
 from broadcast_i18n import send_scheduled_broadcast
 
 logger = logging.getLogger(__name__)
@@ -83,6 +86,7 @@ class LanguageMiddleware:
     async def __call__(self, handler, event, data: dict):
         user = data.get("event_from_user")
         token = None
+        missing_token = None
         try:
             if user is not None:
                 try:
@@ -93,10 +97,88 @@ class LanguageMiddleware:
                 language = normalize_language(language or getattr(user, "language_code", None))
                 catalog = await asyncio.to_thread(self.db.translation_catalog, language) if language not in {"fa", "en"} and await asyncio.to_thread(self.db.get_language, language) else None
                 token = set_language(language, catalog)
+                if language not in {"fa", "en"}:
+                    # Collects any tr() misses for this update so TranslatingBot
+                    # can translate them on demand right before sending.
+                    missing_token = start_missing_tracking()
             return await handler(event, data)
         finally:
+            if missing_token is not None:
+                stop_missing_tracking(missing_token)
             if token is not None:
                 reset_language(token)
+
+
+def _patch_method_texts(method, generated: dict) -> None:
+    """Replace already-built fallback strings with their fresh translation
+    directly inside an outgoing aiogram request, in place, right before it is
+    sent. Longer strings are replaced first so a short phrase can't clobber
+    part of a longer string that happens to contain it."""
+    replacements = sorted(generated.items(), key=lambda kv: len(kv[0]), reverse=True)
+
+    def patch(value):
+        if not isinstance(value, str) or not value:
+            return value
+        for src, dst in replacements:
+            if src in value:
+                value = value.replace(src, dst)
+        return value
+
+    for attr in ("text", "caption"):
+        value = getattr(method, attr, None)
+        if isinstance(value, str):
+            try:
+                setattr(method, attr, patch(value))
+            except Exception:
+                pass
+
+    rows = getattr(getattr(method, "reply_markup", None), "inline_keyboard", None)
+    if rows:
+        for row in rows:
+            for button in row:
+                text = getattr(button, "text", None)
+                if isinstance(text, str):
+                    try:
+                        button.text = patch(text)
+                    except Exception:
+                        pass
+
+
+class TranslatingBot(Bot):
+    """Bot subclass that fills in missing dynamic-language translations on demand.
+
+    Every outgoing Telegram API call (send/edit message, callback answers, ...)
+    passes through ``Bot.__call__``. If the current update's language is a
+    dynamic one (not fa/en) and ``tr()`` hit strings missing from that
+    language's catalog while building this request (see
+    ``i18n.note_missing``/``LanguageMiddleware``), we translate exactly those
+    strings here — once, synchronously, right before sending — persist them so
+    every future lookup (by any user) is instant, and patch them into this
+    outgoing request so the user never sees an untranslated fallback. Requests
+    made outside a tracked update (background loops, broadcasts) are
+    untouched, since there is nothing to drain for them.
+    """
+
+    def __init__(self, *args, translation_db=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._translation_db = translation_db
+
+    async def __call__(self, method, request_timeout=None):
+        db = self._translation_db
+        if db is not None and get_language() not in ("fa", "en"):
+            missing = pop_missing_lookups()
+            if missing:
+                lang = get_language()
+                try:
+                    from translation_engine import translate_texts_now
+                    generated = await asyncio.to_thread(translate_texts_now, db, lang, missing)
+                except Exception:
+                    logger.warning("ترجمه‌ی لحظه‌ای برای زبان %s ناموفق بود.", lang, exc_info=True)
+                    generated = {}
+                if generated:
+                    merge_language_catalog(generated)
+                    _patch_method_texts(method, generated)
+        return await super().__call__(method, request_timeout=request_timeout)
 
 
 class AdminPresenceMiddleware:
@@ -260,7 +342,7 @@ class BotManager:
         if not is_main_bot:
             db.set_setting("bot_role", "full_reseller")
 
-        bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        bot = TranslatingBot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML), translation_db=db)
         # قبلاً MemoryStorage (فقط RAM) بود که با هر ری‌استارت پروسه state‌های
         # در حال انتظار (از جمله «منتظر عکس رسید») را پاک می‌کرد و باعث گم‌شدن
         # رسیدهایی می‌شد که دقیقاً همان لحظه می‌رسیدند؛ حالا روی یک فایل SQLite

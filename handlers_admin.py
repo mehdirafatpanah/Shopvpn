@@ -11091,42 +11091,32 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         )
         await call.answer()
 
-    async def _bg_generate_language(bot, code: str, admin_id: int):
-        """Keep retrying translation for `code` — combining every configured
-        provider each pass — until fully complete, however long that takes,
-        then flip it on and tell the admin who asked for it. No time limit:
-        the admin explicitly asked for patience over giving up."""
-        from translation_engine import sync_language
+    async def _activate_language(bot, code: str, admin_id: int):
+        """Activate `code` right away after a fast sync of only the
+        high-frequency catalog (main menu, common buttons/messages) — enough
+        that the very first thing a user sees is already translated. Every
+        other string is now filled in on demand, the moment a real user
+        actually reaches it (see bot_manager.TranslatingBot), and cached from
+        then on — so the rest of the project fills in gradually with usage
+        instead of needing a slow full sync up front."""
+        from translation_engine import sync_quick
         from i18n import LANGUAGE_CATALOG
-        delay = 30.0
         try:
-            while True:
-                try:
-                    info = await asyncio.to_thread(sync_language, db, code, allow_network=True)
-                except Exception:
-                    logger.exception("زمینه‌ی تولید ترجمه‌ی زبان %s با خطا مواجه شد؛ تلاش مجدد.", code)
-                    await asyncio.sleep(delay)
-                    delay = min(delay * 1.5, 300.0)
-                    continue
-                if info.get("status") == "busy":
-                    await asyncio.sleep(delay)
-                    continue
-                if not info.get("missing_count"):
-                    await asyncio.to_thread(db.enable_language, code, True)
-                    await asyncio.to_thread(db.log_admin_action, admin_id, "language_enable", code)
-                    name = LANGUAGE_CATALOG.get(code, {}).get("name", code)
-                    try:
-                        await bot.send_message(
-                            admin_id,
-                            tr(f"✅ ترجمه‌ی زبان {name} کامل شد و فعال گردید."),
-                        )
-                    except Exception:
-                        pass
-                    return
-                # هنوز چیزی باقی مانده؛ کمی صبر کن و دوباره با همه‌ی ارائه‌دهنده‌های
-                # پیکربندی‌شده (Gemini/OpenRouter/Google/MyMemory/LibreTranslate) تلاش کن
-                await asyncio.sleep(delay)
-                delay = min(delay * 1.3, 300.0)
+            try:
+                await asyncio.to_thread(sync_quick, db, code)
+            except Exception:
+                logger.exception("sync_quick برای زبان %s ناموفق بود؛ زبان بدون آن فعال می‌شود.", code)
+            await asyncio.to_thread(db.enable_language, code, True)
+            await asyncio.to_thread(db.log_admin_action, admin_id, "language_enable", code)
+            name = LANGUAGE_CATALOG.get(code, {}).get("name", code)
+            try:
+                await bot.send_message(
+                    admin_id,
+                    tr(f"✅ زبان {name} فعال شد. منوی اصلی از همین الان ترجمه‌شده؛ "
+                       "بقیه‌ی بخش‌ها همین که کاربری بهشان برسد، خودکار ترجمه و ذخیره می‌شوند."),
+                )
+            except Exception:
+                pass
         finally:
             _bg_lang_tasks.discard(code)
 
@@ -11145,14 +11135,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await asyncio.to_thread(db.log_admin_action, call.from_user.id, "language_disable", code)
             await call.answer(tr("⚪️ زبان غیرفعال شد."))
         elif code in _bg_lang_tasks:
-            await call.answer(tr("⏳ تولید ترجمه‌ی این زبان از قبل در حال انجام است؛ صبر کن."), show_alert=True)
+            await call.answer(tr("⏳ فعال‌سازی این زبان از قبل در حال انجام است؛ صبر کن."), show_alert=True)
             return
         else:
             _bg_lang_tasks.add(code)
-            asyncio.create_task(_bg_generate_language(call.bot, code, call.from_user.id))
+            asyncio.create_task(_activate_language(call.bot, code, call.from_user.id))
             await call.answer(
-                tr("⏳ تولید ترجمه در پس‌زمینه شروع شد؛ هرچقدر طول بکشد ادامه می‌یابد "
-                   "و پس از تکمیل، پیام تأیید برایت ارسال می‌شود."),
+                tr("⏳ در حال فعال‌سازی... منوی اصلی سریع ترجمه می‌شود و زبان فعال خواهد شد؛ "
+                   "بقیه‌ی متن‌ها به‌مرور با استفاده‌ی کاربران تکمیل می‌شوند."),
                 show_alert=True,
             )
         await replace_admin_view(

@@ -1014,6 +1014,51 @@ def sync_language(db, language: str, *, allow_network: bool = True) -> dict:
         lock.release()
 
 
+def sync_quick(db, language: str) -> dict:
+    """Fast-path sync used when an admin activates a language: translates only
+    the hand-curated, high-frequency phrase catalog (``i18n._TRANSLATIONS['en']``
+    — the main menu and the most common buttons/messages) so the very first
+    thing a user sees is already translated. Everything else is left for
+    ``translate_texts_now`` to fill in on demand, per string, the moment a real
+    user reaches it."""
+    import i18n
+    language = _normalize_target(language)
+    if language in {"fa", "en"}:
+        return {"language": language, "status": "builtin", "generated_count": 0}
+    quick_texts = [v for v in i18n._TRANSLATIONS.get("en", {}).values() if v and v.strip()]
+    cached = db.translation_catalog(language)
+    generated, failures = translate_many_partial(quick_texts, language, cached=cached, db=db)
+    if generated:
+        db.upsert_translations(language, generated, source="machine")
+    info = inspect_language(db, language)
+    info["generated_count"] = len(generated)
+    # "lazy": deliberately activated with an incomplete catalog; the rest fills
+    # in over time as sync_language / translate_texts_now cover more ground.
+    status = "lazy" if info["missing_count"] else info["status"]
+    db.upsert_translation_manifest(language, info["catalog_version"], info["source_count"],
+                                   info["translated_count"], info["missing_count"], info["obsolete_count"],
+                                   status, "; ".join(failures[-3:])[:500] or None)
+    info["status"] = status
+    return info
+
+
+def translate_texts_now(db, language: str, texts: Iterable[str]) -> Dict[str, str]:
+    """On-demand translation of a small, specific set of source (English)
+    texts — called right before the bot sends a message whose catalog lookup
+    just missed. Returns ``{source_text: translated_text}`` for whatever could
+    be resolved and persists successes into the shared catalog so every future
+    lookup (by any user) hits the cache instead of calling out again."""
+    language = _normalize_target(language)
+    texts = [str(x) for x in texts if str(x).strip()]
+    if not texts or language in {"fa", "en"}:
+        return {}
+    cached = db.translation_catalog(language)
+    generated, _failures = translate_many_partial(texts, language, cached=cached, db=db)
+    if generated:
+        db.upsert_translations(language, generated, source="machine")
+    return generated
+
+
 def translation_health(db, language: str | None = None) -> dict | list[dict]:
     """Return operational health for one language or all managed languages."""
     source = source_catalog()

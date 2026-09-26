@@ -37,6 +37,50 @@ LANGUAGE_CATALOG = {
 _current_language = ContextVar("shopvpn_language", default=DEFAULT_LANGUAGE)
 _current_catalog = ContextVar("shopvpn_language_catalog", default={})
 
+# Per-update buffer of source (English) strings that tr() looked up but could
+# not find in the active dynamic-language catalog. LanguageMiddleware starts a
+# fresh buffer for every Telegram update whose language is dynamic; the bot
+# layer (see bot_manager.TranslatingBot) drains it right before each outgoing
+# request is actually sent, translates exactly those strings on the spot, and
+# patches them into the request so no untranslated fallback is ever shown to
+# the user. See translation_engine.translate_texts_now.
+_missing_lookups: ContextVar[Optional[list]] = ContextVar("shopvpn_missing_lookups", default=None)
+
+
+def start_missing_tracking():
+    """Begin collecting untranslated lookups for the current context/update."""
+    return _missing_lookups.set([])
+
+
+def stop_missing_tracking(token) -> None:
+    _missing_lookups.reset(token)
+
+
+def note_missing(text: str) -> None:
+    lookups = _missing_lookups.get()
+    if lookups is not None and text and text not in lookups:
+        lookups.append(text)
+
+
+def pop_missing_lookups() -> list:
+    """Return and clear whatever untranslated lookups were collected so far."""
+    lookups = _missing_lookups.get()
+    if not lookups:
+        return []
+    out = list(lookups)
+    lookups.clear()
+    return out
+
+
+def merge_language_catalog(mapping: dict) -> None:
+    """Fold freshly generated translations into the active per-context catalog
+    so any further tr() calls in the same update see them immediately."""
+    if not mapping:
+        return
+    catalog = dict(_current_catalog.get())
+    catalog.update(mapping)
+    _current_catalog.set(catalog)
+
 # High-frequency UI phrases. Unknown/custom text intentionally falls back to the
 # original text so existing installations keep working without data loss.
 _TRANSLATIONS = {
@@ -532,18 +576,14 @@ def is_language_enabled(db, language: str) -> bool:
         row = db.get_language(code)
         if not row or not row["enabled"]:
             return False
-        if code in {"fa", "en"}:
-            return True
-        # Dynamic languages are usable only after their complete catalog has
-        # been synchronized. This is the hard no-mixed-language invariant.
-        manifest = db.get_translation_manifest(code) if hasattr(db, "get_translation_manifest") else None
-        if not manifest:
-            return False
-        missing = int(manifest["missing_count"] or 0)
-        if manifest["status"] == "current" and missing == 0:
-            return True
-        total = int(manifest["source_count"] or 0)
-        return manifest["status"] == "partial" and total > 0 and missing / total <= PARTIAL_MAX_RATIO
+        # Dynamic languages no longer need a (near-)complete catalog before
+        # being selectable: whatever is still missing is translated on demand,
+        # per string, the moment it is actually needed (see
+        # bot_manager.TranslatingBot / translation_engine.translate_texts_now),
+        # so admins can turn a language on immediately instead of waiting for a
+        # full sync. The manifest/ratio machinery still exists for health
+        # reporting in the admin panel, it just no longer gates availability.
+        return True
     except Exception:
         return code in {"fa", "en"}
 
@@ -585,11 +625,19 @@ def tr(text: str, language: Optional[str] = None) -> str:
         return catalog_value
     english = _TRANSLATIONS.get("en", {}).get(text) or _PHRASE_TRANSLATIONS.get(text)
     if english:
-        return catalog.get(english) or english
+        value = catalog.get(english)
+        if value:
+            return value
+        note_missing(english)
+        return english
     matched = dynamic_match(text)
     if matched:
         template, values = matched
-        return fill_template(catalog.get(template) or template, values)
+        value = catalog.get(template)
+        if not value:
+            note_missing(template)
+            value = template
+        return fill_template(value, values)
     return text
 
 def api_message(text: str, language: Optional[str] = None) -> str:
