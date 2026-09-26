@@ -161,8 +161,9 @@ const JALALI_MONTH_NAMES = [
 ];
 
 function notify(message) {
-  if (tg.showAlert) tg.showAlert(message);
-  else alert(message);
+  const localized = window.ShopVPNTranslate ? window.ShopVPNTranslate(message) : message;
+  if (tg.showAlert) tg.showAlert(localized);
+  else alert(localized);
 }
 
 async function api(path, options = {}) {
@@ -5679,7 +5680,11 @@ async function renderAdminSalesSection() {
             const constraints = [];
             if (d.min_purchase) constraints.push(`حداقل خرید ${fmt(d.min_purchase)} ت`);
             if (d.max_purchase) constraints.push(`حداکثر خرید ${fmt(d.max_purchase)} ت`);
-            if (d.product_id) { const p = (allProducts || []).find((x) => x.id === d.product_id); constraints.push(`مخصوص محصول: ${p ? p.name : "#" + d.product_id}`); }
+            if (d.max_discount_amount) constraints.push(`سقف تخفیف ${fmt(d.max_discount_amount)} ت`);
+            if (d.product_ids && d.product_ids.length) {
+              const names = d.product_ids.map((id) => { const p = (allProducts || []).find((x) => x.id === id); return p ? p.name : "#" + id; });
+              constraints.push(`مخصوص محصولات: ${names.join("، ")}`);
+            } else if (d.product_id) { const p = (allProducts || []).find((x) => x.id === d.product_id); constraints.push(`مخصوص محصول: ${p ? p.name : "#" + d.product_id}`); }
             else if (d.category_id) { const c = (allCategories || []).find((x) => x.id === d.category_id); constraints.push(`مخصوص دسته: ${c ? c.name : "#" + d.category_id}`); }
             if (d.per_user_limit) constraints.push(`هر کاربر ${d.per_user_limit} بار`);
             if (d.first_purchase_only) constraints.push("فقط خرید اول");
@@ -5712,6 +5717,8 @@ async function renderAdminSalesSection() {
           <input class="input" id="new-disc-percent" type="number" placeholder="مثال: 25" style="margin-bottom:10px" />
           <label class="field-label">یا مبلغ ثابت تخفیف به تومان (فقط یکی از این دو را پر کن)</label>
           <input class="input" id="new-disc-fixed" type="number" placeholder="مثال: 50000" style="margin-bottom:10px" />
+          <label class="field-label">سقف مبلغ تخفیف (تومان، فقط برای تخفیف درصدی — مثلاً ۲۰٪ تا سقف ۴۰۰۰۰ تومان)</label>
+          <input class="input" id="new-disc-maxdiscount" type="number" placeholder="خالی یعنی بدون سقف" style="margin-bottom:10px" />
           <label class="field-label">حداکثر تعداد دفعات استفاده (۰ یعنی نامحدود)</label>
           <input class="input" id="new-disc-maxuses" type="number" placeholder="0" value="0" style="margin-bottom:4px" />
           <label class="field-label">حداقل مبلغ سبد خرید (تومان — خالی یعنی بدون محدودیت)</label>
@@ -5723,7 +5730,12 @@ async function renderAdminSalesSection() {
             <option value="">🌐 بدون محدودیت (همه‌ی محصولات)</option>
             ${(allCategories || []).length ? `<optgroup label="فقط یک دسته‌بندی خاص">${(allCategories || []).map((c) => `<option value="cat:${c.id}">📁 ${c.name}</option>`).join("")}</optgroup>` : ""}
             ${(allProducts || []).length ? `<optgroup label="فقط یک محصول خاص">${(allProducts || []).map((p) => `<option value="prod:${p.id}">📦 ${p.name}</option>`).join("")}</optgroup>` : ""}
+            ${(allProducts || []).length ? `<option value="mprod">🧩 چند محصول خاص (انتخاب زیر)</option>` : ""}
           </select>
+          <div id="new-disc-mprod-wrap" style="display:none;margin-bottom:10px;max-height:160px;overflow:auto;border:1px solid var(--glass-brd);border-radius:8px;padding:8px">
+            ${(allProducts || []).map((p) => `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+              <input type="checkbox" class="new-disc-mprod-item" value="${p.id}"><span>${p.name}</span></label>`).join("")}
+          </div>
           <label class="field-label">تاریخ انقضا (اختیاری)</label>
           <input class="input" id="new-disc-expires" type="date" style="margin-bottom:10px" />
           <label class="field-label">سقف استفاده‌ی هر کاربر (خالی یعنی نامحدود)</label>
@@ -5942,6 +5954,11 @@ async function renderAdminSalesSection() {
         } catch (e) { notify(e.message); }
       };
     });
+    const discScopeEl = document.getElementById("new-disc-scope");
+    const discMprodWrap = document.getElementById("new-disc-mprod-wrap");
+    if (discScopeEl && discMprodWrap) {
+      discScopeEl.onchange = () => { discMprodWrap.style.display = discScopeEl.value === "mprod" ? "" : "none"; };
+    }
     document.getElementById("new-disc-save").onclick = async () => {
       const errBox = document.getElementById("new-disc-error");
       errBox.textContent = "";
@@ -5954,20 +5971,27 @@ async function renderAdminSalesSection() {
       if (percentVal && fixedVal) { errBox.textContent = "فقط یکی از دو کادر درصد یا مبلغ ثابت را پر کن، نه هردو."; return; }
       const minPurchaseVal = document.getElementById("new-disc-minpurchase").value.trim();
       const maxPurchaseVal = document.getElementById("new-disc-maxpurchase").value.trim();
+      const maxDiscountVal = document.getElementById("new-disc-maxdiscount").value.trim();
       const scopeVal = document.getElementById("new-disc-scope").value;
       const expiresVal = document.getElementById("new-disc-expires").value;
-      let productId = null, categoryId = null;
+      let productId = null, categoryId = null, productIds = null;
       if (scopeVal.startsWith("cat:")) categoryId = Number(scopeVal.split(":")[1]);
       if (scopeVal.startsWith("prod:")) productId = Number(scopeVal.split(":")[1]);
+      if (scopeVal === "mprod") {
+        productIds = Array.from(document.querySelectorAll(".new-disc-mprod-item"))
+          .filter((el) => el.checked).map((el) => Number(el.value));
+        if (!productIds.length) { errBox.textContent = "حداقل یک محصول را برای «چند محصول خاص» انتخاب کن."; return; }
+      }
       try {
         await api("/api/admin/discounts", {
           method: "POST",
           body: JSON.stringify({
             code, percent: percentVal ? Number(percentVal) : null,
             fixed_amount: fixedVal ? Number(fixedVal) : null, max_uses: maxUses,
+            max_discount_amount: maxDiscountVal ? Number(maxDiscountVal) : null,
             min_purchase: minPurchaseVal ? Number(minPurchaseVal) : null,
             max_purchase: maxPurchaseVal ? Number(maxPurchaseVal) : null,
-            product_id: productId, category_id: categoryId,
+            product_id: productId, category_id: categoryId, product_ids: productIds,
             expires_at: expiresVal ? new Date(expiresVal + "T23:59:59").toISOString() : null,
             per_user_limit: Number(document.getElementById("new-disc-peruser").value) || null,
             first_purchase_only: document.getElementById("new-disc-firstonly").checked,

@@ -10,12 +10,14 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Audiowide&family=Rajdhani:wght@400;500;600;700&family=Vazirmatn:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css?v={{VERSION}}">
+<script src="/assets/i18n.js"></script>
 </head>
 <body>
 <div id="app">
   <div class="grid-fx" aria-hidden="true"></div>
 
   <header class="topbar {{HEADER_LOGO_CLASS}}">
+    <button id="lang-toggle" type="button" class="lang-toggle" aria-label="Change language">🇬🇧 English</button>
     <button class="wallet-chip" id="header-wallet-btn" type="button">
       <svg viewBox="0 0 24 24" fill="none"><rect x="3.5" y="6" width="17" height="12.5" rx="2.2" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 10h17" stroke="currentColor" stroke-width="1.8"/><circle cx="16.5" cy="14.2" r="1.3" fill="currentColor"/></svg>
       <span id="header-wallet-amount">۰ تومان</span>
@@ -61,6 +63,49 @@
     </button>
   </nav>
 </div>
+<script>
+(function(){
+  const tg=window.Telegram?.WebApp;
+  let LANGS=[];
+  function currentLang(){ const q=new URLSearchParams(location.search).get('lang'); return q || localStorage.getItem('sv-lang') || 'fa'; }
+  async function syncLang(l){
+    try{ if(tg?.initData) await fetch('/api/language',{method:'POST',headers:{'Content-Type':'application/json','X-Init-Data':tg.initData},body:JSON.stringify({language:l})}); }catch(e){ console.debug('language sync failed',e); }
+  }
+  function picker(){
+    let old=document.getElementById('language-picker'); if(old){old.remove();return;}
+    const b=document.getElementById('lang-toggle'); if(!b)return;
+    const box=document.createElement('div'); box.id='language-picker'; box.style.cssText='position:fixed;top:64px;right:12px;z-index:9999;background:var(--card,#fff);border:1px solid rgba(127,127,127,.2);border-radius:14px;padding:8px;box-shadow:0 12px 35px rgba(0,0,0,.2);min-width:170px;';
+    LANGS.forEach(x=>{ const a=document.createElement('button'); a.type='button'; a.textContent=`${x.flag||''} ${x.native_name||x.name}`; a.style.cssText='display:block;width:100%;padding:10px;border:0;background:transparent;text-align:start;border-radius:10px;cursor:pointer;color:inherit;'; a.onclick=()=>setLang(x.code); box.appendChild(a); });
+    document.body.appendChild(box);
+    setTimeout(()=>document.addEventListener('click',function close(e){ if(!box.contains(e.target)&&e.target!==b){box.remove();document.removeEventListener('click',close);} },{once:true}),0);
+  }
+  async function setLang(l){
+    localStorage.setItem('sv-lang',l);
+    await syncLang(l);
+    await window.ShopVPNLoadLanguage?.(l);
+    document.documentElement.lang=l; document.documentElement.dir=(l==='fa'||l==='ar')?'rtl':'ltr';
+    document.getElementById('language-picker')?.remove();
+    window.ShopVPNApplyI18n?.();
+    location.reload();
+  }
+  async function init(){
+    let lang=currentLang();
+    try{
+      if(tg?.initData){ const r=await fetch('/api/languages',{headers:{'X-Init-Data':tg.initData}}); if(r.ok) LANGS=await r.json(); }
+      if(!LANGS.length) LANGS=[{code:'fa',native_name:'\u0641\u0627\u0631\u0633\u06cc',flag:'🇮🇷'},{code:'en',native_name:'English',flag:'🇬🇧'}];
+      if(tg?.initData){ const r=await fetch('/api/me',{headers:{'X-Init-Data':tg.initData}}); if(r.ok){ const me=await r.json(); if(me.language) lang=me.language; } }
+    }catch(e){ console.debug('language bootstrap failed',e); }
+    if(!LANGS.some(x=>x.code===lang)) lang=LANGS[0]?.code||'fa';
+    localStorage.setItem('sv-lang',lang);
+    document.documentElement.lang=lang; document.documentElement.dir=(lang==='fa'||lang==='ar')?'rtl':'ltr';
+    await window.ShopVPNLoadLanguage?.(lang);
+    const b=document.getElementById('lang-toggle'); if(b){ const cur=LANGS.find(x=>x.code===lang); b.textContent=`${cur?.flag||''} ${cur?.native_name||cur?.name||lang}`; b.onclick=picker; }
+  }
+  document.addEventListener('DOMContentLoaded',init);
+})();
+</script>
+
+<script>document.addEventListener('DOMContentLoaded',()=>window.ShopVPNApplyI18n?.());</script>
 <script src="app.js?v={{VERSION}}"></script>
 </body>
 </html>

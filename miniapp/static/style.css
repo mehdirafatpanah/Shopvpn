@@ -1156,3 +1156,5 @@ html.reseller-owner.tier-vip .brand { color:#e6dcff; }
 .reseller-mini-action b,.reseller-mini-action span { display:block; }
 .reseller-mini-action span { color:var(--text-muted);font-size:10px;margin-top:4px; }
 @media(max-width:380px){.reseller-mini-actions{grid-template-columns:1fr}.reseller-mini-title h2{font-size:18px}}
+
+.lang-toggle{border:1px solid currentColor;background:transparent;color:inherit;border-radius:999px;padding:5px 9px;font:inherit;font-size:11px;cursor:pointer;white-space:nowrap}
