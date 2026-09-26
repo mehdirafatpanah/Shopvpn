@@ -742,13 +742,28 @@ if ('serviceWorker' in navigator) {
   if (!current || current.startsWith('{{')) return;
   const isTyping = () => {
     const el = document.activeElement;
+    if (window.__svLoginPending) return true;
+    // Never reload out from under the login screen: a stuck/oscillating
+    // version between requests must not turn into a login-blocking loop.
+    const loginScreen = document.getElementById('login-screen');
+    if (loginScreen && !loginScreen.hidden) return true;
     return !!el && (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.isContentEditable);
   };
+  // Only ever reload once per distinct version value. If the server keeps
+  // reporting a version that still doesn't match after a reload (flapping
+  // between workers/deploys, or a build that never stabilizes), reloading
+  // again would just repeat forever and lock the admin out — so once we've
+  // already reloaded for a given target version, stay put and let them work.
+  let alreadyReloadedFor = null;
+  try { alreadyReloadedFor = sessionStorage.getItem('sv_reloaded_for_version'); } catch (e) {}
   const check = async () => {
     try {
       const res = await fetch('/api/app-version', { cache: 'no-store' });
       const data = await res.json();
-      if (data.v && data.v !== current && !isTyping()) location.reload();
+      if (!data.v || data.v === current || isTyping()) return;
+      if (data.v === alreadyReloadedFor) return; // already tried once, don't loop
+      try { sessionStorage.setItem('sv_reloaded_for_version', data.v); } catch (e) {}
+      location.reload();
     } catch (e) {}
   };
   document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
@@ -839,6 +854,7 @@ $('#login-form').addEventListener('submit', async e => {
   const errBox = $('#login-error');
   errBox.hidden = true;
   btn.disabled = true; btn.textContent = 'در حال ورود...';
+  window.__svLoginPending = true;
   try {
     await apiPost('/login', {
       username: $('#login-username').value.trim(),
@@ -854,6 +870,7 @@ $('#login-form').addEventListener('submit', async e => {
     errBox.hidden = false;
   } finally {
     btn.disabled = false; btn.textContent = 'ورود';
+    window.__svLoginPending = false;
   }
 });
 
