@@ -132,9 +132,26 @@ def _patch_method_texts(method, generated: dict) -> None:
             except Exception:
                 pass
 
-    rows = getattr(getattr(method, "reply_markup", None), "inline_keyboard", None)
+    markup = getattr(method, "reply_markup", None)
+    rows = getattr(markup, "inline_keyboard", None)
     if rows:
         for row in rows:
+            for button in row:
+                text = getattr(button, "text", None)
+                if isinstance(text, str):
+                    try:
+                        button.text = patch(text)
+                    except Exception:
+                        pass
+
+    # Reply keyboards are the main menu in ShopVPN.  Previously only inline
+    # keyboards were patched, so the translation was correctly generated and
+    # saved in DB but the user still saw the original English fallback in the
+    # bottom keyboard.  Patch every KeyboardButton in the regular keyboard as
+    # well, using the same replacements.
+    reply_rows = getattr(markup, "keyboard", None)
+    if reply_rows:
+        for row in reply_rows:
             for button in row:
                 text = getattr(button, "text", None)
                 if isinstance(text, str):

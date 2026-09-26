@@ -29,7 +29,7 @@ BATCH_SIZE = 40
 # corresponding SHOPVPN_TRANSLATION_*_MODEL environment variables.
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 DEFAULT_OPENROUTER_MODEL = "google/gemini-3.8-flash"
-DEFAULT_PROVIDER_ORDER = "libretranslate,argos,mymemory,google,gemini,openrouter"
+DEFAULT_PROVIDER_ORDER = "google,mymemory,argos,libretranslate,gemini,openrouter"
 _SHARED_CACHE: Dict[tuple, str] = {}
 _PROVIDER_RUNTIME: Dict[str, dict] = {}
 _SYNC_LOCKS: Dict[tuple, threading.Lock] = {}
@@ -105,9 +105,11 @@ _MYMEMORY_LANG = {
     "es": "es-ES", "it": "it-IT", "pt": "pt-PT", "zh": "zh-CN", "ja": "ja-JP",
     "ko": "ko-KR", "nl": "nl-NL", "pl": "pl-PL", "uk": "uk-UA",
 }
-# LibreTranslate exposes the language catalog with the same ISO-style codes
-# used by ShopVPN (including ``zh``), so no target-code rewrite is required.
-_LIBRETRANSLATE_LANG = {}
+# LibreTranslate's argos-translate models expose Chinese under the code
+# "zh-Hans" (per its own /languages endpoint), not the bare "zh" the rest of
+# ShopVPN's catalog uses; without this, every Chinese request 404s/errors on
+# a self-hosted LibreTranslate instance even though the model is installed.
+_LIBRETRANSLATE_LANG = {"zh": "zh-Hans"}
 GLOSSARY = (
     "ShopVPN, VPN, Telegram, Mini App, Stars, USDT stay untranslated. "
     "'Toman' stays 'Toman'. 'Config' means a VPN configuration. "
@@ -377,7 +379,6 @@ class _LibreTranslateProvider(_Provider):
         self.endpoint = endpoint.rstrip("/")
         self.api_key = api_key
         self.source = source
-        self.max_retries = 3
 
     def translate_batch(self, texts: list[str], target: str, contexts: Dict[str, str] | None = None) -> list[str]:
         target = _LIBRETRANSLATE_LANG.get(target, target)
@@ -386,29 +387,21 @@ class _LibreTranslateProvider(_Provider):
             payload = {"q": text, "source": self.source, "target": target, "format": "text"}
             if self.api_key:
                 payload["api_key"] = self.api_key
-            last_exc = None
-            for attempt in range(self.max_retries):
-                req = urllib.request.Request(
-                    self.endpoint + "/translate",
-                    data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                    headers={"Content-Type": "application/json", "Accept": "application/json", "User-Agent": "ShopVPN/1.0"},
-                    method="POST",
-                )
-                try:
-                    with urllib.request.urlopen(req, timeout=60) as response:
-                        data = _json.loads(response.read().decode("utf-8"))
-                    value = data.get("translatedText") if isinstance(data, dict) else None
-                    if not value:
-                        raise RuntimeError("empty translatedText")
-                    out.append(str(value))
-                    last_exc = None
-                    break
-                except Exception as exc:
-                    last_exc = exc
-                    if attempt < self.max_retries - 1:
-                        time.sleep(1.5 * (attempt + 1))
-            if last_exc is not None:
-                raise TranslationProviderError(f"{self.name}: {last_exc}") from last_exc
+            req = urllib.request.Request(
+                self.endpoint + "/translate",
+                data=urllib.parse.urlencode(payload).encode("utf-8"),
+                headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "ShopVPN/1.0"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=60) as response:
+                    data = _json.loads(response.read().decode("utf-8"))
+                value = data.get("translatedText") if isinstance(data, dict) else None
+                if not value:
+                    raise RuntimeError("empty translatedText")
+                out.append(str(value))
+            except Exception as exc:
+                raise TranslationProviderError(f"{self.name}: {exc}") from exc
         return out
 
 
@@ -622,7 +615,16 @@ def openrouter_key_source(db=None) -> str:
 
 
 def _public_translation_allowed() -> bool:
-    return os.getenv("SHOPVPN_TRANSLATION_ALLOW_PUBLIC_APIS", "0").strip().lower() in {"1", "true", "yes", "on"}
+    # GoogleTranslator and MyMemory are the free online fallbacks used for
+    # incremental, on-demand translation.  They are enabled by default so an
+    # installation does not silently fall back to English just because the
+    # old .env contains SHOPVPN_TRANSLATION_ALLOW_PUBLIC_APIS=0.  To explicitly
+    # disable public translation endpoints, set the new disable flag.  The old
+    # variable is still honored when it is explicitly enabled, for backward
+    # compatibility with installations that already opt in.
+    if os.getenv("SHOPVPN_TRANSLATION_DISABLE_PUBLIC_APIS", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        return False
+    return True
 
 
 def _is_local_endpoint(endpoint: str) -> bool:
@@ -666,12 +668,7 @@ def _providers(target: str, db=None, *, local_only: bool = False) -> list[_Provi
                 source="en-US",
             ))
         elif name == "libretranslate":
-            # The preferred provider is a self-hosted LibreTranslate instance.
-            # Keep the localhost default so a standard ShopVPN installation
-            # works even when .env has not been populated yet. Public
-            # LibreTranslate endpoints remain opt-in and are never selected
-            # implicitly.
-            endpoint = os.getenv("SHOPVPN_LIBRETRANSLATE_URL", "http://127.0.0.1:5050").strip()
+            endpoint = os.getenv("SHOPVPN_LIBRETRANSLATE_URL", "").strip()
             if endpoint and ((_is_local_endpoint(endpoint)) or (public_allowed and not local_only)):
                 providers.append(_LibreTranslateProvider(endpoint, os.getenv("SHOPVPN_LIBRETRANSLATE_API_KEY")))
     return providers
@@ -718,7 +715,7 @@ def _fa_en_providers(db=None, *, local_only: bool = False) -> list[_Provider]:
                 MyMemoryTranslator, "mymemory", min_interval=1.0, source="fa-IR",
             ))
         elif name == "libretranslate":
-            endpoint = os.getenv("SHOPVPN_LIBRETRANSLATE_URL", "http://127.0.0.1:5050").strip()
+            endpoint = os.getenv("SHOPVPN_LIBRETRANSLATE_URL", "").strip()
             if endpoint and ((_is_local_endpoint(endpoint)) or (public_allowed and not local_only)):
                 providers.append(_LibreTranslateProvider(endpoint, os.getenv("SHOPVPN_LIBRETRANSLATE_API_KEY"), source="fa"))
     return providers
@@ -1111,28 +1108,25 @@ def sync_enabled_languages(db, *, allow_network: bool = True) -> list[dict]:
         quarantined = bool(row.get("translation_auto_quarantined", 0) if hasattr(row, "get") else row["translation_auto_quarantined"])
         try:
             result = sync_language(db, code, allow_network=allow_network)
-            # Dynamic languages are intentionally lazy: an incomplete catalog is
-            # not a failure. Missing strings are translated on first use and
-            # persisted, so disabling a language merely because it has >5%
-            # missing entries defeats the whole incremental-translation design.
             if result.get("status") == "busy":
                 result["health"] = "busy"
-            elif result.get("status") == "error":
-                result["health"] = "degraded"
+            elif result["missing_count"] and _missing_ratio(result) > PARTIAL_MAX_RATIO:
+                error = f"{result['missing_count']} translation(s) missing"
+                db.disable_language(code, automatic=True, error=error)
+                result["disabled"] = True
+                result["recovered"] = False
+                result["health"] = "quarantined"
             else:
                 if quarantined or bool(row["enabled"]):
                     db.enable_language(code, generated=True, automatic=True)
                 result["disabled"] = False
                 result["recovered"] = quarantined
-                result["health"] = "partial" if result.get("missing_count") else ("recovered" if quarantined else "healthy")
+                result["health"] = "partial" if result["missing_count"] else ("recovered" if quarantined else "healthy")
             results.append(result)
         except Exception as exc:
-            # A provider outage must not erase a language that the admin has
-            # explicitly enabled. Keep it enabled and let the next health pass
-            # retry; users will continue to receive already-cached translations.
             error = str(exc)[:500]
-            result = {"language": code, "status": "error", "error": error, "disabled": False, "recovered": False, "health": "degraded"}
-            results.append(result)
+            db.disable_language(code, automatic=True, error=error)
+            results.append({"language": code, "status": "error", "error": error, "disabled": True, "recovered": False, "health": "quarantined"})
     return results
 
 
@@ -1146,13 +1140,12 @@ def prewarm_language(db, language: str) -> dict:
     """Materialize a language catalog; usable when complete or missing at most PARTIAL_MAX_RATIO of strings."""
     code = _normalize_target(language)
     result = sync_language(db, code, allow_network=True)
-    # Prewarming is an optimization, not a prerequisite for enabling a
-    # language. Missing strings are filled lazily on first use and persisted.
-    # Therefore a partial catalog is still a valid prewarm result.
-    result["prewarmed"] = result.get("status") not in {"error"}
+    result["prewarmed"] = result.get("missing_count", 0) == 0 or (
+        result.get("status") in {"partial", "busy"} and _missing_ratio(result) <= PARTIAL_MAX_RATIO
+    )
     result["cache_entries"] = len(db.translation_catalog(code)) if code not in {"fa", "en"} else 0
     if not result["prewarmed"]:
-        raise RuntimeError(f"Language {code} prewarm failed")
+        raise RuntimeError(f"Language {code} is not fully prewarmed")
     return result
 
 
@@ -1170,8 +1163,6 @@ def prewarm_enabled_languages(db) -> list[dict]:
             results.append(result)
         except Exception as exc:
             error = str(exc)[:500]
-            # Never automatically disable an explicitly enabled language just
-            # because the translation provider is temporarily unavailable.
-            # Cached translations remain usable and the next request can retry.
-            results.append({"language": code, "prewarmed": False, "health": "degraded", "error": error, "disabled": False})
+            db.disable_language(code, automatic=True, error=error)
+            results.append({"language": code, "prewarmed": False, "health": "quarantined", "error": error})
     return results

@@ -638,6 +638,19 @@ def tr(text: str, language: Optional[str] = None) -> str:
             note_missing(template)
             value = template
         return fill_template(value, values)
+
+    # Some installations store customized menu labels directly in English
+    # (for example ``Lucky wheel`` or ``Contact support``).  They are already
+    # the English source text, so the old dynamic-language path treated them as
+    # arbitrary user text and never queued them for translation.  Recognize
+    # every known English catalog value as a translatable source as well as the
+    # Persian key.  This is especially important for persisted menu settings.
+    english_sources = set(_TRANSLATIONS.get("en", {}).values())
+    english_sources.update(_PHRASE_TRANSLATIONS.values())
+    english_sources.update(_FRAGMENT_TRANSLATIONS.values())
+    english_sources.update(_WORD_TRANSLATIONS.values())
+    if text in english_sources:
+        note_missing(text)
     return text
 
 def api_message(text: str, language: Optional[str] = None) -> str:
