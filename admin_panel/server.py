@@ -895,7 +895,7 @@ async def api_i18n_catalog(language: str = Query("en"), admin=Depends(get_curren
     row = await asyncio.to_thread(tenant.db.get_language, code)
     if not row or not row["enabled"]:
         raise HTTPException(400, tr("این زبان در حال حاضر فعال نیست."))
-    return {"language": code, "catalog": await asyncio.to_thread(tenant.db.translation_catalog, code) if code not in {"fa", "en"} else {}}
+    return {"language": code, "catalog": await asyncio.to_thread(tenant.db.translation_catalog, code) if code != "fa" else {}}
 
 
 @app.post("/api/languages/{language}/enable")
@@ -1040,8 +1040,22 @@ def api_i18n_translate_batch(payload: Dict[str, Any], auth=Depends(get_current_a
     texts = [str(x) for x in (payload.get("texts") or [])][:50]
     if not texts:
         return {"language": language, "catalog": {}, "verbatim": []}
-    if language in {"fa", "en"}:
+    if language == "fa":
         return {"language": language, "catalog": {x: x for x in texts}, "verbatim": []}
+    if language == "en":
+        from translation_engine import translate_many_to_english, runtime_limiter
+        if not runtime_limiter.allow((db.db_path, admin["id"])):
+            raise HTTPException(429, tr("درخواست‌های ترجمه بیش از حد مجاز است؛ کمی بعد دوباره تلاش کنید."))
+        catalog = db.translation_catalog("en")
+        missing = [x for x in texts if x not in catalog]
+        if missing:
+            try:
+                generated = translate_many_to_english(missing, cached=catalog, db=db)
+            except Exception as exc:
+                raise HTTPException(503, tr("ترجمه این زبان در دسترس نیست؛ لطفاً کمی بعد دوباره تلاش کنید.")) from exc
+            catalog.update(generated)
+            db.upsert_translations("en", generated, source="machine-runtime")
+        return {"language": "en", "catalog": {x: catalog.get(x, x) for x in texts}, "verbatim": []}
     from translation_engine import split_translatable, runtime_limiter
     texts, verbatim = split_translatable(texts)
     catalog = db.translation_catalog(language)
