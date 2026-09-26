@@ -1050,14 +1050,19 @@ def translation_settings_kb(db) -> InlineKeyboardMarkup:
     import translation_engine as te
     source = te.gemini_key_source(db)
     source_label = {"panel": "🟢 از همین پنل", "env": "🟡 از فایل .env سرور", "none": "🔴 تنظیم نشده"}[source]
+    or_source = te.openrouter_key_source(db)
+    or_source_label = {"panel": "🟢 از همین پنل", "env": "🟡 از فایل .env سرور", "none": "🔴 تنظیم نشده"}[or_source]
     providers = te.provider_status(db)
     providers_label = "، ".join(p["name"] for p in providers) if providers else "هیچ‌کدام"
     rows = [
         [InlineKeyboardButton(text=tr(f"🔑 کلید Gemini: {source_label}"), callback_data="noop")],
+        [InlineKeyboardButton(text=tr(f"🔑 کلید OpenRouter: {or_source_label}"), callback_data="noop")],
         [InlineKeyboardButton(text=tr(f"⚙️ ارائه‌دهنده‌های فعال: {providers_label}"), callback_data="noop")],
         [InlineKeyboardButton(text=tr("🌍 مدیریت زبان‌ها"), callback_data="adm_translation_langs")],
         [InlineKeyboardButton(text=tr("🔑 تنظیم/تغییر کلید Gemini"), callback_data="adm_translation_set_key")],
         [InlineKeyboardButton(text=tr("🔗 ساخت کلید رایگان از Google AI Studio"), url="https://aistudio.google.com/apikey")],
+        [InlineKeyboardButton(text=tr("🔑 تنظیم/تغییر کلید OpenRouter"), callback_data="adm_translation_set_openrouter_key")],
+        [InlineKeyboardButton(text=tr("🔗 ساخت کلید رایگان از OpenRouter"), url="https://openrouter.ai/keys")],
         [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:access")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)

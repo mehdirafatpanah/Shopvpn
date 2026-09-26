@@ -98,6 +98,10 @@ class AdminSetTranslationGeminiKey(StatesGroup):
     waiting_key = State()
 
 
+class AdminSetTranslationOpenRouterKey(StatesGroup):
+    waiting_key = State()
+
+
 class AdminAddCategory(StatesGroup):
     waiting_name = State()
 

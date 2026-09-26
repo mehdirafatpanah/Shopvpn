@@ -113,6 +113,7 @@ from states import (
     AdminSetGroqKey,
     AdminSetOpenRouterKey,
     AdminSetTranslationGeminiKey,
+    AdminSetTranslationOpenRouterKey,
     AdminReferralPercent,
     AdminReferralMultilevel,
     AdminReferralCommissionMax,
@@ -11165,6 +11166,49 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         await asyncio.to_thread(db.set_setting, "translation_gemini_api_key", "\n".join(keys))
         await asyncio.to_thread(db.log_admin_action, message.from_user.id, "translation_gemini_key_change", f"{len(keys)} کلید ذخیره شد.")
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        await message.answer(tr(f"✅ {len(keys)} کلید ذخیره شد. از همگام‌سازی بعدی، ترجمه‌ها با این کلید ساخته می‌شوند."), reply_markup=kb.translation_settings_kb(db))
+
+    @router.callback_query(F.data == "adm_translation_set_openrouter_key")
+    async def cb_admin_translation_set_openrouter_key(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        current_keys = ai_support._split_keys(db.get_setting("translation_openrouter_api_key", ""))
+        masked = "\n".join(f"  {i+1}. ...{k[-4:]}" for i, k in enumerate(current_keys)) if current_keys else "❌ تنظیم نشده"
+        await state.set_state(AdminSetTranslationOpenRouterKey.waiting_key)
+        await replace_admin_view(
+            call,
+            "🔑 کلید OpenRouter برای ترجمه خودکار\n\n"
+            "این کلید فقط برای موتور ترجمه استفاده می‌شود و از کلید OpenRouter «دستیار هوشمند» کاملاً جداست؛ "
+            "می‌توانی همان کلید را اینجا هم بفرستی یا کلید جداگانه بسازی.\n\n"
+            "نیازی به ساخت پروژه‌ی گوگل‌کلاود ندارد و ثبت‌نامش معمولاً بدون محدودیت منطقه‌ای انجام می‌شود.\n\n"
+            "🔗 ساخت کلید رایگان: https://openrouter.ai/keys\n\n"
+            "کلید یا چند کلید را بفرست؛ هر کلید در یک خط (در صورت پر شدن سهمیه‌ی یکی، بعدی امتحان می‌شود).\n\n"
+            f"کلیدهای فعلی:\n{masked}\n\n"
+            "برای حذف: «حذف»",
+            reply_markup=kb.admin_back_kb("adm_translation_settings"),
+        )
+        await call.answer()
+
+    @router.message(AdminSetTranslationOpenRouterKey.waiting_key)
+    async def process_set_translation_openrouter_key(message: Message, state: FSMContext):
+        text = (message.text or "").strip()
+        await state.clear()
+        if text in ("حذف", "/حذف", "-"):
+            await asyncio.to_thread(db.set_setting, "translation_openrouter_api_key", "")
+            await asyncio.to_thread(db.log_admin_action, message.from_user.id, "translation_openrouter_key_change", "کلید حذف شد.")
+            await message.answer(tr("✅ کلید حذف شد."), reply_markup=kb.translation_settings_kb(db))
+            return
+        keys = ai_support._split_keys(text)
+        if not keys:
+            await message.answer(tr("⚠️ متن نامعتبر است؛ کلید را دوباره ارسال کن یا «حذف» را بفرست."))
+            await state.set_state(AdminSetTranslationOpenRouterKey.waiting_key)
+            return
+        await asyncio.to_thread(db.set_setting, "translation_openrouter_api_key", "\n".join(keys))
+        await asyncio.to_thread(db.log_admin_action, message.from_user.id, "translation_openrouter_key_change", f"{len(keys)} کلید ذخیره شد.")
         try:
             await message.delete()
         except Exception:

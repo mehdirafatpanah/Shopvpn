@@ -254,7 +254,7 @@ class _LibreTranslateProvider(_Provider):
                 method="POST",
             )
             try:
-                with urllib.request.urlopen(req, timeout=15) as response:
+                with urllib.request.urlopen(req, timeout=60) as response:
                     data = _json.loads(response.read().decode("utf-8"))
                 value = data.get("translatedText") if isinstance(data, dict) else None
                 if not value:
@@ -310,8 +310,76 @@ class _GeminiProvider(_Provider):
         raise TranslationProviderError(f"gemini: {last}")
 
 
+def _extract_json_array(text: str) -> str:
+    """Pull the JSON array out of a model reply that may be wrapped in markdown fences or prose."""
+    text = text.strip()
+    start, end = text.find("["), text.rfind("]")
+    if start == -1 or end == -1 or end < start:
+        raise ValueError("no JSON array found in response")
+    return text[start:end + 1]
+
+
+class _OpenRouterProvider(_Provider):
+    """LLM-based translation via OpenRouter's OpenAI-compatible chat API.
+
+    Unlike Gemini, this needs no Google Cloud project — just an API key from
+    openrouter.ai — which makes it a usable fallback where creating a GCP
+    project is blocked (e.g. by Google's own regional restrictions).
+    """
+    name = "openrouter"
+
+    def __init__(self, keys: list[str], model: str):
+        self.keys = keys
+        self.model = model
+
+    def _instruction(self, target: str) -> str:
+        name = LANGUAGE_CATALOG.get(target, {}).get("name", target)
+        return (
+            f"You translate UI strings of a VPN sales Telegram bot from English to {name}. "
+            "Input is a JSON list of {id, text, context}. Reply with ONLY a JSON array of {id, text} "
+            "containing the translation of each item — no markdown fences, no extra commentary. "
+            "Keep tokens like __SHOPVPN_TOKEN_000__, emoji, line breaks and leading/trailing punctuation "
+            "exactly as in the source. Use short natural wording for buttons. " + GLOSSARY
+        )
+
+    def translate_batch(self, texts: list[str], target: str, contexts: Dict[str, str] | None = None) -> list[str]:
+        contexts = contexts or {}
+        payload = json.dumps(
+            [{"id": i, "text": t, "context": contexts.get(t, "")} for i, t in enumerate(texts)],
+            ensure_ascii=False,
+        )
+        body = json.dumps({
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": self._instruction(target)},
+                {"role": "user", "content": payload},
+            ],
+        }).encode("utf-8")
+        last: Exception | None = None
+        for key in self.keys:
+            try:
+                req = urllib.request.Request(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    data=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {key}",
+                    },
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=60) as response:
+                    data = _json.loads(response.read().decode("utf-8"))
+                content = data["choices"][0]["message"]["content"]
+                parsed = json.loads(_extract_json_array(content))
+                by_id = {int(item["id"]): str(item["text"]) for item in parsed}
+                return [by_id.get(i, "") for i in range(len(texts))]
+            except Exception as exc:
+                last = exc
+        raise TranslationProviderError(f"openrouter: {last}")
+
+
 def _provider_order() -> list[str]:
-    raw = os.getenv("SHOPVPN_TRANSLATION_PROVIDERS", "gemini,google,mymemory,libretranslate")
+    raw = os.getenv("SHOPVPN_TRANSLATION_PROVIDERS", "gemini,openrouter,google,mymemory,libretranslate")
     return [x.strip().lower() for x in raw.split(",") if x.strip()]
 
 
@@ -347,6 +415,24 @@ def gemini_key_source(db=None) -> str:
     return "none"
 
 
+def _openrouter_keys(db=None) -> list[str]:
+    """Admin-panel key (stored in the main bot's database) wins; env vars are the fallback."""
+    from_db = _split_keys(_db_setting(db, "translation_openrouter_api_key"))
+    if from_db:
+        return from_db
+    raw = os.getenv("SHOPVPN_OPENROUTER_API_KEY") or ""
+    return _split_keys(raw)
+
+
+def openrouter_key_source(db=None) -> str:
+    """Where the OpenRouter key used for translation currently comes from, for admin UIs."""
+    if _split_keys(_db_setting(db, "translation_openrouter_api_key")):
+        return "panel"
+    if os.getenv("SHOPVPN_OPENROUTER_API_KEY"):
+        return "env"
+    return "none"
+
+
 def _providers(target: str, db=None) -> list[_Provider]:
     providers: list[_Provider] = []
     try:
@@ -358,6 +444,12 @@ def _providers(target: str, db=None) -> list[_Provider]:
             keys = _gemini_keys(db)
             if keys:
                 providers.append(_GeminiProvider(keys, os.getenv("SHOPVPN_TRANSLATION_MODEL", "gemini-2.5-flash")))
+        elif name == "openrouter":
+            keys = _openrouter_keys(db)
+            if keys:
+                providers.append(_OpenRouterProvider(
+                    keys, os.getenv("SHOPVPN_TRANSLATION_OPENROUTER_MODEL", "google/gemini-2.0-flash-exp:free")
+                ))
         elif name == "google" and GoogleTranslator:
             # Google's free web endpoint allows ~5 req/s; stay safely under that.
             providers.append(_DeepTranslatorProvider(GoogleTranslator, "google", min_interval=0.3))
