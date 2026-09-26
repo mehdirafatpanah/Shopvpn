@@ -49,6 +49,57 @@
   }
 })();
 </script>
+<script>
+(function(){
+  const dict = {
+    "پنل مدیریت ShopVPN":"ShopVPN Admin Panel",
+    "برای ورود، اطلاعات حساب پنل وب را وارد کن":"Enter your web panel credentials to sign in",
+    "یوزرنیم":"Username","پسورد":"Password","ورود":"Sign in",
+    "راه‌اندازی پنل نمایندگی":"Reseller panel setup",
+    "یک یوزرنیم و پسورد برای پنل وب خودت انتخاب کن":"Choose a username and password for your web panel",
+    "ساخت حساب و ورود":"Create account & sign in",
+    "پنل مدیریت":"Admin panel",
+    "تغییر زبان / Change language":"Change language / تغییر زبان",
+    "اتصال زنده":"Live connection"
+  };
+  function lang(){ return localStorage.getItem("sv-lang") || "fa"; }
+  function apply(){
+    const en=lang()==="en";
+    document.documentElement.lang=en?"en":"fa";
+    document.documentElement.dir=en?"ltr":"rtl";
+    document.body.classList.toggle("i18n-en",en);
+    document.querySelectorAll("[data-i18n-toggle]").forEach(b=>b.textContent=en?"🇮🇷 فارسی":"🇬🇧 English");
+    if(en){
+      const w=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+      const nodes=[]; while(w.nextNode()) nodes.push(w.currentNode);
+      nodes.forEach(n=>{ const t=n.nodeValue.trim(); if(dict[t]) n.nodeValue=n.nodeValue.replace(t,dict[t]); });
+    } else location.reload();
+  }
+  window.ShopVPNSetLanguage=async function(l){
+    localStorage.setItem("sv-lang",l);
+    try{ await fetch("/api/language", {method:"POST", credentials:"include", headers:{"Content-Type":"application/json"}, body:JSON.stringify({language:l})}); }catch(e){}
+    await window.ShopVPNLoadLanguage?.(l);
+    location.reload();
+  };
+  window.ShopVPNShowLanguagePicker=async function(btn){
+    let old=document.getElementById("admin-language-picker"); if(old){old.remove();return;}
+    let langs=[]; try{ const r=await fetch("/api/languages",{credentials:"include"}); if(r.ok) langs=await r.json(); }catch(e){}
+    const box=document.createElement("div"); box.id="admin-language-picker"; box.style.cssText="position:fixed;top:58px;right:16px;z-index:10000;background:var(--card,#fff);border:1px solid rgba(127,127,127,.2);border-radius:14px;padding:8px;box-shadow:0 12px 35px rgba(0,0,0,.2);min-width:170px;";
+    langs.filter(x=>x.enabled).forEach(x=>{ const a=document.createElement("button"); a.type="button"; a.textContent=`${x.flag||""} ${x.native_name||x.name}`; a.className="btn btn-ghost"; a.style.cssText="display:block;width:100%;margin:2px 0;text-align:start;"; a.onclick=()=>ShopVPNSetLanguage(x.code); box.appendChild(a); });
+    document.body.appendChild(box);
+  };
+  window.addEventListener("DOMContentLoaded",function(){
+    const b=document.createElement("button");
+    b.type="button"; b.className="btn btn-ghost"; b.setAttribute("data-i18n-toggle","");
+    b.textContent=lang()==="en"?"🇮🇷 فارسی":"🇬🇧 English";
+    b.onclick=()=>window.ShopVPNShowLanguagePicker(b);
+    const top=document.querySelector(".topbar-actions")||document.querySelector(".topbar");
+    if(top) top.prepend(b);
+    apply();
+  });
+})();
+</script>
+<script src="/assets/i18n.js"></script>
 </head>
 <body>
 

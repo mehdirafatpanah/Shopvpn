@@ -281,12 +281,12 @@ async function api(path, opts = {}) {
   return data;
 }
 function formatApiError(detail) {
-  if (!detail) return 'خطای ناشناخته';
-  if (typeof detail === 'string') return detail;
-  if (Array.isArray(detail)) {
-    return detail.map(d => (d && (d.msg || d.detail)) || JSON.stringify(d)).join('، ') || 'خطای ناشناخته';
-  }
-  return typeof detail === 'object' ? JSON.stringify(detail) : String(detail);
+  let message;
+  if (!detail) message = 'Unknown error';
+  else if (typeof detail === 'string') message = detail;
+  else if (Array.isArray(detail)) message = detail.map(d => (d && (d.msg || d.detail)) || JSON.stringify(d)).join(', ') || 'Unknown error';
+  else message = typeof detail === 'object' ? JSON.stringify(detail) : String(detail);
+  return window.ShopVPNTranslate ? window.ShopVPNTranslate(message) : message;
 }
 const apiGet = p => api(p);
 const apiPost = (p, body) => api(p, { method: 'POST', body: body || {} });
@@ -366,6 +366,7 @@ const NAV = [
 
   // تنظیمات و سیستم — نگهداری، دسترسی و پیکربندی
   { key: 'settings', label: 'تنظیمات و برندینگ', icon: 'settings', role: 'settings', section: 'تنظیمات و سیستم' },
+  { key: 'languages', label: '\u0632\u0628\u0627\u0646\u200c\u0647\u0627', icon: 'settings', role: 'settings', section: '\u062a\u0646\u0638\u06cc\u0645\u0627\u062a \u0648 \u0633\u06cc\u0633\u062a\u0645' },
   { key: 'buttons', label: 'دکمه‌های ربات', icon: 'buttons', role: 'settings', section: 'تنظیمات و سیستم' },
   { key: 'bottexts', label: 'متن‌های ربات', icon: 'bottexts', role: 'settings', section: 'تنظیمات و سیستم' },
   { key: 'salessettings', label: 'تنظیمات فروش', icon: 'settings', role: 'settings', section: 'تنظیمات و سیستم' },
@@ -514,6 +515,7 @@ async function boot() {
   if (location.pathname === '/setup') return boot_setup();
   try {
     ME = await apiGet('/me');
+    if (ME.language) localStorage.setItem('sv-lang', ME.language);
     applyResellerTierChrome();
     showApp();
   } catch (e) {
@@ -844,6 +846,7 @@ $('#login-form').addEventListener('submit', async e => {
       b: tenantParam(),
     });
     ME = await apiGet('/me');
+    if (ME.language) localStorage.setItem('sv-lang', ME.language);
     applyResellerTierChrome();
     showApp();
   } catch (e) {
@@ -884,6 +887,7 @@ async function renderPage(tab) {
       case 'panels': return await renderPanels();
       case 'system': return await renderSystem();
       case 'settings': return await renderSettings();
+      case 'languages': return await renderLanguages();
       case 'buttons': return await renderButtons();
       case 'bottexts': return await renderBotTexts();
       case 'salessettings': return await renderSalesSettings();
@@ -1232,7 +1236,7 @@ function appendExtraStatsPanel(s) {
         <div style="display:flex;justify-content:space-between;padding:6px 0"><span>تعداد کل کدهای تخفیف داده‌شده</span><span class="mono">${fmt(s.discount_orders_count)} سفارش</span></div>
       </div>
     </div>
-    ${low.length ? `<div class="card-sub" style="margin-top:12px;color:#FB7185">⚠️ موجودی کم: ${low.map(p => esc(p.name)).join('، ')}</div>` : ''}
+    ${low.length ? `<div class="card-sub" style="margin-top:12px;color:#FB7185">⚠️ ${settingsUiText('\u0645\u0648\u062c\u0648\u062f\u06cc \u06a9\u0645')}: ${low.map(p => esc(p.name)).join(', ')}</div>` : ''}
   `;
   root.appendChild(el);
 }
@@ -3079,7 +3083,7 @@ function openMakeResellerTierModal(tgId, closeUserModal, tiers, opts = {}) {
     const syncTier = () => {
       const t = currentTier();
       const features = [t.has_dedicated_bot && 'بات مستقل', t.has_web_panel && 'پنل وب', t.has_miniapp && 'مینی‌اپ'].filter(Boolean);
-      $('#mr-tier-info', body).textContent = [t.summary, features.length ? `امکانات: ${features.join('، ')}` : ''].filter(Boolean).join(' | ');
+      $('#mr-tier-info', body).textContent = [t.summary, features.length ? `${settingsUiText('\u0627\u0645\u06a9\u0627\u0646\u0627\u062a')}: ${features.join(', ')}` : ''].filter(Boolean).join(' | ');
       show('#mr-percent-wrap', t.model === 'commission');
       show('#mr-discount-wrap', t.model === 'discount' && t.code === 'silver');
       show('#mr-volume-wrap', t.model === 'volume_credit');
@@ -4144,11 +4148,20 @@ function discountExtraFieldsHtml(categories, products) {
         <input class="input" id="code-minpurchase" type="number" placeholder="حداقل مبلغ خرید (تومان)">
         <input class="input" id="code-maxpurchase" type="number" placeholder="حداکثر مبلغ خرید (تومان)">
       </div>
+      <label class="field"><span>سقف مبلغ تخفیف (تومان، فقط برای تخفیف درصدی — مثلاً ۲۰٪ تا سقف ۴۰۰۰۰ تومان)</span>
+        <input class="input" id="code-maxdiscount" type="number" placeholder="خالی = بدون سقف"></label>
       <select class="input" id="code-scope">
         <option value="">🌐 بدون محدودیت (همه‌ی محصولات)</option>
         ${categories.length ? `<optgroup label="فقط یک دسته‌بندی خاص">${categories.map(c => `<option value="cat:${c.id}">📁 ${esc(c.name)}</option>`).join('')}</optgroup>` : ''}
         ${products.length ? `<optgroup label="فقط یک محصول خاص">${products.map(p => `<option value="prod:${p.id}">📦 ${esc(p.name)}</option>`).join('')}</optgroup>` : ''}
+        ${products.length ? `<option value="mprod">🧩 چند محصول خاص (انتخاب زیر)</option>` : ''}
       </select>
+      <div id="code-mprod-wrap" style="display:none">
+        <div class="form-row" style="flex-wrap:wrap;gap:6px;max-height:180px;overflow:auto;border:1px solid var(--border,#ddd);border-radius:8px;padding:8px">
+          ${products.map(p => `<label style="display:flex;align-items:center;gap:6px;font-size:13px">
+            <input type="checkbox" class="code-mprod-item" value="${p.id}"><span>${esc(p.name)}</span></label>`).join('')}
+        </div>
+      </div>
       <label class="field"><span>تاریخ انقضا (اختیاری)</span><input class="input" id="code-expires" type="date"></label>
       <div class="form-row">
         <input class="input" id="code-peruser" type="number" min="0" placeholder="سقف استفاده‌ی هر کاربر (خالی=نامحدود)">
@@ -4160,16 +4173,27 @@ function discountExtraFieldsHtml(categories, products) {
       </div>
       <label class="field" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="code-firstonly"><span>فقط برای اولین خرید کاربر</span></label>`;
 }
+function discountExtraFieldsBindScope(b) {
+  const scopeEl = $('#code-scope', b);
+  const wrap = $('#code-mprod-wrap', b);
+  if (!scopeEl || !wrap) return;
+  scopeEl.addEventListener('change', () => { wrap.style.display = scopeEl.value === 'mprod' ? '' : 'none'; });
+}
 function discountExtraFieldsPayload(b) {
   const scope = $('#code-scope', b).value;
-  let product_id = null, category_id = null;
+  let product_id = null, category_id = null, product_ids = null;
   if (scope.startsWith('cat:')) category_id = Number(scope.split(':')[1]);
   if (scope.startsWith('prod:')) product_id = Number(scope.split(':')[1]);
+  if (scope === 'mprod') {
+    product_ids = $$('.code-mprod-item', b).filter(i => i.checked).map(i => Number(i.value));
+    if (!product_ids.length) product_ids = null;
+  }
   const expiresRaw = $('#code-expires', b).value;
   return {
     min_purchase: Number($('#code-minpurchase', b).value) || null,
     max_purchase: Number($('#code-maxpurchase', b).value) || null,
-    product_id, category_id,
+    max_discount_amount: Number($('#code-maxdiscount', b).value) || null,
+    product_id, category_id, product_ids,
     expires_at: expiresRaw ? new Date(expiresRaw + 'T23:59:59').toISOString() : null,
     per_user_limit: Number($('#code-peruser', b).value) || null,
     first_purchase_only: $('#code-firstonly', b).checked,
@@ -4180,7 +4204,11 @@ function discountConstraintsLine(c, categories, products) {
   const parts = [];
   if (c.min_purchase) parts.push(`حداقل خرید ${fmt(c.min_purchase)}ت`);
   if (c.max_purchase) parts.push(`حداکثر خرید ${fmt(c.max_purchase)}ت`);
-  if (c.product_id) { const p = products.find(x => x.id === c.product_id); parts.push(`مخصوص محصول: ${p ? esc(p.name) : '#' + c.product_id}`); }
+  if (c.max_discount_amount) parts.push(`سقف تخفیف ${fmt(c.max_discount_amount)}ت`);
+  if (c.product_ids && c.product_ids.length) {
+    const names = c.product_ids.map(id => { const p = products.find(x => x.id === id); return p ? esc(p.name) : '#' + id; });
+    parts.push(`مخصوص محصولات: ${names.join('، ')}`);
+  } else if (c.product_id) { const p = products.find(x => x.id === c.product_id); parts.push(`مخصوص محصول: ${p ? esc(p.name) : '#' + c.product_id}`); }
   else if (c.category_id) { const cat = categories.find(x => x.id === c.category_id); parts.push(`مخصوص دسته: ${cat ? esc(cat.name) : '#' + c.category_id}`); }
   if (c.per_user_limit) parts.push(`هر کاربر ${c.per_user_limit} بار`);
   if (c.first_purchase_only) parts.push('فقط خرید اول');
@@ -4222,6 +4250,7 @@ async function renderDiscounts() {
       ${discountExtraFieldsHtml(categories, products)}
       <button class="btn btn-primary" id="code-save">ثبت</button>
     </div>`, (b, close) => {
+    discountExtraFieldsBindScope(b);
     $('#code-save', b).addEventListener('click', async () => {
       const code = $('#code-value', b).value.trim();
       if (!code) return toast('کد را وارد کن.', true);
@@ -4282,6 +4311,7 @@ function renderDiscountsBento(codes, categories, products) {
       ${discountExtraFieldsHtml(categories, products)}
       <button class="btn btn-primary" id="code-save">ثبت</button>
     </div>`, (b, close) => {
+    discountExtraFieldsBindScope(b);
     $('#code-save', b).addEventListener('click', async () => {
       const code = $('#code-value', b).value.trim();
       if (!code) return toast('کد را وارد کن.', true);
@@ -4361,6 +4391,7 @@ function renderDiscountsBrutalist(codes, categories, products) {
       ${discountExtraFieldsHtml(categories, products)}
       <button class="btn btn-primary" id="code-save">ثبت</button>
     </div>`, (b, close) => {
+    discountExtraFieldsBindScope(b);
     $('#code-save', b).addEventListener('click', async () => {
       const code = $('#code-value', b).value.trim();
       if (!code) return toast('کد را وارد کن.', true);
@@ -6781,31 +6812,41 @@ const SETTINGS_GROUPS = [
   ]},
 ];
 
+function settingsUiText(value) {
+  // Settings are generated dynamically, so translate the source label before
+  // inserting it into the DOM instead of relying only on the mutation observer.
+  // This keeps the settings screen bilingual even when a section is rendered
+  // or re-rendered before the observer runs.
+  return (typeof window.ShopVPNTranslate === 'function')
+    ? window.ShopVPNTranslate(String(value ?? ''))
+    : String(value ?? '');
+}
+
 function settingsFieldHtml(f, settings) {
   const val = settings[f.key] ?? '';
   if (f.type === 'bool') {
     const on = val === '1' || val === 1 || val === true;
     return `
       <label class="field field-row">
-        <span>${esc(f.label)}</span>
+        <span>${esc(settingsUiText(f.label))}</span>
         <span class="switch" data-key="${f.key}" data-type="bool" data-on="${on ? '1' : '0'}"><i></i></span>
       </label>`;
   }
   if (f.type === 'push_test_button') {
     return `<label class="field">
-      <span>${esc(f.label)}</span>
+      <span>${esc(settingsUiText(f.label))}</span>
       <button type="button" class="btn btn-sm push-test-btn">ارسال پوش تست</button>
     </label>`;
   }
   if (f.type === 'push_guide_button') {
     return `<label class="field">
-      <span>${esc(f.label)}</span>
+      <span>${esc(settingsUiText(f.label))}</span>
       <button type="button" class="btn btn-sm push-guide-btn">📖 مشاهده راهنما</button>
     </label>`;
   }
   if (f.type === 'firebase_json_extract') {
     return `<label class="field">
-      <span>${esc(f.label)}</span>
+      <span>${esc(settingsUiText(f.label))}</span>
       <span class="card-sub">کل فایل google-services.json (کنسول فایربیس &gt; تنظیمات پروژه &gt; اپ اندروید com.shopvpn.admin) را دانلود کن و محتواش را اینجا پیست کن؛ ۴ فیلد پایین خودکار پر می‌شوند - نیازی به کپی دستی تک‌تک مقادیر نیست.</span>
       <div class="firebase-json-extract">
         <textarea class="input" rows="4" placeholder='{"project_info": {...}, "client": [...]}'></textarea>
@@ -6814,11 +6855,11 @@ function settingsFieldHtml(f, settings) {
     </label>`;
   }
   if (f.type === 'textarea') {
-    return `<label class="field"><span>${esc(f.label)}</span>
+    return `<label class="field"><span>${esc(settingsUiText(f.label))}</span>
       <textarea class="input" rows="3" data-key="${f.key}" data-type="text">${esc(val)}</textarea></label>`;
   }
   if (f.type === 'select') {
-    return `<label class="field"><span>${esc(f.label)}</span>
+    return `<label class="field"><span>${esc(settingsUiText(f.label))}</span>
       <select class="input" data-key="${f.key}" data-type="text">
         ${f.options.map(([v, l]) => `<option value="${v}" ${val === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}
       </select></label>`;
@@ -6826,15 +6867,15 @@ function settingsFieldHtml(f, settings) {
   if (f.type === 'color') {
     const cur = ['primary', 'success', 'danger'].includes(val) ? val : '';
     const swatches = [['', 'swatch-default', 'پیش‌فرض (خاکستری)'], ['primary', 'swatch-primary', 'آبی'], ['success', 'swatch-success', 'سبز'], ['danger', 'swatch-danger', 'قرمز']];
-    return `<label class="field"><span>${esc(f.label)}</span>
+    return `<label class="field"><span>${esc(settingsUiText(f.label))}</span>
       <div class="color-pick" data-key="${f.key}" data-color="${cur}">
-        ${swatches.map(([v, cls, title]) => `<button type="button" class="color-swatch ${cls} ${cur === v ? 'active' : ''}" data-value="${v}" title="${esc(title)}"></button>`).join('')}
+        ${swatches.map(([v, cls, title]) => `<button type="button" class="color-swatch ${cls} ${cur === v ? 'active' : ''}" data-value="${v}" title="${esc(settingsUiText(title))}"></button>`).join('')}
       </div></label>`;
   }
   if (f.type === 'image') {
     return `
       <label class="field">
-        <span>${esc(f.label)}</span>
+        <span>${esc(settingsUiText(f.label))}</span>
         <div class="image-field" data-key="${f.key}">
           ${val ? `<img src="${val}" class="image-field-preview">` : '<span class="card-sub">تصویری تنظیم نشده</span>'}
           <div class="image-field-actions">
@@ -6846,7 +6887,7 @@ function settingsFieldHtml(f, settings) {
         </div>
       </label>`;
   }
-  return `<label class="field"><span>${esc(f.label)}</span>
+  return `<label class="field"><span>${esc(settingsUiText(f.label))}</span>
     <input class="input" type="${f.type === 'password' ? 'password' : f.type === 'number' ? 'number' : 'text'}"${f.type === 'number' ? ' step="any"' : ''} data-key="${f.key}" data-type="text" value="${esc(val)}"></label>`;
 }
 
@@ -6861,7 +6902,7 @@ function renderSettingsGroups(settings) {
       return `
       <div class="settings-group ${isFirstInTab ? 'open' : ''}" data-settings-tab="${g.tab}" style="${g.tab === settingsActiveTab ? '' : 'display:none'}">
         <button type="button" class="settings-group-head">
-          <span>${esc(g.title)}</span>
+          <span>${esc(settingsUiText(g.title))}</span>
           <span class="settings-group-arrow">˅</span>
         </button>
         <div class="settings-group-body"><div class="form-grid">
@@ -6874,7 +6915,7 @@ function renderSettingsGroups(settings) {
 
 function settingsTabsHtml() {
   return `<div class="tabs" id="settings-tabs-nav">
-    ${SETTINGS_TABS.map(t => `<button type="button" class="tab-btn ${t.key === settingsActiveTab ? 'active' : ''}" data-tab="${t.key}">${t.label}</button>`).join('')}
+    ${SETTINGS_TABS.map(t => `<button type="button" class="tab-btn ${t.key === settingsActiveTab ? 'active' : ''}" data-tab="${t.key}">${settingsUiText(t.label)}</button>`).join('')}
   </div>`;
 }
 
@@ -8143,6 +8184,59 @@ const C2C_STATUS_LABEL = {
 };
 
 
+function translationHealthBadge(h) {
+  const T = s => settingsUiText(s);
+  if (h.language === 'fa' || h.language === 'en') return `<span class="badge badge-approved">${T("\u067e\u06cc\u0634\u200c\u0641\u0631\u0636")}</span>`;
+  if (h.auto_quarantined) return `<span class="badge" style="border-color:var(--rose);color:var(--rose)">${T("\u0642\u0631\u0646\u0637\u06cc\u0646\u0647 \u062e\u0648\u062f\u06a9\u0627\u0631")}</span>`;
+  if (h.healthy) return `<span class="badge badge-approved">${T("\u0633\u0627\u0644\u0645")}</span>`;
+  return `<span class="badge" style="border-color:var(--amber,#f5a623);color:var(--amber,#f5a623)">${T("\u0646\u06cc\u0627\u0632\u0645\u0646\u062f \u0628\u0631\u0631\u0633\u06cc")}</span>`;
+}
+
+function translationMetricCard(label, value, hint='') {
+  return `<div class="card" style="margin:0"><div class="card-sub">${settingsUiText(label)}</div><div style="font-size:28px;font-weight:800;margin-top:6px">${esc(String(value))}</div>${hint ? `<div class="card-sub" style="margin-top:5px">${esc(hint)}</div>` : ''}</div>`;
+}
+
+async function renderLanguages() {
+  const [rows, dashboard] = await Promise.all([
+    apiGet('/languages'),
+    apiGet('/i18n/dashboard').catch(() => null),
+  ]);
+  const T = s => settingsUiText(s);
+  const healthByCode = Object.fromEntries((dashboard?.languages || []).map(x => [x.language, x]));
+  const summary = dashboard?.summary || {};
+  const providers = dashboard?.providers || [];
+  setContent(`<div class="page-head"><div><h1>${T("\u0632\u0628\u0627\u0646\u200c\u0647\u0627")}</h1><p>${T("\u0645\u062f\u06cc\u0631\u06cc\u062a \u062e\u0648\u062f\u06a9\u0627\u0631 \u062a\u0631\u062c\u0645\u0647 \u0648 \u06a9\u0627\u062a\u0627\u0644\u0648\u06af")}</p></div></div>
+    ${dashboard ? `<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:18px">
+      ${translationMetricCard("\u0632\u0628\u0627\u0646\u200c\u0647\u0627\u06cc \u0641\u0639\u0627\u0644", summary.enabled_languages ?? '—')}
+      ${translationMetricCard("\u0632\u0628\u0627\u0646\u200c\u0647\u0627\u06cc \u0622\u0645\u0627\u062f\u0647", summary.warm_languages ?? '—')}
+      ${translationMetricCard("\u0632\u0628\u0627\u0646\u200c\u0647\u0627\u06cc \u0646\u06cc\u0627\u0632\u0645\u0646\u062f \u0628\u0631\u0631\u0633\u06cc", summary.pending_languages ?? '—')}
+      ${translationMetricCard("\u0632\u0628\u0627\u0646\u200c\u0647\u0627\u06cc \u062f\u0631 \u0642\u0631\u0646\u0637\u06cc\u0646\u0647", summary.quarantined_languages ?? '—')}
+      ${translationMetricCard("\u06a9\u0644\u06cc\u062f\u0647\u0627\u06cc \u0645\u0646\u0628\u0639", dashboard.source_count ?? '—', dashboard.catalog_version ? `v${dashboard.catalog_version}` : '')}
+    </div>
+    <div class="card" style="margin-bottom:18px"><div class="card-head"><h3>${T("\u0627\u0631\u0627\u0626\u0647\u200c\u062f\u0647\u0646\u062f\u06af\u0627\u0646")}</h3><span class="chip mono">${providers.filter(x => x.configured).length}/${providers.length} ${T("\u0622\u0645\u0627\u062f\u0647")}</span></div><div class="chip-row">${providers.length ? providers.map(x => `<span class="chip">${esc(x.name)} · ${x.configured ? T("\u0622\u0645\u0627\u062f\u0647") : T("\u0641\u0639\u0627\u0644 \u0646\u06cc\u0633\u062a")}</span>`).join('') : `<span class="card-sub">${T("\u0647\u06cc\u0686 \u0633\u0631\u0648\u06cc\u0633 \u062a\u0631\u062c\u0645\u0647\u200c\u0627\u06cc \u062a\u0646\u0638\u06cc\u0645 \u0646\u0634\u062f\u0647 \u0627\u0633\u062a.")}</span>`}</div></div>` : ''}
+    <div class="card"><div class="table-wrap"><table><thead><tr><th>${T("\u0632\u0628\u0627\u0646")}</th><th>${T("\u06a9\u062f")}</th><th>${T("\u062c\u0647\u062a")}</th><th>${T("\u0648\u0636\u0639\u06cc\u062a")}</th><th>${T("\u0633\u0644\u0627\u0645\u062a \u062a\u0631\u062c\u0645\u0647")}</th><th>${T("\u0639\u0645\u0644\u06cc\u0627\u062a")}</th></tr></thead><tbody>
+      ${rows.map(x => {
+        const h = healthByCode[x.code] || {};
+        const status = x.enabled ? `<span class="badge badge-approved">${T("\u0641\u0639\u0627\u0644")}</span>` : `<span class="badge">${T("\u063a\u06cc\u0631\u0641\u0639\u0627\u0644")}</span>`;
+        const action = (x.code === 'fa' || x.code === 'en') ? `<span class="muted">${T("\u067e\u06cc\u0634\u200c\u0641\u0631\u0636")}</span>` : (x.enabled ? `<button class="btn btn-sm" data-lang-disable="${esc(x.code)}">${T("\u063a\u06cc\u0631\u0641\u0639\u0627\u0644\u200c\u0633\u0627\u0632\u06cc")}</button>` : `<button class="btn btn-sm btn-primary" data-lang-enable="${esc(x.code)}">${T("\u0641\u0639\u0627\u0644\u200c\u0633\u0627\u0632\u06cc \u062e\u0648\u062f\u06a9\u0627\u0631")}</button>`);
+        return `<tr><td>${esc(`${x.flag || ''} ${x.native_name || x.name}`)}</td><td class="mono">${esc(x.code)}</td><td>${x.rtl ? 'RTL' : 'LTR'}</td><td>${status}</td><td>${translationHealthBadge(h)}</td><td>${action}</td></tr>`;
+      }).join('')}
+    </tbody></table></div></div>`);
+}
+
+document.addEventListener('click', async e => {
+  const en = e.target.closest('[data-lang-enable]');
+  const dis = e.target.closest('[data-lang-disable]');
+  if (!en && !dis) return;
+  const code = (en || dis).dataset.langEnable || (en || dis).dataset.langDisable;
+  (en || dis).disabled = true;
+  try {
+    const result = await apiPost(`/languages/${encodeURIComponent(code)}/${en ? 'enable' : 'disable'}`);
+    toast(en ? `${settingsUiText('\u0632\u0628\u0627\u0646 \u0641\u0639\u0627\u0644 \u0634\u062f')} — ${result.translated || 0} ${settingsUiText('\u062a\u0631\u062c\u0645\u0647 \u062e\u0648\u062f\u06a9\u0627\u0631 \u0633\u0627\u062e\u062a\u0647 \u0634\u062f')}.` : `${settingsUiText('\u0632\u0628\u0627\u0646 \u063a\u06cc\u0631\u0641\u0639\u0627\u0644 \u0634\u062f')}.`);
+    await renderLanguages();
+  } catch (err) { handleErr(err); (en || dis).disabled = false; }
+});
+
 async function renderSettings() {
   const [settings, rate, mainMenuDisplay, gateways, methods, c2cCards, c2cWebhook, c2cInvoices, mobileTokens] = await Promise.all([
     apiGet('/settings'),
@@ -8177,7 +8271,7 @@ async function renderSettings() {
     ${renderSettingsGroups(settings)}
 
     <div class="settings-save-bar">
-      <button class="btn btn-primary btn-block" id="settings-save">ذخیره تغییرات</button>
+      <button class="btn btn-primary btn-block" id="settings-save">${settingsUiText('ذخیره تغییرات')}</button>
     </div>
   `);
   $$('#settings-tabs-nav .tab-btn', content()).forEach(btn => btn.addEventListener('click', () => switchSettingsTab(btn.dataset.tab, content())));
@@ -8205,9 +8299,9 @@ async function renderSettings() {
 // فقط با آکاردئون/سوییچ/سواچ گردتر (از طریق CSS اسکوپ‌شده به تم bento).
 function renderSettingsBento(settings, rate, mainMenuDisplay, pay, mobileTokens) {
   setContent(`
-    <div class="bn-hero"><div><h2>تنظیمات</h2><p>پیکربندی محتوا، پرداخت، کمپین و سرویس‌های ربات</p></div></div>
+    <div class="bn-hero"><div><h2>${settingsUiText('تنظیمات')}</h2><p>${settingsUiText('پیکربندی محتوا، پرداخت، کمپین و سرویس‌های ربات')}</p></div></div>
     <div class="bn-seg" id="settings-tabs-nav" style="margin-bottom:16px">
-      ${SETTINGS_TABS.map(t => `<button type="button" class="bn-seg-btn ${t.key === settingsActiveTab ? 'active' : ''}" data-tab="${t.key}">${t.label}</button>`).join('')}
+      ${SETTINGS_TABS.map(t => `<button type="button" class="bn-seg-btn ${t.key === settingsActiveTab ? 'active' : ''}" data-tab="${t.key}">${settingsUiText(t.label)}</button>`).join('')}
     </div>
     <div data-settings-tab="content" style="${settingsActiveTab === 'content' ? '' : 'display:none'}">
       ${mainMenuDisplayCardHtml(mainMenuDisplay)}
@@ -8221,7 +8315,7 @@ function renderSettingsBento(settings, rate, mainMenuDisplay, pay, mobileTokens)
     </div>
     ${renderSettingsGroups(settings)}
     <div class="settings-save-bar">
-      <button class="bn-btn bn-btn-ok btn-block" id="settings-save" style="width:100%;padding:12px">ذخیره تغییرات</button>
+      <button class="bn-btn bn-btn-ok btn-block" id="settings-save" style="width:100%;padding:12px">${settingsUiText('ذخیره تغییرات')}</button>
     </div>
   `);
   $$('#settings-tabs-nav .bn-seg-btn', content()).forEach(btn => btn.addEventListener('click', () => switchSettingsTab(btn.dataset.tab, content())));
@@ -8260,7 +8354,7 @@ function renderSettingsBento(settings, rate, mainMenuDisplay, pay, mobileTokens)
 // واقعی) — بدنه‌ی فرم‌ها با همون منطق قبلی، فقط قاب/سوییچ/سواچ برutalist.
 function renderSettingsBrutalist(settings, rate, mainMenuDisplay, pay, mobileTokens) {
   setContent(`
-    <div class="bru-hero"><h2>تنظیمات</h2><p>پیکربندی محتوا، پرداخت، کمپین و سرویس‌های ربات</p></div>
+    <div class="bru-hero"><h2>${settingsUiText('تنظیمات')}</h2><p>${settingsUiText('پیکربندی محتوا، پرداخت، کمپین و سرویس‌های ربات')}</p></div>
     <div class="bru-settings-layout">
       <nav class="bru-settings-nav" id="settings-tabs-nav">
         ${SETTINGS_TABS.map(t => `<button type="button" class="bru-seg-btn ${t.key === settingsActiveTab ? 'active' : ''}" data-tab="${t.key}">${t.label}</button>`).join('')}
@@ -8573,7 +8667,7 @@ async function renderWebAdmins() {
       <tbody>${admins.map(a => `<tr>
         <td>${esc(a.username)}</td>
         <td><span class="badge badge-${a.role}">${ROLE_LABEL[a.role]}</span></td>
-        <td>${a.role === 'owner' ? '<span class="card-sub">همه</span>' : `<span class="card-sub">${a.permissions.length ? a.permissions.map(p => PERM_LABEL[p] || p).join('، ') : 'بدون مجوز (فقط مشاهده)'}</span>`}</td>
+        <td>${a.role === 'owner' ? `<span class="card-sub">${settingsUiText('\u0647\u0645\u0647')}</span>` : `<span class="card-sub">${a.permissions.length ? a.permissions.map(p => PERM_LABEL[p] || p).join(', ') : settingsUiText('\u0628\u062f\u0648\u0646 \u0645\u062c\u0648\u0632 (\u0641\u0642\u0637 \u0645\u0634\u0627\u0647\u062f\u0647)')}</span>`}</td>
         <td>${a.is_active ? '<span class="badge badge-approved">فعال</span>' : '<span class="badge badge-rejected">غیرفعال</span>'}</td>
         <td class="mono">${fmtDate(a.last_login)}</td>
         <td>${a.role === 'owner' ? '<span class="card-sub">مالک</span>' : `
@@ -8786,7 +8880,7 @@ function renderWebAdminsBrutalist(admins) {
           <div class="bru-user-name">${esc(a.username)}</div>
           <div class="bru-flag" style="background:var(--primary);margin-top:4px">${ROLE_LABEL[a.role]}</div>
           <div class="bru-user-id mono" style="margin-top:6px">ورود: ${fmtDate(a.last_login)}</div>
-          <div class="bru-user-joined" style="max-width:190px">${a.role === 'owner' ? 'دسترسی کامل' : (a.permissions.length ? a.permissions.map(p => PERM_LABEL[p] || p).join('، ') : 'بدون مجوز')}</div>
+          <div class="bru-user-joined" style="max-width:190px">${a.role === 'owner' ? settingsUiText('\u062f\u0633\u062a\u0631\u0633\u06cc \u06a9\u0627\u0645\u0644') : (a.permissions.length ? a.permissions.map(p => PERM_LABEL[p] || p).join(', ') : settingsUiText('\u0628\u062f\u0648\u0646 \u0645\u062c\u0648\u0632'))}</div>
           ${a.role !== 'owner' ? `
           <div class="bru-user-actions">
             <button class="btn btn-sm" data-edit-perms="${a.id}">مجوزها</button>
@@ -9001,7 +9095,7 @@ async function renderSystem() {
         formData.append('confirm_phrase', phrase);
         const res = await fetch('/api/system/backup/restore', { method: 'POST', credentials: 'include', body: formData });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.detail || 'خطای ناشناخته');
+        if (!res.ok) throw new Error(window.ShopVPNTranslate ? window.ShopVPNTranslate(data.detail || 'Unknown error') : (data.detail || 'Unknown error'));
         statusEl.innerHTML = `<span class="card-sub">✅ دیتابیس بازیابی شد. نسخه‌ی قبلی به‌عنوان «${esc(data.pre_restore_backup)}» ذخیره شد. صفحه را رفرش کن.</span>`;
         restorePendingFile = null;
         $('#restore-file').value = '';
@@ -9071,7 +9165,7 @@ async function renderSystem() {
         formData.append('confirm_phrase', phrase);
         const res = await fetch('/api/system/factory-reset', { method: 'POST', credentials: 'include', body: formData });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.detail || 'خطای ناشناخته');
+        if (!res.ok) throw new Error(window.ShopVPNTranslate ? window.ShopVPNTranslate(data.detail || 'Unknown error') : (data.detail || 'Unknown error'));
         statusEl.innerHTML = `<span class="card-sub">✅ بات به حالت کارخانه بازگشت.${data.safety_backup ? ` بکاپ قبل از پاک‌سازی: «${esc(data.safety_backup)}».` : ''} صفحه را رفرش کن.</span>`;
         factoryResetStep = 0;
       } catch (e) {
