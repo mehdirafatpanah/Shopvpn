@@ -749,20 +749,30 @@ if ('serviceWorker' in navigator) {
     if (loginScreen && !loginScreen.hidden) return true;
     return !!el && (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.isContentEditable);
   };
-  // Only ever reload once per distinct version value. If the server keeps
-  // reporting a version that still doesn't match after a reload (flapping
-  // between workers/deploys, or a build that never stabilizes), reloading
-  // again would just repeat forever and lock the admin out — so once we've
-  // already reloaded for a given target version, stay put and let them work.
-  let alreadyReloadedFor = null;
-  try { alreadyReloadedFor = sessionStorage.getItem('sv_reloaded_for_version'); } catch (e) {}
+  // Hard cooldown + two-in-a-row confirmation. The old guard only remembered
+  // the *last* version it had reloaded for, so if the server ever reported
+  // more than two distinct version values in a row (flapping between
+  // workers/deploys, or a version source that isn't fully stable), every
+  // single check would see "yet another new version" and reload again —
+  // in practice a reload loop as fast as the page could re-fire
+  // visibilitychange (looks like the page refreshing every second).
+  // Fix: (1) never reload more than once per COOLDOWN_MS no matter how many
+  // different values show up in between, and (2) only trust a new version
+  // once it has been seen twice in a row, so a value that's itself
+  // unstable between requests can't trigger a reload at all.
+  const COOLDOWN_MS = 5 * 60 * 1000;
+  let lastReloadAt = 0;
+  try { lastReloadAt = parseInt(sessionStorage.getItem('sv_last_reload_at') || '0', 10) || 0; } catch (e) {}
+  let pendingVersion = null;
   const check = async () => {
     try {
       const res = await fetch('/api/app-version', { cache: 'no-store' });
       const data = await res.json();
-      if (!data.v || data.v === current || isTyping()) return;
-      if (data.v === alreadyReloadedFor) return; // already tried once, don't loop
-      try { sessionStorage.setItem('sv_reloaded_for_version', data.v); } catch (e) {}
+      if (!data.v || data.v === current || isTyping()) { pendingVersion = null; return; }
+      if (Date.now() - lastReloadAt < COOLDOWN_MS) return; // still cooling down from a recent reload
+      if (pendingVersion !== data.v) { pendingVersion = data.v; return; } // wait for confirmation
+      lastReloadAt = Date.now();
+      try { sessionStorage.setItem('sv_last_reload_at', String(lastReloadAt)); } catch (e) {}
       location.reload();
     } catch (e) {}
   };
