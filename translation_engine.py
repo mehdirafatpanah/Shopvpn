@@ -27,7 +27,13 @@ BATCH_SIZE = 40
 _SHARED_CACHE: Dict[tuple, str] = {}
 _SYNC_LOCKS: Dict[tuple, threading.Lock] = {}
 _SYNC_LOCKS_GUARD = threading.Lock()
-_PROVIDER_LANG = {"zh": "zh-CN"}
+# deep-translator's GoogleTranslator accepts bare ISO codes; MyMemory's free API
+# only recognizes locale-qualified codes for most non-English targets.
+_MYMEMORY_LANG = {
+    "tr": "tr-TR", "ar": "ar-SA", "ru": "ru-RU", "de": "de-DE", "fr": "fr-FR",
+    "es": "es-ES", "it": "it-IT", "pt": "pt-PT", "zh": "zh-CN", "ja": "ja-JP",
+    "ko": "ko-KR", "nl": "nl-NL", "pl": "pl-PL", "uk": "uk-UA",
+}
 GLOSSARY = (
     "ShopVPN, VPN, Telegram, Mini App, Stars, USDT stay untranslated. "
     "'Toman' stays 'Toman'. 'Config' means a VPN configuration. "
@@ -165,16 +171,60 @@ class _Provider:
 
 
 class _DeepTranslatorProvider(_Provider):
-    def __init__(self, provider_cls, name: str):
+    """Wraps a deep-translator provider with per-item pacing and retry.
+
+    The free unofficial APIs behind these providers (Google's web endpoint,
+    MyMemory) enforce tight per-second rate limits (Google: ~5 req/s). Calling
+    the library's own translate_batch fires requests back-to-back with no
+    delay and trips that limit almost immediately once the catalog has more
+    than a handful of missing strings, so translation is done one item at a
+    time with throttling and a short backoff-retry on rate-limit errors.
+    """
+
+    def __init__(self, provider_cls, name: str, lang_map: Dict[str, str] | None = None,
+                 min_interval: float = 0.0, max_retries: int = 2):
         self.provider_cls = provider_cls
         self.name = name
+        self.lang_map = lang_map or {}
+        self.min_interval = min_interval
+        self.max_retries = max_retries
+        self._last_call = 0.0
+        self._pace_lock = threading.Lock()
+
+    def _throttle(self):
+        if self.min_interval <= 0:
+            return
+        with self._pace_lock:
+            wait = self.min_interval - (time.monotonic() - self._last_call)
+            if wait > 0:
+                time.sleep(wait)
+            self._last_call = time.monotonic()
 
     def translate_batch(self, texts: list[str], target: str, contexts: Dict[str, str] | None = None) -> list[str]:
+        target_code = self.lang_map.get(target, target)
         try:
-            translator = self.provider_cls(source="en", target=_PROVIDER_LANG.get(target, target))
-            return translator.translate_batch(texts)
+            translator = self.provider_cls(source="en", target=target_code)
         except Exception as exc:
             raise TranslationProviderError(f"{self.name}: {exc}") from exc
+        out: list[str] = []
+        for text in texts:
+            last_exc: Exception | None = None
+            for attempt in range(self.max_retries + 1):
+                self._throttle()
+                try:
+                    out.append(translator.translate(text))
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    msg = str(exc).lower()
+                    if attempt < self.max_retries and ("too many requests" in msg or "429" in msg):
+                        time.sleep(2.0 * (attempt + 1))
+                        continue
+                    break
+            if last_exc is not None:
+                raise TranslationProviderError(f"{self.name}: {last_exc}") from last_exc
+        return out
 
 
 class _LibreTranslateProvider(_Provider):
@@ -302,9 +352,12 @@ def _providers(target: str, db=None) -> list[_Provider]:
             if keys:
                 providers.append(_GeminiProvider(keys, os.getenv("SHOPVPN_TRANSLATION_MODEL", "gemini-2.5-flash")))
         elif name == "google" and GoogleTranslator:
-            providers.append(_DeepTranslatorProvider(GoogleTranslator, "google"))
+            # Google's free web endpoint allows ~5 req/s; stay safely under that.
+            providers.append(_DeepTranslatorProvider(GoogleTranslator, "google", min_interval=0.3))
         elif name in {"mymemory", "my-memory"} and MyMemoryTranslator:
-            providers.append(_DeepTranslatorProvider(MyMemoryTranslator, "mymemory"))
+            providers.append(_DeepTranslatorProvider(
+                MyMemoryTranslator, "mymemory", lang_map=_MYMEMORY_LANG, min_interval=1.0,
+            ))
         elif name == "libretranslate":
             endpoint = os.getenv("SHOPVPN_LIBRETRANSLATE_URL", "").strip()
             if endpoint:
