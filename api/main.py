@@ -19,6 +19,7 @@ from fastapi.responses import HTMLResponse
 from config import DB_PATH as PROJECT_DB_PATH
 from database import Database
 from .utils import RateLimiter, hash_token, has_scope, pagination, safe_row
+from i18n import tr, set_language, reset_language, normalize_language
 
 DB_PATH = os.getenv("DB_PATH", PROJECT_DB_PATH)
 app = FastAPI(
@@ -33,6 +34,21 @@ db = Database(DB_PATH)
 
 RATE_LIMIT_PER_MINUTE = int(os.getenv("API_RATE_LIMIT_PER_MINUTE", "60"))
 limiter = RateLimiter(RATE_LIMIT_PER_MINUTE)
+
+
+@app.middleware("http")
+async def language_middleware(request: Request, call_next):
+    language = normalize_language(request.headers.get("x-language") or request.headers.get("accept-language"))
+    catalog = db.translation_catalog(language) if language not in {"fa", "en"} and db.get_language(language) and db.get_language(language)["enabled"] else None
+    token = set_language(language, catalog)
+    try:
+        return await call_next(request)
+    finally:
+        reset_language(token)
+
+
+def api_message(text: str) -> str:
+    return tr(text)
 
 access_logger = logging.getLogger("shopvpn.api.access")
 if not access_logger.handlers:
@@ -52,25 +68,25 @@ SAFE_SETTINGS = {
 
 def _auth(request: Request, token: Optional[str], required_scope: str = "read") -> dict:
     if not token:
-        raise HTTPException(401, "Token header is required")
+        raise HTTPException(401, api_message("توکن در هدر الزامی است."))
     row = db.get_mobile_token_by_hash(hash_token(token))
     if not row:
-        raise HTTPException(401, "Invalid or revoked token")
+        raise HTTPException(401, api_message("توکن نامعتبر است یا لغو شده است."))
     request.state.token_id = row["id"]
     request.state.admin_id = row["admin_id"]
     retry_after = limiter.check(row["id"])
     if retry_after:
-        raise HTTPException(429, "Rate limit exceeded", headers={"Retry-After": str(retry_after)})
+        raise HTTPException(429, api_message("محدودیت درخواست رد شده است."), headers={"Retry-After": str(retry_after)})
     scope = row["scope"] if "scope" in row.keys() else "read"
     if not has_scope(scope, required_scope):
-        raise HTTPException(403, f"Missing scope: {required_scope}")
+        raise HTTPException(403, api_message(f"مجوز لازم وجود ندارد: {required_scope}"))
     db.touch_mobile_token(row["id"])
     return {"id": row["id"], "admin_id": row["admin_id"], "scope": scope}
 
 
 def _require(auth: dict, scope: str) -> None:
     if not has_scope(auth["scope"], scope):
-        raise HTTPException(403, f"Missing scope: {scope}")
+        raise HTTPException(403, api_message(f"مجوز لازم وجود ندارد: {scope}"))
 
 
 @app.middleware("http")
@@ -119,8 +135,8 @@ async def actions(request: Request, payload: Dict[str, Any], Token: Optional[str
     # یک read-only token هرگز نتواند سفارش را تایید یا تغییر دهد.
     if action in {"order_confirm", "order_approve", "order_reject"}:
         if not has_scope(auth["scope"], "orders:write"):
-            raise HTTPException(403, "Read-only token cannot modify orders")
-        raise HTTPException(501, "Write order actions are disabled in the public API")
+            raise HTTPException(403, api_message("توکن فقط خواندنی نمی‌تواند سفارش‌ها را تغییر دهد."))
+        raise HTTPException(501, api_message("عملیات نوشتن سفارش در API عمومی غیرفعال است."))
 
     if action in {"users", "user_get", "user_list"}:
         _require(auth, "users")
@@ -176,9 +192,9 @@ async def actions(request: Request, payload: Dict[str, Any], Token: Optional[str
         key = payload.get("key")
         if key:
             if key not in SAFE_SETTINGS:
-                raise HTTPException(403, "This setting is not exposed by the public API")
+                raise HTTPException(403, api_message("این تنظیم از طریق API عمومی قابل دسترسی نیست."))
             return _response({key: await asyncio.to_thread(db.get_setting, key, "")})
         result = {k: await asyncio.to_thread(db.get_setting, k, "") for k in SAFE_SETTINGS}
         return _response(result)
 
-    raise HTTPException(400, "Unknown action")
+    raise HTTPException(400, api_message("عملیات ناشناخته است."))
