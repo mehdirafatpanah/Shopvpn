@@ -25,6 +25,19 @@ class UsersMixin:
             )
         return cur.rowcount > 0
 
+    def set_all_users_language(self, language_code: str) -> int:
+        """زبان همه‌ی کاربران ربات را یک‌جا تغییر می‌دهد (نه فقط ادمین درخواست‌دهنده).
+        برای استفاده‌ی مدیر از پنل مدیریت وقتی بخواهد زبان را برای همه‌ی
+        کاربران عوض کند، نه فقط برای خودش. تعداد ردیف‌های تغییریافته را برمی‌گرداند."""
+        from i18n import normalize_language
+        lang = normalize_language(language_code)
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "UPDATE users SET language_code=? WHERE language_code IS NULL OR language_code<>?",
+                (lang, lang),
+            )
+        return cur.rowcount or 0
+
     def set_user_phone(self, tg_id: int, phone: str) -> bool:
         phone = (phone or "").strip()
         if len(phone) < 7:
