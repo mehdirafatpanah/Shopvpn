@@ -186,7 +186,6 @@ def _menu_items(db, is_admin: bool, is_reseller: bool, is_main_bot: bool, show_r
         "btn_reseller_tiers": item_reseller_tiers,
         "btn_reseller_request": item_reseller_request,
         "btn_commission_reseller_request": item_commission_reseller_request,
-        "language": lambda: (LANGUAGE_BTN_TEXT, ""),
     }
 
     items = []
@@ -198,8 +197,6 @@ def _menu_items(db, is_admin: bool, is_reseller: bool, is_main_bot: bool, show_r
         if result:
             text, style = result
             items.append((key, text, style))
-    if not any(item[0] == "language" for item in items):
-        items.append(("language", LANGUAGE_BTN_TEXT, ""))
     return items
 
 

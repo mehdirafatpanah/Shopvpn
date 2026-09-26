@@ -194,7 +194,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         )
 
     @router.callback_query(F.data.startswith("language:"))
-    async def cb_language(call: CallbackQuery):
+    async def cb_language(call: CallbackQuery, state: FSMContext):
         lang = normalize_language(call.data.split(":", 1)[1])
         if not await asyncio.to_thread(is_language_enabled, db, lang):
             await call.answer(tr("زبان در حال حاضر فعال نیست."), show_alert=True)
@@ -207,13 +207,30 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         token = set_language(lang, catalog)
         try:
             await call.answer(language_label(lang))
-            await call.message.answer(
-                db.get_text("handlers_user.language.changed", "زبان با موفقیت تغییر کرد.")
-            )
-            await call.message.answer(
-                db.get_text("handlers_user.language.choose", "لطفاً زبان موردنظر را انتخاب کنید:"),
-                reply_markup=kb.menu_for_user(db, user_id, is_main_bot),
-            )
+            data = await state.get_data()
+            if data.get("pending_welcome"):
+                # اولین انتخاب زبان بعد از /start: به‌جای پیام تغییر زبان، مستقیم
+                # پیام خوش‌آمد و منوی اصلی فرستاده می‌شود.
+                await state.update_data(pending_welcome=False)
+                welcome = (await asyncio.to_thread(db.get_setting, "welcome_text"))
+                reply_enabled = (await asyncio.to_thread(db.get_setting, "main_menu_reply_enabled", "1")) == "1"
+                if reply_enabled:
+                    await call.message.answer(welcome, reply_markup=kb.menu_for_user(db, user_id, is_main_bot))
+                    await _send_inline_main_menu(call.message, user_id)
+                else:
+                    inline_kb = (await asyncio.to_thread(kb.inline_menu_for_user, db, user_id, is_main_bot))
+                    await call.message.answer(
+                        welcome,
+                        reply_markup=inline_kb if inline_kb is not None else kb.menu_for_user(db, user_id, is_main_bot),
+                    )
+            else:
+                await call.message.answer(
+                    db.get_text("handlers_user.language.changed", "زبان با موفقیت تغییر کرد.")
+                )
+                await call.message.answer(
+                    db.get_text("handlers_user.language.choose", "لطفاً زبان موردنظر را انتخاب کنید:"),
+                    reply_markup=kb.menu_for_user(db, user_id, is_main_bot),
+                )
         finally:
             reset_language(token)
 
@@ -514,12 +531,6 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         (await asyncio.to_thread(db.add_or_update_user,
             message.from_user.id, message.from_user.username or "", message.from_user.first_name or ""
         ))
-        if not existing_user:
-            await asyncio.to_thread(
-                db.set_user_language,
-                message.from_user.id,
-                normalize_language(getattr(message.from_user, "language_code", None)),
-            )
 
         # پردازش پارامتر دیپ‌لینک: /start <param>
         # چند بخش با "-" قابل ترکیب هستند، مثلاً: nofj-disc_SUMMER10
@@ -592,7 +603,15 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
         welcome = (await asyncio.to_thread(db.get_setting, "welcome_text"))
         reply_enabled = (await asyncio.to_thread(db.get_setting, "main_menu_reply_enabled", "1")) == "1"
-        if reply_enabled:
+        if not existing_user:
+            # کاربر تازه: به‌جای تنظیم خودکار زبان بر اساس لوکیل تلگرام، از او سوال می‌شود.
+            # پیام خوش‌آمد/منو بلافاصله بعد از انتخاب زبان (در cb_language) فرستاده می‌شود.
+            await state.update_data(pending_welcome=True)
+            await message.answer(
+                db.get_text("handlers_user.language.choose", "لطفاً زبان موردنظر را انتخاب کنید:"),
+                reply_markup=kb.language_kb(db),
+            )
+        elif reply_enabled:
             # منوی پایین فعال است: طبق روال قبلی، پیام خوش‌آمد با منوی پایین
             # ارسال می‌شود و منوی شیشه‌ای (در صورت فعال بودن) در پیام جدا می‌آید،
             # چون یک پیام نمی‌تواند هم‌زمان هر دو نوع کیبورد را داشته باشد.
@@ -711,13 +730,6 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     # -----------------------------------------------------------------------
     # مینی‌اپ (دکمه‌ی متنی -> پیام با دکمه‌ی inline واقعی وب‌اپ)
     # -----------------------------------------------------------------------
-
-    @router.message(F.text.func(lambda t: t in (kb.LANGUAGE_BTN_TEXT, tr(kb.LANGUAGE_BTN_TEXT, "en"))))
-    async def language_button(message: Message):
-        await message.answer(
-            db.get_text("handlers_user.language.choose", "لطفاً زبان موردنظر را انتخاب کنید:"),
-            reply_markup=kb.language_kb(db),
-        )
 
     @router.message(F.text.func(lambda t: t in (kb.MINIAPP_BTN_TEXT, tr(kb.MINIAPP_BTN_TEXT, "en"))))
     async def open_miniapp(message: Message):
