@@ -7,6 +7,7 @@ compare_price = قیمت قبل از تخفیف. اگر از قیمت فعلی �
 همچنان فقط از `price` انجام می‌شود.
 """
 
+_LRE, _RLE, _PDF = "\u202a", "\u202b", "\u202c"
 _STRIKE = "̶"  # Combining long stroke overlay: خط‌خوردگی در متن ساده‌ی تلگرام (دکمه‌ها هم)‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 
 
@@ -34,21 +35,56 @@ def compare_price_for(product, unit_price: int = None) -> int:
     return compare + (int(unit_price) - price)
 
 
+def _ltr(text: str) -> str:
+    """عدد را در یک بلوک چپ‌به‌راست جدا می‌کند تا در متن راست‌به‌چپ ارقام و ویرگول‌ها جابه‌جا نشوند
+    (مثلاً 70,000 به‌شکل 000,70 دیده نمی‌شد)."""
+    return f"{_LRE}{text}{_PDF}"
+
+
+def _rtl(text: str) -> str:
+    """کل برچسب قیمت را راست‌به‌چپ می‌کند: قیمت قدیمی سمت راست، جدید سمت چپ، حتی اگر دکمه با نام لاتین شروع شود."""
+    return f"{_RLE}{text}{_PDF}"
+
+
+def _percent(old: int, new: int) -> int:
+    return max(round((old - new) * 100 / old), 1) if old > 0 else 0
+
+
+def price_range(old: int, new: int, suffix: str = "") -> str:
+    """«قیمت قدیمی (خط‌خورده) ← قیمت جدید» با ترتیب درست در هر زمینه‌ی متنی (راست‌به‌چپ یا چپ‌به‌راست)."""
+    tail = f" {suffix}" if suffix else ""
+    return _rtl(f"{_ltr(strike(f'{int(old):,}'))} ← {_ltr(f'{int(new):,}')}{tail}")
+
+
+def plain_range(old: int, new: int, suffix: str = "ت") -> str:
+    """مثل price_range ولی بدون خط‌خوردگی (برای دکمه‌های ادمین و متن‌هایی که خط‌خورده لازم ندارند)."""
+    return _rtl(f"{_ltr(f'{int(old):,}')} ← {_ltr(f'{int(new):,}')}{suffix}")
+
+
 def price_label_plain(product, unit_price: int = None, suffix: str = "تومان") -> str:
-    """برچسب قیمت برای دکمه/متن ساده: «~~۱۰۰,۰۰۰~~ ۸۰,۰۰۰ تومان» (خط‌خورده با کاراکتر ترکیبی)."""
+    """برچسب قیمت برای متن ساده: «۱۰۰,۰۰۰ (خط‌خورده) ← ۸۰,۰۰۰ تومان»."""
     price = int(unit_price if unit_price is not None else product["price"])
     old = compare_price_for(product, price)
     if not old:
-        return f"{price:,} {suffix}".rstrip()
-    return f"{strike(f'{old:,}')} ➜ {price:,} {suffix}".rstrip()
+        return f"{_ltr(f'{price:,}')} {suffix}".rstrip()
+    return price_range(old, price, suffix).rstrip()
 
 
-def price_label_button(product, unit_price: int = None) -> str:
-    """برچسب کوتاه‌شده برای دکمه‌ها تا متن در تلگرام بریده نشود."""
+# حداکثر طول (کاراکتر) نام + دو عدد برای نمایش کامل قیمت خط‌خورده روی دکمه؛ بیشتر از آن
+# متن زیر لبه‌ی دکمه می‌رود، پس فرم کوتاه با درصد تخفیف نشان داده می‌شود.
+_BUTTON_FULL_LIMIT = 26
+
+
+def price_label_button(product, unit_price: int = None, name: str = "") -> str:
+    """برچسب قیمت دکمه. اگر جا باشد قیمت قدیمی خط‌خورده + جدید، وگرنه قیمت جدید + درصد تخفیف."""
     price = int(unit_price if unit_price is not None else product["price"])
     old = compare_price_for(product, price)
     if not old:
-        return f"{price:,} تومان"
-    return f"{strike(f'{old:,}')} {price:,}ت"
+        return f"{_ltr(f'{price:,}')} تومان"
+    old_s, new_s = f"{old:,}", f"{price:,}"
+    if len(str(name)) + len(old_s) + len(new_s) <= _BUTTON_FULL_LIMIT:
+        return price_range(old, price, "ت")
+    return _rtl(f"{_ltr(new_s)}ت ({_ltr(str(_percent(old, price)) + '٪')} تخفیف)")
+
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 # 		   		 		  	 	 		 		   		  	 	 		 			  		 				 			  	 

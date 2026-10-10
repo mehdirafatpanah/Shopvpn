@@ -8,7 +8,7 @@
 به‌عنوان پارامتر می‌گیرند - نه اینکه از یک ماژول سراسری import شود.
 """
 
-from price_display import price_label_plain, price_label_button
+from price_display import price_label_plain, price_label_button, plain_range
 from aiogram.types import (
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
@@ -373,7 +373,7 @@ def products_kb(db, products, category_id) -> InlineKeyboardMarkup:
             [
                 _styled_inline(
                     db,
-                    f"{stock_tag} {p['name']} - {price_label_button(p)}{inactive_tag}",
+                    f"{stock_tag} {p['name']} - {price_label_button(p, name=p['name'])}{inactive_tag}",
                     f"prod:{p['id']}",
                     "btn_product_select_style",
                 )
@@ -2630,7 +2630,7 @@ def admin_products_list_kb(db, products) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text=tr("💳 روش‌های پرداخت مجاز"), callback_data=f"adm_prod_paymethods:{p['id']}")]
         )
         compare = p["compare_price"] if "compare_price" in p.keys() else 0
-        compare_label = f"🏷 تخفیف: {compare:,}ت ← {p['price']:,}ت" if compare and compare > p["price"] else "🏷 تنظیم تخفیف"
+        compare_label = f"🏷 تخفیف: {plain_range(compare, p['price'])}" if compare and compare > p["price"] else "🏷 تنظیم تخفیف"
         rows.append(
             [InlineKeyboardButton(text=tr(compare_label), callback_data=f"adm_prod_compare:{p['id']}")]
         )

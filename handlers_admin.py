@@ -15,6 +15,7 @@ import hashlib
 import html
 import asyncio
 from datetime import date, datetime, timedelta
+from price_display import price_range
 import tempfile
 import logging
 import zipfile
@@ -1327,12 +1328,36 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     def _discount_back_cb(product) -> str:
         return f"adm_prod_cat:{product['category_id']}" if product["category_id"] is not None else "adm_products"
 
-    async def _apply_product_discount(admin_id: int, product, new_price: int, percent: int = None):
+    async def _apply_product_discount(admin_id: int, product, new_price: int, percent: int = None,
+                                      days: int = 0, max_uses: int = 0):
         base = _discount_base(product)
-        await asyncio.to_thread(db.edit_product, product["id"], price=new_price, compare_price=base)
+        await asyncio.to_thread(db.edit_product, product["id"], price=new_price, compare_price=base,
+                                discount_days=int(days or 0), discount_max_uses=int(max_uses or 0))
         extra = f" ({percent}٪)" if percent else ""
+        limits = f" | مدت: {days} روز" if days else ""
+        limits += f" | سقف: {max_uses} خرید" if max_uses else ""
         await asyncio.to_thread(db.log_admin_action, admin_id, "product_discount_set",
-                                f"محصول «{product['name']}» → {base:,} ← {new_price:,}{extra}")
+                                f"محصول «{product['name']}» → {base:,} ← {new_price:,}{extra}{limits}")
+
+    def _discount_limits_text(product) -> str:
+        """وضعیت محدودیت‌های تخفیف فعلی (مدت و تعداد) برای نمایش به ادمین."""
+        keys = product.keys()
+        parts = []
+        exp = product["discount_expires_at"] if "discount_expires_at" in keys else None
+        if exp:
+            try:
+                left = datetime.fromisoformat(str(exp)) - datetime.utcnow()
+                secs = max(int(left.total_seconds()), 0)
+                parts.append(f"⏳ باقی‌مانده: {secs // 86400} روز و {(secs % 86400) // 3600} ساعت")
+            except Exception:
+                pass
+        mx = int(product["discount_max_uses"] or 0) if "discount_max_uses" in keys else 0
+        if mx:
+            used = int(product["discount_used_count"] or 0)
+            parts.append(f"🛒 خرید با تخفیف: {used} از {mx}")
+        if parts:
+            parts.append("(هر کدام زودتر برسد تخفیف تمام می‌شود)")
+        return "\n".join(parts)
 
     @router.callback_query(F.data.startswith("adm_prod_compare:"))
     async def cb_admin_prod_compare(call: CallbackQuery, state: FSMContext):
@@ -1348,6 +1373,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         lines = [f"🏷 «{product['name']}»", f"قیمت اصلی: {base:,} تومان"]
         if base > price:
             lines.append(f"قیمت با تخفیف: {price:,} تومان ({round((base - price) * 100 / base)}٪)")
+            limits_text = _discount_limits_text(product)
+            if limits_text:
+                lines.append(limits_text)
         lines.append("\nنوع تخفیف را انتخاب کنید:")
         await safe_edit(call, "\n".join(lines), reply_markup=kb.admin_product_discount_kb(product, _discount_back_cb(product)))
         await call.answer()
@@ -1405,13 +1433,56 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
         )
 
-    async def _finish_discount(message: Message, state: FSMContext, product, new_price: int, percent: int = None):
-        await _apply_product_discount(message.from_user.id, product, new_price, percent)
+    async def _ask_discount_days(message: Message, state: FSMContext, product, new_price: int, percent: int):
+        await state.update_data(dsc_new_price=int(new_price), dsc_percent=int(percent or 0),
+                                editing_product_id=product["id"])
+        await state.set_state(AdminEditProduct.waiting_discount_days)
+        await message.answer(
+            tr("⏳ تخفیف چند روز فعال بماند؟\nفقط عدد وارد کنید. عدد 0 یعنی بدون محدودیت زمانی."),
+            reply_markup=kb.admin_back_kb(f"adm_prod_compare:{product['id']}"),
+        )
+
+    @router.message(AdminEditProduct.waiting_discount_days)
+    async def process_prod_discount_days(message: Message, state: FSMContext):
+        text = _parse_digits(message)
+        if not text.isdigit() or int(text) > 3650:
+            return await message.answer(tr("لطفاً فقط عدد بین 0 تا 3650 وارد کنید. مثال: 7 (یا 0 برای بدون محدودیت)"))
+        await state.update_data(dsc_days=int(text))
+        await state.set_state(AdminEditProduct.waiting_discount_uses)
+        await message.answer(
+            tr("🛒 تخفیف روی چند خرید اعمال شود؟\nفقط عدد وارد کنید. عدد 0 یعنی بدون سقف تعداد.\n"
+               "اگر هر دو (مدت و تعداد) تنظیم شده باشند، هرکدام زودتر برسد تخفیف تمام می‌شود."),
+        )
+
+    @router.message(AdminEditProduct.waiting_discount_uses)
+    async def process_prod_discount_uses(message: Message, state: FSMContext):
+        text = _parse_digits(message)
+        if not text.isdigit() or int(text) > 1000000:
+            return await message.answer(tr("لطفاً فقط عدد وارد کنید. مثال: 50 (یا 0 برای بدون سقف)"))
+        data = await state.get_data()
+        product = await asyncio.to_thread(db.get_product, data.get("editing_product_id"))
+        if not product or not data.get("dsc_new_price"):
+            await state.clear()
+            return await message.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'))
+        await _finish_discount(message, state, product, int(data["dsc_new_price"]),
+                               int(data.get("dsc_percent") or 0),
+                               days=int(data.get("dsc_days") or 0), max_uses=int(text))
+
+    async def _finish_discount(message: Message, state: FSMContext, product, new_price: int, percent: int = None,
+                               days: int = 0, max_uses: int = 0):
+        await _apply_product_discount(message.from_user.id, product, new_price, percent, days, max_uses)
         await state.clear()
         products = await asyncio.to_thread(db.get_products, product["category_id"], active_only=False)
         base = _discount_base(product)
+        extra = ""
+        if days:
+            extra += f"\n⏳ مدت: {days} روز"
+        if max_uses:
+            extra += f"\n🛒 سقف: {max_uses} خرید"
+        if not days and not max_uses:
+            extra = "\n♾ بدون محدودیت زمان و تعداد (تا زمانی که دستی حذف کنید)"
         await message.answer(
-            tr(f"✅ تخفیف ثبت شد: {base:,} ← {new_price:,} تومان"),
+            tr(f"✅ تخفیف ثبت شد: {price_range(base, new_price, 'تومان')}{extra}"),
             reply_markup=kb.admin_products_list_kb(db, products),
         )
 
@@ -1429,7 +1500,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         base = _discount_base(product)
         if value >= base:
             return await message.answer(tr(f"قیمت جدید باید از قیمت اصلی ({base:,}) کمتر باشد. دوباره وارد کنید."))
-        await _finish_discount(message, state, product, value, round((base - value) * 100 / base))
+        await _ask_discount_days(message, state, product, value, round((base - value) * 100 / base))
 
     @router.message(AdminEditProduct.waiting_discount_percent)
     async def process_prod_discount_percent(message: Message, state: FSMContext):
@@ -1446,7 +1517,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         value = max(round(base * (100 - percent) / 100), 1)
         if value >= base:
             return await message.answer(tr("با این درصد قیمت تغییری نمی‌کند. درصد بزرگ‌تری وارد کنید."))
-        await _finish_discount(message, state, product, value, percent)
+        await _ask_discount_days(message, state, product, value, percent)
 
     @router.callback_query(F.data.startswith("adm_prod_users:"))
     async def cb_admin_prod_users(call: CallbackQuery, state: FSMContext):

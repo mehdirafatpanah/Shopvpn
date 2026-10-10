@@ -541,6 +541,8 @@ class AdminEditProduct(StatesGroup):
     waiting_volume = State()
     waiting_discount_price = State()
     waiting_discount_percent = State()
+    waiting_discount_days = State()
+    waiting_discount_uses = State()
     waiting_sub_base_url = State()
     waiting_user_base = State()
     waiting_user_extra_price = State()
