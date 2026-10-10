@@ -3523,6 +3523,31 @@ function readProductPaymentMethodsFields(b) {
   return (checked.length === 0 || checked.length === boxes.length) ? null : checked;
 }
 
+function productDiscountFieldsHtml(prefix, product) {
+  const active = product && Number(product.compare_price || 0) > Number(product.price || 0);
+  const sel = (v) => (active ? 'price' : 'none') === v ? 'selected' : '';
+  return `<div class="form-row">
+    <select class="input" id="${prefix}-dmode">
+      <option value="none" ${sel('none')}>بدون تخفیف</option>
+      <option value="price" ${sel('price')}>تخفیف: قیمت جدید</option>
+      <option value="pct" ${sel('pct')}>تخفیف: درصدی</option>
+    </select>
+    <input class="input" id="${prefix}-dval" type="number" placeholder="قیمت جدید (تومان) یا درصد" value="${active ? product.price : ''}">
+  </div>`;
+}
+
+function readProductDiscount(b, prefix, base) {
+  const mode = $('#' + prefix + '-dmode', b).value;
+  const v = Number($('#' + prefix + '-dval', b).value) || 0;
+  if (mode === 'none') return { price: base, compare_price: 0 };
+  if (mode === 'price') {
+    if (!(v > 0 && v < base)) { toast('قیمت جدید باید از قیمت اصلی کمتر باشد.', true); return null; }
+    return { price: v, compare_price: base };
+  }
+  if (!(v >= 1 && v <= 99)) { toast('درصد تخفیف باید بین 1 تا 99 باشد.', true); return null; }
+  return { price: Math.max(Math.round(base * (100 - v) / 100), 1), compare_price: base };
+}
+
 // فرم کامل «ویرایش محصول»: نام/قیمت/توضیحات/دسته + امکان تغییر منبع تأمین
 // (بانک کانفیگ ⇄ اتصال مستقیم به پنل) و در حالت مستقیم، تغییر خودِ پنل/حجم.
 function productEditFormHtml(product, categories, panelServers) {
@@ -3531,10 +3556,10 @@ function productEditFormHtml(product, categories, panelServers) {
       <select class="input" id="pe-cat">${categories.map(c => `<option value="${c.id}" ${c.id === product.category_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
       <input class="input" id="pe-name" placeholder="نام محصول" value="${esc(product.name)}">
       <div class="form-row">
-        <input class="input" id="pe-price" type="number" placeholder="قیمت (تومان)" value="${product.price}">
-        <input class="input" id="pe-compare" type="number" placeholder="قیمت قبل از تخفیف (اختیاری؛ خالی/0 = بدون تخفیف)" value="${product.compare_price || ''}">
+        <input class="input" id="pe-price" type="number" placeholder="قیمت اصلی (تومان)" value="${Number(product.compare_price || 0) > Number(product.price) ? product.compare_price : product.price}">
         <input class="input" id="prod-duration" type="number" placeholder="مدت (روز)" value="${product.duration_days || 30}">
       </div>
+      ${productDiscountFieldsHtml('pe', product)}
       <textarea class="input" id="pe-desc" placeholder="توضیحات (اختیاری)" rows="2">${esc(product.description || '')}</textarea>
       ${productProvisionFieldsHtml(panelServers, product)}
       <button class="btn btn-primary" id="pe-save">ذخیره</button>
@@ -3548,10 +3573,12 @@ function openProductEditModal(product, categories, panelServers) {
       const name = $('#pe-name', b).value.trim();
       const price = Number($('#pe-price', b).value);
       if (!name || !price) return toast('نام و قیمت الزامی است.', true);
+      const disc = readProductDiscount(b, 'pe', price);
+      if (!disc) return;
       const prov = readProductProvisionFields(b);
       if (!prov.ok) return;
       const payload = {
-        category_id: Number($('#pe-cat', b).value), name, price, compare_price: Number($('#pe-compare', b).value) || 0,
+        category_id: Number($('#pe-cat', b).value), name, price: disc.price, compare_price: disc.compare_price,
         description: $('#pe-desc', b).value, duration_days: prov.duration_days,
         source: prov.source,
       };
@@ -3641,9 +3668,9 @@ async function renderCatalog() {
     <div class="form-grid">
       <select class="input" id="prod-cat">${categories.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
       <input class="input" id="prod-name" placeholder="نام محصول">
-      <div class="form-row"><input class="input" id="prod-price" type="number" placeholder="قیمت (تومان)">
-      <input class="input" id="prod-compare" type="number" placeholder="قیمت قبل از تخفیف (اختیاری)">
+      <div class="form-row"><input class="input" id="prod-price" type="number" placeholder="قیمت اصلی (تومان)">
       <input class="input" id="prod-duration" type="number" placeholder="مدت (روز)" value="30"></div>
+      ${productDiscountFieldsHtml('prod', null)}
       <textarea class="input" id="prod-desc" placeholder="توضیحات (اختیاری)" rows="2"></textarea>
       ${productProvisionFieldsHtml(panelServers)}
       ${productPaymentMethodsFieldsHtml(paymentMethods)}
@@ -3654,12 +3681,14 @@ async function renderCatalog() {
       const name = $('#prod-name', b).value.trim();
       const price = Number($('#prod-price', b).value);
       if (!name || !price) return toast('نام و قیمت الزامی است.', true);
+      const disc = readProductDiscount(b, 'prod', price);
+      if (!disc) return;
       const prov = readProductProvisionFields(b);
       if (!prov.ok) return;
       const payment_methods = readProductPaymentMethodsFields(b);
       try {
         await apiPost('/products', {
-          category_id: Number($('#prod-cat', b).value), name, price, compare_price: Number($('#prod-compare', b).value) || 0,
+          category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price,
           description: $('#prod-desc', b).value, duration_days: prov.duration_days,
           provision_server_id: prov.provision_server_id, auto_provision_volume_gb: prov.auto_provision_volume_gb,
           payment_methods,
@@ -3774,9 +3803,9 @@ function renderCatalogBento(categories, products, panelServers, paymentMethods) 
     <div class="form-grid">
       <select class="input" id="prod-cat">${categories.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
       <input class="input" id="prod-name" placeholder="نام محصول">
-      <div class="form-row"><input class="input" id="prod-price" type="number" placeholder="قیمت (تومان)">
-      <input class="input" id="prod-compare" type="number" placeholder="قیمت قبل از تخفیف (اختیاری)">
+      <div class="form-row"><input class="input" id="prod-price" type="number" placeholder="قیمت اصلی (تومان)">
       <input class="input" id="prod-duration" type="number" placeholder="مدت (روز)" value="30"></div>
+      ${productDiscountFieldsHtml('prod', null)}
       <textarea class="input" id="prod-desc" placeholder="توضیحات (اختیاری)" rows="2"></textarea>
       ${productProvisionFieldsHtml(panelServers)}
       ${productPaymentMethodsFieldsHtml(paymentMethods)}
@@ -3787,12 +3816,14 @@ function renderCatalogBento(categories, products, panelServers, paymentMethods) 
       const name = $('#prod-name', b).value.trim();
       const price = Number($('#prod-price', b).value);
       if (!name || !price) return toast('نام و قیمت الزامی است.', true);
+      const disc = readProductDiscount(b, 'prod', price);
+      if (!disc) return;
       const prov = readProductProvisionFields(b);
       if (!prov.ok) return;
       const payment_methods = readProductPaymentMethodsFields(b);
       try {
         await apiPost('/products', {
-          category_id: Number($('#prod-cat', b).value), name, price, compare_price: Number($('#prod-compare', b).value) || 0,
+          category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price,
           description: $('#prod-desc', b).value, duration_days: prov.duration_days,
           provision_server_id: prov.provision_server_id, auto_provision_volume_gb: prov.auto_provision_volume_gb,
           payment_methods,
@@ -3906,9 +3937,9 @@ function renderCatalogBrutalist(categories, products, panelServers, paymentMetho
     <div class="form-grid">
       <select class="input" id="prod-cat">${categories.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
       <input class="input" id="prod-name" placeholder="نام محصول">
-      <div class="form-row"><input class="input" id="prod-price" type="number" placeholder="قیمت (تومان)">
-      <input class="input" id="prod-compare" type="number" placeholder="قیمت قبل از تخفیف (اختیاری)">
+      <div class="form-row"><input class="input" id="prod-price" type="number" placeholder="قیمت اصلی (تومان)">
       <input class="input" id="prod-duration" type="number" placeholder="مدت (روز)" value="30"></div>
+      ${productDiscountFieldsHtml('prod', null)}
       <textarea class="input" id="prod-desc" placeholder="توضیحات (اختیاری)" rows="2"></textarea>
       ${productProvisionFieldsHtml(panelServers)}
       ${productPaymentMethodsFieldsHtml(paymentMethods)}
@@ -3919,12 +3950,14 @@ function renderCatalogBrutalist(categories, products, panelServers, paymentMetho
       const name = $('#prod-name', b).value.trim();
       const price = Number($('#prod-price', b).value);
       if (!name || !price) return toast('نام و قیمت الزامی است.', true);
+      const disc = readProductDiscount(b, 'prod', price);
+      if (!disc) return;
       const prov = readProductProvisionFields(b);
       if (!prov.ok) return;
       const payment_methods = readProductPaymentMethodsFields(b);
       try {
         await apiPost('/products', {
-          category_id: Number($('#prod-cat', b).value), name, price, compare_price: Number($('#prod-compare', b).value) || 0,
+          category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price,
           description: $('#prod-desc', b).value, duration_days: prov.duration_days,
           provision_server_id: prov.provision_server_id, auto_provision_volume_gb: prov.auto_provision_volume_gb,
           payment_methods,
