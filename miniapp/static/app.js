@@ -4220,6 +4220,7 @@ async function renderAdminPanelsSection() {
           api_password: document.getElementById("ps-password").value,
           template_username: document.getElementById("ps-template").value.trim(),
         };
+        if (panelType === "pasarguard" && !payload.api_username && payload.api_password.trim().startsWith("pg_key_")) payload.api_username = "apikey";
         if (!payload.name || !payload.api_url || !payload.api_username || !payload.api_password) {
           errBox.textContent = "نام، آدرس، یوزرنیم و پسورد الزامی هستند."; return;
         }
