@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import aiohttp
 from i18n import tr, api_message, set_language, reset_language, normalize_language, is_language_enabled
 from db_text_policy import render_stored_setting
+from price_display import compare_price_for
 from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Form, Depends, Query, Request
 from fastapi.staticfiles import StaticFiles
 
@@ -1325,6 +1326,7 @@ def api_catalog(auth=Depends(get_verified_user)):
                     "id": p["id"],
                     "name": p["name"],
                     "price": p["price"],
+                    "original_price": compare_price_for(p) or None,
                     "description": p["description"],
                     "stock": db.count_available_configs(p["id"]),
                     "is_auto_provision": bool(p["is_auto_provision"]),
@@ -4612,6 +4614,7 @@ class ProductCreate(BaseModel):
     auto_provision_volume_gb: Optional[int] = None
     provision_server_id: Optional[int] = None
     payment_methods: Optional[List[str]] = None
+    compare_price: Optional[int] = None  # قیمت قبل از تخفیف (نمایشی)
 
 
 class ProductUpdate(BaseModel):
@@ -4621,6 +4624,7 @@ class ProductUpdate(BaseModel):
     duration_days: Optional[int] = None
     provision_server_id: Optional[int] = None
     auto_provision_volume_gb: Optional[int] = None
+    compare_price: Optional[int] = None  # 0 یعنی حذف تخفیف
 
 
 class ConfigsAdd(BaseModel):
@@ -5079,6 +5083,7 @@ def api_admin_list_products(cat_id: int, auth=Depends(require_senior_admin)):
     return [
         {
             "id": p["id"], "name": p["name"], "price": p["price"],
+            "compare_price": p["compare_price"] or 0,
             "description": p["description"], "duration_days": p["duration_days"],
             "is_active": bool(p["is_active"]),
             "is_auto_provision": bool(p["is_auto_provision"]),
@@ -5136,6 +5141,7 @@ def api_admin_create_product(body: ProductCreate, auth=Depends(require_senior_ad
         body.category_id, body.name.strip(), body.price, body.description, body.duration_days,
         is_auto_provision=is_auto_provision, auto_provision_volume_gb=body.auto_provision_volume_gb,
         provision_server_id=provision_server_id, payment_methods=body.payment_methods,
+        compare_price=max(int(body.compare_price or 0), 0),
     )
     return {"id": product_id}
 
@@ -5184,6 +5190,8 @@ def api_admin_edit_product(product_id: int, body: ProductUpdate, auth=Depends(re
     # Ellipsis استفاده می‌کند (یعنی «بدون تغییر»)؛ پس این دو را فقط وقتی صراحتاً
     # مقداردهی شده‌اند پاس می‌دهیم، وگرنه ممکن است به‌اشتباه NULL شوند.
     edit_kwargs = {}
+    if body.compare_price is not None:
+        edit_kwargs["compare_price"] = max(int(body.compare_price), 0)
     if provision_server_id is not None:
         edit_kwargs["provision_server_id"] = provision_server_id
     if body.auto_provision_volume_gb is not None:
