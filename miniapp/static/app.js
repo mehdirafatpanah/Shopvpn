@@ -4906,7 +4906,7 @@ async function renderAdminProducts(body) {
     const duration = durationUnlimited ? 0 : (Number(document.getElementById("new-prod-duration").value) || 30);
     const disc = readProductDiscount("new-prod", price, errBox);
     if (!disc) return;
-    const payload = { category_id: categoryId, name, price: disc.price, duration_days: duration, description: desc, compare_price: disc.compare_price };
+    const payload = { category_id: categoryId, name, price: disc.price, duration_days: duration, description: desc, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses };
     if (isDirect) {
       const provision_server_id = Number(document.getElementById("new-prod-server").value);
       const volumeUnlimited = newVolUnlimitedCb && newVolUnlimitedCb.checked;
@@ -4998,7 +4998,7 @@ async function renderAdminEditProduct(body) {
     if (!name || !price || (!durationUnlimited && !duration)) { errBox.textContent = "نام، قیمت و مدت اعتبار الزامی هستند."; return; }
     const disc = readProductDiscount("edit-prod", price, errBox);
     if (!disc) return;
-    const payload = { name, price: disc.price, duration_days: duration, description, compare_price: disc.compare_price };
+    const payload = { name, price: disc.price, duration_days: duration, description, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses };
     const serverSel = document.getElementById("edit-prod-server");
     if (serverSel) {
       const provision_server_id = Number(serverSel.value);
@@ -7086,6 +7086,14 @@ bootstrapEntryGates();
 function productDiscountHtml(prefix, product) {
   const active = product && Number(product.compare_price || 0) > Number(product.price || 0);
   const sel = (v) => (active ? "price" : "none") === v ? "selected" : "";
+  let days = "";
+  if (active && product.discount_expires_at) {
+    const ms = new Date(String(product.discount_expires_at).replace(/Z?$/, "Z")).getTime() - Date.now();
+    if (!isNaN(ms)) days = Math.max(Math.ceil(ms / 86400000), 1);
+  }
+  let uses = "";
+  const mx = Number((active && product.discount_max_uses) || 0);
+  if (mx > 0) uses = Math.max(mx - Number(product.discount_used_count || 0), 1);
   return `
       <label class="field-label">تخفیف</label>
       <select class="input" id="${prefix}-dmode" style="margin-bottom:8px">
@@ -7093,18 +7101,23 @@ function productDiscountHtml(prefix, product) {
         <option value="price" ${sel("price")}>قیمت جدید (بعد از تخفیف)</option>
         <option value="pct" ${sel("pct")}>درصدی</option>
       </select>
-      <input class="input" id="${prefix}-dval" type="number" placeholder="قیمت جدید (تومان) یا درصد" value="${active ? product.price : ""}" style="margin-bottom:10px" />`;
+      <input class="input" id="${prefix}-dval" type="number" placeholder="قیمت جدید (تومان) یا درصد" value="${active ? product.price : ""}" style="margin-bottom:10px" />
+      <input class="input" id="${prefix}-ddays" type="number" min="0" placeholder="مدت تخفیف (روز) - خالی = نامحدود" value="${days}" style="margin-bottom:8px" />
+      <input class="input" id="${prefix}-duses" type="number" min="0" placeholder="سقف تعداد خرید - خالی = نامحدود" value="${uses}" style="margin-bottom:6px" />
+      <div class="muted" style="font-size:12px;margin-bottom:10px">اگر هر دو پر باشند، هرکدام زودتر برسد تخفیف تمام می‌شود.</div>`;
 }
 
 function readProductDiscount(prefix, base, errBox) {
   const mode = document.getElementById(prefix + "-dmode").value;
   const v = Number(document.getElementById(prefix + "-dval").value) || 0;
-  if (mode === "none") return { price: base, compare_price: 0 };
+  const days = Math.max(Math.floor(Number(document.getElementById(prefix + "-ddays").value) || 0), 0);
+  const uses = Math.max(Math.floor(Number(document.getElementById(prefix + "-duses").value) || 0), 0);
+  if (mode === "none") return { price: base, compare_price: 0, discount_days: 0, discount_max_uses: 0 };
   if (mode === "price") {
     if (!(v > 0 && v < base)) { errBox.textContent = "قیمت جدید باید از قیمت اصلی کمتر باشد."; return null; }
-    return { price: v, compare_price: base };
+    return { price: v, compare_price: base, discount_days: days, discount_max_uses: uses };
   }
   if (!(v >= 1 && v <= 99)) { errBox.textContent = "درصد تخفیف باید بین 1 تا 99 باشد."; return null; }
-  return { price: Math.max(Math.round(base * (100 - v) / 100), 1), compare_price: base };
+  return { price: Math.max(Math.round(base * (100 - v) / 100), 1), compare_price: base, discount_days: days, discount_max_uses: uses };
 }
 
