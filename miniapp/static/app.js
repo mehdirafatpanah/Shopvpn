@@ -2362,7 +2362,7 @@ async function renderStore() {
           <div class="product">
             <div>
               <div class="product-name">${p.name}</div>
-              <div class="price">${fmt(p.price)} تومان</div>
+              <div class="price">${priceHtml(p.price, p.original_price)}</div>
             </div>
             <button class="btn small" ${p.stock <= 0 ? "disabled" : ""}
               onclick="openProductPurchase(${p.id})">
@@ -2401,7 +2401,7 @@ async function renderPurchasePanel(productId, p, quantity, discountCode) {
     <div class="eyebrow">خرید محصول</div>
     <div class="card">
       <h3><span class="ic">📦</span>${p.name}</h3>
-      <div class="stat-row"><span>قیمت واحد</span><b>${fmt(p.price)} تومان</b></div>
+      <div class="stat-row"><span>قیمت واحد</span><b>${priceHtml(p.price, p.original_price)}</b></div>
       ${p.is_auto_provision
         ? `<div class="stat-row"><span>تأمین</span><b>⚡️ خودکار و لحظه‌ای</b></div>`
         : `<div class="stat-row"><span>موجودی</span><b>${p.stock} عدد</b></div>`}
@@ -2501,6 +2501,14 @@ function _randomCustomUsername() {
   let s = "u";
   for (let i = 0; i < 8; i++) s += chars[Math.floor(Math.random() * chars.length)];
   return s;
+}
+
+// قیمت محصول؛ اگر قیمت قبل از تخفیف بزرگ‌تر باشد، قیمت قبلی خط‌خورده کنارش نشان داده می‌شود.
+function priceHtml(price, originalPrice) {
+  const strike = originalPrice && Number(originalPrice) > Number(price)
+    ? `<s class="hint-text">${fmt(originalPrice)}</s> `
+    : "";
+  return `${strike}${fmt(price)} تومان`;
 }
 
 function _priceForVolume(tiers, gb) {
@@ -4822,6 +4830,7 @@ async function renderAdminProducts(body) {
       <div class="eyebrow" style="margin-top:0">افزودن محصول جدید</div>
       <input class="input" id="new-prod-name" type="text" placeholder="نام محصول" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:8px" />
       <input class="input" id="new-prod-price" type="number" placeholder="قیمت (تومان)" style="margin-bottom:8px" />
+      <input class="input" id="new-prod-compare" type="number" placeholder="قیمت قبل از تخفیف (اختیاری)" style="margin-bottom:8px" />
       <input class="input" id="new-prod-duration" type="number" placeholder="مدت اعتبار (روز)" value="30" style="margin-bottom:8px" />
       <input class="input" id="new-prod-desc" type="text" placeholder="توضیحات (اختیاری)" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:8px" />
       ${productProvisionFieldsHtml(panelServers)}
@@ -4895,7 +4904,8 @@ async function renderAdminProducts(body) {
     const isDirect = sourceEl && sourceEl.value === "direct";
     const durationUnlimited = isDirect && newDurUnlimitedCb && newDurUnlimitedCb.checked;
     const duration = durationUnlimited ? 0 : (Number(document.getElementById("new-prod-duration").value) || 30);
-    const payload = { category_id: categoryId, name, price, duration_days: duration, description: desc };
+    const compare_price = Number(document.getElementById("new-prod-compare").value) || 0;
+    const payload = { category_id: categoryId, name, price, duration_days: duration, description: desc, compare_price };
     if (isDirect) {
       const provision_server_id = Number(document.getElementById("new-prod-server").value);
       const volumeUnlimited = newVolUnlimitedCb && newVolUnlimitedCb.checked;
@@ -4931,6 +4941,8 @@ async function renderAdminEditProduct(body) {
       <input class="input" id="edit-prod-name" type="text" value="${(p.name || "").replace(/"/g, "&quot;")}" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:10px" />
       <label class="field-label">قیمت (تومان)</label>
       <input class="input" id="edit-prod-price" type="number" value="${p.price}" style="margin-bottom:10px" />
+      <label class="field-label">قیمت قبل از تخفیف (اختیاری؛ خالی یا 0 = بدون تخفیف)</label>
+      <input class="input" id="edit-prod-compare" type="number" value="${p.compare_price || ""}" style="margin-bottom:10px" />
       <label class="field-label">مدت اعتبار (روز)</label>
       <input class="input" id="edit-prod-duration" type="number" value="${p.duration_days}" style="margin-bottom:${isDirectEditable ? "4" : "10"}px" ${durationIsUnlimited ? "disabled" : ""} />
       ${isDirectEditable ? `
@@ -4984,7 +4996,8 @@ async function renderAdminEditProduct(body) {
     const durationUnlimited = editDurUnlimitedCb && editDurUnlimitedCb.checked;
     const duration = durationUnlimited ? 0 : Number(document.getElementById("edit-prod-duration").value);
     if (!name || !price || (!durationUnlimited && !duration)) { errBox.textContent = "نام، قیمت و مدت اعتبار الزامی هستند."; return; }
-    const payload = { name, price, duration_days: duration, description };
+    const compare_price = Number(document.getElementById("edit-prod-compare").value) || 0;
+    const payload = { name, price, duration_days: duration, description, compare_price };
     const serverSel = document.getElementById("edit-prod-server");
     if (serverSel) {
       const provision_server_id = Number(serverSel.value);
