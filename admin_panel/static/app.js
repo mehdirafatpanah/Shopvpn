@@ -3523,9 +3523,23 @@ function readProductPaymentMethodsFields(b) {
   return (checked.length === 0 || checked.length === boxes.length) ? null : checked;
 }
 
+function _discountLimitPrefill(product) {
+  // مقدار باقی‌مانده‌ی مدت (روز) و تعداد را برای ذخیره‌ی مجدد فرم پیش‌فرض می‌گذارد تا ویرایش بی‌ربط، شمارش را از نو شروع نکند.
+  let days = '';
+  if (product && product.discount_expires_at) {
+    const ms = new Date(String(product.discount_expires_at).replace(/Z?$/, 'Z')).getTime() - Date.now();
+    if (!isNaN(ms)) days = Math.max(Math.ceil(ms / 86400000), 1);
+  }
+  let uses = '';
+  const mx = Number((product && product.discount_max_uses) || 0);
+  if (mx > 0) uses = Math.max(mx - Number(product.discount_used_count || 0), 1);
+  return { days, uses };
+}
+
 function productDiscountFieldsHtml(prefix, product) {
   const active = product && Number(product.compare_price || 0) > Number(product.price || 0);
   const sel = (v) => (active ? 'price' : 'none') === v ? 'selected' : '';
+  const pre = _discountLimitPrefill(active ? product : null);
   return `<div class="form-row">
     <select class="input" id="${prefix}-dmode">
       <option value="none" ${sel('none')}>بدون تخفیف</option>
@@ -3533,19 +3547,26 @@ function productDiscountFieldsHtml(prefix, product) {
       <option value="pct" ${sel('pct')}>تخفیف: درصدی</option>
     </select>
     <input class="input" id="${prefix}-dval" type="number" placeholder="قیمت جدید (تومان) یا درصد" value="${active ? product.price : ''}">
-  </div>`;
+  </div>
+  <div class="form-row">
+    <input class="input" id="${prefix}-ddays" type="number" min="0" placeholder="مدت تخفیف (روز) - خالی = نامحدود" value="${pre.days}">
+    <input class="input" id="${prefix}-duses" type="number" min="0" placeholder="سقف تعداد خرید - خالی = نامحدود" value="${pre.uses}">
+  </div>
+  <div class="muted" style="font-size:12px">اگر هر دو پر باشند، هرکدام زودتر برسد تخفیف تمام می‌شود و قیمت به قیمت اصلی برمی‌گردد.</div>`;
 }
 
 function readProductDiscount(b, prefix, base) {
   const mode = $('#' + prefix + '-dmode', b).value;
   const v = Number($('#' + prefix + '-dval', b).value) || 0;
-  if (mode === 'none') return { price: base, compare_price: 0 };
+  const days = Math.max(Math.floor(Number($('#' + prefix + '-ddays', b).value) || 0), 0);
+  const uses = Math.max(Math.floor(Number($('#' + prefix + '-duses', b).value) || 0), 0);
+  if (mode === 'none') return { price: base, compare_price: 0, discount_days: 0, discount_max_uses: 0 };
   if (mode === 'price') {
     if (!(v > 0 && v < base)) { toast('قیمت جدید باید از قیمت اصلی کمتر باشد.', true); return null; }
-    return { price: v, compare_price: base };
+    return { price: v, compare_price: base, discount_days: days, discount_max_uses: uses };
   }
   if (!(v >= 1 && v <= 99)) { toast('درصد تخفیف باید بین 1 تا 99 باشد.', true); return null; }
-  return { price: Math.max(Math.round(base * (100 - v) / 100), 1), compare_price: base };
+  return { price: Math.max(Math.round(base * (100 - v) / 100), 1), compare_price: base, discount_days: days, discount_max_uses: uses };
 }
 
 // فرم کامل «ویرایش محصول»: نام/قیمت/توضیحات/دسته + امکان تغییر منبع تأمین
@@ -3578,7 +3599,7 @@ function openProductEditModal(product, categories, panelServers) {
       const prov = readProductProvisionFields(b);
       if (!prov.ok) return;
       const payload = {
-        category_id: Number($('#pe-cat', b).value), name, price: disc.price, compare_price: disc.compare_price,
+        category_id: Number($('#pe-cat', b).value), name, price: disc.price, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
         description: $('#pe-desc', b).value, duration_days: prov.duration_days,
         source: prov.source,
       };
@@ -3688,7 +3709,7 @@ async function renderCatalog() {
       const payment_methods = readProductPaymentMethodsFields(b);
       try {
         await apiPost('/products', {
-          category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price,
+          category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
           description: $('#prod-desc', b).value, duration_days: prov.duration_days,
           provision_server_id: prov.provision_server_id, auto_provision_volume_gb: prov.auto_provision_volume_gb,
           payment_methods,
@@ -3823,7 +3844,7 @@ function renderCatalogBento(categories, products, panelServers, paymentMethods) 
       const payment_methods = readProductPaymentMethodsFields(b);
       try {
         await apiPost('/products', {
-          category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price,
+          category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
           description: $('#prod-desc', b).value, duration_days: prov.duration_days,
           provision_server_id: prov.provision_server_id, auto_provision_volume_gb: prov.auto_provision_volume_gb,
           payment_methods,
@@ -3957,7 +3978,7 @@ function renderCatalogBrutalist(categories, products, panelServers, paymentMetho
       const payment_methods = readProductPaymentMethodsFields(b);
       try {
         await apiPost('/products', {
-          category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price,
+          category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
           description: $('#prod-desc', b).value, duration_days: prov.duration_days,
           provision_server_id: prov.provision_server_id, auto_provision_volume_gb: prov.auto_provision_volume_gb,
           payment_methods,
