@@ -2176,5 +2176,9 @@ EXTRA_DYNAMIC_PHRASES.extend([
     ('📜 وضعیت: {x}', '📜 Status: {x}'),
     ('📝 متن فعلی: {x}', '📝 Current text: {x}'),
 ])
+EXTRA_PHRASES.update({
+    '🔴 غیرفعال کردن کل سیستم زیرمجموعه‌گیری': '🔴 Disable the whole referral system',
+    '🟢 فعال کردن کل سیستم زیرمجموعه‌گیری': '🟢 Enable the whole referral system',
+})
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 # 		   		 		  	 	 		 		   		  	 	 		 			  		 				 			  	 

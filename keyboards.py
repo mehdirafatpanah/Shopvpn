@@ -3645,7 +3645,11 @@ def referral_settings_kb(db) -> InlineKeyboardMarkup:
     renewal_max = int(db.get_setting("referral_renewal_max_count", "0") or 0)
     renewal_max_text = f"{renewal_max} تمدید" if renewal_max > 0 else "نامحدود"
 
+    master_enabled = db.get_setting("referral_button_enabled", "1") == "1"
+    master_text = "🔴 غیرفعال کردن کل سیستم زیرمجموعه‌گیری" if master_enabled else "🟢 فعال کردن کل سیستم زیرمجموعه‌گیری"
+
     rows = [
+        [InlineKeyboardButton(text=tr(master_text), callback_data="adm_referral_master_toggle")],
         [InlineKeyboardButton(text=tr("① پورسانت درصدی از خرید زیرمجموعه"), callback_data="noop")],
         [InlineKeyboardButton(text=tr(f"درصد پورسانت: {percent}% | سقف: {commission_max_text}"), callback_data="noop")],
         [InlineKeyboardButton(text=toggle_text, callback_data="adm_referral_toggle")],

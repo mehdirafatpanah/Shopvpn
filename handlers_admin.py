@@ -5033,12 +5033,23 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await replace_admin_view(call, tr("🤝 تنظیمات زیرمجموعه‌گیری:"), reply_markup=kb.referral_settings_kb(db))
         await call.answer()
 
+    @router.callback_query(F.data == "adm_referral_master_toggle")
+    async def cb_admin_referral_master_toggle(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        current = (await asyncio.to_thread(db.get_setting, "referral_button_enabled", "1"))
+        (await asyncio.to_thread(db.set_setting, "referral_button_enabled", "0" if current == "1" else "1"))
+        await safe_edit(call, db.get_text('handlers_admin.auto_d33a70fe', '🤝 تنظیمات زیرمجموعه\u200cگیری:'), reply_markup=kb.referral_settings_kb(db))
+        await call.answer(db.get_text('handlers_admin.auto_d5ebb39c', 'وضعیت تغییر کرد.'))
+
     @router.callback_query(F.data == "adm_referral_toggle")
     async def cb_admin_referral_toggle(call: CallbackQuery):
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         current = (await asyncio.to_thread(db.get_setting, "referral_enabled", "1"))
         (await asyncio.to_thread(db.set_setting, "referral_enabled", "0" if current == "1" else "1"))
+        if current != "1":
+            (await asyncio.to_thread(db.set_setting, "referral_button_enabled", "1"))
         await safe_edit(call, db.get_text('handlers_admin.auto_d33a70fe', '🤝 تنظیمات زیرمجموعه\u200cگیری:'), reply_markup=kb.referral_settings_kb(db))
         await call.answer(db.get_text('handlers_admin.auto_d5ebb39c', 'وضعیت تغییر کرد.'))
 
@@ -5199,6 +5210,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await call.answer(db.get_text('handlers_admin.auto_72fcacb3', 'ابتدا از «انتخاب محصول جایزه» یک محصول انتخاب کنید.'), show_alert=True)
             return
         (await asyncio.to_thread(db.set_setting, "referral_free_config_enabled", new_value))
+        if new_value == "1":
+            (await asyncio.to_thread(db.set_setting, "referral_button_enabled", "1"))
         await safe_edit(call, db.get_text('handlers_admin.auto_d33a70fe', '🤝 تنظیمات زیرمجموعه\u200cگیری:'), reply_markup=kb.referral_settings_kb(db))
         await call.answer(db.get_text('handlers_admin.auto_d5ebb39c', 'وضعیت تغییر کرد.'))
 
@@ -5261,6 +5274,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await call.answer(db.get_text('handlers_admin.auto_932ef487', 'ابتدا مبلغ شارژ را از «تغییر مبلغ شارژ» تنظیم کنید.'), show_alert=True)
             return
         (await asyncio.to_thread(db.set_setting, "referral_invite_bonus_enabled", new_value))
+        if new_value == "1":
+            (await asyncio.to_thread(db.set_setting, "referral_button_enabled", "1"))
         await safe_edit(call, db.get_text('handlers_admin.auto_d33a70fe', '🤝 تنظیمات زیرمجموعه\u200cگیری:'), reply_markup=kb.referral_settings_kb(db))
         await call.answer(db.get_text('handlers_admin.auto_d5ebb39c', 'وضعیت تغییر کرد.'))
 
