@@ -668,6 +668,18 @@ def account_hub_kb(db) -> InlineKeyboardMarkup:
             continue
         if key == "acct_tutorial" and tutorial_hub.GENERAL not in db.get_tutorial_bound_targets():
             continue
+        # دکمه‌ی زیرمجموعه‌گیری فقط وقتی نشان داده شود که کلید اصلی و حداقل یکی از
+        # سه مدل پاداش روشن باشد (هم‌رفتار با item_referral در منوی اصلی)؛ وگرنه
+        # کاربر روی دکمه می‌زند و پیام «سیستم غیرفعال است» می‌گیرد.
+        if key == "acct_referral" and not (
+            db.get_setting("referral_button_enabled", "1") == "1"
+            and (
+                db.get_setting("referral_enabled", "1") == "1"
+                or db.get_setting("referral_free_config_enabled", "0") == "1"
+                or db.get_setting("referral_invite_bonus_enabled", "0") == "1"
+            )
+        ):
+            continue
         text = tr(db.get_setting(f"{key}_text", ACCOUNT_HUB_META[key]["default_text"]))
         rows.append([_styled_inline(db, text, callback_data, f"{key}_style")])
     rows.append([InlineKeyboardButton(text=tr(LANGUAGE_BTN_TEXT), callback_data="acct:language")])

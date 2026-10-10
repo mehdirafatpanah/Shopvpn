@@ -5389,15 +5389,20 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     @router.message(F.text.func(lambda t: t in (db.get_setting("btn_referral"), tr(db.get_setting("btn_referral")))))
     async def referral_menu(message: Message, bot: Bot):
         settings = (await asyncio.to_thread(db.get_all_settings))
+        _disabled_text = db.get_text('handlers_user.auto_623932c0', 'در حال حاضر سیستم زیرمجموعه\u200cگیری غیرفعال است.')
         if settings.get("referral_button_enabled", "1") != "1":
-            await message.answer(db.get_text('handlers_user.auto_623932c0', 'در حال حاضر سیستم زیرمجموعه\u200cگیری غیرفعال است.'))
+            if await asyncio.to_thread(db.is_admin, message.from_user.id):
+                _disabled_text += "\n\n🔧 (فقط برای ادمین) کلید اصلی «نمایش دکمه‌ی زیرمجموعه‌گیری برای کاربران» خاموش است. مسیر: تنظیمات ← زیرمجموعه‌گیری پیشرفته."
+            await message.answer(_disabled_text)
             return
         commission_on = settings.get("referral_enabled", "1") == "1"
         freeconfig_on = settings.get("referral_free_config_enabled", "0") == "1"
         invitebonus_on = settings.get("referral_invite_bonus_enabled", "0") == "1"
 
         if not (commission_on or freeconfig_on or invitebonus_on):
-            await message.answer(db.get_text('handlers_user.auto_623932c0', 'در حال حاضر سیستم زیرمجموعه\u200cگیری غیرفعال است.'))
+            if await asyncio.to_thread(db.is_admin, message.from_user.id):
+                _disabled_text += "\n\n🔧 (فقط برای ادمین) هیچ‌کدام از سه مدل پاداش (پورسانت خرید / کانفیگ رایگان / شارژ به‌ازای دعوت) روشن نیست."
+            await message.answer(_disabled_text)
             return
 
         me = await bot.get_me()
