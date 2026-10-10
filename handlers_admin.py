@@ -6298,7 +6298,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await replace_admin_view(call,
             tr("🛠 ساخت کانفیگ شخصی\n\n"
             "کاربران می‌توانند با تعیین نام، حجم و پرداخت متناسب، کاربر خودشان را مستقیماً "
-            "روی یکی از سرورهای پنل زیر بسازند."),
+            "روی یکی از سرورهای پنل VPN بسازند."),
             reply_markup=kb.custom_config_menu_kb(db, is_main_bot),
         )
         await call.answer()

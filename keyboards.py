@@ -1628,7 +1628,8 @@ ADMIN_PANEL_ITEMS = [
     ("adm_connect_alert_settings", "🔌 هشدار اتصال/عدم‌اتصال کانفیگ", "adm_connect_alert_settings"),
     ("adm_early_renewal_discount", "🎁 تخفیف تمدید کامل زودهنگام", "adm_early_renewal_discount"),
     ("adm_stock_alert_settings", "📦 آستانه‌ی هشدار موجودی", "adm_stock_alert_settings"),
-    ("adm_custom_config_settings", "🛠 ساخت کانفیگ شخصی (پنل‌های VPN)", "adm_custom_config_settings"),
+    ("adm_custom_config_settings", "🛠 ساخت کانفیگ شخصی", "adm_custom_config_settings"),
+    ("adm_panel_servers", "🖥 مدیریت پنل‌های VPN", "adm_panel_servers"),
     ("adm_renewal_pricing", "💳 قیمت‌گذاری تمدید حجم/زمان", "adm_renewal_pricing"),
     ("adm_delivery_settings", "📤 تنظیمات ارسال کانفیگ", "adm_delivery_settings"),
     ("adm_referral_settings", "🤝 تنظیمات زیرمجموعه‌گیری", "adm_referral_settings"),
@@ -1718,6 +1719,7 @@ ADMIN_PANEL_CATEGORIES = [
         "adm_cleanup_settings",
         "adm_service_alert_channel",
         "adm_custom_config_settings",
+        "adm_panel_servers",
         "adm_delivery_settings",
         "adm_renewal_pricing",
     ]),
@@ -1853,7 +1855,7 @@ def _is_item_visible(db, key: str, is_main_bot: bool) -> bool:
         # بات‌های نمایندگی خودشان اجازه‌ی ساخت زیرنماینده، فروش اعتبار یا مدیریت
         # درخواست‌های نمایندگی سطح ۲ (که فقط از بات اصلی قابل درخواست است) را ندارند
         return False
-    if key == "adm_custom_config_settings" and not db.is_full_access_bot(is_main_bot):
+    if key in ("adm_custom_config_settings", "adm_panel_servers") and not db.is_full_access_bot(is_main_bot):
         # ساخت کانفیگ شخصی به اتصال مستقیم پنل VPN نیاز دارد که فقط از بات اصلی یا نمایندگی کامل قابل مدیریت است
         return False
     if key in ("adm_add_configs", "adm_random_cfg") and (not is_main_bot) and _is_volume_credit_owner(db):
@@ -4091,10 +4093,6 @@ def custom_config_menu_kb(db, is_main_bot: bool = True) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=tr(f"🏷 پیش‌وند نام کانفیگ: {prefix_label}"), callback_data="adm_custom_config_prefix")],
         [InlineKeyboardButton(text=tr("📍 تنظیمات تغییر لوکیشن سرویس"), callback_data="adm_location_transfer_settings")],
     ]
-    if db.is_full_access_bot(is_main_bot):
-        # اتصال پنل VPN فقط توسط بات اصلی یا نمایندگی سطح کامل مدیریت می‌شود؛ نمایندگی سطح ۲
-        # از استخر حجمی که ادمین بات اصلی تعیین می‌کند استفاده می‌کند، نه پنل خودش.
-        rows.append([InlineKeyboardButton(text=tr("🖥 مدیریت سرورهای پنل"), callback_data="adm_panel_servers")])
     rows.append([InlineKeyboardButton(text=tr("💰 مدیریت قیمت‌گذاری بر اساس بازه (تنظیم قدیمی/پیش‌فرض)"), callback_data="adm_pricing_tiers")])
     rows.append([InlineKeyboardButton(text=tr("🧩 محصولات کانفیگ‌ساز (چندمحصولی)"), callback_data="adm_ccp_list")])
     rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:products")])
@@ -4280,7 +4278,7 @@ def panel_servers_list_kb(db) -> InlineKeyboardMarkup:
             text=f"{icon} {s['name']} ({PANEL_TYPE_LABELS.get(s['panel_type'], s['panel_type'])})", callback_data=f"adm_panel_server_view:{s['id']}",
         )])
     rows.append([InlineKeyboardButton(text=tr("➕ افزودن سرور جدید"), callback_data="adm_panel_server_add")])
-    rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_custom_config_settings")])
+    rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:products")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
