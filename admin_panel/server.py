@@ -3704,6 +3704,8 @@ class ProductBody(BaseModel):
     provision_server_id: Optional[int] = None
     payment_methods: Optional[List[str]] = None
     compare_price: Optional[int] = None  # قیمت قبل از تخفیف (نمایشی)
+    discount_days: Optional[int] = None  # مدت اعتبار تخفیف (روز)؛ 0 = بدون محدودیت زمانی
+    discount_max_uses: Optional[int] = None  # سقف تعداد خرید با تخفیف؛ 0 = بدون سقف
 
 
 @app.get("/api/products")
@@ -3757,6 +3759,10 @@ def api_add_product(body: ProductBody, admin=Depends(require_permission("catalog
         body.provision_server_id, payment_methods=body.payment_methods,
         compare_price=max(int(body.compare_price or 0), 0),
     )
+    if int(body.compare_price or 0) > 0 and (body.discount_days is not None or body.discount_max_uses is not None):
+        db.edit_product(pid, compare_price=int(body.compare_price),
+                        discount_days=max(int(body.discount_days or 0), 0),
+                        discount_max_uses=max(int(body.discount_max_uses or 0), 0))
     pm_log = "همه" if not body.payment_methods else "، ".join(body.payment_methods)
     db.log_admin_action(admin["id"], "product_add", f"{body.name} | پرداخت: {pm_log} (پنل وب - {admin['username']})", "product", pid)
     return {"id": pid}
@@ -3774,6 +3780,8 @@ class ProductEditBody(BaseModel):
     provision_server_id: Optional[int] = None
     auto_provision_volume_gb: Optional[int] = None
     compare_price: Optional[int] = None  # 0 یعنی حذف تخفیف
+    discount_days: Optional[int] = None
+    discount_max_uses: Optional[int] = None
 
 
 @app.put("/api/products/{product_id}")
@@ -3840,6 +3848,8 @@ def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(requi
         is_auto_provision=is_auto_provision, provision_server_id=provision_server_id,
         auto_provision_volume_gb=auto_provision_volume_gb, category_id=body.category_id,
         compare_price=(max(int(body.compare_price), 0) if body.compare_price is not None else ...),
+        discount_days=(max(int(body.discount_days), 0) if body.discount_days is not None else ...),
+        discount_max_uses=(max(int(body.discount_max_uses), 0) if body.discount_max_uses is not None else ...),
     )
     db.log_admin_action(admin["id"], "product_edit", f"#{product_id} (پنل وب - {admin['username']})", "product", product_id)
     return {"ok": True}
