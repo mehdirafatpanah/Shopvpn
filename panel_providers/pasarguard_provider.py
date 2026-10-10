@@ -24,6 +24,8 @@ from datetime import datetime
 from . import auth_cache
 from .base import BasePanelProvider, PanelUserResult, PanelError, PanelUsernameTakenError
 
+API_KEY_PREFIX = "pg_key_"
+
 _SECRET_FIELDS = {
     "shadowsocks": ["password"],
     "trojan": ["password"],
@@ -59,9 +61,20 @@ class PasarguardProvider(BasePanelProvider):
     def _base_url(self) -> str:
         return self.server["api_url"].rstrip("/")
 
+    def _api_key_mode(self) -> bool:
+        """اگر مقدار ذخیره‌شده به‌جای رمز، یک API Key پاسارگارد (pg_key_...) باشد."""
+        return str(self.server["api_password"] or "").strip().startswith(API_KEY_PREFIX)
+
+    def _auth(self, token: str) -> dict:
+        if self._api_key_mode():
+            return {"X-Api-Key": token}
+        return {"Authorization": f"Bearer {token}"}
+
     async def _get_token(self, session: aiohttp.ClientSession) -> str:
-        """توکن را از کش می‌خواند (اگر معتبر باشد) تا لاگین تکراری روی هر
-        عملیات انجام نشود؛ فقط وقتی کش خالی/منقضی باشد واقعاً لاگین می‌کند."""
+        """در حالت API Key خودِ کلید را برمی‌گرداند؛ وگرنه توکن را از کش می‌خواند
+        (اگر معتبر باشد) و فقط وقتی کش خالی/منقضی باشد واقعاً لاگین می‌کند."""
+        if self._api_key_mode():
+            return str(self.server["api_password"]).strip()
         key = auth_cache.cache_key("pasarguard", self.server)
         cached = auth_cache.get_token(key)
         if cached:
@@ -109,7 +122,7 @@ class PasarguardProvider(BasePanelProvider):
             try:
                 async with session.get(
                     f"{self._base_url()}/api/user/{sample_username}",
-                    headers={"Authorization": f"Bearer {token}", "accept": "application/json"},
+                    headers={**self._auth(token), "accept": "application/json"},
                     timeout=aiohttp.ClientTimeout(total=20),
                 ) as resp:
                     if resp.status == 404:
@@ -155,7 +168,7 @@ class PasarguardProvider(BasePanelProvider):
                 async with session.post(
                     f"{self._base_url()}/api/user",
                     json=payload,
-                    headers={"Authorization": f"Bearer {token}", "accept": "application/json", "Content-Type": "application/json"},
+                    headers={**self._auth(token), "accept": "application/json", "Content-Type": "application/json"},
                     timeout=aiohttp.ClientTimeout(total=20),
                 ) as resp:
                     if resp.status == 409:
@@ -178,7 +191,7 @@ class PasarguardProvider(BasePanelProvider):
             try:
                 async with session.delete(
                     f"{self._base_url()}/api/user/{username}",
-                    headers={"Authorization": f"Bearer {token}", "accept": "application/json"},
+                    headers={**self._auth(token), "accept": "application/json"},
                     timeout=aiohttp.ClientTimeout(total=20),
                 ) as resp:
                     return resp.status < 400
@@ -191,7 +204,7 @@ class PasarguardProvider(BasePanelProvider):
             try:
                 async with session.get(
                     f"{self._base_url()}/api/user/{username}",
-                    headers={"Authorization": f"Bearer {token}", "accept": "application/json"},
+                    headers={**self._auth(token), "accept": "application/json"},
                     timeout=aiohttp.ClientTimeout(total=20),
                 ) as resp:
                     if resp.status >= 400:
@@ -213,7 +226,7 @@ class PasarguardProvider(BasePanelProvider):
             try:
                 async with session.get(
                     f"{self._base_url()}/api/user/{username}",
-                    headers={"Authorization": f"Bearer {token}", "accept": "application/json"},
+                    headers={**self._auth(token), "accept": "application/json"},
                     timeout=aiohttp.ClientTimeout(total=20),
                 ) as resp:
                     if resp.status == 404:
@@ -236,7 +249,7 @@ class PasarguardProvider(BasePanelProvider):
         می‌نامند)."""
         async with self._session() as session:
             token = await self._get_token(session)
-            headers = {"Authorization": f"Bearer {token}", "accept": "application/json"}
+            headers = {**self._auth(token), "accept": "application/json"}
             try:
                 async with session.post(
                     f"{self._base_url()}/api/user/{username}/revoke_sub", headers=headers,
@@ -256,7 +269,10 @@ class PasarguardProvider(BasePanelProvider):
         return PanelUserResult(username=data.get("username", username), subscription_url=sub_url, raw=data)
 
     async def test_connection(self) -> bool:
-        """همیشه واقعاً لاگین می‌کند (نه از کش) تا واقعاً یوزر/پس فعلی را تست کند."""
+        """همیشه واقعاً لاگین می‌کند (نه از کش) تا واقعاً یوزر/پس فعلی را تست کند.
+        در حالت API Key، GET /api/admin را با کلید صدا می‌زند."""
+        if self._api_key_mode():
+            return await self._test_api_key()
         try:
             async with self._session() as session:
                 token = await self._login(session)
@@ -266,10 +282,34 @@ class PasarguardProvider(BasePanelProvider):
             self.last_error = str(e)
             return False
 
+    async def _test_api_key(self) -> bool:
+        key = str(self.server["api_password"]).strip()
+        try:
+            async with self._session() as session:
+                async with session.get(
+                    f"{self._base_url()}/api/admin",
+                    headers={"X-Api-Key": key, "accept": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status == 401:
+                        self.last_error = "API Key نامعتبر، منقضی یا غیرفعال است."
+                        return False
+                    if resp.status == 403:
+                        self.last_error = "ادمینِ صاحب این API Key غیرفعال است یا دسترسی ندارد."
+                        return False
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        self.last_error = f"خطا در احراز هویت پنل (کد {resp.status}): {text[:300]}"
+                        return False
+                    return True
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            self.last_error = f"خطا در اتصال به پنل: {e or 'پاسخی از سرور در زمان مقرر دریافت نشد (timeout)'}"
+            return False
+
     async def set_enabled(self, username: str, enabled: bool) -> None:
         async with self._session() as session:
             token = await self._get_token(session)
-            headers = {"Authorization": f"Bearer {token}", "accept": "application/json", "Content-Type": "application/json"}
+            headers = {**self._auth(token), "accept": "application/json", "Content-Type": "application/json"}
             payload = {"status": "active" if enabled else "disabled"}
             try:
                 async with session.put(
@@ -288,7 +328,7 @@ class PasarguardProvider(BasePanelProvider):
                            reset_usage: bool = False, preserve_remaining: bool = False) -> PanelUserResult:
         async with self._session() as session:
             token = await self._get_token(session)
-            headers = {"Authorization": f"Bearer {token}", "accept": "application/json", "Content-Type": "application/json"}
+            headers = {**self._auth(token), "accept": "application/json", "Content-Type": "application/json"}
             try:
                 async with session.get(
                     f"{self._base_url()}/api/user/{username}", headers=headers,
