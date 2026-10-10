@@ -63,7 +63,7 @@ from admin_panel.config_delivery_web import deliver_config_to_user_web
 from admin_panel.webpush import PUSH_ENABLED, send_push
 import fcm_client
 import report_router
-from reseller_auto_provision import provision_auto_config, ProvisionError
+from reseller_auto_provision import provision_auto_config, is_volume_credit_bot, ProvisionError
 from service_refund import quote_service_refund, refund_quote_text, grant_service_refund_credit, refund_result_text
 from service_alerts import send_service_alert_sync
 from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
@@ -793,6 +793,18 @@ def require_full_access_tenant(admin=Depends(get_current_admin)):
     return admin
 
 
+def _tenant_is_vip_credit() -> bool:
+    tenant = _current_tenant.get()
+    return is_volume_credit_bot(tenant.db, tenant.bot_id is None)
+
+
+def require_bank_tenant(admin=Depends(get_current_admin)):
+    """نمایندگی VIP (اعتبار حجمی) بانک کانفیگ ندارد."""
+    if _tenant_is_vip_credit():
+        raise HTTPException(403, tr("نمایندگی VIP بانک کانفیگ ندارد."))
+    return admin
+
+
 @app.post("/api/login")
 def api_login(body: LoginBody, response: Response):
     tenant = resolve_tenant_by_slug(body.b or "")
@@ -1386,6 +1398,8 @@ def api_app_config(admin=Depends(get_current_admin)):
                     {"key": "price", "label": "قیمت (تومان)", "type": "number"},
                     {"key": "description", "label": "توضیحات", "type": "textarea"},
                     {"key": "duration_days", "label": "مدت اعتبار (روز)", "type": "number"},
+                    {"key": "source", "label": "منبع تأمین (خالی=بدون تغییر)", "type": "select",
+                     "options": [["bank", "بانک کانفیگ"], ["direct", "اتصال مستقیم به پنل"]]},
                     {"key": "provision_server_id", "label": "پنل VPN (فقط اتصال مستقیم)", "type": "select_remote",
                      "options_source": "/api/panel-servers-lite", "option_value_key": "id", "option_label_key": "name",
                      "nullable": True},
@@ -3753,6 +3767,8 @@ def api_add_product(body: ProductBody, admin=Depends(require_permission("catalog
             raise HTTPException(403, tr("اتصال مستقیم به پنل فقط برای بات اصلی مجاز است."))
         if not body.is_auto_provision:
             raise HTTPException(403, tr("این نمایندگی فقط می‌تواند محصول خودکار (از اعتبار حجمی) بسازد؛ نه بانک کانفیگ دستی."))
+    if not (body.is_auto_provision or body.provision_server_id) and _tenant_is_vip_credit():
+        raise HTTPException(403, tr("نمایندگی VIP بانک کانفیگ ندارد؛ محصول باید از اعتبار حجمی ساخته شود."))
     pid = db.add_product(
         body.category_id, body.name, body.price, body.description, body.duration_days,
         body.is_auto_provision or bool(body.provision_server_id), body.auto_provision_volume_gb,
@@ -3795,6 +3811,8 @@ def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(requi
 
     if body.source is not None and body.source not in ("bank", "direct"):
         raise HTTPException(status_code=400, detail=tr("منبع تأمین نامعتبر است."))
+    if body.source == "bank" and _tenant_is_vip_credit():
+        raise HTTPException(status_code=403, detail=tr("نمایندگی VIP بانک کانفیگ ندارد."))
 
     # سنتینل Ellipsis یعنی «بدون تغییر» (به db.edit_product پاس داده می‌شود).
     is_auto_provision = ...
@@ -3905,18 +3923,18 @@ class ConfigsAddBody(BaseModel):
 
 
 @app.get("/api/products/{product_id}/configs")
-def api_product_configs(product_id: int, admin=Depends(require_permission("catalog")), _fa=Depends(require_full_access_tenant)):
+def api_product_configs(product_id: int, admin=Depends(require_permission("catalog")), _fa=Depends(require_bank_tenant)):
     stats = db.get_config_stats(product_id)
     return {"items": rows_to_list(db.get_unused_configs(product_id)), "used_count": stats["used"]}
 
 
 @app.get("/api/products/{product_id}/configs/used")
-def api_product_used_configs(product_id: int, admin=Depends(require_permission("catalog")), _fa=Depends(require_full_access_tenant)):
+def api_product_used_configs(product_id: int, admin=Depends(require_permission("catalog")), _fa=Depends(require_bank_tenant)):
     return {"items": rows_to_list(db.get_used_configs(product_id))}
 
 
 @app.delete("/api/products/{product_id}/configs/{config_id}/used")
-def api_delete_used_config(product_id: int, config_id: int, admin=Depends(require_permission("catalog")), _fa=Depends(require_full_access_tenant)):
+def api_delete_used_config(product_id: int, config_id: int, admin=Depends(require_permission("catalog")), _fa=Depends(require_bank_tenant)):
     row = db.admin_delete_bank_config(config_id)
     if not row or row["product_id"] != product_id:
         raise HTTPException(404, tr("کانفیگ یافت نشد."))
@@ -3929,7 +3947,7 @@ def api_delete_used_config(product_id: int, config_id: int, admin=Depends(requir
 
 
 @app.post("/api/products/{product_id}/configs")
-def api_add_configs(product_id: int, body: ConfigsAddBody, admin=Depends(require_permission("catalog")), _fa=Depends(require_full_access_tenant)):
+def api_add_configs(product_id: int, body: ConfigsAddBody, admin=Depends(require_permission("catalog")), _fa=Depends(require_bank_tenant)):
     links = [l.strip() for l in body.links.splitlines() if l.strip()]
     added, duplicates = db.add_configs(product_id, links)
     db.log_admin_action(admin["id"], "configs_add", f"{added} لینک به محصول #{product_id} (پنل وب - {admin['username']})", "product", product_id)
@@ -3937,7 +3955,7 @@ def api_add_configs(product_id: int, body: ConfigsAddBody, admin=Depends(require
 
 
 @app.delete("/api/configs/{config_id}")
-def api_delete_config(config_id: int, admin=Depends(require_permission("catalog")), _fa=Depends(require_full_access_tenant)):
+def api_delete_config(config_id: int, admin=Depends(require_permission("catalog")), _fa=Depends(require_bank_tenant)):
     row = db.get_config_by_id(config_id) if hasattr(db, "get_config_by_id") else None
     db.delete_config(config_id)
     if row:
