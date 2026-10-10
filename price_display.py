@@ -20,7 +20,19 @@ def _field(product, key, default=0):
 
 
 def strike(text: str) -> str:
-    return "".join(ch + _STRIKE for ch in str(text))
+    """خط‌خوردگی فقط روی ارقام. علامت ترکیبی بعد از ویرگول/نقطه باعث می‌شود تلگرام آن را جداکننده‌ی عدد
+    نبیند و در متن راست‌به‌چپ عدد برعکس شود (70,000 → 000,70). پس جداکننده‌ها بدون علامت می‌مانند
+    و برای پوشاندن جای آن‌ها، یک خط اضافه به رقم قبلی داده می‌شود."""
+    out = []
+    for ch in str(text):
+        if ch.isdigit():
+            out.append(ch + _STRIKE)
+        elif out:
+            out[-1] += _STRIKE  # خط رقم قبلی تا روی جداکننده کشیده شود
+            out.append(ch)
+        else:
+            out.append(ch)
+    return "".join(out)
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 
 
