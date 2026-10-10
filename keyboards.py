@@ -1839,6 +1839,8 @@ def _is_item_visible(db, key: str, is_main_bot: bool) -> bool:
     if key == "adm_custom_config_settings" and not db.is_full_access_bot(is_main_bot):
         # ساخت کانفیگ شخصی به اتصال مستقیم پنل VPN نیاز دارد که فقط از بات اصلی یا نمایندگی کامل قابل مدیریت است
         return False
+    if key in ("adm_add_configs", "adm_random_cfg") and (not is_main_bot) and _is_volume_credit_owner(db):
+        return False
     if key == "adm_add_configs" and not db.is_full_access_bot(is_main_bot):
         # نماینده سطح ۲ بانک لینک دستی ندارد؛ محصولاتش همیشه خودکار از اعتبار حجمی تامین می‌شوند
         return False
@@ -2607,6 +2609,7 @@ def admin_products_categories_kb(categories, prefix="adm_prod_cat") -> InlineKey
 
 def admin_products_list_kb(db, products) -> InlineKeyboardMarkup:
     rows = []
+    vip_bot = _is_volume_credit_owner(db)
     for p in products:
         stock = "∞" if p["is_auto_provision"] else db.count_available_configs(p["id"])
         state_icon = "🟢" if p["is_active"] else "🔴"
@@ -2634,6 +2637,9 @@ def admin_products_list_kb(db, products) -> InlineKeyboardMarkup:
         rows.append(
             [InlineKeyboardButton(text=tr(compare_label), callback_data=f"adm_prod_compare:{p['id']}")]
         )
+        if (p["provision_server_id"] and not vip_bot) or not p["is_auto_provision"]:
+            src_label = "🔁 تبدیل به بانک کانفیگ" if p["provision_server_id"] else "🔁 تبدیل به اتصال مستقیم پنل"
+            rows.append([InlineKeyboardButton(text=tr(src_label), callback_data=f"adm_prod_src:{p['id']}")])
         if p["is_auto_provision"]:
             edit_row = [InlineKeyboardButton(text=tr("📶 تغییر حجم"), callback_data=f"adm_prod_vol:{p['id']}")]
             if p["provision_server_id"]:
@@ -2682,6 +2688,45 @@ def admin_edit_product_provision_kb(db, product_id) -> InlineKeyboardMarkup:
     back_cb = f"adm_prod_cat:{cat_id}" if cat_id is not None else "adm_products"
     rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data=back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_product_src_to_bank_kb(product) -> InlineKeyboardMarkup:
+    pid = product["id"]
+    back_cb = f"adm_prod_cat:{product['category_id']}" if product["category_id"] is not None else "adm_products"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=tr("✅ تایید و تبدیل به بانک کانفیگ"), callback_data=f"adm_prod_src_bank:{pid}")],
+        [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data=back_cb)],
+    ])
+
+
+def admin_product_src_servers_kb(db, product) -> InlineKeyboardMarkup:
+    pid = product["id"]
+    rows = [
+        [InlineKeyboardButton(
+            text=f"🖥 {s['name']} ({PANEL_TYPE_LABELS.get(s['panel_type'], s['panel_type'])})",
+            callback_data=f"adm_prod_src_srv:{pid}:{s['id']}",
+        )]
+        for s in db.get_panel_servers(active_only=True)
+    ]
+    back_cb = f"adm_prod_cat:{product['category_id']}" if product["category_id"] is not None else "adm_products"
+    rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data=back_cb)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_product_src_volume_mode_kb(product_id: int, server_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=tr("🔢 مقدار مشخص"), callback_data=f"adm_prod_src_vm:{product_id}:{server_id}:limited")],
+        [InlineKeyboardButton(text=tr("♾ نامحدود"), callback_data=f"adm_prod_src_vm:{product_id}:{server_id}:unlimited")],
+        [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data=f"adm_prod_src:{product_id}")],
+    ])
+
+
+def admin_product_src_duration_kb(product_id: int, server_id: int, volume_gb: int, days: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=tr(f"⏳ همان {days} روز"), callback_data=f"adm_prod_src_dur:{product_id}:{server_id}:{volume_gb}:limited")],
+        [InlineKeyboardButton(text=tr("♾ نامحدود"), callback_data=f"adm_prod_src_dur:{product_id}:{server_id}:{volume_gb}:unlimited")],
+        [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data=f"adm_prod_src:{product_id}")],
+    ])
 
 
 def admin_new_product_payment_methods_kb(db, selected) -> InlineKeyboardMarkup:
@@ -2816,8 +2861,9 @@ def admin_new_product_source_kb(show_credit: bool = False) -> InlineKeyboardMark
     rows = []
     if show_credit:
         rows.append([InlineKeyboardButton(text=tr("📊 از حجم اعتباری من (پنل نمایندگی)"), callback_data="adm_newprod_src:credit")])
+    if not show_credit:
+        rows.append([InlineKeyboardButton(text=tr("📦 بانک کانفیگ (لینک‌های آماده)"), callback_data="adm_newprod_src:bank")])
     rows += [
-        [InlineKeyboardButton(text=tr("📦 بانک کانفیگ (لینک‌های آماده)"), callback_data="adm_newprod_src:bank")],
         [InlineKeyboardButton(text=tr("🔌 اتصال مستقیم به پنل"), callback_data="adm_newprod_src:direct")],
         [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:products")],
     ]

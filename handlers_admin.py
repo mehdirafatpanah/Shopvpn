@@ -1320,6 +1320,199 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         else:
             await message.answer(db.get_text('handlers_admin.auto_2f18448b', '✅ حجم به\u200cروزرسانی شد.'))
 
+    async def _prod_src_back(call_or_msg, product, text):
+        products = await asyncio.to_thread(db.get_products, product["category_id"], active_only=False)
+        markup = kb.admin_products_list_kb(db, products)
+        if isinstance(call_or_msg, CallbackQuery):
+            await safe_edit(call_or_msg, text, reply_markup=markup)
+        else:
+            await call_or_msg.answer(text, reply_markup=markup)
+
+    async def _prod_src_apply_bank(actor_id: int, product, duration_days=None):
+        await asyncio.to_thread(
+            db.edit_product, product["id"], duration_days=duration_days,
+            is_auto_provision=False, provision_server_id=None, auto_provision_volume_gb=None,
+        )
+        await asyncio.to_thread(db.log_admin_action, actor_id, "product_source_edit",
+                                f"محصول «{product['name']}» → بانک کانفیگ")
+
+    async def _prod_src_apply_direct(actor_id: int, product, server, volume_gb: int, unlimited_duration: bool):
+        await asyncio.to_thread(
+            db.edit_product, product["id"], duration_days=(0 if unlimited_duration else None),
+            is_auto_provision=True, provision_server_id=server["id"], auto_provision_volume_gb=volume_gb,
+        )
+        await asyncio.to_thread(db.log_admin_action, actor_id, "product_source_edit",
+                                f"محصول «{product['name']}» → اتصال مستقیم به پنل «{server['name']}»")
+
+    @router.callback_query(F.data.startswith("adm_prod_src:"))
+    async def cb_admin_prod_src(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_prod_src")
+        if product_id is None:
+            return await call.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
+        if not full_access_bot:
+            return await call.answer(db.get_text('handlers_admin.auto_27d04dd7', '⛔️ این بخش فقط برای بات اصلی یا نمایندگی کامل در دسترس است.'), show_alert=True)
+        product = await asyncio.to_thread(db.get_product, product_id)
+        if not product:
+            return await call.answer(tr("⚠️ این محصول دیگر وجود ندارد."), show_alert=True)
+        if (await asyncio.to_thread(_volume_credit_info)) is not None:
+            return await call.answer(tr("نمایندگی VIP بانک کانفیگ ندارد."), show_alert=True)
+        await state.clear()
+        if product["provision_server_id"]:
+            stock = await asyncio.to_thread(db.count_available_configs, product_id)
+            await safe_edit(
+                call,
+                tr(f"🔁 تبدیل «{product['name']}» به بانک کانفیگ؟\n\n"
+                   f"از این به بعد خرید این محصول از موجودی بانک کانفیگ تحویل داده می‌شود (موجودی فعلی بانک: {stock}).\n"
+                   "سرویس‌هایی که قبلاً روی پنل ساخته شده‌اند تغییر نمی‌کنند."),
+                reply_markup=kb.admin_product_src_to_bank_kb(product),
+            )
+        elif not product["is_auto_provision"]:
+            servers = await asyncio.to_thread(db.get_panel_servers, active_only=True)
+            if not servers:
+                return await call.answer(db.get_text('handlers_admin.auto_80677e1c', 'ابتدا باید حداقل یک پنل فعال در بخش «مدیریت پنل\u200cها» تعریف کنید.'), show_alert=True)
+            await safe_edit(
+                call,
+                tr(f"🔁 تبدیل «{product['name']}» به اتصال مستقیم پنل\n\n"
+                   "این محصول به کدام پنل وصل شود؟ کانفیگ‌های باقی‌مانده در بانک حذف نمی‌شوند و با برگشت به بانک دوباره قابل فروش‌اند."),
+                reply_markup=kb.admin_product_src_servers_kb(db, product),
+            )
+        else:
+            return await call.answer(tr("⚠️ تغییر منبع برای محصولات خودکارِ مبتنی بر اعتبار حجمی نماینده در دسترس نیست."), show_alert=True)
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_prod_src_bank:"))
+    async def cb_admin_prod_src_bank(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_prod_src_bank")
+        if product_id is None:
+            return await call.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
+        if not full_access_bot:
+            return await call.answer(db.get_text('handlers_admin.auto_27d04dd7', '⛔️ این بخش فقط برای بات اصلی یا نمایندگی کامل در دسترس است.'), show_alert=True)
+        product = await asyncio.to_thread(db.get_product, product_id)
+        if not product or not product["provision_server_id"]:
+            return await call.answer(tr("⚠️ این محصول دیگر اتصال مستقیم به پنل ندارد."), show_alert=True)
+        if (await asyncio.to_thread(_volume_credit_info)) is not None:
+            return await call.answer(tr("نمایندگی VIP بانک کانفیگ ندارد."), show_alert=True)
+        if not product["duration_days"]:
+            await state.update_data(editing_product_id=product_id)
+            await state.set_state(AdminEditProduct.waiting_src_bank_days)
+            back_cb = f"adm_prod_cat:{product['category_id']}" if product["category_id"] is not None else "adm_products"
+            await safe_edit(
+                call,
+                tr("⏳ مدت اعتبار این محصول نامحدود است ولی محصولات بانک کانفیگ باید مدت مشخص داشته باشند.\n"
+                   "مدت اعتبار را به روز بفرستید (مثال: 30):"),
+                reply_markup=kb.admin_back_kb(back_cb),
+            )
+            return await call.answer()
+        await _prod_src_apply_bank(call.from_user.id, product)
+        await _prod_src_back(call, product, tr("✅ محصول به بانک کانفیگ تبدیل شد."))
+        await call.answer()
+
+    @router.message(AdminEditProduct.waiting_src_bank_days)
+    async def process_prod_src_bank_days(message: Message, state: FSMContext):
+        text = (message.text or "").strip()
+        if not text.isdigit() or int(text) <= 0:
+            return await message.answer(tr("لطفاً فقط عدد صحیح و بزرگ‌تر از صفر وارد کنید. مثال: 30"))
+        data = await state.get_data()
+        product = await asyncio.to_thread(db.get_product, data.get("editing_product_id"))
+        await state.clear()
+        if not product or not product["provision_server_id"]:
+            return await message.answer(tr("⚠️ این محصول دیگر اتصال مستقیم به پنل ندارد."))
+        await _prod_src_apply_bank(message.from_user.id, product, duration_days=int(text))
+        await _prod_src_back(message, product, tr("✅ محصول به بانک کانفیگ تبدیل شد."))
+
+    @router.callback_query(F.data.startswith("adm_prod_src_srv:"))
+    async def cb_admin_prod_src_srv(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        try:
+            _, product_id_s, server_id_s = call.data.split(":")
+            product_id, server_id = int(product_id_s), int(server_id_s)
+        except (ValueError, IndexError):
+            return await call.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
+        if not full_access_bot:
+            return await call.answer(db.get_text('handlers_admin.auto_27d04dd7', '⛔️ این بخش فقط برای بات اصلی یا نمایندگی کامل در دسترس است.'), show_alert=True)
+        product = await asyncio.to_thread(db.get_product, product_id)
+        server = await asyncio.to_thread(db.get_panel_server, server_id)
+        if not product or product["is_auto_provision"]:
+            return await call.answer(tr("⚠️ این محصول دیگر بانک کانفیگ نیست."), show_alert=True)
+        if not server:
+            return await call.answer(db.get_text('handlers_admin.auto_bbdc5d08', '⚠️ این پنل دیگر وجود ندارد.'), show_alert=True)
+        await safe_edit(
+            call,
+            db.get_text('handlers_admin.auto_11190e90', '📦 حجم این محصول چطور باشد؟\n\n«مقدار مشخص» یعنی یک عدد گیگابایت مشخص می\u200cکنید؛ «نامحدود» یعنی این سرویس هیچ محدودیت حجمی ندارد.'),
+            reply_markup=kb.admin_product_src_volume_mode_kb(product_id, server_id),
+        )
+        await call.answer()
+
+    async def _prod_src_ask_duration(target, product, server_id: int, volume_gb: int):
+        days = int(product["duration_days"] or 0) or 30
+        text = db.get_text('handlers_admin.auto_41f1c921', '⏳ مدت اعتبار این محصول چطور باشد؟\n\n«محدود» یعنی همان مدتی که قبلاً وارد کردید؛ «نامحدود» یعنی این سرویس هیچ\u200cوقت روی پنل منقضی نمی\u200cشود.')
+        markup = kb.admin_product_src_duration_kb(product["id"], server_id, volume_gb, days)
+        if isinstance(target, CallbackQuery):
+            await safe_edit(target, text, reply_markup=markup)
+        else:
+            await target.answer(text, reply_markup=markup)
+
+    @router.callback_query(F.data.startswith("adm_prod_src_vm:"))
+    async def cb_admin_prod_src_volume_mode(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        try:
+            _, product_id_s, server_id_s, mode = call.data.split(":")
+            product_id, server_id = int(product_id_s), int(server_id_s)
+        except (ValueError, IndexError):
+            return await call.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
+        if not full_access_bot:
+            return await call.answer(db.get_text('handlers_admin.auto_27d04dd7', '⛔️ این بخش فقط برای بات اصلی یا نمایندگی کامل در دسترس است.'), show_alert=True)
+        product = await asyncio.to_thread(db.get_product, product_id)
+        if not product or product["is_auto_provision"]:
+            return await call.answer(tr("⚠️ این محصول دیگر بانک کانفیگ نیست."), show_alert=True)
+        if mode == "unlimited":
+            await _prod_src_ask_duration(call, product, server_id, 0)
+            return await call.answer()
+        await state.update_data(editing_product_id=product_id, src_server_id=server_id)
+        await state.set_state(AdminEditProduct.waiting_src_volume)
+        await safe_edit(call, db.get_text('handlers_admin.auto_d8ef9615', 'این محصول چند گیگابایت باشد؟ فقط عدد وارد کنید (مثال: 30):'), reply_markup=None)
+        await call.answer()
+
+    @router.message(AdminEditProduct.waiting_src_volume)
+    async def process_prod_src_volume(message: Message, state: FSMContext):
+        text = (message.text or "").strip()
+        if not text.isdigit() or int(text) <= 0:
+            return await message.answer(tr("لطفاً فقط عدد صحیح و بزرگ‌تر از صفر وارد کنید. مثال: 30"))
+        data = await state.get_data()
+        product = await asyncio.to_thread(db.get_product, data.get("editing_product_id"))
+        server_id = data.get("src_server_id")
+        await state.clear()
+        if not product or product["is_auto_provision"] or not server_id:
+            return await message.answer(tr("⚠️ این محصول دیگر بانک کانفیگ نیست."))
+        await _prod_src_ask_duration(message, product, server_id, int(text))
+
+    @router.callback_query(F.data.startswith("adm_prod_src_dur:"))
+    async def cb_admin_prod_src_duration(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        try:
+            _, product_id_s, server_id_s, volume_s, mode = call.data.split(":")
+            product_id, server_id, volume_gb = int(product_id_s), int(server_id_s), int(volume_s)
+        except (ValueError, IndexError):
+            return await call.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
+        if not full_access_bot:
+            return await call.answer(db.get_text('handlers_admin.auto_27d04dd7', '⛔️ این بخش فقط برای بات اصلی یا نمایندگی کامل در دسترس است.'), show_alert=True)
+        product = await asyncio.to_thread(db.get_product, product_id)
+        server = await asyncio.to_thread(db.get_panel_server, server_id)
+        if not product or product["is_auto_provision"]:
+            return await call.answer(tr("⚠️ این محصول دیگر بانک کانفیگ نیست."), show_alert=True)
+        if not server:
+            return await call.answer(db.get_text('handlers_admin.auto_bbdc5d08', '⚠️ این پنل دیگر وجود ندارد.'), show_alert=True)
+        await _prod_src_apply_direct(call.from_user.id, product, server, volume_gb, mode == "unlimited")
+        await _prod_src_back(call, product, tr("✅ محصول به اتصال مستقیم پنل تبدیل شد."))
+        await call.answer()
+
     def _discount_base(product) -> int:
         price = int(product["price"])
         compare = int(product["compare_price"] or 0) if "compare_price" in product.keys() else 0
@@ -2002,6 +2195,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await call.answer()
             return
         if source == "bank":
+            if (await asyncio.to_thread(_volume_credit_info)) is not None:
+                await call.answer(tr("نمایندگی VIP بانک کانفیگ ندارد."), show_alert=True)
+                return
             await state.update_data(payment_methods=None)
             await state.set_state(AdminAddProduct.waiting_payment_methods)
             await safe_edit(call, 
@@ -2255,6 +2451,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not full_access_bot:
             await call.answer(db.get_text('handlers_admin.auto_53aa104e', 'این بخش برای نمایندگی سطح محدود فعال نیست.'), show_alert=True)
             return
+        if (await asyncio.to_thread(_volume_credit_info)) is not None:
+            await call.answer(tr("نمایندگی VIP بانک کانفیگ ندارد؛ محصولات از اعتبار حجمی ساخته می‌شوند."), show_alert=True)
+            return
         products = (await asyncio.to_thread(db.get_all_products))
         if not products:
             await call.answer(db.get_text('handlers_admin.auto_0d101458', 'ابتدا باید یک محصول بسازید.'), show_alert=True)
@@ -2303,6 +2502,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def cb_admin_random_cfg(call: CallbackQuery):
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
+        if (await asyncio.to_thread(_volume_credit_info)) is not None:
+            return await call.answer(tr("نمایندگی VIP بانک کانفیگ ندارد."), show_alert=True)
         products = (await asyncio.to_thread(db.get_all_products))
         if not products:
             await call.answer(db.get_text('handlers_admin.auto_0d101458', 'ابتدا باید یک محصول بسازید.'), show_alert=True)
