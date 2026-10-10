@@ -4829,8 +4829,8 @@ async function renderAdminProducts(body) {
     <div class="card">
       <div class="eyebrow" style="margin-top:0">افزودن محصول جدید</div>
       <input class="input" id="new-prod-name" type="text" placeholder="نام محصول" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:8px" />
-      <input class="input" id="new-prod-price" type="number" placeholder="قیمت (تومان)" style="margin-bottom:8px" />
-      <input class="input" id="new-prod-compare" type="number" placeholder="قیمت قبل از تخفیف (اختیاری)" style="margin-bottom:8px" />
+      <input class="input" id="new-prod-price" type="number" placeholder="قیمت اصلی (تومان)" style="margin-bottom:8px" />
+      ${productDiscountHtml("new-prod", null)}
       <input class="input" id="new-prod-duration" type="number" placeholder="مدت اعتبار (روز)" value="30" style="margin-bottom:8px" />
       <input class="input" id="new-prod-desc" type="text" placeholder="توضیحات (اختیاری)" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:8px" />
       ${productProvisionFieldsHtml(panelServers)}
@@ -4904,8 +4904,9 @@ async function renderAdminProducts(body) {
     const isDirect = sourceEl && sourceEl.value === "direct";
     const durationUnlimited = isDirect && newDurUnlimitedCb && newDurUnlimitedCb.checked;
     const duration = durationUnlimited ? 0 : (Number(document.getElementById("new-prod-duration").value) || 30);
-    const compare_price = Number(document.getElementById("new-prod-compare").value) || 0;
-    const payload = { category_id: categoryId, name, price, duration_days: duration, description: desc, compare_price };
+    const disc = readProductDiscount("new-prod", price, errBox);
+    if (!disc) return;
+    const payload = { category_id: categoryId, name, price: disc.price, duration_days: duration, description: desc, compare_price: disc.compare_price };
     if (isDirect) {
       const provision_server_id = Number(document.getElementById("new-prod-server").value);
       const volumeUnlimited = newVolUnlimitedCb && newVolUnlimitedCb.checked;
@@ -4939,10 +4940,9 @@ async function renderAdminEditProduct(body) {
       <div class="eyebrow" style="margin-top:0">✏️ ویرایش محصول</div>
       <label class="field-label">نام محصول</label>
       <input class="input" id="edit-prod-name" type="text" value="${(p.name || "").replace(/"/g, "&quot;")}" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:10px" />
-      <label class="field-label">قیمت (تومان)</label>
-      <input class="input" id="edit-prod-price" type="number" value="${p.price}" style="margin-bottom:10px" />
-      <label class="field-label">قیمت قبل از تخفیف (اختیاری؛ خالی یا 0 = بدون تخفیف)</label>
-      <input class="input" id="edit-prod-compare" type="number" value="${p.compare_price || ""}" style="margin-bottom:10px" />
+      <label class="field-label">قیمت اصلی (تومان)</label>
+      <input class="input" id="edit-prod-price" type="number" value="${Number(p.compare_price || 0) > Number(p.price) ? p.compare_price : p.price}" style="margin-bottom:10px" />
+      ${productDiscountHtml("edit-prod", p)}
       <label class="field-label">مدت اعتبار (روز)</label>
       <input class="input" id="edit-prod-duration" type="number" value="${p.duration_days}" style="margin-bottom:${isDirectEditable ? "4" : "10"}px" ${durationIsUnlimited ? "disabled" : ""} />
       ${isDirectEditable ? `
@@ -4996,8 +4996,9 @@ async function renderAdminEditProduct(body) {
     const durationUnlimited = editDurUnlimitedCb && editDurUnlimitedCb.checked;
     const duration = durationUnlimited ? 0 : Number(document.getElementById("edit-prod-duration").value);
     if (!name || !price || (!durationUnlimited && !duration)) { errBox.textContent = "نام، قیمت و مدت اعتبار الزامی هستند."; return; }
-    const compare_price = Number(document.getElementById("edit-prod-compare").value) || 0;
-    const payload = { name, price, duration_days: duration, description, compare_price };
+    const disc = readProductDiscount("edit-prod", price, errBox);
+    if (!disc) return;
+    const payload = { name, price: disc.price, duration_days: duration, description, compare_price: disc.compare_price };
     const serverSel = document.getElementById("edit-prod-server");
     if (serverSel) {
       const provision_server_id = Number(serverSel.value);
@@ -7081,3 +7082,29 @@ if (headerWalletBtn) headerWalletBtn.onclick = () => switchTab("wallet");
 bootstrapEntryGates();
 /*‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍*/
 // 		   		 		  	 	 		 		   		  	 	 		 			  		 				 			  	 
+
+function productDiscountHtml(prefix, product) {
+  const active = product && Number(product.compare_price || 0) > Number(product.price || 0);
+  const sel = (v) => (active ? "price" : "none") === v ? "selected" : "";
+  return `
+      <label class="field-label">تخفیف</label>
+      <select class="input" id="${prefix}-dmode" style="margin-bottom:8px">
+        <option value="none" ${sel("none")}>بدون تخفیف</option>
+        <option value="price" ${sel("price")}>قیمت جدید (بعد از تخفیف)</option>
+        <option value="pct" ${sel("pct")}>درصدی</option>
+      </select>
+      <input class="input" id="${prefix}-dval" type="number" placeholder="قیمت جدید (تومان) یا درصد" value="${active ? product.price : ""}" style="margin-bottom:10px" />`;
+}
+
+function readProductDiscount(prefix, base, errBox) {
+  const mode = document.getElementById(prefix + "-dmode").value;
+  const v = Number(document.getElementById(prefix + "-dval").value) || 0;
+  if (mode === "none") return { price: base, compare_price: 0 };
+  if (mode === "price") {
+    if (!(v > 0 && v < base)) { errBox.textContent = "قیمت جدید باید از قیمت اصلی کمتر باشد."; return null; }
+    return { price: v, compare_price: base };
+  }
+  if (!(v >= 1 && v <= 99)) { errBox.textContent = "درصد تخفیف باید بین 1 تا 99 باشد."; return null; }
+  return { price: Math.max(Math.round(base * (100 - v) / 100), 1), compare_price: base };
+}
+
