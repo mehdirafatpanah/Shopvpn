@@ -428,6 +428,10 @@ class AdminRenewalSettings(StatesGroup):
     waiting_expiry_hours = State()
 
 
+class AdminChurnSettings(StatesGroup):
+    waiting_value = State()
+
+
 class AdminStockAlertSettings(StatesGroup):
     waiting_threshold = State()
 

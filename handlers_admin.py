@@ -48,6 +48,7 @@ import abangateway_payment
 import blupal_payment
 import noapay_payment
 import extra_gateway_admin
+import extra_settings_schema
 import ai_support
 import ai_admin
 import admin_help
@@ -146,6 +147,7 @@ from states import (
     AdminWheelSettings,
     AdminWheelPrize,
     AdminRenewalSettings,
+    AdminChurnSettings,
     AdminVolumeReminderSettings,
     AdminConnectAlertSettings,
     AdminEarlyRenewalDiscount,
@@ -5849,6 +5851,79 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_mid(call)
         await replace_admin_view(call, tr("🔔 یادآوری تمدید سرویس:"), reply_markup=kb.renewal_settings_kb(db))
         await call.answer()
+
+    CHURN_SETTINGS_TEXT = (
+        "🔮 پیش‌بینی ریزش و پیشنهاد بازگشت\n\n"
+        "کاربری که از فاصله‌ی معمول خریدش عقب افتاده و سرویس فعال ندارد شناسایی می‌شود و "
+        "یک کد تخفیف یک‌بارمصرف اختصاصی می‌گیرد. بررسی هر ۶ ساعت انجام می‌شود.\n"
+        "برای تغییر هر مقدار روی آن بزنید."
+    )
+
+    @router.callback_query(F.data == "adm_churn_settings")
+    async def cb_admin_churn_settings(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        await state.clear()
+        await replace_admin_view(call, tr(CHURN_SETTINGS_TEXT), reply_markup=kb.churn_settings_kb(db))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_churn_toggle:"))
+    async def cb_admin_churn_toggle(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        field = call.data.split(":", 1)[1]
+        key = {"enabled": "churn_offer_enabled", "ai_enabled": "churn_offer_ai_enabled"}.get(field)
+        if not key:
+            return await call.answer()
+        current = (await asyncio.to_thread(db.get_churn_settings))[field]
+        await asyncio.to_thread(db.set_setting, key, "0" if current else "1")
+        await asyncio.to_thread(
+            db.log_admin_action, call.from_user.id, "setting_change",
+            f"churn offer {field} -> {'0' if current else '1'} (بات)", "setting", "churn_offer",
+        )
+        await safe_edit(call, tr(CHURN_SETTINGS_TEXT), reply_markup=kb.churn_settings_kb(db))
+        await call.answer(tr("وضعیت تغییر کرد."))
+
+    @router.callback_query(F.data.startswith("adm_churn_edit:"))
+    async def cb_admin_churn_edit(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        short = call.data.split(":", 1)[1]
+        spec = kb.CHURN_NUMERIC_FIELDS.get(short)
+        if not spec:
+            return await call.answer()
+        field = extra_settings_schema._FIELD_INDEX[spec[0]]
+        bounds = ""
+        if "min" in field and "max" in field:
+            bounds = f" (بین {field['min']} تا {field['max']})"
+        elif "min" in field:
+            bounds = f" (حداقل {field['min']})"
+        await state.set_state(AdminChurnSettings.waiting_value)
+        await state.update_data(churn_field=short)
+        await safe_edit(
+            call, tr(f"{field['label']}{bounds}\nمقدار جدید را به‌صورت عدد بفرستید:"),
+            reply_markup=kb.admin_back_kb("adm_churn_settings"),
+        )
+        await call.answer()
+
+    @router.message(AdminChurnSettings.waiting_value)
+    async def process_churn_value(message: Message, state: FSMContext):
+        data = await state.get_data()
+        spec = kb.CHURN_NUMERIC_FIELDS.get(data.get("churn_field"))
+        if not spec:
+            await state.clear()
+            return await message.answer(tr(CHURN_SETTINGS_TEXT), reply_markup=kb.churn_settings_kb(db))
+        text = (message.text or "").strip()
+        try:
+            await asyncio.to_thread(extra_settings_schema.save_values, db, "mini", {spec[0]: text})
+        except extra_settings_schema.SettingsValidationError as e:
+            return await message.answer(str(e))
+        await state.clear()
+        await asyncio.to_thread(
+            db.log_admin_action, message.from_user.id, "setting_change",
+            f"churn offer {spec[0]} -> {text} (بات)", "setting", "churn_offer",
+        )
+        await message.answer(tr("✅ ذخیره شد."), reply_markup=kb.churn_settings_kb(db))
 
     @router.callback_query(F.data == "adm_stock_alert_settings")
     async def cb_admin_stock_alert_settings(call: CallbackQuery):

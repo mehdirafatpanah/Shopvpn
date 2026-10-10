@@ -1623,6 +1623,7 @@ ADMIN_PANEL_ITEMS = [
     ("adm_lottery_settings", "🪙 سکه و قرعه‌کشی شبانه", "adm_lottery_settings"),
     ("adm_cashback_settings", "💸 کش‌بک تمدید و شارژ", "adm_cashback_settings"),
     ("adm_renewal_settings", "🔔 یادآوری تمدید سرویس", "adm_renewal_settings"),
+    ("adm_churn_settings", "🔮 پیش‌بینی ریزش و پیشنهاد بازگشت", "adm_churn_settings"),
     ("adm_volume_reminder_settings", "📉 یادآوری اتمام حجم", "adm_volume_reminder_settings"),
     ("adm_connect_alert_settings", "🔌 هشدار اتصال/عدم‌اتصال کانفیگ", "adm_connect_alert_settings"),
     ("adm_early_renewal_discount", "🎁 تخفیف تمدید کامل زودهنگام", "adm_early_renewal_discount"),
@@ -1759,6 +1760,7 @@ ADMIN_PANEL_CATEGORIES = [
     ]),
     ("alerts", "🔔 یادآوری‌ها و هشدارها", [
         "adm_renewal_settings",
+        "adm_churn_settings",
         "adm_volume_reminder_settings",
         "adm_connect_alert_settings",
         "adm_early_renewal_discount",
@@ -3803,6 +3805,31 @@ def renewal_settings_kb(db) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=tr("✏️ تغییر اعتبار کد (ساعت)"), callback_data="adm_renewal_edit_hours")],
         [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:alerts")],
     ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+CHURN_NUMERIC_FIELDS = {
+    "min_score": ("churn_offer_min_score", "min_score", "🎯 حداقل امتیاز ریزش", ""),
+    "discount": ("churn_offer_discount_percent", "discount_percent", "🎟 درصد تخفیف پایه", "٪"),
+    "max_discount": ("churn_offer_max_discount_percent", "max_discount_percent", "🔝 سقف تخفیف", "٪"),
+    "hours": ("churn_offer_expiry_hours", "discount_expiry_hours", "⏳ اعتبار کد", " ساعت"),
+    "cooldown": ("churn_offer_cooldown_days", "cooldown_days", "🕓 فاصله بین دو پیشنهاد", " روز"),
+    "per_run": ("churn_offer_max_per_run", "max_per_run", "📨 سقف پیشنهاد در هر دور", ""),
+    "cycle": ("churn_offer_default_cycle_days", "default_cycle_days", "🔁 چرخه‌ی پیش‌فرض خرید", " روز"),
+}
+
+
+def churn_settings_kb(db) -> InlineKeyboardMarkup:
+    s = db.get_churn_settings()
+    on = lambda v: "🟢 روشن" if v else "🔴 خاموش"
+    rows = [
+        [InlineKeyboardButton(text=tr(f"فعال بودن: {on(s['enabled'])}"), callback_data="adm_churn_toggle:enabled")],
+        [InlineKeyboardButton(text=tr(f"🤖 تصمیم‌گیری با AI: {on(s['ai_enabled'])}"), callback_data="adm_churn_toggle:ai_enabled")],
+    ]
+    for short, (_key, field, label, unit) in CHURN_NUMERIC_FIELDS.items():
+        rows.append([InlineKeyboardButton(
+            text=tr(f"{label}: {s[field]}{unit}"), callback_data=f"adm_churn_edit:{short}")])
+    rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:alerts")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

@@ -917,6 +917,7 @@ _PHRASE_TRANSLATIONS.update({
     "🔌 هشدار اتصال/عدم‌اتصال کانفیگ": "🔌 Config connect/disconnect alert",
     "🎁 تخفیف تمدید کامل زودهنگام": "🎁 Early full-renewal discount",
     "📦 آستانه‌ی هشدار موجودی": "📦 Stock alert threshold",
+    "🔮 پیش‌بینی ریزش و پیشنهاد بازگشت": "🔮 Churn prediction & win-back offers",
     "🛠 ساخت کانفیگ شخصی (پنل‌های VPN)": "🛠 Personal config creation (VPN panels)",
     "💳 قیمت‌گذاری تمدید حجم/زمان": "💳 Volume/time renewal pricing",
     "📤 تنظیمات ارسال کانفیگ": "📤 Config delivery settings",
