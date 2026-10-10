@@ -4761,7 +4761,13 @@ async function renderAdminCategories(body) {
   };
 }
 
-function productProvisionFieldsHtml(panelServers) {
+function productProvisionFieldsHtml(panelServers, bankAllowed = true) {
+  if (!bankAllowed) {
+    return `
+    <label class="field-label">محصول از اعتبار حجمی شما ساخته می‌شود</label>
+    <input class="input" id="new-prod-credit-volume" type="number" placeholder="حجم (گیگابایت)" style="margin-bottom:8px" />
+  `;
+  }
   if (!panelServers || !panelServers.length) return "";
   return `
     <label class="field-label">منبع کانفیگ</label>
@@ -4807,6 +4813,7 @@ async function renderAdminProducts(body) {
   const { categoryId, categoryName } = adminCatalogView;
   const products = await api(`/api/admin/categories/${categoryId}/products`);
   const panelServers = await api("/api/admin/panel-servers-lite").catch(() => []);
+  const bankAllowed = (await api("/api/admin/catalog-capabilities").catch(() => ({ bank_allowed: true }))).bank_allowed !== false;
   const paymentMethods = await api("/api/admin/payment-methods").catch(() => []);
   body.innerHTML = `
     <button class="btn outline small" id="back-to-cats" style="width:auto;margin-bottom:12px">→ بازگشت به دسته‌بندی‌ها</button>
@@ -4833,7 +4840,7 @@ async function renderAdminProducts(body) {
       ${productDiscountHtml("new-prod", null)}
       <input class="input" id="new-prod-duration" type="number" placeholder="مدت اعتبار (روز)" value="30" style="margin-bottom:8px" />
       <input class="input" id="new-prod-desc" type="text" placeholder="توضیحات (اختیاری)" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:8px" />
-      ${productProvisionFieldsHtml(panelServers)}
+      ${productProvisionFieldsHtml(panelServers, bankAllowed)}
       ${productPaymentMethodsFieldsHtml(paymentMethods)}
       <div class="field-error" id="new-prod-error"></div>
       <button class="btn" id="new-prod-save">➕ افزودن محصول</button>
@@ -4918,6 +4925,13 @@ async function renderAdminProducts(body) {
       payload.provision_server_id = provision_server_id;
       payload.auto_provision_volume_gb = auto_provision_volume_gb;
     }
+    const creditVolEl = document.getElementById("new-prod-credit-volume");
+    if (creditVolEl) {
+      const creditVolume = Number(creditVolEl.value);
+      if (!creditVolume || creditVolume < 0) { errBox.textContent = "حجم (گیگابایت) را مشخص کنید."; return; }
+      payload.is_auto_provision = true;
+      payload.auto_provision_volume_gb = creditVolume;
+    }
     payload.payment_methods = readProductPaymentMethodsFields(body);
     try {
       await api("/api/admin/products", { method: "POST", body: JSON.stringify(payload) });
@@ -4928,10 +4942,12 @@ async function renderAdminProducts(body) {
 
 async function renderAdminEditProduct(body) {
   const { product: p, categoryId, categoryName } = adminCatalogView;
-  const panelServers = p.is_auto_provision
+  const isCreditAuto = !!p.is_auto_provision && !p.provision_server_id;
+  const panelServers = !isCreditAuto
     ? await api("/api/admin/panel-servers-lite").catch(() => [])
     : [];
-  const isDirectEditable = p.is_auto_provision && panelServers.length > 0;
+  const isDirectEditable = !isCreditAuto && panelServers.length > 0;
+  const startDirect = !!p.provision_server_id;
   const durationIsUnlimited = p.duration_days === 0;
   const volumeIsUnlimited = p.auto_provision_volume_gb === 0;
   body.innerHTML = `
@@ -4946,12 +4962,18 @@ async function renderAdminEditProduct(body) {
       <label class="field-label">مدت اعتبار (روز)</label>
       <input class="input" id="edit-prod-duration" type="number" value="${p.duration_days}" style="margin-bottom:${isDirectEditable ? "4" : "10"}px" ${durationIsUnlimited ? "disabled" : ""} />
       ${isDirectEditable ? `
-      <label style="display:flex;align-items:center;gap:6px;margin-bottom:10px">
+      <label id="edit-prod-dur-unl-wrap" style="display:${startDirect ? "flex" : "none"};align-items:center;gap:6px;margin-bottom:10px">
         <input type="checkbox" id="edit-prod-duration-unlimited" ${durationIsUnlimited ? "checked" : ""} /> ♾ مدت اعتبار نامحدود
       </label>` : ""}
       <label class="field-label">توضیحات (اختیاری)</label>
       <input class="input" id="edit-prod-desc" type="text" value="${(p.description || "").replace(/"/g, "&quot;")}" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:10px" />
-      ${p.is_auto_provision ? (panelServers.length ? `
+      ${isDirectEditable ? `
+      <label class="field-label">منبع تأمین محصول</label>
+      <div style="display:flex;gap:14px;margin-bottom:8px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="edit-prod-source" value="bank" ${startDirect ? "" : "checked"} /> بانک کانفیگ</label>
+        <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="edit-prod-source" value="direct" ${startDirect ? "checked" : ""} /> اتصال مستقیم به پنل</label>
+      </div>
+      <div id="edit-prod-direct" style="display:${startDirect ? "" : "none"}">
       <label class="field-label">پنل / اینباند (اتصال مستقیم)</label>
       <select class="input" id="edit-prod-server" style="margin-bottom:8px">
         ${panelServers.map((s) => `<option value="${s.id}" ${s.id === p.provision_server_id ? "selected" : ""}>${s.name}</option>`).join("")}
@@ -4960,8 +4982,9 @@ async function renderAdminEditProduct(body) {
       <label style="display:flex;align-items:center;gap:6px;margin-bottom:10px">
         <input type="checkbox" id="edit-prod-volume-unlimited" ${volumeIsUnlimited ? "checked" : ""} /> ♾ حجم نامحدود
       </label>
-      <p class="hint-text">🔌 با تغییر پنل، ساخت‌های بعدیِ همین محصول از پنل/اینباند جدید انجام می‌شود؛ سرویس‌های قبلاً ساخته‌شده تغییر نمی‌کنند.</p>
-      ` : `<p class="hint-text">🔌 این محصول به‌صورت خودکار (${p.auto_provision_volume_gb ? p.auto_provision_volume_gb + " گیگ" : "نامحدود"}) ساخته می‌شود. برای تغییر پنل/اینباند باید نمایندگی باشی.</p>`) : ""}
+      <p class="hint-text">🔌 با تغییر پنل یا منبع، ساخت‌های بعدیِ همین محصول طبق تنظیم جدید انجام می‌شود؛ سرویس‌های قبلاً ساخته‌شده و کانفیگ‌های باقی‌مانده در بانک تغییر نمی‌کنند.</p>
+      </div>
+      ` : (isCreditAuto ? `<p class="hint-text">🔌 این محصول به‌صورت خودکار (${p.auto_provision_volume_gb ? p.auto_provision_volume_gb + " گیگ" : "نامحدود"}) ساخته می‌شود. برای تغییر پنل/اینباند باید نمایندگی باشی.</p>` : "")}
       <div class="field-error" id="edit-prod-error"></div>
       <div style="display:flex;gap:8px;margin-top:8px">
         <button class="btn" id="edit-prod-save">💾 ذخیره تغییرات</button>
@@ -4981,6 +5004,12 @@ async function renderAdminEditProduct(body) {
       document.getElementById("edit-prod-duration").disabled = editDurUnlimitedCb.checked;
     });
   }
+  body.querySelectorAll('input[name="edit-prod-source"]').forEach((r) => r.addEventListener("change", () => {
+    const direct = body.querySelector('input[name="edit-prod-source"]:checked').value === "direct";
+    document.getElementById("edit-prod-direct").style.display = direct ? "" : "none";
+    document.getElementById("edit-prod-dur-unl-wrap").style.display = direct ? "flex" : "none";
+    document.getElementById("edit-prod-duration").disabled = direct && editDurUnlimitedCb && editDurUnlimitedCb.checked;
+  }));
   const editVolUnlimitedCb = document.getElementById("edit-prod-volume-unlimited");
   if (editVolUnlimitedCb) {
     editVolUnlimitedCb.addEventListener("change", () => {
@@ -4993,14 +5022,17 @@ async function renderAdminEditProduct(body) {
     const name = document.getElementById("edit-prod-name").value.trim();
     const price = Number(document.getElementById("edit-prod-price").value);
     const description = document.getElementById("edit-prod-desc").value.trim();
-    const durationUnlimited = editDurUnlimitedCb && editDurUnlimitedCb.checked;
+    const editSourceEl = body.querySelector('input[name="edit-prod-source"]:checked');
+    const editIsDirect = editSourceEl ? editSourceEl.value === "direct" : !!p.provision_server_id;
+    const durationUnlimited = editIsDirect && editDurUnlimitedCb && editDurUnlimitedCb.checked;
     const duration = durationUnlimited ? 0 : Number(document.getElementById("edit-prod-duration").value);
     if (!name || !price || (!durationUnlimited && !duration)) { errBox.textContent = "نام، قیمت و مدت اعتبار الزامی هستند."; return; }
     const disc = readProductDiscount("edit-prod", price, errBox);
     if (!disc) return;
     const payload = { name, price: disc.price, duration_days: duration, description, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses };
     const serverSel = document.getElementById("edit-prod-server");
-    if (serverSel) {
+    if (editSourceEl) payload.source = editIsDirect ? "direct" : "bank";
+    if (serverSel && editIsDirect) {
       const provision_server_id = Number(serverSel.value);
       const volumeUnlimited = editVolUnlimitedCb && editVolUnlimitedCb.checked;
       const auto_provision_volume_gb = volumeUnlimited ? 0 : Number(document.getElementById("edit-prod-volume").value);
