@@ -4615,6 +4615,8 @@ class ProductCreate(BaseModel):
     provision_server_id: Optional[int] = None
     payment_methods: Optional[List[str]] = None
     compare_price: Optional[int] = None  # قیمت قبل از تخفیف (نمایشی)
+    discount_days: Optional[int] = None
+    discount_max_uses: Optional[int] = None
 
 
 class ProductUpdate(BaseModel):
@@ -4625,6 +4627,8 @@ class ProductUpdate(BaseModel):
     provision_server_id: Optional[int] = None
     auto_provision_volume_gb: Optional[int] = None
     compare_price: Optional[int] = None  # 0 یعنی حذف تخفیف
+    discount_days: Optional[int] = None
+    discount_max_uses: Optional[int] = None
 
 
 class ConfigsAdd(BaseModel):
@@ -5084,6 +5088,9 @@ def api_admin_list_products(cat_id: int, auth=Depends(require_senior_admin)):
         {
             "id": p["id"], "name": p["name"], "price": p["price"],
             "compare_price": p["compare_price"] or 0,
+            "discount_expires_at": p["discount_expires_at"],
+            "discount_max_uses": p["discount_max_uses"] or 0,
+            "discount_used_count": p["discount_used_count"] or 0,
             "description": p["description"], "duration_days": p["duration_days"],
             "is_active": bool(p["is_active"]),
             "is_auto_provision": bool(p["is_auto_provision"]),
@@ -5143,6 +5150,10 @@ def api_admin_create_product(body: ProductCreate, auth=Depends(require_senior_ad
         provision_server_id=provision_server_id, payment_methods=body.payment_methods,
         compare_price=max(int(body.compare_price or 0), 0),
     )
+    if int(body.compare_price or 0) > 0 and (body.discount_days is not None or body.discount_max_uses is not None):
+        db.edit_product(product_id, compare_price=int(body.compare_price),
+                        discount_days=max(int(body.discount_days or 0), 0),
+                        discount_max_uses=max(int(body.discount_max_uses or 0), 0))
     return {"id": product_id}
 
 
@@ -5192,6 +5203,10 @@ def api_admin_edit_product(product_id: int, body: ProductUpdate, auth=Depends(re
     edit_kwargs = {}
     if body.compare_price is not None:
         edit_kwargs["compare_price"] = max(int(body.compare_price), 0)
+    if body.discount_days is not None:
+        edit_kwargs["discount_days"] = max(int(body.discount_days), 0)
+    if body.discount_max_uses is not None:
+        edit_kwargs["discount_max_uses"] = max(int(body.discount_max_uses), 0)
     if provision_server_id is not None:
         edit_kwargs["provision_server_id"] = provision_server_id
     if body.auto_provision_volume_gb is not None:
