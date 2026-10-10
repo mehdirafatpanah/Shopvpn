@@ -281,7 +281,37 @@ class CatalogMixin:
             return cur.lastrowid
 
 
+    def expire_product_discounts(self) -> int:
+        """تخفیف محصولاتی که مهلتشان تمام شده یا سقف تعداد خریدشان پر شده را تمام می‌کند
+        و قیمت را به قیمت اصلی (compare_price) برمی‌گرداند. ارزان است و قبل از هر خواندن
+        محصول صدا زده می‌شود، پس انقضا دقیق است و به حلقه‌ی ساعتی وابسته نیست."""
+        now = datetime.utcnow().isoformat()
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "UPDATE products SET price=compare_price, compare_price=0, discount_expires_at=NULL, "
+                "discount_max_uses=0, discount_used_count=0 "
+                "WHERE COALESCE(compare_price,0) > price AND ("
+                "(discount_expires_at IS NOT NULL AND discount_expires_at<>'' AND discount_expires_at<=?) "
+                "OR (COALESCE(discount_max_uses,0) > 0 AND COALESCE(discount_used_count,0) >= discount_max_uses))",
+                (now,),
+            )
+            return cur.rowcount
+
+    def _count_product_discount_use(self, conn, order_id: int):
+        """بعد از تایید سفارش عادی، یک مصرف از سقف تعداد تخفیف محصول کم می‌کند (به‌ازای تعداد خرید)."""
+        row = conn.execute(
+            "SELECT product_id, quantity, COALESCE(is_renewal,0) r FROM orders WHERE id=?", (order_id,)
+        ).fetchone()
+        if not row or row["r"] or not row["product_id"]:
+            return
+        conn.execute(
+            "UPDATE products SET discount_used_count=COALESCE(discount_used_count,0)+? "
+            "WHERE id=? AND COALESCE(compare_price,0) > price AND COALESCE(discount_max_uses,0) > 0",
+            (max(int(row["quantity"] or 1), 1), row["product_id"]),
+        )
+
     def get_products(self, category_id: int, active_only=True):
+        self.expire_product_discounts()
         with self._get_conn() as conn:
             if active_only:
                 rows = conn.execute(
@@ -296,6 +326,7 @@ class CatalogMixin:
 
 
     def get_all_products(self):
+        self.expire_product_discounts()
         with self._get_conn() as conn:
             return conn.execute(
                 "SELECT p.*, c.name as category_name FROM products p "
@@ -318,6 +349,7 @@ class CatalogMixin:
 
 
     def get_product(self, product_id: int):
+        self.expire_product_discounts()
         with self._get_conn() as conn:
             return conn.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone()
 
@@ -358,7 +390,7 @@ class CatalogMixin:
                       description: str = None, duration_days: int = None,
                       is_auto_provision=..., auto_provision_volume_gb=...,
                       provision_server_id=..., payment_methods=..., category_id: int = None,
-                      compare_price=...):
+                      compare_price=..., discount_days=..., discount_max_uses=...):
         # نکته: is_auto_provision/auto_provision_volume_gb/provision_server_id از سنتینل
         # Ellipsis استفاده می‌کنند (مثل payment_methods) چون باید بتوان آن‌ها را عمداً
         # NULL/False کرد (مثلاً وقتی محصول از «اتصال مستقیم به پنل» به «بانک کانفیگ»
@@ -386,6 +418,20 @@ class CatalogMixin:
         if compare_price is not ...:
             # 0/None یعنی حذف تخفیف (خط‌خورده نمایش داده نمی‌شود)
             fields.append("compare_price=?"); values.append(max(int(compare_price or 0), 0))
+            if int(compare_price or 0) <= 0:
+                # با حذف تخفیف، محدودیت‌ها و شمارنده هم پاک می‌شوند
+                fields.append("discount_expires_at=NULL")
+                fields.append("discount_max_uses=0")
+                fields.append("discount_used_count=0")
+        if compare_price is not ... and int(compare_price or 0) > 0:
+            # هر بار تخفیف جدید ثبت شود، محدودیت‌ها از نو (بر اساس مقدار داده‌شده) شروع می‌شوند
+            days = 0 if discount_days is ... else max(int(discount_days or 0), 0)
+            uses = 0 if discount_max_uses is ... else max(int(discount_max_uses or 0), 0)
+            if discount_days is not ... or discount_max_uses is not ...:
+                expires = (datetime.utcnow() + timedelta(days=days)).isoformat() if days else None
+                fields.append("discount_expires_at=?"); values.append(expires)
+                fields.append("discount_max_uses=?"); values.append(uses)
+                fields.append("discount_used_count=0")
         if not fields:
             return
         values.append(product_id)

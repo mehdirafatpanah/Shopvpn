@@ -2091,6 +2091,7 @@ class OrdersMixin:
 
     def _award_order_score(self, conn, order_id: int, points: int, expiry_days: int = 0):
         """points و expiry_days باید قبل از باز کردن conn محاسبه شوند؛ get_setting داخل قفل _get_conn ممکن است deadlock بدهد."""
+        self._count_product_discount_use(conn, order_id)
         if points > 0:
             row = conn.execute("SELECT user_id FROM orders WHERE id=?", (order_id,)).fetchone()
             if row:
