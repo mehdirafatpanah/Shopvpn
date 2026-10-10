@@ -18,7 +18,7 @@ import time
 import json
 import asyncio
 import aiohttp
-from datetime import datetime
+from datetime import datetime, timezone
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 
 from . import auth_cache
@@ -54,6 +54,10 @@ def _expire_to_epoch(value):
 
 
 class PasarguardProvider(BasePanelProvider):
+    supports_user_limit = True
+    supports_online_status = True
+    online_window_seconds = 120
+
 
     def _session(self) -> aiohttp.ClientSession:
         return aiohttp.ClientSession(connector=self._build_connector())
@@ -142,7 +146,8 @@ class PasarguardProvider(BasePanelProvider):
             "proxy_settings": self._clean_proxy_settings(data.get("proxy_settings")),
         }
 
-    async def create_user(self, username: str, volume_gb: int, duration_days: int, start_on_first_use: bool = False) -> PanelUserResult:
+    async def create_user(self, username: str, volume_gb: int, duration_days: int, start_on_first_use: bool = False,
+                           user_limit: int = 0) -> PanelUserResult:
         group_ids = self.server["group_ids"]
         proxy_settings = self.server["proxy_settings"]
         if not group_ids or not proxy_settings:
@@ -162,6 +167,8 @@ class PasarguardProvider(BasePanelProvider):
         }
         if start_on_first_use and duration_days:
             payload["on_hold_expire_duration"] = int(duration_days * 86400)
+        if user_limit:
+            payload["hwid_limit"] = int(user_limit)
         async with self._session() as session:
             token = await self._get_token(session)
             try:
@@ -282,6 +289,54 @@ class PasarguardProvider(BasePanelProvider):
             self.last_error = str(e)
             return False
 
+    async def _get_json(self, path: str, error_label: str):
+        async with self._session() as session:
+            token = await self._get_token(session)
+            try:
+                async with session.get(
+                    f"{self._base_url()}{path}",
+                    headers={**self._auth(token), "accept": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status == 404:
+                        raise PanelError(f"{error_label}: مورد پیدا نشد.")
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise PanelError(f"{error_label} (کد {resp.status}): {text[:300]}")
+                    return await resp.json()
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e or 'پاسخی از سرور در زمان مقرر دریافت نشد (timeout)'}") from e
+
+    async def is_client_online(self, username: str) -> bool:
+        """پاسارگارد endpoint لحظه‌ای آنلاین ندارد؛ کاربر وقتی آنلاین حساب می‌شود که
+        online_at او در ۲ دقیقه‌ی اخیر (همان پنجره‌ی خود پنل) باشد."""
+        data = await self._get_json(f"/api/user/{username}", "خطا در دریافت اطلاعات کاربر")
+        raw = data.get("online_at")
+        if not raw:
+            return False
+        try:
+            seen = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if seen.tzinfo is None:
+            seen = seen.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - seen).total_seconds() <= self.online_window_seconds
+
+    async def get_panel_stats(self) -> dict:
+        """آمار کلی پنل از /api/system/users و تعداد اینباندها از /api/inbounds."""
+        users = await self._get_json("/api/system/users", "خطا در دریافت آمار پنل")
+        try:
+            inbounds = await self._get_json("/api/inbounds", "خطا در دریافت اینباندها")
+        except PanelError:
+            inbounds = []
+        return {
+            "inbound_count": len(inbounds) if isinstance(inbounds, list) else 0,
+            "total_clients": int(users.get("total_user") or 0),
+            "online_clients": int(users.get("online_users") or 0),
+            "expired_clients": int(users.get("expired_users") or 0),
+            "disabled_clients": int(users.get("disabled_users") or 0),
+        }
+
     async def _test_api_key(self) -> bool:
         key = str(self.server["api_password"]).strip()
         try:
@@ -325,7 +380,8 @@ class PasarguardProvider(BasePanelProvider):
                 raise PanelError(f"خطا در اتصال به پنل: {e or 'پاسخی از سرور در زمان مقرر دریافت نشد (timeout)'}") from e
 
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
-                           reset_usage: bool = False, preserve_remaining: bool = False) -> PanelUserResult:
+                           reset_usage: bool = False, preserve_remaining: bool = False,
+                           user_limit: int = None) -> PanelUserResult:
         async with self._session() as session:
             token = await self._get_token(session)
             headers = {**self._auth(token), "accept": "application/json", "Content-Type": "application/json"}
@@ -368,6 +424,8 @@ class PasarguardProvider(BasePanelProvider):
                            "on_hold_expire_duration": current_hold_duration + int(add_days * 86400)}
             else:
                 payload = {"data_limit": new_limit, "expire": new_expire, "status": "active"}
+            if user_limit is not None:
+                payload["hwid_limit"] = int(user_limit)
             try:
                 async with session.put(
                     f"{self._base_url()}/api/user/{username}", json=payload, headers=headers,
