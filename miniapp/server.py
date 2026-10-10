@@ -4772,7 +4772,11 @@ def api_admin_list_panel_servers(auth=Depends(require_full_access_admin)):
 async def api_admin_add_panel_server(body: PanelServerCreate, auth=Depends(require_full_access_admin)):
     _, db, _ = auth
     admin_id, _, _ = auth
-    body.api_username = body.api_username.strip() or TOKEN_ONLY_PANEL_TYPES.get(body.panel_type, "")
+    body.api_username = (
+        body.api_username.strip()
+        or TOKEN_ONLY_PANEL_TYPES.get(body.panel_type, "")
+        or ("apikey" if body.panel_type == "pasarguard" and body.api_password.strip().startswith("pg_key_") else "")
+    )
     if not body.name.strip() or not body.api_url.strip() or not body.api_username.strip() or not body.api_password.strip():
         raise HTTPException(status_code=400, detail=tr("نام، آدرس، یوزرنیم و پسورد الزامی هستند."))
     if body.panel_type not in PROVIDERS:
