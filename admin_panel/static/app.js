@@ -3532,6 +3532,7 @@ function productEditFormHtml(product, categories, panelServers) {
       <input class="input" id="pe-name" placeholder="نام محصول" value="${esc(product.name)}">
       <div class="form-row">
         <input class="input" id="pe-price" type="number" placeholder="قیمت (تومان)" value="${product.price}">
+        <input class="input" id="pe-compare" type="number" placeholder="قیمت قبل از تخفیف (اختیاری؛ خالی/0 = بدون تخفیف)" value="${product.compare_price || ''}">
         <input class="input" id="prod-duration" type="number" placeholder="مدت (روز)" value="${product.duration_days || 30}">
       </div>
       <textarea class="input" id="pe-desc" placeholder="توضیحات (اختیاری)" rows="2">${esc(product.description || '')}</textarea>
@@ -3550,7 +3551,7 @@ function openProductEditModal(product, categories, panelServers) {
       const prov = readProductProvisionFields(b);
       if (!prov.ok) return;
       const payload = {
-        category_id: Number($('#pe-cat', b).value), name, price,
+        category_id: Number($('#pe-cat', b).value), name, price, compare_price: Number($('#pe-compare', b).value) || 0,
         description: $('#pe-desc', b).value, duration_days: prov.duration_days,
         source: prov.source,
       };
@@ -3641,6 +3642,7 @@ async function renderCatalog() {
       <select class="input" id="prod-cat">${categories.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
       <input class="input" id="prod-name" placeholder="نام محصول">
       <div class="form-row"><input class="input" id="prod-price" type="number" placeholder="قیمت (تومان)">
+      <input class="input" id="prod-compare" type="number" placeholder="قیمت قبل از تخفیف (اختیاری)">
       <input class="input" id="prod-duration" type="number" placeholder="مدت (روز)" value="30"></div>
       <textarea class="input" id="prod-desc" placeholder="توضیحات (اختیاری)" rows="2"></textarea>
       ${productProvisionFieldsHtml(panelServers)}
@@ -3657,7 +3659,7 @@ async function renderCatalog() {
       const payment_methods = readProductPaymentMethodsFields(b);
       try {
         await apiPost('/products', {
-          category_id: Number($('#prod-cat', b).value), name, price,
+          category_id: Number($('#prod-cat', b).value), name, price, compare_price: Number($('#prod-compare', b).value) || 0,
           description: $('#prod-desc', b).value, duration_days: prov.duration_days,
           provision_server_id: prov.provision_server_id, auto_provision_volume_gb: prov.auto_provision_volume_gb,
           payment_methods,
@@ -3773,6 +3775,7 @@ function renderCatalogBento(categories, products, panelServers, paymentMethods) 
       <select class="input" id="prod-cat">${categories.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
       <input class="input" id="prod-name" placeholder="نام محصول">
       <div class="form-row"><input class="input" id="prod-price" type="number" placeholder="قیمت (تومان)">
+      <input class="input" id="prod-compare" type="number" placeholder="قیمت قبل از تخفیف (اختیاری)">
       <input class="input" id="prod-duration" type="number" placeholder="مدت (روز)" value="30"></div>
       <textarea class="input" id="prod-desc" placeholder="توضیحات (اختیاری)" rows="2"></textarea>
       ${productProvisionFieldsHtml(panelServers)}
@@ -3789,7 +3792,7 @@ function renderCatalogBento(categories, products, panelServers, paymentMethods) 
       const payment_methods = readProductPaymentMethodsFields(b);
       try {
         await apiPost('/products', {
-          category_id: Number($('#prod-cat', b).value), name, price,
+          category_id: Number($('#prod-cat', b).value), name, price, compare_price: Number($('#prod-compare', b).value) || 0,
           description: $('#prod-desc', b).value, duration_days: prov.duration_days,
           provision_server_id: prov.provision_server_id, auto_provision_volume_gb: prov.auto_provision_volume_gb,
           payment_methods,
@@ -3904,6 +3907,7 @@ function renderCatalogBrutalist(categories, products, panelServers, paymentMetho
       <select class="input" id="prod-cat">${categories.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
       <input class="input" id="prod-name" placeholder="نام محصول">
       <div class="form-row"><input class="input" id="prod-price" type="number" placeholder="قیمت (تومان)">
+      <input class="input" id="prod-compare" type="number" placeholder="قیمت قبل از تخفیف (اختیاری)">
       <input class="input" id="prod-duration" type="number" placeholder="مدت (روز)" value="30"></div>
       <textarea class="input" id="prod-desc" placeholder="توضیحات (اختیاری)" rows="2"></textarea>
       ${productProvisionFieldsHtml(panelServers)}
@@ -3920,7 +3924,7 @@ function renderCatalogBrutalist(categories, products, panelServers, paymentMetho
       const payment_methods = readProductPaymentMethodsFields(b);
       try {
         await apiPost('/products', {
-          category_id: Number($('#prod-cat', b).value), name, price,
+          category_id: Number($('#prod-cat', b).value), name, price, compare_price: Number($('#prod-compare', b).value) || 0,
           description: $('#prod-desc', b).value, duration_days: prov.duration_days,
           provision_server_id: prov.provision_server_id, auto_provision_volume_gb: prov.auto_provision_volume_gb,
           payment_methods,
