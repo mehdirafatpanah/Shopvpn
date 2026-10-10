@@ -8,7 +8,7 @@
 به‌عنوان پارامتر می‌گیرند - نه اینکه از یک ماژول سراسری import شود.
 """
 
-from price_display import price_label_plain
+from price_display import price_label_plain, price_label_button
 from aiogram.types import (
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
@@ -373,7 +373,7 @@ def products_kb(db, products, category_id) -> InlineKeyboardMarkup:
             [
                 _styled_inline(
                     db,
-                    f"{stock_tag} {p['name']} - {price_label_plain(p)}{inactive_tag}",
+                    f"{stock_tag} {p['name']} - {price_label_button(p)}{inactive_tag}",
                     f"prod:{p['id']}",
                     "btn_product_select_style",
                 )
@@ -2613,7 +2613,7 @@ def admin_products_list_kb(db, products) -> InlineKeyboardMarkup:
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=tr(f"{state_icon} {p['name']} | {p['price']:,}ت | موجودی: {stock} | مدت: {dur_label}"),
+                    text=tr(f"{state_icon} {p['name']} | {p['price']:,}ت | 📦{stock} | ⏳{dur_label}"),
                     callback_data="noop",
                 )
             ]
@@ -2628,7 +2628,7 @@ def admin_products_list_kb(db, products) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text=tr("💳 روش‌های پرداخت مجاز"), callback_data=f"adm_prod_paymethods:{p['id']}")]
         )
         compare = p["compare_price"] if "compare_price" in p.keys() else 0
-        compare_label = f"🏷 تخفیف: {compare:,}ت ← {p['price']:,}ت" if compare and compare > p["price"] else "🏷 تنظیم قیمت قبل از تخفیف"
+        compare_label = f"🏷 تخفیف: {compare:,}ت ← {p['price']:,}ت" if compare and compare > p["price"] else "🏷 تنظیم تخفیف"
         rows.append(
             [InlineKeyboardButton(text=tr(compare_label), callback_data=f"adm_prod_compare:{p['id']}")]
         )
@@ -2650,6 +2650,19 @@ def admin_products_list_kb(db, products) -> InlineKeyboardMarkup:
                 users_label = "👥 محدودیت کاربر: غیرفعال"
             rows.append([InlineKeyboardButton(text=users_label, callback_data=f"adm_prod_users:{p['id']}")])
     rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_products")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_product_discount_kb(product, back_cb: str) -> InlineKeyboardMarkup:
+    pid = product["id"]
+    rows = [
+        [InlineKeyboardButton(text=tr("💰 تعیین قیمت جدید"), callback_data=f"adm_prod_dsc_price:{pid}")],
+        [InlineKeyboardButton(text=tr("٪ تخفیف درصدی"), callback_data=f"adm_prod_dsc_pct:{pid}")],
+    ]
+    compare = int(product["compare_price"] or 0) if "compare_price" in product.keys() else 0
+    if compare > int(product["price"]):
+        rows.append([InlineKeyboardButton(text=tr("❌ حذف تخفیف"), callback_data=f"adm_prod_dsc_off:{pid}")])
+    rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data=back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

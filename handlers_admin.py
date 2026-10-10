@@ -1317,54 +1317,134 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         else:
             await message.answer(db.get_text('handlers_admin.auto_2f18448b', '✅ حجم به\u200cروزرسانی شد.'))
 
+    def _discount_base(product) -> int:
+        price = int(product["price"])
+        compare = int(product["compare_price"] or 0) if "compare_price" in product.keys() else 0
+        return compare if compare > price else price
+
+    def _discount_back_cb(product) -> str:
+        return f"adm_prod_cat:{product['category_id']}" if product["category_id"] is not None else "adm_products"
+
+    async def _apply_product_discount(admin_id: int, product, new_price: int, percent: int = None):
+        base = _discount_base(product)
+        await asyncio.to_thread(db.edit_product, product["id"], price=new_price, compare_price=base)
+        extra = f" ({percent}٪)" if percent else ""
+        await asyncio.to_thread(db.log_admin_action, admin_id, "product_discount_set",
+                                f"محصول «{product['name']}» → {base:,} ← {new_price:,}{extra}")
+
     @router.callback_query(F.data.startswith("adm_prod_compare:"))
     async def cb_admin_prod_compare(call: CallbackQuery, state: FSMContext):
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         product_id = callback_id(call.data, "adm_prod_compare")
-        if product_id is None:
-            return await call.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
-        product = (await asyncio.to_thread(db.get_product, product_id))
+        product = (await asyncio.to_thread(db.get_product, product_id)) if product_id is not None else None
         if not product:
             return await call.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
+        await state.clear()
+        base = _discount_base(product)
+        price = int(product["price"])
+        lines = [f"🏷 «{product['name']}»", f"قیمت اصلی: {base:,} تومان"]
+        if base > price:
+            lines.append(f"قیمت با تخفیف: {price:,} تومان ({round((base - price) * 100 / base)}٪)")
+        lines.append("\nنوع تخفیف را انتخاب کنید:")
+        await safe_edit(call, "\n".join(lines), reply_markup=kb.admin_product_discount_kb(product, _discount_back_cb(product)))
+        await call.answer()
+
+    async def _start_discount_input(call: CallbackQuery, state: FSMContext, prefix: str, new_state, prompt: str):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, prefix)
+        product = (await asyncio.to_thread(db.get_product, product_id)) if product_id is not None else None
+        if not product:
+            return await call.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
+        base = _discount_base(product)
         await state.update_data(editing_product_id=product_id)
-        await state.set_state(AdminEditProduct.waiting_compare_price)
-        back_cb = f"adm_prod_cat:{product['category_id']}" if product["category_id"] is not None else "adm_products"
-        current = int(product["compare_price"] or 0) if "compare_price" in product.keys() else 0
-        current_line = f"قیمت قبل از تخفیف فعلی: {current:,} تومان\n" if current else ""
+        await state.set_state(new_state)
         await safe_edit(
             call,
-            f"🏷 «{product['name']}»\nقیمت فعلی: {int(product['price']):,} تومان\n{current_line}\n"
-            "قیمت قبل از تخفیف (قیمت اصلی) را فقط عدد وارد کنید.\n"
-            "این عدد باید از قیمت فعلی بزرگ‌تر باشد. برای حذف تخفیف عدد 0 را بفرستید.",
-            reply_markup=kb.admin_back_kb(back_cb),
+            f"🏷 «{product['name']}»\nقیمت اصلی: {base:,} تومان\n\n{prompt}",
+            reply_markup=kb.admin_back_kb(f"adm_prod_compare:{product_id}"),
         )
         await call.answer()
 
-    @router.message(AdminEditProduct.waiting_compare_price)
-    async def process_prod_compare(message: Message, state: FSMContext):
-        text = (message.text or "").strip().replace(",", "").replace("٬", "")
+    @router.callback_query(F.data.startswith("adm_prod_dsc_price:"))
+    async def cb_admin_prod_dsc_price(call: CallbackQuery, state: FSMContext):
+        await _start_discount_input(
+            call, state, "adm_prod_dsc_price", AdminEditProduct.waiting_discount_price,
+            tr("قیمت جدید (بعد از تخفیف) را فقط به‌صورت عدد وارد کنید.\nباید از قیمت اصلی کمتر باشد."),
+        )
+
+    @router.callback_query(F.data.startswith("adm_prod_dsc_pct:"))
+    async def cb_admin_prod_dsc_pct(call: CallbackQuery, state: FSMContext):
+        await _start_discount_input(
+            call, state, "adm_prod_dsc_pct", AdminEditProduct.waiting_discount_percent,
+            tr("درصد تخفیف را فقط به‌صورت عدد بین 1 تا 99 وارد کنید. مثال: 20"),
+        )
+
+    @router.callback_query(F.data.startswith("adm_prod_dsc_off:"))
+    async def cb_admin_prod_dsc_off(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_prod_dsc_off")
+        product = (await asyncio.to_thread(db.get_product, product_id)) if product_id is not None else None
+        if not product:
+            return await call.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
+        base = _discount_base(product)
+        await asyncio.to_thread(db.edit_product, product_id, price=base, compare_price=0)
+        await asyncio.to_thread(db.log_admin_action, call.from_user.id, "product_discount_remove",
+                                f"محصول «{product['name']}» → قیمت برگشت به {base:,}")
+        await state.clear()
+        products = await asyncio.to_thread(db.get_products, product["category_id"], active_only=False)
+        await safe_edit(call, tr("✅ تخفیف حذف شد."), reply_markup=kb.admin_products_list_kb(db, products))
+        await call.answer()
+
+    def _parse_digits(message: Message) -> str:
+        return (message.text or "").strip().replace(",", "").replace("٬", "").translate(
+            str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+        )
+
+    async def _finish_discount(message: Message, state: FSMContext, product, new_price: int, percent: int = None):
+        await _apply_product_discount(message.from_user.id, product, new_price, percent)
+        await state.clear()
+        products = await asyncio.to_thread(db.get_products, product["category_id"], active_only=False)
+        base = _discount_base(product)
+        await message.answer(
+            tr(f"✅ تخفیف ثبت شد: {base:,} ← {new_price:,} تومان"),
+            reply_markup=kb.admin_products_list_kb(db, products),
+        )
+
+    @router.message(AdminEditProduct.waiting_discount_price)
+    async def process_prod_discount_price(message: Message, state: FSMContext):
+        text = _parse_digits(message)
         data = await state.get_data()
-        product_id = data.get("editing_product_id")
-        product = (await asyncio.to_thread(db.get_product, product_id))
+        product = await asyncio.to_thread(db.get_product, data.get("editing_product_id"))
         if not product:
             await state.clear()
             return await message.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'))
-        if not text.isdigit():
-            await message.answer(tr("لطفاً فقط عدد وارد کنید. مثال: 150000 (برای حذف تخفیف: 0)"))
-            return
+        if not text.isdigit() or int(text) <= 0:
+            return await message.answer(tr("لطفاً فقط عدد وارد کنید. مثال: 150000"))
         value = int(text)
-        price = int(product["price"])
-        if value > 0 and value <= price:
-            await message.answer(tr(f"قیمت قبل از تخفیف باید از قیمت فعلی ({price:,}) بزرگ‌تر باشد. دوباره وارد کنید، یا 0 برای حذف تخفیف."))
-            return
-        (await asyncio.to_thread(db.edit_product, product_id, compare_price=value))
-        (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "product_compare_price_edit",
-                                  f"محصول «{product['name']}» → قیمت قبل از تخفیف: {value:,}"))
-        await state.clear()
-        products = (await asyncio.to_thread(db.get_products, product["category_id"], active_only=False))
-        done = "✅ تخفیف حذف شد." if value == 0 else "✅ قیمت قبل از تخفیف ثبت شد."
-        await message.answer(done, reply_markup=kb.admin_products_list_kb(db, products))
+        base = _discount_base(product)
+        if value >= base:
+            return await message.answer(tr(f"قیمت جدید باید از قیمت اصلی ({base:,}) کمتر باشد. دوباره وارد کنید."))
+        await _finish_discount(message, state, product, value, round((base - value) * 100 / base))
+
+    @router.message(AdminEditProduct.waiting_discount_percent)
+    async def process_prod_discount_percent(message: Message, state: FSMContext):
+        text = _parse_digits(message).rstrip("%٪")
+        data = await state.get_data()
+        product = await asyncio.to_thread(db.get_product, data.get("editing_product_id"))
+        if not product:
+            await state.clear()
+            return await message.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'))
+        if not text.isdigit() or not 1 <= int(text) <= 99:
+            return await message.answer(tr("لطفاً یک عدد بین 1 تا 99 وارد کنید. مثال: 20"))
+        percent = int(text)
+        base = _discount_base(product)
+        value = max(round(base * (100 - percent) / 100), 1)
+        if value >= base:
+            return await message.answer(tr("با این درصد قیمت تغییری نمی‌کند. درصد بزرگ‌تری وارد کنید."))
+        await _finish_discount(message, state, product, value, percent)
 
     @router.callback_query(F.data.startswith("adm_prod_users:"))
     async def cb_admin_prod_users(call: CallbackQuery, state: FSMContext):

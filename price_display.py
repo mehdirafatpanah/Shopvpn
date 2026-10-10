@@ -41,5 +41,14 @@ def price_label_plain(product, unit_price: int = None, suffix: str = "تومان
     if not old:
         return f"{price:,} {suffix}".rstrip()
     return f"{strike(f'{old:,}')} ➜ {price:,} {suffix}".rstrip()
+
+
+def price_label_button(product, unit_price: int = None) -> str:
+    """برچسب کوتاه‌شده برای دکمه‌ها تا متن در تلگرام بریده نشود."""
+    price = int(unit_price if unit_price is not None else product["price"])
+    old = compare_price_for(product, price)
+    if not old:
+        return f"{price:,} تومان"
+    return f"{strike(f'{old:,}')} {price:,}ت"
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 # 		   		 		  	 	 		 		   		  	 	 		 			  		 				 			  	 
