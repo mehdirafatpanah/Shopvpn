@@ -26,6 +26,7 @@ from aiogram.fsm.storage.base import StorageKey
 from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError, TelegramBadRequest, TelegramNetworkError
 
 from md_utils import escape_md, escape_html
+from price_display import price_label_plain
 import keyboards as kb
 from states import BuyFlow, ContactFlow, TicketFlow, TicketReplyFlow, AIChatFlow, DiscountEntry, RenewalDiscountEntry, WalletTopup, WalletGiftCode, WalletTransfer, CoinConvert, CustomConfigFlow, AddServiceFlow, RenewalFlow, ResellerFlow, ResellerRequestFlow, ServiceRenameFlow, ServiceTransferFlow, CommissionResellerRequestFlow
 import ai_support
@@ -1014,7 +1015,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         text = db.get_text(
             "handlers_user.product.confirm_header",
             "📦 {name}\n💰 قیمت واحد: {price} تومان\n📝 توضیحات: {description}\n",
-        ).format(name=product["name"], price=f"{unit_price:,}", description=product["description"] or "---")
+        ).format(name=product["name"], price=price_label_plain(product, unit_price, suffix=""), description=product["description"] or "---")
         text += stock_line
         if product["is_auto_provision"] and (product["auto_provision_volume_gb"] or product["duration_days"]):
             volume_gb = product["auto_provision_volume_gb"]

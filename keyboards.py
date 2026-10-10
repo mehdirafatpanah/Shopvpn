@@ -8,6 +8,7 @@
 به‌عنوان پارامتر می‌گیرند - نه اینکه از یک ماژول سراسری import شود.
 """
 
+from price_display import price_label_plain
 from aiogram.types import (
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
@@ -372,7 +373,7 @@ def products_kb(db, products, category_id) -> InlineKeyboardMarkup:
             [
                 _styled_inline(
                     db,
-                    f"{stock_tag} {p['name']} - {p['price']:,} تومان{inactive_tag}",
+                    f"{stock_tag} {p['name']} - {price_label_plain(p)}{inactive_tag}",
                     f"prod:{p['id']}",
                     "btn_product_select_style",
                 )
