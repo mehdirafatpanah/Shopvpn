@@ -1648,6 +1648,8 @@ class DatabaseBase:
             ("products", "extra_user_price", "INTEGER DEFAULT 0"),
             ("products", "max_users", "INTEGER DEFAULT 0"),
             ("products", "base_users", "INTEGER DEFAULT 0"),
+            # قیمت قبل از تخفیف (فقط نمایشی: خط‌خورده کنار قیمت فعلی). 0 یعنی بدون تخفیف.
+            ("products", "compare_price", "INTEGER DEFAULT 0"),
             ("orders", "user_limit", "INTEGER"),
             ("orders", "renewal_user_limit", "INTEGER"),
             ("custom_configs", "user_limit", "INTEGER"),

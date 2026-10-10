@@ -253,7 +253,8 @@ class CatalogMixin:
     def add_product(self, category_id: int, name: str, price: int, description: str = "", duration_days: int = 30,
                      is_auto_provision: bool = False, auto_provision_volume_gb: int = None,
                      provision_server_id: int = None, payment_methods=None,
-                     base_users: int = 0, extra_user_price: int = 0, max_users: int = 0) -> int:
+                     base_users: int = 0, extra_user_price: int = 0, max_users: int = 0,
+                     compare_price: int = 0) -> int:
         """payment_methods: None/[] یعنی «همه‌ی روش‌های پرداخت مجازند» (پیش‌فرض)،
         در غیر این صورت لیستی از کلیدهای مجاز - همان قراردادِ set_product_payment_methods.
 
@@ -264,17 +265,18 @@ class CatalogMixin:
         base_users = max(int(base_users or 0), 0) if is_auto_provision else 0
         extra_user_price = max(int(extra_user_price or 0), 0)
         max_users = max(int(max_users or 0), 0)
+        compare_price = max(int(compare_price or 0), 0)
         if not base_users or extra_user_price <= 0 or max_users <= base_users:
             extra_user_price, max_users = 0, 0
         with self._get_conn() as conn:
             cur = conn.execute(
                 "INSERT INTO products (category_id, name, price, description, duration_days, "
                 "is_auto_provision, auto_provision_volume_gb, provision_server_id, payment_methods, "
-                "base_users, extra_user_price, max_users) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "base_users, extra_user_price, max_users, compare_price) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (category_id, name, price, description, duration_days,
                  1 if is_auto_provision else 0, auto_provision_volume_gb, provision_server_id, pm_value,
-                 base_users, extra_user_price, max_users),
+                 base_users, extra_user_price, max_users, compare_price),
             )
             return cur.lastrowid
 
@@ -355,7 +357,8 @@ class CatalogMixin:
     def edit_product(self, product_id: int, name: str = None, price: int = None,
                       description: str = None, duration_days: int = None,
                       is_auto_provision=..., auto_provision_volume_gb=...,
-                      provision_server_id=..., payment_methods=..., category_id: int = None):
+                      provision_server_id=..., payment_methods=..., category_id: int = None,
+                      compare_price=...):
         # نکته: is_auto_provision/auto_provision_volume_gb/provision_server_id از سنتینل
         # Ellipsis استفاده می‌کنند (مثل payment_methods) چون باید بتوان آن‌ها را عمداً
         # NULL/False کرد (مثلاً وقتی محصول از «اتصال مستقیم به پنل» به «بانک کانفیگ»
@@ -380,6 +383,9 @@ class CatalogMixin:
         if payment_methods is not ...:
             fields.append("payment_methods=?")
             values.append(json.dumps(payment_methods, ensure_ascii=False) if payment_methods else None)
+        if compare_price is not ...:
+            # 0/None یعنی حذف تخفیف (خط‌خورده نمایش داده نمی‌شود)
+            fields.append("compare_price=?"); values.append(max(int(compare_price or 0), 0))
         if not fields:
             return
         values.append(product_id)
