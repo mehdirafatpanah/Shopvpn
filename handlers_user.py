@@ -3936,9 +3936,13 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if not links:
             await call.answer(db.get_text('handlers_user.auto_096cc2af', 'در حال حاضر کانفیگ تکی\u200cای یافت نشد.'), show_alert=True)
             return
-        text = f"📋 کانفیگ‌های تکی این سرویس ({len(links)} عدد):\n\n" + "\n".join(f"`{c}`" for c in links)
-        if len(text) > 4000:
-            text = text[:3950] + "\n\n… (فهرست کوتاه شد؛ تعداد کانفیگ‌ها زیاد است)"
+        text = f"📋 کانفیگ‌های تکی این سرویس ({len(links)} عدد):\n\n"
+        for c in links:
+            entry = f"`{str(c).replace(chr(96), '')}`\n"
+            if len(text) + len(entry) > 3800:
+                text += "\n… (فهرست کوتاه شد؛ تعداد کانفیگ‌ها زیاد است)"
+                break
+            text += entry
         await call.message.answer(text, parse_mode="Markdown")
 
     @router.callback_query(F.data.startswith("mo_del:"))
@@ -7835,9 +7839,13 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if not links:
             await message.answer(db.get_text('handlers_user.auto_b9f34761', '⛔️ در حال حاضر کانفیگ تکی\u200cای یافت نشد.'))
             return
-        text = f"📋 کانفیگ‌های تکی این سرویس ({len(links)} عدد):\n\n" + "\n".join(f"`{c}`" for c in links)
-        if len(text) > 4000:
-            text = text[:3950] + "\n\n… (فهرست کوتاه شد؛ تعداد کانفیگ‌ها زیاد است)"
+        text = f"📋 کانفیگ‌های تکی این سرویس ({len(links)} عدد):\n\n"
+        for c in links:
+            entry = f"`{str(c).replace(chr(96), '')}`\n"
+            if len(text) + len(entry) > 3800:
+                text += "\n… (فهرست کوتاه شد؛ تعداد کانفیگ‌ها زیاد است)"
+                break
+            text += entry
         await message.answer(text, parse_mode="Markdown")
 
     async def _ai_toggle_service_enabled(message: Message, service_id, enabled) -> None:
