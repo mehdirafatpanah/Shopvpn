@@ -772,6 +772,7 @@ menu_item() {
 }
 
 pause() {
+    printf '\033[?25h\033[?7h'
     echo ""
     read -rp "$(t pause_prompt)" _
 }
@@ -802,25 +803,32 @@ INSTALL_JOKES_EN=(
 )
 
 # ---------------------------------------------------------------------------
-# Live step UI: checklist-style steps + overall bar + live output tail
-# رابط زنده مرحله‌ای: مراحل انجام‌شده، مرحله جاری با اسپینر، آخرین خروجی و نوار کلی
+# Live step UI (append-only: one live line per running step, permanent result
+# lines, final gradient bar). Uses only "\r" + "erase line" so it behaves the
+# same in every terminal app (Termius, Termux, JuiceSSH, desktop...).
+# رابط زنده مرحله‌ای: یک خط زنده برای مرحله جاری، خط ثابت برای مراحل تمام‌شده
 # ---------------------------------------------------------------------------
 UI_SPIN_FRAMES=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+UI_GRAD=(51 45 39 33 63 99)     # same cyan -> blue -> purple flow as the logo
 UI_T0=${UI_T0:-0}
+UI_FAIL=0
+UI_OK=0
+trap '[ -t 1 ] && printf "\033[?25h\033[?7h"' EXIT
 
 ui_fmt_dur() {
   local s="$1"
   if [ "$s" -ge 60 ]; then printf '%dm %02ds' $(( s / 60 )) $(( s % 60 )); else printf '%ds' "$s"; fi
 }
 
+# Real terminal width (tput inside $(...) cannot see the tty and may say 80)
 ui_cols() {
-  local c
-  c="$(tput cols 2>/dev/null || echo 80)"
-  [[ "$c" =~ ^[0-9]+$ ]] || c=80
+  local c=""
+  c="$(stty size 2>/dev/null </dev/tty | awk '{print $2}')"
+  [[ "$c" =~ ^[0-9]+$ ]] && [ "$c" -gt 0 ] || c="${COLUMNS:-}"
+  [[ "$c" =~ ^[0-9]+$ ]] && [ "$c" -gt 0 ] || c=80
   echo "$c"
 }
 
-# ui_trunc <text> <max>  -> text cut to max chars with an ellipsis
 ui_trunc() {
   local t="$1" max="$2"
   [ "$max" -lt 6 ] && max=6
@@ -828,36 +836,31 @@ ui_trunc() {
   printf '%s' "$t"
 }
 
-# ui_bar <pct> <width>  -> thin modern bar:  ━━━━━━╺━━━━━━
+# Drop a leading emoji token ("🔄 text" -> "text"); the UI draws its own icons.
+# Emoji start with a byte >= 0xE0, Latin/Persian text does not.
+ui_clean_label() {
+  local l="$1" b
+  b="$(printf '%s' "$l" | head -c1 | od -An -tu1 | tr -d ' ')"
+  if [ -n "$b" ] && [ "$b" -ge 224 ] && [[ "$l" == *" "* ]]; then l="${l#* }"; fi
+  printf '%s' "$l"
+}
+
+# ui_bar <pct> <width>  gradient bar, colours flow along the bar like the logo
 ui_bar() {
   local pct="$1" w="$2" filled i
   filled=$(( pct * w / 100 ))
-  printf '%b' "${CYAN}${BOLD}"
-  for ((i = 0; i < filled; i++)); do printf '━'; done
-  printf '%b' "${RESET}${DIM}"
-  for ((i = filled; i < w; i++)); do printf '━'; done
-  printf '%b' "${RESET}"
-}
-
-# ui_overall_line <pct> <idx> <total>
-ui_overall_line() {
-  local pct="$1" idx="$2" total="$3" cols bw el
-  cols="$(ui_cols)"
-  bw=$(( cols - 30 )); [ "$bw" -gt 32 ] && bw=32; [ "$bw" -lt 8 ] && bw=8
-  el=$(( SECONDS - UI_T0 ))
-  printf '  '; ui_bar "$pct" "$bw"
-  printf ' %b%3d%%%b %b%s/%s · %s%b' "${BOLD}" "$pct" "${RESET}" "${DIM}" "$idx" "$total" "$(ui_fmt_dur "$el")" "${RESET}"
-}
-
-# last meaningful line of a log file, without colour codes / progress carriage returns
-ui_last_line() {
-  tail -c 600 "$1" 2>/dev/null | tr '\r' '\n' | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' \
-    | sed 's/^[[:space:]]*//' | grep -v '^$' | tail -n 1
+  for ((i = 0; i < filled; i++)); do
+    printf '\033[38;5;%sm█' "${UI_GRAD[$(( i * ${#UI_GRAD[@]} / w ))]}"
+  done
+  printf '\033[0m\033[38;5;238m'
+  for ((i = filled; i < w; i++)); do printf '░'; done
+  printf '\033[0m'
 }
 
 run_step_live() {
   local idx="$1" total="$2" label="$3"; shift 3
-  local log pid start_ms now_ms ms elapsed elapsed_s span base pct status cols f tail_txt maxw
+  local clean log pid start_ms ms status f=0 cols=80 bw lmax pct base span el_s pad lw ln fp tot
+  clean="$(ui_clean_label "$label")"
 
   # Non-interactive output (pipe / CI): simple, parse-friendly lines
   if [ ! -t 1 ]; then
@@ -867,52 +870,64 @@ run_step_live() {
     return "$status"
   fi
 
-  [ "$idx" -eq 1 ] && UI_T0=$SECONDS
+  if [ "$idx" -le 1 ]; then UI_T0=$SECONDS; UI_FAIL=0; UI_OK=0; fi
   log="$(mktemp)"
   start_ms=$(( $(date +%s%N) / 1000000 ))
   "$@" >"$log" 2>&1 &
   pid=$!
-  trap 'printf "\033[?25h"; kill "$pid" 2>/dev/null; trap - INT; kill -INT $$' INT
-  printf '\033[?25l'
+  trap 'printf "\033[?25h\033[?7h"; kill "$pid" 2>/dev/null; trap - INT; kill -INT $$' INT
+  printf '\033[?7l\033[?25l'          # no auto-wrap, hide cursor while animating
 
   base=$(( (idx - 1) * 100 / total ))
   span=$(( idx * 100 / total - base ))
-  f=0
-  printf '\n\n\n'   # reserve the 3-line live region
   while kill -0 "$pid" 2>/dev/null; do
-    now_ms=$(( $(date +%s%N) / 1000000 ))
-    ms=$(( now_ms - start_ms )); elapsed=$(( ms / 1000 ))
+    ms=$(( $(date +%s%N) / 1000000 - start_ms ))
+    [ $(( f % 20 )) -eq 0 ] && cols="$(ui_cols)"
     pct=$(( base + span * 90 * ms / ((ms + 20000) * 100) ))
-    cols="$(ui_cols)"; maxw=$(( cols - 12 ))
-    tail_txt="$(ui_last_line "$log")"
-    [ -z "$tail_txt" ] && tail_txt="…"
-    printf '\033[3A\r'
-    printf '\033[K  %b%s%b %s %b%s%b\n' "${CYAN}${BOLD}" "${UI_SPIN_FRAMES[$((f % 10))]}" "${RESET}" \
-      "$(ui_trunc "$label" $(( maxw - 8 )))" "${DIM}" "$(ui_fmt_dur "$elapsed")" "${RESET}"
-    printf '\033[K    %b╰─ %s%b\n' "${DIM}" "$(ui_trunc "$tail_txt" "$maxw")" "${RESET}"
-    printf '\033[K'; ui_overall_line "$pct" "$idx" "$total"; printf '\n'
+    bw=16; [ "$cols" -lt 64 ] && bw=10
+    lmax=$(( cols - bw - 22 ))
+    printf '\r\033[K  \033[1;38;5;45m%s\033[0m ' "${UI_SPIN_FRAMES[$(( f % 10 ))]}"
+    ui_bar "$pct" "$bw"
+    printf ' \033[1m%3d%%\033[0m  %s \033[2m%s\033[0m' "$pct" "$(ui_trunc "$clean" "$lmax")" "$(ui_fmt_dur $(( ms / 1000 )))"
     f=$(( f + 1 ))
     sleep 0.1
   done
   wait "$pid"; status=$?
   trap - INT
-  elapsed_s=$(awk -v ms=$(( $(date +%s%N) / 1000000 - start_ms )) 'BEGIN{printf "%.1fs", ms/1000}')
+  el_s="$(awk -v ms=$(( $(date +%s%N) / 1000000 - start_ms )) 'BEGIN{printf "%.1fs", ms/1000}')"
 
-  # collapse the live region into one permanent result line
-  printf '\033[3A\r\033[J'
+  # turn the live line into one permanent, aligned result line
+  cols="$(ui_cols)"
+  lw=$(( cols - 14 )); [ "$lw" -gt 52 ] && lw=52; [ "$lw" -lt 12 ] && lw=12
+  clean="$(ui_trunc "$clean" "$lw")"
+  pad=$(( lw - ${#clean} )); [ "$pad" -lt 1 ] && pad=1
+  printf '\r\033[K'
   if [ "$status" -eq 0 ]; then
-    printf '  %b✓%b %s %b%s%b\n' "${GREEN}${BOLD}" "${RESET}" "$label" "${DIM}" "$elapsed_s" "${RESET}"
-    if [ "$idx" -eq "$total" ]; then ui_overall_line 100 "$total" "$total"; printf '\n'; fi
+    UI_OK=$(( UI_OK + 1 ))
+    printf '  \033[1;38;5;46m✔\033[0m %s%*s \033[2m%s\033[0m\n' "$clean" "$pad" '' "$el_s"
   else
-    printf '  %b✗%b %b%s%b %b%s%b\n' "${RED}${BOLD}" "${RESET}" "${RED}" "$label" "${RESET}" "${DIM}" "$elapsed_s" "${RESET}"
+    UI_FAIL=1
+    printf '  \033[1;38;5;203m✘\033[0m \033[38;5;203m%s\033[0m%*s \033[2m%s\033[0m\n' "$clean" "$pad" '' "$el_s"
     if [ -s "$log" ]; then
-      local ln
       while IFS= read -r ln; do
-        printf '      %b│ %s%b\n' "${DIM}" "$ln" "${RESET}"
+        printf '      \033[2m│ %s\033[0m\n' "$(ui_trunc "$ln" $(( cols - 10 )))"
       done < <(tail -8 "$log" | tr '\r' '\n' | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | grep -v '^[[:space:]]*$')
     fi
   fi
-  printf '\033[?25h'
+
+  # last step: full-width summary bar
+  if [ "$idx" -ge "$total" ]; then
+    tot=$(( SECONDS - UI_T0 ))
+    fp=$(( UI_OK * 100 / total ))
+    bw=$(( cols - 26 )); [ "$bw" -gt 36 ] && bw=36; [ "$bw" -lt 10 ] && bw=10
+    printf '\n  '; ui_bar "$fp" "$bw"
+    if [ "$UI_FAIL" -eq 0 ]; then
+      printf '  \033[1;38;5;46m%d%%\033[0m \033[2m%d/%d · %s\033[0m\n' "$fp" "$UI_OK" "$total" "$(ui_fmt_dur "$tot")"
+    else
+      printf '  \033[1;38;5;203m%d%%\033[0m \033[2m%d/%d · %s\033[0m\n' "$fp" "$UI_OK" "$total" "$(ui_fmt_dur "$tot")"
+    fi
+  fi
+  printf '\033[?25h\033[?7h'
   rm -f "$log"
   return "$status"
 }
@@ -1792,7 +1807,7 @@ update_admin_panel() {
     section_header "$(t update_panel_header)"
     run_step_live 1 3 "$(t fetching_latest)" fetch_project_code "$INSTALL_DIR" || failed=1
     run_step_live 2 3 "$(t updating_packages)" bash -c "source '$INSTALL_DIR/venv/bin/activate' && pip install -r requirements.txt --quiet && deactivate" || failed=1
-    run_step 3 3 "$(t restarting_panel_service)" bash -c "sudo systemctl restart '$PANEL_SERVICE' && sleep 2" || failed=1
+    run_step_live 3 3 "$(t restarting_panel_service)" bash -c "sudo systemctl restart '$PANEL_SERVICE' && sleep 2" || failed=1
 
     draw_rule
     if [ "$failed" = "0" ] && systemctl is-active --quiet "$PANEL_SERVICE"; then
@@ -2417,7 +2432,7 @@ update_api() {
     section_header "$(t update_api_header)"
     run_step_live 1 3 "$(t fetching_latest)" fetch_project_code "$INSTALL_DIR" || failed=1
     run_step_live 2 3 "$(t updating_packages)" bash -c "source '$INSTALL_DIR/venv/bin/activate' && pip install -r requirements.txt --quiet && deactivate" || failed=1
-    run_step 3 3 "$(t restarting_api_service)" bash -c "sudo systemctl restart '$API_SERVICE' && sleep 2" || failed=1
+    run_step_live 3 3 "$(t restarting_api_service)" bash -c "sudo systemctl restart '$API_SERVICE' && sleep 2" || failed=1
 
     draw_rule
     if [ "$failed" = "0" ] && systemctl is-active --quiet "$API_SERVICE"; then
