@@ -5692,6 +5692,8 @@ async def api_add_panel_server(body: PanelServerBody, admin=Depends(require_perm
     username = body.api_username.strip()
     if body.panel_type in TOKEN_ONLY_PANEL_TYPES:
         username = username or TOKEN_ONLY_PANEL_TYPES[body.panel_type]
+    if body.panel_type == "pasarguard" and not username and body.api_password.strip().startswith("pg_key_"):
+        username = "apikey"
 
     if body.panel_type in INBOUND_SELECT_PANEL_TYPES:
         server_id = db.add_panel_server(body.name.strip(), body.panel_type, body.api_url.strip(), username, body.api_password, body.default_group)
