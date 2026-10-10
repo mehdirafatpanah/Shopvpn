@@ -1812,18 +1812,35 @@ def _admin_item_label_and_cb(key: str):
     return key, key
 
 
+_VOLUME_CREDIT_OWNER_CACHE = {}
+_VOLUME_CREDIT_OWNER_TTL = 60.0
+
+
 def _is_volume_credit_owner(db) -> bool:
-    """مالکِ این بات (نمایندگی VIP/اعتبار حجمی) در بات اصلی اعتبار حجمی دارد؟"""
+    """مالکِ این بات (نمایندگی VIP/اعتبار حجمی) در بات اصلی اعتبار حجمی دارد؟
+    نتیجه ۶۰ ثانیه کش می‌شود تا هر رندر منو یک اتصال تازه به دیتابیس اصلی باز نکند."""
+    import time as _time
+    key = getattr(db, "db_path", None)
+    now = _time.monotonic()
+    hit = _VOLUME_CREDIT_OWNER_CACHE.get(key)
+    if hit and now - hit[0] < _VOLUME_CREDIT_OWNER_TTL:
+        return hit[1]
+    result = False
     try:
         from config import DB_PATH as _MAIN_DB_PATH
-        from database import Database as _Database
-        owner_id = db.get_owner_telegram_id()
-        if not owner_id:
-            return False
-        main_db = _Database(_MAIN_DB_PATH)
-        return bool(main_db.is_reseller(owner_id)) and main_db.get_reseller_supply(owner_id)["model"] != "fixed_product"
+        if key != _MAIN_DB_PATH:
+            from database import Database as _Database
+            owner_id = db.get_owner_telegram_id()
+            if owner_id:
+                main_db = _Database(_MAIN_DB_PATH)
+                try:
+                    result = bool(main_db.is_reseller(owner_id)) and main_db.get_reseller_supply(owner_id)["model"] != "fixed_product"
+                finally:
+                    main_db.close()
     except Exception:
-        return False
+        result = False
+    _VOLUME_CREDIT_OWNER_CACHE[key] = (now, result)
+    return result
 
 
 def _is_item_visible(db, key: str, is_main_bot: bool) -> bool:
