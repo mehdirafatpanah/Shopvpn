@@ -2627,6 +2627,11 @@ def admin_products_list_kb(db, products) -> InlineKeyboardMarkup:
         rows.append(
             [InlineKeyboardButton(text=tr("💳 روش‌های پرداخت مجاز"), callback_data=f"adm_prod_paymethods:{p['id']}")]
         )
+        compare = p["compare_price"] if "compare_price" in p.keys() else 0
+        compare_label = f"🏷 تخفیف: {compare:,}ت ← {p['price']:,}ت" if compare and compare > p["price"] else "🏷 تنظیم قیمت قبل از تخفیف"
+        rows.append(
+            [InlineKeyboardButton(text=tr(compare_label), callback_data=f"adm_prod_compare:{p['id']}")]
+        )
         if p["is_auto_provision"]:
             edit_row = [InlineKeyboardButton(text=tr("📶 تغییر حجم"), callback_data=f"adm_prod_vol:{p['id']}")]
             if p["provision_server_id"]:

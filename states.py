@@ -535,6 +535,7 @@ class AdminAddPanelServer(StatesGroup):
 
 class AdminEditProduct(StatesGroup):
     waiting_volume = State()
+    waiting_compare_price = State()
     waiting_sub_base_url = State()
     waiting_user_base = State()
     waiting_user_extra_price = State()

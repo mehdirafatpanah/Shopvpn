@@ -232,6 +232,8 @@ MSG_FA[bot_not_installed]="⛔️ بات هنوز نصب نشده. اول گزی
 MSG_EN[fetching_latest]="🔄 Fetching latest changes from GitHub"
 MSG_FA[fetching_latest]="🔄 دریافت آخرین تغییرات از گیت‌هاب"
 MSG_EN[updating_packages]="🐍 Updating Python packages"
+MSG_EN[updating_translation]="🌍 Updating local translation runtime/models"
+MSG_FA[updating_translation]="🌍 آپدیت موتور و مدل‌های ترجمه محلی"
 MSG_FA[updating_packages]="🐍 آپدیت پکیج‌های پایتون"
 MSG_EN[restarting_bot_service]="♻️ Restarting bot service"
 MSG_FA[restarting_bot_service]="♻️ ری‌استارت سرویس بات"
@@ -799,64 +801,118 @@ INSTALL_JOKES_EN=(
     "Almost there... the famous 'almost' 😄"
 )
 
-progress_bar() {
-  local pct="$1" width="${PB_WIDTH:-28}" filled empty
-  filled=$(( pct * width / 100 )); empty=$(( width - filled ))
-  printf '['
-  printf '%*s' "$filled" '' | tr ' ' '#'
-  printf '%*s' "$empty" '' | tr ' ' '-'
-  printf '] %3d%%' "$pct"
+# ---------------------------------------------------------------------------
+# Live step UI: checklist-style steps + overall bar + live output tail
+# رابط زنده مرحله‌ای: مراحل انجام‌شده، مرحله جاری با اسپینر، آخرین خروجی و نوار کلی
+# ---------------------------------------------------------------------------
+UI_SPIN_FRAMES=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+UI_T0=${UI_T0:-0}
+
+ui_fmt_dur() {
+  local s="$1"
+  if [ "$s" -ge 60 ]; then printf '%dm %02ds' $(( s / 60 )) $(( s % 60 )); else printf '%ds' "$s"; fi
 }
 
-draw_line() {
-  local pct="$1" mark="$2" text="$3" cols bw rest
-  cols="$(tput cols 2>/dev/null || echo 80)"
-  [[ "$cols" =~ ^[0-9]+$ ]] || cols=80
-  if [ "$cols" -lt 70 ]; then bw=12; else bw=28; fi
-  rest=$(( cols - bw - 12 ))
-  [ -n "$mark" ] && rest=$(( rest - 2 ))
-  [ "$rest" -lt 8 ] && rest=8
-  [ "${#text}" -gt "$rest" ] && text="${text:0:$((rest - 1))}…"
-  printf '\r\033[K  %b' "${CYAN}${BOLD}"
-  PB_WIDTH=$bw progress_bar "$pct"
-  printf '%b' "$RESET"
-  [ -n "$mark" ] && printf ' %b' "$mark"
-  printf ' %s' "$text"
+ui_cols() {
+  local c
+  c="$(tput cols 2>/dev/null || echo 80)"
+  [[ "$c" =~ ^[0-9]+$ ]] || c=80
+  echo "$c"
+}
+
+# ui_trunc <text> <max>  -> text cut to max chars with an ellipsis
+ui_trunc() {
+  local t="$1" max="$2"
+  [ "$max" -lt 6 ] && max=6
+  [ "${#t}" -gt "$max" ] && t="${t:0:$((max - 1))}…"
+  printf '%s' "$t"
+}
+
+# ui_bar <pct> <width>  -> thin modern bar:  ━━━━━━╺━━━━━━
+ui_bar() {
+  local pct="$1" w="$2" filled i
+  filled=$(( pct * w / 100 ))
+  printf '%b' "${CYAN}${BOLD}"
+  for ((i = 0; i < filled; i++)); do printf '━'; done
+  printf '%b' "${RESET}${DIM}"
+  for ((i = filled; i < w; i++)); do printf '━'; done
+  printf '%b' "${RESET}"
+}
+
+# ui_overall_line <pct> <idx> <total>
+ui_overall_line() {
+  local pct="$1" idx="$2" total="$3" cols bw el
+  cols="$(ui_cols)"
+  bw=$(( cols - 30 )); [ "$bw" -gt 32 ] && bw=32; [ "$bw" -lt 8 ] && bw=8
+  el=$(( SECONDS - UI_T0 ))
+  printf '  '; ui_bar "$pct" "$bw"
+  printf ' %b%3d%%%b %b%s/%s · %s%b' "${BOLD}" "$pct" "${RESET}" "${DIM}" "$idx" "$total" "$(ui_fmt_dur "$el")" "${RESET}"
+}
+
+# last meaningful line of a log file, without colour codes / progress carriage returns
+ui_last_line() {
+  tail -c 600 "$1" 2>/dev/null | tr '\r' '\n' | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' \
+    | sed 's/^[[:space:]]*//' | grep -v '^$' | tail -n 1
 }
 
 run_step_live() {
   local idx="$1" total="$2" label="$3"; shift 3
-  local log pid start_ms now_ms ms elapsed span base pct jokes_n joke status
+  local log pid start_ms now_ms ms elapsed elapsed_s span base pct status cols f tail_txt maxw
+
+  # Non-interactive output (pipe / CI): simple, parse-friendly lines
+  if [ ! -t 1 ]; then
+    ( "$@" ) >/dev/null 2>&1; status=$?
+    if [ "$status" -eq 0 ]; then printf '  [%s/%s] ✓ %s\n' "$idx" "$total" "$label"
+    else printf '  [%s/%s] ✗ %s\n' "$idx" "$total" "$label"; fi
+    return "$status"
+  fi
+
+  [ "$idx" -eq 1 ] && UI_T0=$SECONDS
   log="$(mktemp)"
   start_ms=$(( $(date +%s%N) / 1000000 ))
   "$@" >"$log" 2>&1 &
   pid=$!
+  trap 'printf "\033[?25h"; kill "$pid" 2>/dev/null; trap - INT; kill -INT $$' INT
+  printf '\033[?25l'
+
   base=$(( (idx - 1) * 100 / total ))
   span=$(( idx * 100 / total - base ))
-  pct=$base
+  f=0
+  printf '\n\n\n'   # reserve the 3-line live region
   while kill -0 "$pid" 2>/dev/null; do
     now_ms=$(( $(date +%s%N) / 1000000 ))
-    ms=$(( now_ms - start_ms ))
-    elapsed=$(( ms / 1000 ))
-    pct=$(( base + span * 95 * ms / ((ms + 15000) * 100) ))
-    if [ "$UI_LANG" = "fa" ]; then
-      jokes_n=${#INSTALL_JOKES_FA[@]}; joke="${INSTALL_JOKES_FA[$(( ms / 4000 % jokes_n ))]}"
-    else
-      jokes_n=${#INSTALL_JOKES_EN[@]}; joke="${INSTALL_JOKES_EN[$(( ms / 4000 % jokes_n ))]}"
-    fi
-    draw_line "$pct" "" "$label · ${elapsed}s · $joke"
-    sleep 0.25
+    ms=$(( now_ms - start_ms )); elapsed=$(( ms / 1000 ))
+    pct=$(( base + span * 90 * ms / ((ms + 20000) * 100) ))
+    cols="$(ui_cols)"; maxw=$(( cols - 12 ))
+    tail_txt="$(ui_last_line "$log")"
+    [ -z "$tail_txt" ] && tail_txt="…"
+    printf '\033[3A\r'
+    printf '\033[K  %b%s%b %s %b%s%b\n' "${CYAN}${BOLD}" "${UI_SPIN_FRAMES[$((f % 10))]}" "${RESET}" \
+      "$(ui_trunc "$label" $(( maxw - 8 )))" "${DIM}" "$(ui_fmt_dur "$elapsed")" "${RESET}"
+    printf '\033[K    %b╰─ %s%b\n' "${DIM}" "$(ui_trunc "$tail_txt" "$maxw")" "${RESET}"
+    printf '\033[K'; ui_overall_line "$pct" "$idx" "$total"; printf '\n'
+    f=$(( f + 1 ))
+    sleep 0.1
   done
   wait "$pid"; status=$?
-  elapsed=$(( ( $(date +%s%N) / 1000000 - start_ms ) / 1000 ))
+  trap - INT
+  elapsed_s=$(awk -v ms=$(( $(date +%s%N) / 1000000 - start_ms )) 'BEGIN{printf "%.1fs", ms/1000}')
+
+  # collapse the live region into one permanent result line
+  printf '\033[3A\r\033[J'
   if [ "$status" -eq 0 ]; then
-    draw_line "$(( idx * 100 / total ))" "${GREEN}${BOLD}✓${RESET}" "$label · ${elapsed}s"
-    printf '\n'
+    printf '  %b✓%b %s %b%s%b\n' "${GREEN}${BOLD}" "${RESET}" "$label" "${DIM}" "$elapsed_s" "${RESET}"
+    if [ "$idx" -eq "$total" ]; then ui_overall_line 100 "$total" "$total"; printf '\n'; fi
   else
-    draw_line "$pct" "${RED}${BOLD}✗${RESET}" "$label · ${elapsed}s"
-    printf '\n'
-    [ -s "$log" ] && tail -8 "$log" | sed 's/^/      /'
+    printf '  %b✗%b %b%s%b %b%s%b\n' "${RED}${BOLD}" "${RESET}" "${RED}" "$label" "${RESET}" "${DIM}" "$elapsed_s" "${RESET}"
+    if [ -s "$log" ]; then
+      local ln
+      while IFS= read -r ln; do
+        printf '      %b│ %s%b\n' "${DIM}" "$ln" "${RESET}"
+      done < <(tail -8 "$log" | tr '\r' '\n' | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | grep -v '^[[:space:]]*$')
+    fi
   fi
+  printf '\033[?25h'
   rm -f "$log"
   return "$status"
 }
@@ -1012,7 +1068,7 @@ update_bot() {
     run_step_live "$step" "$total" "$(t updating_packages)" bash -c "source '$INSTALL_DIR/venv/bin/activate' && pip install -r requirements.txt --quiet && deactivate" || failed=1
 
     step=$((step+1))
-    run_step_live "$step" "$total" "🌍 Updating local translation runtime/models" bash -c "bash '$INSTALL_DIR/setup_local_translation.sh'" || failed=1
+    run_step_live "$step" "$total" "$(t updating_translation)" bash -c "bash '$INSTALL_DIR/setup_local_translation.sh'" || failed=1
 
     step=$((step+1))
     run_step_live "$step" "$total" "$(t restarting_bot_service)" bash -c "sudo systemctl restart '$SERVICE_NAME' && sleep 2" || failed=1
@@ -1034,7 +1090,8 @@ update_bot() {
 
     draw_rule
     if [ "$failed" = "0" ] && systemctl is-active --quiet "$SERVICE_NAME"; then
-        echo -e "  ${GREEN}${BOLD}$(t update_done)${RESET}"
+        echo -e "  ${GREEN}${BOLD}$(t update_done)${RESET}  ${DIM}($(ui_fmt_dur $(( SECONDS - UI_T0 ))))${RESET}"
+        print_status_line
     else
         echo -e "  ${RED}$(t install_failed "$SERVICE_NAME")${RESET}"
     fi
