@@ -3703,6 +3703,7 @@ class ProductBody(BaseModel):
     auto_provision_volume_gb: Optional[int] = None
     provision_server_id: Optional[int] = None
     payment_methods: Optional[List[str]] = None
+    compare_price: Optional[int] = None  # قیمت قبل از تخفیف (نمایشی)
 
 
 @app.get("/api/products")
@@ -3754,6 +3755,7 @@ def api_add_product(body: ProductBody, admin=Depends(require_permission("catalog
         body.category_id, body.name, body.price, body.description, body.duration_days,
         body.is_auto_provision or bool(body.provision_server_id), body.auto_provision_volume_gb,
         body.provision_server_id, payment_methods=body.payment_methods,
+        compare_price=max(int(body.compare_price or 0), 0),
     )
     pm_log = "همه" if not body.payment_methods else "، ".join(body.payment_methods)
     db.log_admin_action(admin["id"], "product_add", f"{body.name} | پرداخت: {pm_log} (پنل وب - {admin['username']})", "product", pid)
@@ -3771,6 +3773,7 @@ class ProductEditBody(BaseModel):
     source: Optional[str] = None
     provision_server_id: Optional[int] = None
     auto_provision_volume_gb: Optional[int] = None
+    compare_price: Optional[int] = None  # 0 یعنی حذف تخفیف
 
 
 @app.put("/api/products/{product_id}")
@@ -3836,6 +3839,7 @@ def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(requi
         product_id, body.name, body.price, body.description, body.duration_days,
         is_auto_provision=is_auto_provision, provision_server_id=provision_server_id,
         auto_provision_volume_gb=auto_provision_volume_gb, category_id=body.category_id,
+        compare_price=(max(int(body.compare_price), 0) if body.compare_price is not None else ...),
     )
     db.log_admin_action(admin["id"], "product_edit", f"#{product_id} (پنل وب - {admin['username']})", "product", product_id)
     return {"ok": True}
