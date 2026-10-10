@@ -4248,6 +4248,13 @@ def panel_type_select_kb() -> InlineKeyboardMarkup:
     ])
 
 
+def pasarguard_apikey_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=tr("🔑 اتصال با API Key"), callback_data="adm_pg_apikey")],
+        [InlineKeyboardButton(text=tr("❌ انصراف"), callback_data="cancel_flow")],
+    ])
+
+
 def inbound_select_kb(inbounds, selected_ids=None) -> InlineKeyboardMarkup:
     """کیبورد چند-انتخابی inbound ها: با هر تپ روی یک ردیف، تیک آن toggle می‌شود
     (بدون بستن پیام) و دکمه‌ی «تایید» در پایین وضعیت انتخاب فعلی را ادامه‌ی فلو

@@ -7227,12 +7227,27 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await message.answer(SECRET_PROMPTS[data["panel_type"]])
             return
         await state.set_state(AdminAddPanelServer.waiting_username)
+        if data.get("panel_type") == "pasarguard":
+            await message.answer(
+                tr("نام کاربری ادمین پنل را بفرست، یا برای اتصال بدون یوزر/پس روی «اتصال با API Key» بزن:"),
+                reply_markup=kb.pasarguard_apikey_kb(),
+            )
+            return
         if data.get("panel_type") == "hiddify":
             await message.answer(
                 db.get_text('handlers_admin.auto_6e649819', 'هیدیفای یوزر/پس ندارد؛ این فیلد استفاده نمی\u200cشود - فقط هر متنی (مثلاً «hiddify») بفرست:')
             )
         else:
             await message.answer(db.get_text('handlers_admin.auto_b10629f3', 'نام کاربری ادمین پنل را بفرست:'))
+
+    @router.callback_query(F.data == "adm_pg_apikey", AdminAddPanelServer.waiting_username)
+    async def cb_panel_server_pasarguard_apikey(call: CallbackQuery, state: FSMContext):
+        await state.update_data(username="apikey")
+        await state.set_state(AdminAddPanelServer.waiting_password)
+        await call.answer()
+        await call.message.answer(
+            tr("API Key پنل را بفرست (از داخل پنل PasarGuard بخش API Keys بساز؛ با pg_key_ شروع می‌شود):")
+        )
 
     @router.message(AdminAddPanelServer.waiting_username)
     async def process_panel_server_username(message: Message, state: FSMContext):
@@ -7246,7 +7261,12 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
 
     @router.message(AdminAddPanelServer.waiting_password)
     async def process_panel_server_password(message: Message, state: FSMContext):
-        await state.update_data(password=message.text.strip())
+        data = await state.get_data()
+        secret = message.text.strip()
+        if data.get("panel_type") == "pasarguard" and data.get("username") == "apikey" and not secret.startswith("pg_key_"):
+            await message.answer(tr("⛔️ API Key پاسارگارد باید با pg_key_ شروع شود. دوباره بفرست:"))
+            return
+        await state.update_data(password=secret)
         try:
             await message.delete()
         except Exception:
