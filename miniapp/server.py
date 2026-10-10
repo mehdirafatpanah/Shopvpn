@@ -5850,6 +5850,8 @@ def api_admin_set_referral_settings(body: ReferralSettingsUpdate, auth=Depends(r
     db.set_setting("referral_invite_bonus_enabled", "1" if body.invite_bonus_enabled else "0")
     db.set_setting("referral_invite_bonus_amount", str(body.invite_bonus_amount))
     db.set_setting("referral_invite_bonus_max_count", str(body.invite_bonus_max_count))
+    if body.enabled or body.free_config_enabled or body.invite_bonus_enabled:
+        db.set_setting("referral_button_enabled", "1")
     return {"status": "ok"}
 
 
