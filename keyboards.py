@@ -4304,6 +4304,8 @@ def panel_server_view_kb(server) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text=tr("♻️ بازیابی پنل از بکاپ"), callback_data=f"adm_panel_server_restore:{server['id']}")],
             [InlineKeyboardButton(text=tr("📊 آمار کامل پنل"), callback_data=f"adm_panel_server_stats:{server['id']}")],
         ]
+    if server["panel_type"] == "pasarguard":
+        rows.append([InlineKeyboardButton(text=tr("📊 آمار کامل پنل"), callback_data=f"adm_panel_server_stats:{server['id']}")])
     proxy_text = f"🧦 پروکسی ساکس: {'فعال' if server['socks_proxy'] else 'خاموش'}"
     rows += [
         [InlineKeyboardButton(text=proxy_text, callback_data=f"adm_panel_server_socks:{server['id']}")],

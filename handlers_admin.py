@@ -7486,7 +7486,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         server = await asyncio.to_thread(db.get_panel_server, server_id)
         await message.answer(db.get_text('handlers_admin.auto_e1789a23', '✅ سقف ظرفیت ذخیره شد.'), reply_markup=kb.panel_server_view_kb(server))
 
-    async def _xui_server_or_deny(call: CallbackQuery, server_id: int):
+    async def _xui_server_or_deny(call: CallbackQuery, server_id: int, allowed=("3xui",)):
         if not full_access_bot:
             await deny_reseller_panel_access(call)
             return None
@@ -7494,7 +7494,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await deny_mid(call)
             return None
         server = await asyncio.to_thread(db.get_panel_server, server_id)
-        if not server or server["panel_type"] != "3xui":
+        if not server or server["panel_type"] not in allowed:
             await call.answer(db.get_text('handlers_admin.auto_c9fececa', 'این قابلیت فقط برای سرور 3X-UI است.'), show_alert=True)
             return None
         return server
@@ -7650,7 +7650,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     @router.callback_query(F.data.startswith("adm_panel_server_stats:"))
     async def cb_admin_panel_server_stats(call: CallbackQuery):
         server_id = callback_id(call.data, "adm_panel_server_stats")
-        server = await _xui_server_or_deny(call, server_id)
+        server = await _xui_server_or_deny(call, server_id, allowed=("3xui", "pasarguard"))
         if not server:
             return
         await call.answer(db.get_text('handlers_admin.auto_9a8c4ab6', 'در حال دریافت آمار...'))
