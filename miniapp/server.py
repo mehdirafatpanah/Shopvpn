@@ -292,6 +292,14 @@ def require_full_access_admin(auth=Depends(get_verified_user)):
     return auth
 
 
+def require_bank_admin(auth=Depends(require_full_access_admin)):
+    """بانک کانفیگ برای نمایندگی VIP (اعتبار حجمی) وجود ندارد."""
+    _, db, tenant = auth
+    if is_volume_credit_bot(db, not bool(tenant.tenant_id)):
+        raise HTTPException(status_code=403, detail=tr("نمایندگی VIP بانک کانفیگ ندارد."))
+    return auth
+
+
 def require_main_admin(auth=Depends(get_verified_user)):
     """مدیریت بات‌های نمایندگی: فقط مالک یا مدیر کامل بات اصلی (نه ادمین میانی/پشتیبان،
     نه بات‌های نمایندگی)."""
@@ -4624,6 +4632,7 @@ class ProductUpdate(BaseModel):
     price: Optional[int] = None
     description: Optional[str] = None
     duration_days: Optional[int] = None
+    source: Optional[str] = None
     provision_server_id: Optional[int] = None
     auto_provision_volume_gb: Optional[int] = None
     compare_price: Optional[int] = None  # 0 یعنی حذف تخفیف
@@ -5080,6 +5089,12 @@ def api_admin_panel_servers_lite(auth=Depends(require_senior_admin)):
     return [{"id": s["id"], "name": s["name"]} for s in db.get_panel_servers(active_only=True)]
 
 
+@app.get("/api/admin/catalog-capabilities")
+def api_admin_catalog_capabilities(auth=Depends(require_senior_admin)):
+    _, db, tenant = auth
+    return {"bank_allowed": not is_volume_credit_bot(db, not bool(tenant.tenant_id))}
+
+
 @app.get("/api/admin/categories/{cat_id}/products")
 def api_admin_list_products(cat_id: int, auth=Depends(require_senior_admin)):
     _, db, _ = auth
@@ -5132,6 +5147,8 @@ def api_admin_create_product(body: ProductCreate, auth=Depends(require_senior_ad
     is_full_access = db.is_full_access_bot(not bool(tenant.tenant_id))
     provision_server_id = body.provision_server_id if is_full_access else None
     is_auto_provision = bool(body.is_auto_provision or provision_server_id)
+    if not is_auto_provision and is_volume_credit_bot(db, not bool(tenant.tenant_id)):
+        raise HTTPException(status_code=403, detail=tr("نمایندگی VIP بانک کانفیگ ندارد؛ محصول باید از اعتبار حجمی ساخته شود."))
 
     if body.duration_days < 0:
         raise HTTPException(status_code=400, detail=tr("مدت اعتبار نامعتبر است."))
@@ -5173,8 +5190,30 @@ def api_admin_edit_product(product_id: int, body: ProductUpdate, auth=Depends(re
     if body.price is not None and body.price < 0:
         raise HTTPException(status_code=400, detail=tr("قیمت نامعتبر است."))
 
+    if body.source is not None and body.source not in ("bank", "direct"):
+        raise HTTPException(status_code=400, detail=tr("منبع تأمین نامعتبر است."))
+    if body.source == "bank" and is_volume_credit_bot(db, not bool(tenant.tenant_id)):
+        raise HTTPException(status_code=403, detail=tr("نمایندگی VIP بانک کانفیگ ندارد."))
+
+    source_kwargs = {}
     provision_server_id = None
-    if body.provision_server_id is not None:
+    if body.source is not None:
+        if not db.is_full_access_bot(not bool(tenant.tenant_id)):
+            raise HTTPException(status_code=403, detail=tr("تغییر منبع محصول فقط برای بات اصلی یا نمایندگی کامل مجاز است."))
+        if old_product["is_auto_provision"] and not old_product["provision_server_id"]:
+            raise HTTPException(status_code=400, detail=tr("تغییر منبع برای محصولات خودکارِ مبتنی بر اعتبار حجمی نماینده ممکن نیست."))
+    if body.source == "direct":
+        if not body.provision_server_id or not db.get_panel_server(body.provision_server_id):
+            raise HTTPException(status_code=404, detail=tr("سرور پنل یافت نشد."))
+        if body.auto_provision_volume_gb is None or body.auto_provision_volume_gb < 0:
+            raise HTTPException(status_code=400, detail=tr("برای اتصال مستقیم به پنل باید حجم (گیگابایت) را مشخص کنید."))
+        provision_server_id = body.provision_server_id
+        source_kwargs["is_auto_provision"] = True
+    elif body.source == "bank":
+        if body.duration_days is None and old_product["duration_days"] == 0:
+            raise HTTPException(status_code=400, detail=tr("برای برگرداندن به «بانک کانفیگ» باید مدت اعتبار (روز) را هم مشخص کنید."))
+        source_kwargs.update(is_auto_provision=False, provision_server_id=None, auto_provision_volume_gb=None)
+    elif body.provision_server_id is not None:
         if not old_product["is_auto_provision"]:
             raise HTTPException(status_code=400, detail=tr("این محصول به‌صورت خودکار ساخته نمی‌شود."))
         if not db.is_full_access_bot(not bool(tenant.tenant_id)):
@@ -5183,7 +5222,10 @@ def api_admin_edit_product(product_id: int, body: ProductUpdate, auth=Depends(re
             raise HTTPException(status_code=404, detail=tr("سرور پنل یافت نشد."))
         provision_server_id = body.provision_server_id
 
-    effective_server_id = provision_server_id if provision_server_id is not None else old_product["provision_server_id"]
+    if body.source == "bank":
+        effective_server_id = None
+    else:
+        effective_server_id = provision_server_id if provision_server_id is not None else old_product["provision_server_id"]
 
     if body.duration_days is not None:
         if body.duration_days < 0:
@@ -5200,7 +5242,7 @@ def api_admin_edit_product(product_id: int, body: ProductUpdate, auth=Depends(re
     # نکته: edit_product برای provision_server_id/auto_provision_volume_gb از سنتینل
     # Ellipsis استفاده می‌کند (یعنی «بدون تغییر»)؛ پس این دو را فقط وقتی صراحتاً
     # مقداردهی شده‌اند پاس می‌دهیم، وگرنه ممکن است به‌اشتباه NULL شوند.
-    edit_kwargs = {}
+    edit_kwargs = dict(source_kwargs)
     if body.compare_price is not None:
         edit_kwargs["compare_price"] = max(int(body.compare_price), 0)
     if body.discount_days is not None:
@@ -5209,7 +5251,7 @@ def api_admin_edit_product(product_id: int, body: ProductUpdate, auth=Depends(re
         edit_kwargs["discount_max_uses"] = max(int(body.discount_max_uses), 0)
     if provision_server_id is not None:
         edit_kwargs["provision_server_id"] = provision_server_id
-    if body.auto_provision_volume_gb is not None:
+    if body.auto_provision_volume_gb is not None and body.source != "bank":
         edit_kwargs["auto_provision_volume_gb"] = body.auto_provision_volume_gb
     db.edit_product(
         product_id,
@@ -5224,7 +5266,13 @@ def api_admin_edit_product(product_id: int, body: ProductUpdate, auth=Depends(re
             admin_id, "product_price_edit",
             f"محصول «{old_product['name']}» (#{product_id}) | قیمت قبلی: {old_product['price']:,} | قیمت جدید: {body.price:,}",
         )
-    if provision_server_id is not None and provision_server_id != old_product["provision_server_id"]:
+    if body.source is not None and (body.source == "direct") != bool(old_product["provision_server_id"]):
+        target = f"اتصال مستقیم به سرور #{provision_server_id}" if body.source == "direct" else "بانک کانفیگ"
+        db.log_admin_action(
+            admin_id, "product_source_edit",
+            f"محصول «{old_product['name']}» (#{product_id}) | منبع تغییر کرد به {target}",
+        )
+    elif provision_server_id is not None and provision_server_id != old_product["provision_server_id"]:
         db.log_admin_action(
             admin_id, "product_server_edit",
             f"محصول «{old_product['name']}» (#{product_id}) | سرور/اینباند تغییر کرد به سرور #{provision_server_id}",
@@ -5257,7 +5305,7 @@ def api_admin_delete_product(product_id: int, auth=Depends(require_senior_admin)
 
 
 @app.get("/api/admin/products/{product_id}/configs")
-def api_admin_list_configs(product_id: int, auth=Depends(require_full_access_admin)):
+def api_admin_list_configs(product_id: int, auth=Depends(require_bank_admin)):
     _, db, _ = auth
     if not db.get_product(product_id):
         raise HTTPException(status_code=404, detail=tr("محصول یافت نشد."))
@@ -5266,7 +5314,7 @@ def api_admin_list_configs(product_id: int, auth=Depends(require_full_access_adm
 
 
 @app.post("/api/admin/products/{product_id}/configs")
-def api_admin_add_configs(product_id: int, body: ConfigsAdd, auth=Depends(require_full_access_admin)):
+def api_admin_add_configs(product_id: int, body: ConfigsAdd, auth=Depends(require_bank_admin)):
     _, db, _ = auth
     if not db.get_product(product_id):
         raise HTTPException(status_code=404, detail=tr("محصول یافت نشد."))
@@ -5278,7 +5326,7 @@ def api_admin_add_configs(product_id: int, body: ConfigsAdd, auth=Depends(requir
 
 
 @app.delete("/api/admin/configs/{config_id}")
-def api_admin_delete_config(config_id: int, auth=Depends(require_full_access_admin)):
+def api_admin_delete_config(config_id: int, auth=Depends(require_bank_admin)):
     _, db, tenant = auth
     row = db.get_config_by_id(config_id) if hasattr(db, "get_config_by_id") else None
     db.delete_config(config_id)
@@ -7158,7 +7206,7 @@ def api_admin_adjust_wallet(body: WalletAdjust, auth=Depends(require_full_admin)
 # ---------------------------------------------------------------------------
 
 @app.post("/api/admin/products/{product_id}/take-random-config")
-def api_admin_take_random_config(product_id: int, auth=Depends(require_senior_admin)):
+def api_admin_take_random_config(product_id: int, auth=Depends(require_bank_admin)):
     tg_id, db, _ = auth
     if not db.get_product(product_id):
         raise HTTPException(status_code=404, detail=tr("محصول یافت نشد."))
