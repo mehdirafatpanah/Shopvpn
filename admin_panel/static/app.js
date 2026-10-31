@@ -3465,6 +3465,7 @@ async function openCustomConfigPaymentMethodsModal() {
 let catalogDsubEnabled = false;
 
 function productProvisionFieldsHtml(panelServers, sshNodes = [], prefill = null) {
+  window.__productPanelServers = panelServers || [];
   panelServers = panelServers || []; sshNodes = sshNodes || [];
   const isDirect = !!(prefill && (prefill.provision_server_id || prefill.provision_ssh_node_id));
   const extraPanels = ((prefill && prefill.extra_panel_ids) || []).map(Number);
@@ -3501,6 +3502,15 @@ function productProvisionFieldsHtml(panelServers, sshNodes = [], prefill = null)
       <label class="field field-row"><span>♾ مدت اعتبار نامحدود</span><input type="checkbox" id="prod-duration-unlimited" ${durUnlimited ? 'checked' : ''}></label>
       <label class="field"><span>حجم (GB) — ۰ = نامحدود</span><input class="input" id="prod-volume" type="number" min="0" step="1" placeholder="حجم (گیگابایت)" value="${prefill && prefill.auto_provision_volume_gb != null ? prefill.auto_provision_volume_gb : ''}" ${volUnlimited ? 'disabled' : ''}></label>
       <label class="field field-row"><span>♾ حجم نامحدود</span><input type="checkbox" id="prod-volume-unlimited" ${volUnlimited ? 'checked' : ''}></label>
+      <div id="prod-user-limit-fields" style="display:none;grid-column:1/-1">
+        <div class="card-sub">👥 محدودیت تعداد کاربر همزمان <span id="prod-user-limit-supported-by"></span></div>
+        <div class="form-grid">
+          <label class="field"><span>کاربر پایه (۰ = بدون محدودیت)</span><input class="input" id="prod-base-users" type="number" min="0" max="20" step="1" value="${prefill && prefill.base_users != null ? prefill.base_users : 0}"></label>
+          <label class="field"><span>قیمت هر کاربر اضافه (تومان)</span><input class="input" id="prod-extra-user-price" type="number" min="0" step="1" value="${prefill && prefill.extra_user_price != null ? prefill.extra_user_price : 0}"></label>
+          <label class="field"><span>سقف نهایی کاربر</span><input class="input" id="prod-max-users" type="number" min="0" max="20" step="1" value="${prefill && prefill.max_users != null ? prefill.max_users : 0}"></label>
+        </div>
+        <span class="card-sub">این گزینه فقط وقتی فعال است که تمام پنل‌های VPN انتخاب‌شده از محدودیت کاربر پشتیبانی کنند.</span>
+      </div>
     </div>`;
 }
 
@@ -3510,6 +3520,24 @@ function wireProductProvisionToggle(b) {
     if (df) df.style.display = $('input[name="prod-source"]:checked', b).value === 'direct' ? '' : 'none';
   }));
   const targetType = $('#prod-target-type', b);
+  const syncUserLimit = () => {
+    const wrap = $('#prod-user-limit-fields', b);
+    if (!wrap) return;
+    const tt = targetType ? targetType.value : 'vpn';
+    const serverData = (window.__productPanelServers || []);
+    let ids = [];
+    if (tt === 'multi') ids = $$('.prod-multi-panel:checked', b).map(c => Number(c.value));
+    else if (tt === 'both' || tt === 'vpn') { const v = Number($('#prod-server', b)?.value || 0); if (v) ids=[v]; }
+    const rows = ids.map(id => serverData.find(s => Number(s.id) === id)).filter(Boolean);
+    const supported = rows.length > 0 && rows.every(s => !!s.supports_user_limit);
+    wrap.style.display = supported ? '' : 'none';
+    const hint = $('#prod-user-limit-supported-by', b);
+    if (hint) hint.textContent = supported ? `(${rows.map(s => s.name).join('، ')})` : '';
+    if (!supported) {
+      const base=$('#prod-base-users',b), extra=$('#prod-extra-user-price',b), max=$('#prod-max-users',b);
+      if(base) base.value='0'; if(extra) extra.value='0'; if(max) max.value='0';
+    }
+  };
   const syncMultiProtocols = () => {
     const box = $('#prod-multi-protocols', b);
     if (!box) return;
@@ -3555,6 +3583,7 @@ function wireProductProvisionToggle(b) {
     if ($('#prod-proto-wrap', b)) $('#prod-proto-wrap', b).style.display = (t === 'multi' || t === 'both') ? '' : 'none';
     if ($('#prod-multi-fields', b)) $('#prod-multi-fields', b).style.display = t === 'multi' ? '' : 'none';
     syncSshProtocol();
+    syncUserLimit();
   });
   const durUnlimitedCb = $('#prod-duration-unlimited', b);
   if (durUnlimitedCb) {
@@ -3562,6 +3591,9 @@ function wireProductProvisionToggle(b) {
     if (durInput) durInput.disabled = durUnlimitedCb.checked;
     durUnlimitedCb.addEventListener('change', () => { if (durInput) durInput.disabled = durUnlimitedCb.checked; });
   }
+  $$('.prod-multi-panel', b).forEach(c => c.addEventListener('change', syncUserLimit));
+  const prodServer = $('#prod-server', b); if (prodServer) prodServer.addEventListener('change', syncUserLimit);
+  syncUserLimit();
   const volUnlimitedCb = $('#prod-volume-unlimited', b);
   if (volUnlimitedCb) volUnlimitedCb.addEventListener('change', () => {
     const volInput = $('#prod-volume', b); if (volInput) volInput.disabled = volUnlimitedCb.checked;
@@ -3576,7 +3608,8 @@ function readProductProvisionFields(b) {
   const durationUnlimited = isDirect && durUnlimitedCb && durUnlimitedCb.checked;
   const durInput = $('#prod-duration', b);
   const duration_days = durationUnlimited ? 0 : (Number(durInput ? durInput.value : 0) || 30);
-  if (!isDirect) return { ok: true, source: 'bank', provision_server_id: null, provision_ssh_node_id: null, extra_panel_ids: [], extra_ssh_node_ids: [], auto_provision_volume_gb: null, duration_days };
+  const userLimit = () => ({ base_users: Number($('#prod-base-users', b)?.value || 0), extra_user_price: Number($('#prod-extra-user-price', b)?.value || 0), max_users: Number($('#prod-max-users', b)?.value || 0) });
+  if (!isDirect) return { ok: true, source: 'bank', provision_server_id: null, provision_ssh_node_id: null, extra_panel_ids: [], extra_ssh_node_ids: [], auto_provision_volume_gb: null, duration_days, ...userLimit() };
   const target = $('#prod-target-type', b)?.value || 'vpn';
   const volUnlimitedCb = $('#prod-volume-unlimited', b);
   const volumeUnlimited = volUnlimitedCb && volUnlimitedCb.checked;
@@ -3592,7 +3625,7 @@ function readProductProvisionFields(b) {
     return { ok: true, source: 'direct', provision_server_id: panels[0] || null, provision_ssh_node_id: nodes[0] || null,
       extra_panel_ids: panels.slice(1), extra_ssh_node_ids: nodes.slice(1),
       provision_ssh_protocol: nodes.length ? ($$('#prod-multi-protocols input[data-multi-proto]:checked', b).map(c => c.dataset.multiProto).join(',') || 'ssh') : 'ssh',
-      auto_provision_volume_gb, duration_days };
+      auto_provision_volume_gb, duration_days, ...userLimit() };
   }
   if (target === 'both') {
     const provision_server_id = Number($('#prod-server', b)?.value || 0);
@@ -3600,16 +3633,16 @@ function readProductProvisionFields(b) {
     if (!provision_server_id) { toast('یک پنل VPN فعال انتخاب کنید.', true); return { ok: false }; }
     if (!provision_ssh_node_id) { toast('یک نود SSH فعال انتخاب کنید.', true); return { ok: false }; }
     return { ok: true, source: 'direct', provision_server_id, provision_ssh_node_id, extra_panel_ids: [], extra_ssh_node_ids: [],
-      provision_ssh_protocol: $$('#prod-multi-protocols input[data-multi-proto]:checked', b).map(c => c.dataset.multiProto).join(',') || 'ssh', auto_provision_volume_gb, duration_days };
+      provision_ssh_protocol: $$('#prod-multi-protocols input[data-multi-proto]:checked', b).map(c => c.dataset.multiProto).join(',') || 'ssh', auto_provision_volume_gb, duration_days, ...userLimit() };
   }
   if (target === 'ssh') {
     const provision_ssh_node_id = Number($('#prod-ssh-node', b)?.value || 0);
     if (!provision_ssh_node_id) { toast('یک نود SSH فعال انتخاب کنید.', true); return { ok: false }; }
-    return { ok: true, source: 'direct', provision_server_id: null, provision_ssh_node_id, extra_panel_ids: [], extra_ssh_node_ids: [], provision_ssh_protocol: 'ssh', auto_provision_volume_gb, duration_days };
+    return { ok: true, source: 'direct', provision_server_id: null, provision_ssh_node_id, extra_panel_ids: [], extra_ssh_node_ids: [], provision_ssh_protocol: 'ssh', auto_provision_volume_gb, duration_days, ...userLimit() };
   }
   const provision_server_id = Number($('#prod-server', b)?.value || 0);
   if (!provision_server_id) { toast('یک پنل VPN فعال انتخاب کنید.', true); return { ok: false }; }
-  return { ok: true, source: 'direct', provision_server_id, provision_ssh_node_id: null, extra_panel_ids: [], extra_ssh_node_ids: [], auto_provision_volume_gb, duration_days };
+  return { ok: true, source: 'direct', provision_server_id, provision_ssh_node_id: null, extra_panel_ids: [], extra_ssh_node_ids: [], auto_provision_volume_gb, duration_days, ...userLimit() };
 }
 
 // روش‌های پرداخت مجاز حین «ساخت» محصول جدید (پیش‌فرض: همه تیک‌خورده = بدون
@@ -3723,6 +3756,7 @@ function openProductEditModal(product, categories, panelServers, sshNodes) {
         payload.extra_panel_ids = prov.extra_panel_ids;
         payload.extra_ssh_node_ids = prov.extra_ssh_node_ids;
         payload.auto_provision_volume_gb = prov.auto_provision_volume_gb;
+        payload.base_users = prov.base_users; payload.extra_user_price = prov.extra_user_price; payload.max_users = prov.max_users;
       }
       try {
         await apiPut(`/products/${product.id}`, payload);
@@ -3831,7 +3865,7 @@ async function renderCatalog() {
           category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
           description: $('#prod-desc', b).value, duration_days: prov.duration_days,
           provision_server_id: prov.provision_server_id, provision_ssh_node_id: prov.provision_ssh_node_id, provision_ssh_protocol: prov.provision_ssh_protocol, extra_panel_ids: prov.extra_panel_ids, extra_ssh_node_ids: prov.extra_ssh_node_ids,
-          auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods,
+          auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods, base_users: prov.base_users, extra_user_price: prov.extra_user_price, max_users: prov.max_users,
         });
         toast('محصول اضافه شد.'); close(); renderCatalog();
       } catch (e) { handleErr(e); }
@@ -3966,7 +4000,7 @@ function renderCatalogBento(categories, products, panelServers, sshNodes, paymen
           category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
           description: $('#prod-desc', b).value, duration_days: prov.duration_days,
           provision_server_id: prov.provision_server_id, provision_ssh_node_id: prov.provision_ssh_node_id, provision_ssh_protocol: prov.provision_ssh_protocol, extra_panel_ids: prov.extra_panel_ids, extra_ssh_node_ids: prov.extra_ssh_node_ids,
-          auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods,
+          auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods, base_users: prov.base_users, extra_user_price: prov.extra_user_price, max_users: prov.max_users,
         });
         toast('محصول اضافه شد.'); close(); renderCatalog();
       } catch (e) { handleErr(e); }
@@ -4100,7 +4134,7 @@ function renderCatalogBrutalist(categories, products, panelServers, sshNodes, pa
           category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
           description: $('#prod-desc', b).value, duration_days: prov.duration_days,
           provision_server_id: prov.provision_server_id, provision_ssh_node_id: prov.provision_ssh_node_id, provision_ssh_protocol: prov.provision_ssh_protocol, extra_panel_ids: prov.extra_panel_ids, extra_ssh_node_ids: prov.extra_ssh_node_ids,
-          auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods,
+          auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods, base_users: prov.base_users, extra_user_price: prov.extra_user_price, max_users: prov.max_users,
         });
         toast('محصول اضافه شد.'); close(); renderCatalog();
       } catch (e) { handleErr(e); }
