@@ -1728,13 +1728,10 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         product = (await asyncio.to_thread(db.get_product, product_id))
         if not product or not product["is_auto_provision"]:
             return await call.answer(db.get_text('handlers_admin.auto_d0d88ea3', '⚠️ این محصول خودکار نیست.'), show_alert=True)
-        if product["provision_ssh_node_id"]:
-            return await call.answer(tr("⚠️ محدودیت کاربر همزمان برای محصولات SSH پشتیبانی نمی‌شود."), show_alert=True)
-        if product["provision_server_id"]:
-            from user_limit import server_supports
-            server = await asyncio.to_thread(db.get_panel_server, product["provision_server_id"])
-            if server and not server_supports(server):
-                return await call.answer(tr("⚠️ پنل این محصول از محدودیت کاربر همزمان پشتیبانی نمی‌کند (فقط 3X-UI و علیرضا)."), show_alert=True)
+        from panel_capabilities import product_capabilities, USER_LIMIT
+        capabilities = await asyncio.to_thread(product_capabilities, db, product)
+        if not capabilities[USER_LIMIT]:
+            return await call.answer(tr("⚠️ همهٔ پنل‌های VPN این محصول از محدودیت کاربر همزمان پشتیبانی نمی‌کنند."), show_alert=True)
         await state.update_data(editing_product_id=product_id)
         await state.set_state(AdminEditProduct.waiting_user_base)
         back_cb = f"adm_prod_cat:{product['category_id']}" if product["category_id"] is not None else "adm_products"
@@ -1743,12 +1740,20 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             f"👥 کاربر همزمان «{product['name']}»\n\n"
             "چند کاربر همزمان در قیمت این محصول گنجانده شده؟ (عدد بین ۱ تا ۲۰)\n"
             "این تعداد روی هر سرویسِ ساخته‌شده از این محصول اعمال می‌شود.\n"
-            "عدد 0 یعنی بدون محدودیت (فقط پنل‌های 3X-UI و علیرضا پشتیبانی می‌شوند):",
+            "عدد 0 یعنی بدون محدودیت.",
             reply_markup=kb.admin_back_kb(back_cb),
         )
         await call.answer()
 
     async def _finish_prod_user_limit(message: Message, state: FSMContext, product, base: int, extra_price: int, max_users: int):
+        from panel_capabilities import product_capabilities, normalize_user_limit, USER_LIMIT
+        try:
+            base, extra_price, max_users = normalize_user_limit(
+                base, extra_price, max_users,
+                supported=(await asyncio.to_thread(product_capabilities, db, product))[USER_LIMIT],
+            )
+        except ValueError as exc:
+            return await message.answer(str(exc))
         await asyncio.to_thread(db.set_product_user_limit, product["id"], extra_price, max_users, base)
         if not base:
             summary, done = "بدون محدودیت", "✅ محدودیت کاربر غیرفعال شد."
@@ -2294,12 +2299,13 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def _newprod_after_volume(state: FSMContext):
         """اگر پنل انتخاب‌شده از limitIp پشتیبانی کند، اول تعداد کاربر همزمان را می‌پرسد؛ وگرنه مستقیم روش‌های پرداخت."""
         data = await state.get_data()
-        ask_users = True
-        server_id = data.get("provision_server_id")
-        if server_id:
-            from user_limit import server_supports
-            server = await asyncio.to_thread(db.get_panel_server, server_id)
-            ask_users = bool(server and server_supports(server))
+        from panel_capabilities import all_panels_support, USER_LIMIT
+        panel_ids = []
+        if data.get("provision_server_id"):
+            panel_ids.append(int(data["provision_server_id"]))
+        panel_ids.extend(int(x) for x in (data.get("extra_panel_ids") or []))
+        panels = [await asyncio.to_thread(db.get_panel_server, sid) for sid in panel_ids]
+        ask_users = all_panels_support(panels, USER_LIMIT)
         await state.update_data(base_users=0, user_extra_price=0, user_max=0)
         if ask_users:
             await state.set_state(AdminAddProduct.waiting_base_users)
@@ -2307,7 +2313,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 tr(
                     "👥 چند کاربر همزمان (اتصال هم‌زمان) در قیمت این محصول گنجانده شود؟\n"
                     "عدد بین ۱ تا ۲۰ بفرستید؛ این تعداد روی هر سرویسِ ساخته‌شده اعمال می‌شود.\n"
-                    "عدد 0 یعنی بدون محدودیت (فقط پنل‌های 3X-UI و علیرضا پشتیبانی می‌شوند)."
+                    "عدد 0 یعنی بدون محدودیت؛ این گزینه فقط وقتی نمایش داده می‌شود که همهٔ پنل‌های VPN انتخاب‌شده پشتیبانی کنند."
                 ),
                 None,
             )

@@ -21,6 +21,18 @@ logger = logging.getLogger(__name__)
 _GB = 1024 ** 3
 
 
+async def _update_panel_links_user_limit(db, custom_config_id: int, user_limit: int):
+    """Apply a user-limit change to every VPN panel belonging to a multi-panel service."""
+    for link in db.panel_links_for_config(custom_config_id, active_only=True):
+        link_server = db.get_panel_server(link["panel_server_id"])
+        if not link_server:
+            raise RenewalError("یکی از پنل‌های سرویس چندمقصدی دیگر در دسترس نیست.")
+        link_provider = get_provider(link_server)
+        if not getattr(link_provider, "supports_user_limit", False):
+            raise RenewalError("یکی از پنل‌های سرویس چندمقصدی از محدودیت کاربر پشتیبانی نمی‌کند.")
+        await link_provider.update_user(link["username"], **provider_kwargs(link_provider, user_limit))
+
+
 def _renew_quota_pool(db, pool, mode, add_volume, add_days, fresh=False):
     """تمدید استخر سهمیه‌ی مشترک VPN+SSH. برای سرویس ترکیبی، حجم و انقضای واقعی در
     استخر نگهداری می‌شود (پنل VPN با سقف نامحدود ساخته شده و reconciler سقف آن را از
@@ -67,9 +79,11 @@ async def renew_pooled_service(db, provider, username, pool, mode, add_volume, a
     for link in db.panel_links_for_pool(pool["id"]):
         try:
             link_server = db.get_panel_server(link["panel_server_id"])
-            await get_provider(link_server).update_user(
+            link_provider = get_provider(link_server)
+            await link_provider.update_user(
                 link["username"], add_volume_gb=0, add_days=add_days, reset_usage=False,
                 preserve_remaining=False, unlimited_volume=False,
+                **(user_kwargs or {}),
             )
         except Exception:
             logger.exception("multi-panel renewal: extra panel renew failed (pool=%s, link=%s)",
@@ -117,6 +131,7 @@ async def execute_renewal(db, order) -> str:
                 if not getattr(provider, "supports_user_limit", False):
                     raise RenewalError("پنل این سرویس از محدودیت کاربر پشتیبانی نمی‌کند.")
                 await provider.update_user(cc["username"], **provider_kwargs(provider, renewal_users))
+                await _update_panel_links_user_limit(db, cc["id"], renewal_users)
             except PanelError as e:
                 raise RenewalError(str(e)) from e
             db.set_custom_config_user_limit(cc["id"], renewal_users)

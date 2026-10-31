@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 
 from panel_providers import get_provider, PanelError, PanelUsernameTakenError
 from user_limit import order_user_limit, provider_kwargs
+from panel_capabilities import product_capabilities, USER_LIMIT
 from ssh_uri import build_ssh_uri
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 
@@ -109,6 +110,10 @@ async def _provision_vpn(db, product, quantity: int = 1, user_id: int = None, or
         raise ProvisionError("حجم این محصول تنظیم نشده است.")
     # 0 یعنی نامحدود (هم برای حجم و هم برای مدت) - نباید با مقدار پیش‌فرض جایگزین شود
     duration_days = product["duration_days"] if product["duration_days"] is not None else 30
+
+    configured_user_limit = any(int(product[key] or 0) > 0 for key in ("base_users", "extra_user_price", "max_users"))
+    if configured_user_limit and not product_capabilities(db, product)[USER_LIMIT]:
+        raise ProvisionError("این محصول محدودیت کاربر دارد اما یکی از پنل‌های مقصد دیگر از آن پشتیبانی نمی‌کند؛ تنظیمات محصول را اصلاح کنید.")
 
     provider = get_provider(server)
     prefix = db.get_custom_config_prefix()
@@ -272,6 +277,9 @@ async def _provision_multi(db, product, targets: dict, quantity: int = 1, user_i
     if user_id is None or not isinstance(quantity, int) or quantity < 1:
         raise ProvisionError("شناسه کاربر یا تعداد برای ساخت محصول چندمقصدی نامعتبر است.")
     panel_ids, node_ids = list(targets["panels"]), list(targets["ssh"])
+    configured_user_limit = any(int(product[key] or 0) > 0 for key in ("base_users", "extra_user_price", "max_users"))
+    if configured_user_limit and not product_capabilities(db, product)[USER_LIMIT]:
+        raise ProvisionError("محدودیت کاربر این محصول با یکی از پنل‌های مقصد سازگار نیست؛ تنظیمات محصول را اصلاح کنید.")
     if not panel_ids and any(p in FILE_PROTOCOLS for p in _product_ssh_protocols(product)):
         raise ProvisionError("تحویل فایل OpenVPN/WireGuard حداقل یک پنل VPN در محصول لازم دارد.")
     for sid in panel_ids:

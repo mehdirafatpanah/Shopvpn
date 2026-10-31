@@ -13,6 +13,7 @@ import argparse
 import asyncio
 from contextlib import contextmanager
 import hmac
+import hashlib
 import ipaddress
 import json
 import logging
@@ -39,6 +40,7 @@ OVPN_CCD = OVPN_DIR / "ccd"
 OVPN_PKI = Path(os.getenv("SHOPVPN_OVPN_PKI", "/etc/shopvpn/ovpn-pki"))
 OVPN_SOCK = Path(os.getenv("SHOPVPN_OVPN_SOCK", "/run/openvpn-server/shopvpn.sock"))
 OVPN_EVENTS = Path(os.getenv("SHOPVPN_OVPN_EVENTS", "/var/lib/shopvpn-ovpn-events"))
+OVPN_AUTH_FILE = Path(os.getenv("SHOPVPN_OVPN_AUTH_FILE", "/etc/openvpn/server/shopvpn/auth-users"))
 EASYRSA_CANDIDATES = ("/usr/share/easy-rsa/easyrsa", "/usr/bin/easyrsa")
 WG_IFACE = os.getenv("SHOPVPN_WG_IFACE", "wg-shopvpn")
 WG_SUBNET = ipaddress.ip_network(os.getenv("SHOPVPN_WG_SUBNET", "10.88.0.0/16"))
@@ -334,16 +336,51 @@ class Agent:
     def _ovpn_ready(self) -> bool:
         return "openvpn" in self.protocols and OVPN_SOCK.exists()
 
-    def _ovpn_profile(self, username: str, remote_host: str) -> str:
+    @staticmethod
+    def _ovpn_password_hash(password: str, salt: bytes | None = None) -> str:
+        salt = salt or secrets.token_bytes(16)
+        digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=2**14, r=8, p=1, dklen=32)
+        return f"scrypt$16384$8$1${salt.hex()}${digest.hex()}"
+
+    def _ovpn_set_credentials(self, username: str, password: str):
+        OVPN_AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+        entries = {}
+        if OVPN_AUTH_FILE.is_file():
+            for line in OVPN_AUTH_FILE.read_text(encoding="utf-8").splitlines():
+                parts = line.split("\t", 1)
+                if len(parts) == 2 and parts[0] and parts[1]:
+                    entries[parts[0]] = parts[1]
+        entries[username] = self._ovpn_password_hash(password)
+        tmp = OVPN_AUTH_FILE.with_suffix(".tmp")
+        tmp.write_text("".join(f"{u}\t{h}\n" for u, h in sorted(entries.items())), encoding="utf-8")
+        os.chmod(tmp, 0o640)
+        os.replace(tmp, OVPN_AUTH_FILE)
+
+    def _ovpn_remove_credentials(self, username: str):
+        if not OVPN_AUTH_FILE.is_file():
+            return
+        entries = {}
+        for line in OVPN_AUTH_FILE.read_text(encoding="utf-8").splitlines():
+            parts = line.split("\t", 1)
+            if len(parts) == 2 and parts[0] and parts[1] and parts[0] != username:
+                entries[parts[0]] = parts[1]
+        tmp = OVPN_AUTH_FILE.with_suffix(".tmp")
+        tmp.write_text("".join(f"{u}\t{h}\n" for u, h in sorted(entries.items())), encoding="utf-8")
+        os.chmod(tmp, 0o640)
+        os.replace(tmp, OVPN_AUTH_FILE)
+
+    def _ovpn_profile(self, username: str, password: str, remote_host: str) -> str:
         port, proto = self._ovpn_settings()
         parts = [
             "client", "dev tun", f"proto {proto}", f"remote {remote_host} {port}", "resolv-retry infinite",
             "nobind", "persist-key", "persist-tun", "remote-cert-tls server", "auth SHA256",
+            "auth-user-pass",
             "cipher AES-256-GCM", "verb 3",
             f"<ca>\n{self._pem_block(OVPN_DIR / 'ca.crt')}\n</ca>",
             f"<cert>\n{self._pem_block(OVPN_PKI / 'issued' / f'{username}.crt')}\n</cert>",
             f"<key>\n{self._pem_block(OVPN_PKI / 'private' / f'{username}.key')}\n</key>",
             f"<tls-crypt>\n{(OVPN_DIR / 'ta.key').read_text(encoding='utf-8').strip()}\n</tls-crypt>",
+            f"<auth-user-pass>\n{username}\n{password}\n</auth-user-pass>",
         ]
         return "\n".join(parts) + "\n"
 
@@ -359,6 +396,7 @@ class Agent:
             shutil.copyfile(OVPN_PKI / "crl.pem", OVPN_DIR / "crl.pem")
             os.chmod(OVPN_DIR / "crl.pem", 0o644)
         self._ovpn_cleanup_files(username)
+        self._ovpn_remove_credentials(username)
 
     async def _ovpn_mgmt(self, *commands: str, timeout: float = 5.0) -> str:
         reader, writer = await asyncio.wait_for(asyncio.open_unix_connection(str(OVPN_SOCK)), timeout)
@@ -453,9 +491,10 @@ class Agent:
 
     async def _ovpn_delete(self, username: str):
         await self._ovpn_disable(username)
+        self._ovpn_remove_credentials(username)
         self._ovpn_revoke(username)
 
-    async def _create_openvpn_account(self, account_id, username, expires_at, limit_bytes, remote_host):
+    async def _create_openvpn_account(self, account_id, username, password, expires_at, limit_bytes, remote_host):
         with self._conn() as db:
             if db.execute("SELECT 1 FROM accounts WHERE account_id=? OR username=?", (account_id, username)).fetchone():
                 raise web.HTTPConflict(text="account already exists")
@@ -465,8 +504,11 @@ class Agent:
             if not (OVPN_DIR / "ca.crt").is_file():
                 raise RuntimeError("openvpn server is not installed on this node")
             self._ovpn_cleanup_files(username)
+            if len(password) < 16 or len(password) > 128 or "\n" in password or "\r" in password or ":" in password:
+                raise ValueError("password must be 16-128 safe characters")
             self._easyrsa("build-client-full", username, "nopass")
-            profile = self._ovpn_profile(username, remote_host)
+            self._ovpn_set_credentials(username, password)
+            profile = self._ovpn_profile(username, password, remote_host)
             OVPN_CCD.mkdir(parents=True, exist_ok=True)
             now = utc_now()
             source = "openvpn_accounting" if self._ovpn_ready() else "unreported"
@@ -477,6 +519,7 @@ class Agent:
                 db.execute("INSERT INTO usage(account_id,reported_at,source) VALUES(?,?,?)", (account_id, now, source))
         except Exception as exc:
             try:
+                self._ovpn_remove_credentials(username)
                 self._ovpn_revoke(username)
             except Exception:
                 logger.exception("OpenVPN rollback failed for %s", username)
@@ -679,8 +722,11 @@ class Agent:
     async def info(self, request):
         port, proto = self._ovpn_settings()
         low, high = self._default_ssh_port_range()
+        features = ["ssh_port_range"]
+        if self._ovpn_ready():
+            features.append("openvpn_username_password")
         return web.json_response({"ok": True, "version": 3, "protocols": sorted(self.protocols),
-                                  "features": ["ssh_port_range"],
+                                  "features": features,
                                   "ssh": {"port_min": low, "port_max": high},
                                   "openvpn": {"ready": self._ovpn_ready(), "port": port, "transport": proto}
                                   if "openvpn" in self.protocols else None,
@@ -717,7 +763,10 @@ class Agent:
             raise web.HTTPBadRequest(text="invalid account_id or username")
         if protocol == "openvpn":
             remote_host = str(body.get("remote_host") or os.getenv("SHOPVPN_OVPN_REMOTE", "")).strip()
-            return await self._create_openvpn_account(account_id, username, expires_at, limit_bytes, remote_host)
+            password = str(body.get("password") or "")
+            if not password:
+                raise web.HTTPBadRequest(text="password is required for openvpn accounts")
+            return await self._create_openvpn_account(account_id, username, password, expires_at, limit_bytes, remote_host)
         if protocol == "wireguard":
             remote_host = str(body.get("remote_host") or os.getenv("SHOPVPN_WG_REMOTE", "")).strip()
             return await self._create_wireguard_account(account_id, username, expires_at, limit_bytes, remote_host)

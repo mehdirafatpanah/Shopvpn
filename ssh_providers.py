@@ -146,9 +146,14 @@ class LinuxAgentSSHProvider(BaseSSHProvider):
                              protocol: str = "ssh") -> SSHAccountResult:
         protocol = str(protocol or "ssh").strip().lower()
         if protocol == "openvpn":
+            info = await self.get_info()
+            if "openvpn_username_password" not in (info.get("features") or []):
+                raise SSHProviderError("Linux Agent از OpenVPN با Username/Password پشتیبانی نمی‌کند؛ Agent را به‌روز کنید")
+            alphabet = string.ascii_letters + string.digits + "-_"
+            password = "".join(secrets.choice(alphabet) for _ in range(28))
             account_id = str(uuid.uuid4())
             data = await self._request("POST", "/v1/accounts", {
-                "account_id": account_id, "username": username, "protocol": "openvpn",
+                "account_id": account_id, "username": username, "password": password, "protocol": "openvpn",
                 "remote_host": str(self.node.get("host") or ""), "expires_at": expires_at,
                 "limit_bytes": max(0, int(limit_bytes)),
             })
@@ -157,7 +162,7 @@ class LinuxAgentSSHProvider(BaseSSHProvider):
                 raise SSHProviderError("پاسخ Agent شامل پروفایل OpenVPN معتبر نیست")
             return SSHAccountResult(account_id=account_id, username=data.get("username", username),
                 host=str(self.node.get("host") or ""), port=int(data.get("port") or 1194),
-                metadata={"profile": profile, "protocol": "openvpn", "transport": data.get("transport"),
+                metadata={"profile": profile, "password": password, "protocol": "openvpn", "transport": data.get("transport"),
                           "limit_bytes_requested": int(limit_bytes), "accounting_ready": False})
         if protocol == "wireguard":
             account_id = str(uuid.uuid4())

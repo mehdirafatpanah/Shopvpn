@@ -336,6 +336,13 @@ async def create_account(db, *, node_id: int, user_id: int, username: str, limit
         except ValueError as exc:
             raise SSHServiceError(str(exc))
     provider = get_ssh_provider(node, secret_resolver=_env_secret_resolver)
+    if protocol == "openvpn":
+        try:
+            info = await provider.get_info()
+        except Exception as exc:
+            raise SSHServiceError(f"قابلیت OpenVPN Username/Password از Agent قابل استعلام نیست: {str(exc)[:180]}", 502)
+        if "openvpn_username_password" not in (info.get("features") or []):
+            raise SSHServiceError("Agent این نود از OpenVPN با Username/Password پشتیبانی نمی‌کند؛ Agent را به‌روز کنید.", 409)
     try:
         encrypt_credential("preflight-check")
     except RuntimeError as exc:

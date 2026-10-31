@@ -10,7 +10,7 @@
 (extra_user_price برای هر کاربر اضافه) را بپردازد.
 """
 
-from panel_providers import PROVIDERS
+from panel_capabilities import product_capabilities, USER_LIMIT
 
 
 def _field(row, key, default=0):
@@ -41,10 +41,8 @@ def configured_max_users(product) -> int:
 
 
 def server_supports(server) -> bool:
-    if not server:
-        return False
-    provider_cls = PROVIDERS.get(server["panel_type"])
-    return bool(provider_cls and getattr(provider_cls, "supports_user_limit", False))
+    from panel_capabilities import server_capabilities, USER_LIMIT
+    return bool(server and server_capabilities(server).get(USER_LIMIT, False))
 
 
 def resolve_server(db, product):
@@ -68,8 +66,7 @@ def included_users(db, product) -> int:
     base = product_base_users(product)
     if not base or not _field(product, "is_auto_provision"):
         return 0
-    server = resolve_server(db, product)
-    if not server or not _field(server, "is_active", 1) or not server_supports(server):
+    if not product_capabilities(db, product)[USER_LIMIT]:
         return 0
     return base
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
@@ -82,8 +79,7 @@ def selectable_max_users(db, product) -> int:
     max_users = configured_max_users(product)
     if not max_users:
         return 0
-    server = resolve_server(db, product)
-    if not server or not _field(server, "is_active", 1) or not server_supports(server):
+    if not product_capabilities(db, product)[USER_LIMIT]:
         return 0
     return max_users
 
@@ -120,6 +116,11 @@ def renewal_users(db, product, cc) -> int:
     server = db.get_panel_server(cc["panel_server_id"]) if _field(cc, "panel_server_id", None) else None
     if not server or not server_supports(server):
         return 0
+    links = db.panel_links_for_config(cc["id"], active_only=True) if _field(cc, "id", None) else []
+    if links:
+        panel_rows = [server] + [db.get_panel_server(link["panel_server_id"]) for link in links]
+        if not all(row and server_supports(row) for row in panel_rows):
+            return 0
     return max(int(_field(cc, "user_limit", 0) or 0), base)
 
 
@@ -145,6 +146,9 @@ def service_upgrade_info(db, cc):
     if not max_users or current >= max_users:
         return None
     if not server or not _field(server, "is_active", 1) or not server_supports(server):
+        return None
+    links = db.panel_links_for_config(cc["id"], active_only=True) if _field(cc, "id", None) else []
+    if links and not all(server_supports(db.get_panel_server(link["panel_server_id"])) for link in links):
         return None
     return {"product": product, "current": current, "max_users": max_users}
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
