@@ -37,12 +37,13 @@ SERVICE_SOURCE="${PROJECT_ROOT}/deploy/shopvpn-ssh-agent.service"
 SSHD_TEMPLATE_SOURCE="${PROJECT_ROOT}/deploy/shopvpn-sshd@.service"
 OVPN_DISCONNECT_SOURCE="${PROJECT_ROOT}/deploy/shopvpn-ovpn-disconnect.sh"
 OVPN_NAT_SOURCE="${PROJECT_ROOT}/deploy/shopvpn-ovpn-nat.service"
+OVPN_AUTH_SOURCE="${PROJECT_ROOT}/deploy/shopvpn-ovpn-auth.py"
 WG_NAT_SOURCE="${PROJECT_ROOT}/deploy/shopvpn-wg-nat.service"
 ENV_FILE=/etc/shopvpn-ssh-agent.env
 
 required=("${AGENT_SOURCE}" "${SERVICE_SOURCE}")
 [[ "${WANT_SSH}" -eq 1 ]] && required+=("${SSHD_TEMPLATE_SOURCE}")
-[[ "${WANT_OVPN}" -eq 1 ]] && required+=("${OVPN_DISCONNECT_SOURCE}" "${OVPN_NAT_SOURCE}")
+[[ "${WANT_OVPN}" -eq 1 ]] && required+=("${OVPN_DISCONNECT_SOURCE}" "${OVPN_NAT_SOURCE}" "${OVPN_AUTH_SOURCE}")
 [[ "${WANT_WG}" -eq 1 ]] && required+=("${WG_NAT_SOURCE}")
 for file in "${required[@]}"; do
   if [[ ! -f "${file}" ]]; then
@@ -141,6 +142,11 @@ if [[ "${WANT_OVPN}" -eq 1 ]]; then
   install -d -o root -g root -m 0755 "${OVPN_BASE}" "${OVPN_DIR}" "${OVPN_DIR}/ccd"
   install -d -o root -g root -m 1733 /var/lib/shopvpn-ovpn-events
   install -o root -g root -m 0755 "${OVPN_DISCONNECT_SOURCE}" /opt/shopvpn/ovpn-disconnect.sh
+  install -o root -g root -m 0755 "${OVPN_AUTH_SOURCE}" /opt/shopvpn/ovpn-auth.py
+  install -d -o root -g nogroup -m 0750 "${OVPN_DIR}" 2>/dev/null || install -d -o root -g nobody -m 0750 "${OVPN_DIR}"
+  touch "${OVPN_DIR}/auth-users"
+  chown root:nogroup "${OVPN_DIR}/auth-users" 2>/dev/null || chown root:nobody "${OVPN_DIR}/auth-users"
+  chmod 0640 "${OVPN_DIR}/auth-users"
   install -o root -g root -m 0644 "${OVPN_NAT_SOURCE}" /etc/systemd/system/shopvpn-ovpn-nat.service
 
   if [[ ! -f "${OVPN_CONF}" ]]; then
@@ -197,6 +203,8 @@ if [[ "${WANT_OVPN}" -eq 1 ]]; then
       echo "crl-verify ${OVPN_DIR}/crl.pem"
       echo "client-config-dir ${OVPN_DIR}/ccd"
       echo "auth SHA256"
+      echo "auth-user-pass-verify /opt/shopvpn/ovpn-auth.py via-file"
+      echo "username-as-common-name"
       echo "cipher AES-256-GCM"
       echo "${CIPHER_LINE}"
       echo "tls-version-min 1.2"
@@ -232,7 +240,19 @@ EOF
     echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-shopvpn-ovpn.conf
     sysctl -q -p /etc/sysctl.d/99-shopvpn-ovpn.conf || true
   else
-    echo "Existing OpenVPN server config preserved."
+    echo "Existing OpenVPN server config found; enabling ShopVPN username/password authentication."
+    install -d -o root -g root -m 0755 "${OVPN_DIR}" "${OVPN_DIR}/ccd"
+    install -d -o root -g root -m 0755 /opt/shopvpn
+    install -o root -g root -m 0755 "${OVPN_AUTH_SOURCE}" /opt/shopvpn/ovpn-auth.py
+    touch "${OVPN_DIR}/auth-users"
+    chmod 0640 "${OVPN_DIR}/auth-users"
+    chown root:nogroup "${OVPN_DIR}/auth-users" 2>/dev/null || chown root:nobody "${OVPN_DIR}/auth-users"
+    if ! grep -q '^auth-user-pass-verify /opt/shopvpn/ovpn-auth.py via-file$' "${OVPN_CONF}"; then
+      printf '\nauth-user-pass-verify /opt/shopvpn/ovpn-auth.py via-file\nusername-as-common-name\n' >> "${OVPN_CONF}"
+    fi
+    if ! grep -q '^script-security 2$' "${OVPN_CONF}"; then
+      printf 'script-security 2\n' >> "${OVPN_CONF}"
+    fi
   fi
 fi
 
