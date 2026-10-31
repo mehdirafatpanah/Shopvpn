@@ -59,11 +59,12 @@ class QuotaReconciler:
     If telemetry is stale, the reconciler does not automatically re-enable any
     previously suspended service.
     """
-    def __init__(self, db, interval_seconds: int = 60, max_snapshot_age_seconds: int = 300,
+    def __init__(self, db, interval_seconds: int = 60, max_snapshot_age_seconds: int = 300, stale_grace_seconds: int = 900,
                  vpn_provider_factory=None, ssh_provider_factory=None, secret_resolver=None):
         self.db = db
         self.interval_seconds = max(10, int(interval_seconds))
         self.max_snapshot_age_seconds = max(30, int(max_snapshot_age_seconds))
+        self.stale_grace_seconds = max(0, int(stale_grace_seconds))
         self.vpn_provider_factory = vpn_provider_factory or get_provider
         self.ssh_provider_factory = ssh_provider_factory or get_ssh_provider
         self.secret_resolver = secret_resolver or _env_secret_resolver
@@ -283,6 +284,16 @@ class QuotaReconciler:
                 return False
         return True
 
+    def _oldest_snapshot_age(self, members):
+        now = datetime.now(timezone.utc)
+        ages = []
+        for member in members:
+            stamp = _parse_time(member.get("reported_at"))
+            if not stamp:
+                return float("inf")
+            ages.append(abs((now - stamp).total_seconds()))
+        return max(ages) if ages else 0.0
+
     async def reconcile_pool(self, pool):
         pool_id = int(pool["id"])
         members_before = self.db.get_quota_members(pool_id)
@@ -315,6 +326,8 @@ class QuotaReconciler:
                 actions.append(await self._set_member_enabled(pool_id, member, False, "expired"))
             self.db.set_quota_pool_status(pool_id, "expired")
             state = "expired"
+        elif limit and not fresh and self._oldest_snapshot_age(members) <= self.max_snapshot_age_seconds + self.stale_grace_seconds:
+            state = "stale_grace"
         elif limit and not fresh:
             for member in members:
                 actions.append(await self._set_member_enabled(pool_id, member, False, "stale"))
