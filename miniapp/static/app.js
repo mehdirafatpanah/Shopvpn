@@ -5232,6 +5232,13 @@ async function renderAdminProducts(body) {
       <input class="input" id="new-prod-duration" type="number" placeholder="مدت اعتبار (روز)" value="30" style="margin-bottom:8px" />
       <input class="input" id="new-prod-desc" type="text" placeholder="توضیحات (اختیاری)" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:8px" />
       ${productProvisionFieldsHtml(panelServers, bankAllowed)}
+      <div id="new-prod-user-limit" style="display:none;margin-bottom:10px">
+        <label class="field-label">👥 محدودیت کاربر همزمان</label>
+        <input class="input" id="new-prod-base-users" type="number" min="0" max="20" value="0" placeholder="تعداد پایه (۰ = بدون محدودیت)" style="margin-bottom:6px" />
+        <input class="input" id="new-prod-extra-user-price" type="number" min="0" value="0" placeholder="قیمت هر کاربر اضافه" style="margin-bottom:6px" />
+        <input class="input" id="new-prod-max-users" type="number" min="0" max="20" value="0" placeholder="سقف کاربران" />
+        <p class="hint-text">این بخش فقط وقتی نمایش داده می‌شود که پنل VPN انتخاب‌شده این قابلیت را پشتیبانی کند.</p>
+      </div>
       ${productPaymentMethodsFieldsHtml(paymentMethods)}
       <div class="field-error" id="new-prod-error"></div>
       <button class="btn" id="new-prod-save">➕ افزودن محصول</button>
@@ -5285,6 +5292,19 @@ async function renderAdminProducts(body) {
       document.getElementById("new-prod-duration").disabled = newDurUnlimitedCb.checked;
     });
   }
+  const syncNewProdUserLimit = () => {
+    const wrap = document.getElementById("new-prod-user-limit");
+    const direct = body.querySelector('input[name="new-prod-source"]:checked')?.value === "direct";
+    const sid = Number(document.getElementById("new-prod-server")?.value || 0);
+    const panel = panelServers.find((x) => Number(x.id) === sid);
+    const show = direct && !!panel?.supports_user_limit;
+    if (wrap) wrap.style.display = show ? "" : "none";
+    if (!show) ["new-prod-base-users","new-prod-extra-user-price","new-prod-max-users"].forEach((id) => { const el = document.getElementById(id); if (el) el.value = 0; });
+  };
+  document.getElementById("new-prod-server")?.addEventListener("change", syncNewProdUserLimit);
+  sourceRadios.forEach((r) => r.addEventListener("change", syncNewProdUserLimit));
+  syncNewProdUserLimit();
+
   const newVolUnlimitedCb = document.getElementById("new-prod-volume-unlimited");
   if (newVolUnlimitedCb) {
     newVolUnlimitedCb.addEventListener("change", () => {
@@ -5304,7 +5324,10 @@ async function renderAdminProducts(body) {
     const duration = durationUnlimited ? 0 : (Number(document.getElementById("new-prod-duration").value) || 30);
     const disc = readProductDiscount("new-prod", price, errBox);
     if (!disc) return;
-    const payload = { category_id: categoryId, name, price: disc.price, duration_days: duration, description: desc, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses };
+    const payload = { category_id: categoryId, name, price: disc.price, duration_days: duration, description: desc, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
+      base_users: Number(document.getElementById("new-prod-base-users")?.value || 0),
+      extra_user_price: Number(document.getElementById("new-prod-extra-user-price")?.value || 0),
+      max_users: Number(document.getElementById("new-prod-max-users")?.value || 0) };
     if (isDirect) {
       const provision_server_id = Number(document.getElementById("new-prod-server").value);
       const volumeUnlimited = newVolUnlimitedCb && newVolUnlimitedCb.checked;
@@ -5373,6 +5396,12 @@ async function renderAdminEditProduct(body) {
       <label style="display:flex;align-items:center;gap:6px;margin-bottom:10px">
         <input type="checkbox" id="edit-prod-volume-unlimited" ${volumeIsUnlimited ? "checked" : ""} /> ♾ حجم نامحدود
       </label>
+      <div id="edit-prod-user-limit" style="display:${startDirect && panelServers.find((x) => Number(x.id) === Number(p.provision_server_id))?.supports_user_limit ? "" : "none"};margin-bottom:10px">
+        <label class="field-label">👥 محدودیت کاربر همزمان</label>
+        <input class="input" id="edit-prod-base-users" type="number" min="0" max="20" value="${Number(p.base_users || 0)}" placeholder="تعداد پایه" style="margin-bottom:6px" />
+        <input class="input" id="edit-prod-extra-user-price" type="number" min="0" value="${Number(p.extra_user_price || 0)}" placeholder="قیمت هر کاربر اضافه" style="margin-bottom:6px" />
+        <input class="input" id="edit-prod-max-users" type="number" min="0" max="20" value="${Number(p.max_users || 0)}" placeholder="سقف کاربران" />
+      </div>
       <p class="hint-text">🔌 با تغییر پنل یا منبع، ساخت‌های بعدیِ همین محصول طبق تنظیم جدید انجام می‌شود؛ سرویس‌های قبلاً ساخته‌شده و کانفیگ‌های باقی‌مانده در بانک تغییر نمی‌کنند.</p>
       </div>
       ` : (isCreditAuto ? `<p class="hint-text">🔌 این محصول به‌صورت خودکار (${p.auto_provision_volume_gb ? p.auto_provision_volume_gb + " گیگ" : "نامحدود"}) ساخته می‌شود. برای تغییر پنل/اینباند باید نمایندگی باشی.</p>` : "")}
@@ -5401,6 +5430,19 @@ async function renderAdminEditProduct(body) {
     document.getElementById("edit-prod-dur-unl-wrap").style.display = direct ? "flex" : "none";
     document.getElementById("edit-prod-duration").disabled = direct && editDurUnlimitedCb && editDurUnlimitedCb.checked;
   }));
+  const syncEditProdUserLimit = () => {
+    const wrap = document.getElementById("edit-prod-user-limit");
+    const direct = body.querySelector('input[name="edit-prod-source"]:checked')?.value === "direct" || !!p.provision_server_id;
+    const sid = Number(document.getElementById("edit-prod-server")?.value || 0);
+    const panel = panelServers.find((x) => Number(x.id) === sid);
+    const show = direct && !!panel?.supports_user_limit;
+    if (wrap) wrap.style.display = show ? "" : "none";
+    if (!show) ["edit-prod-base-users","edit-prod-extra-user-price","edit-prod-max-users"].forEach((id) => { const el = document.getElementById(id); if (el) el.value = 0; });
+  };
+  document.getElementById("edit-prod-server")?.addEventListener("change", syncEditProdUserLimit);
+  body.querySelectorAll('input[name="edit-prod-source"]').forEach((r) => r.addEventListener("change", syncEditProdUserLimit));
+  syncEditProdUserLimit();
+
   const editVolUnlimitedCb = document.getElementById("edit-prod-volume-unlimited");
   if (editVolUnlimitedCb) {
     editVolUnlimitedCb.addEventListener("change", () => {
@@ -5420,7 +5462,10 @@ async function renderAdminEditProduct(body) {
     if (!name || !price || (!durationUnlimited && !duration)) { errBox.textContent = "نام، قیمت و مدت اعتبار الزامی هستند."; return; }
     const disc = readProductDiscount("edit-prod", price, errBox);
     if (!disc) return;
-    const payload = { name, price: disc.price, duration_days: duration, description, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses };
+    const payload = { name, price: disc.price, duration_days: duration, description, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
+      base_users: Number(document.getElementById("edit-prod-base-users")?.value || 0),
+      extra_user_price: Number(document.getElementById("edit-prod-extra-user-price")?.value || 0),
+      max_users: Number(document.getElementById("edit-prod-max-users")?.value || 0) };
     const serverSel = document.getElementById("edit-prod-server");
     if (editSourceEl) payload.source = editIsDirect ? "direct" : "bank";
     if (serverSel && editIsDirect) {
