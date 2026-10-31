@@ -464,6 +464,48 @@ class CatalogMixin:
                 conn.execute("DELETE FROM product_extra_targets WHERE product_id=?", (product_id,))
 
 
+    def repair_product_capabilities(self) -> int:
+        """Normalize stored user-limit settings against the product's actual VPN targets.
+
+        SSH targets are intentionally ignored. This is a one-time/cheap consistency
+        repair used after schema migrations so old products cannot retain a user limit
+        that their current provider combination cannot enforce.
+        """
+        from panel_capabilities import all_panels_support, normalize_user_limit, USER_LIMIT
+
+        changed = 0
+        with self._get_conn() as conn:
+            products = conn.execute(
+                "SELECT id, provision_server_id, base_users, extra_user_price, max_users FROM products"
+            ).fetchall()
+            for product in products:
+                panel_ids = [int(product["provision_server_id"])] if product["provision_server_id"] else []
+                extras = conn.execute(
+                    "SELECT target_id FROM product_extra_targets WHERE product_id=? AND kind='panel' ORDER BY position,id",
+                    (int(product["id"]),),
+                ).fetchall()
+                panel_ids.extend(int(r["target_id"]) for r in extras)
+                panel_ids = list(dict.fromkeys(panel_ids))
+                rows = []
+                for pid in panel_ids:
+                    rows.append(conn.execute("SELECT id,panel_type,is_active FROM panel_servers WHERE id=?", (pid,)).fetchone())
+                supported = all_panels_support(rows, USER_LIMIT)
+                try:
+                    base, extra, maximum = normalize_user_limit(
+                        product["base_users"], product["extra_user_price"], product["max_users"],
+                        supported=supported,
+                    )
+                except ValueError:
+                    base, extra, maximum = 0, 0, 0
+                if (int(product["base_users"] or 0), int(product["extra_user_price"] or 0), int(product["max_users"] or 0)) != (base, extra, maximum):
+                    conn.execute(
+                        "UPDATE products SET base_users=?, extra_user_price=?, max_users=? WHERE id=?",
+                        (base, extra, maximum, int(product["id"])),
+                    )
+                    changed += 1
+        return changed
+
+
     def set_product_user_limit(self, product_id: int, extra_user_price: int, max_users: int,
                                base_users: int = None):
         """base_users=None: ستون base_users دست نمی‌خورد (رفتار قدیمی).

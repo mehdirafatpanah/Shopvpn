@@ -1682,7 +1682,16 @@ class DatabaseBase:
             if "duplicate column name" not in str(exc).lower():
                 raise
 
-# قابلیت ۵۰: هر بار این نمونه از بات بالا می‌آید، کد را برای فراخوانی‌های
+# هم‌گام‌سازی محدودیت کاربر محصولات با Capability واقعی پنل‌ها.
+        # این مرحله بعد از commit شدن schema اجرا می‌شود تا lock بازگشتی روی _get_conn نداشته باشیم.
+        try:
+            repaired = self.repair_product_capabilities()
+            if repaired:
+                logger.info("%d product user-limit records repaired against panel capabilities", repaired)
+        except Exception:
+            logger.exception("ترمیم محدودیت کاربر محصولات ناموفق بود")
+
+        # قابلیت ۵۰: هر بار این نمونه از بات بالا می‌آید، کد را برای فراخوانی‌های
         # get_text(...) اسکن می‌کند تا متن‌های جدید خودکار در پنل وب ظاهر شوند
         # (نگاه کن: text_scanner.py، _sync_text_registry).
         self._sync_text_registry()
