@@ -110,6 +110,18 @@ class RebeccaProvider(BasePanelProvider):
                 json={"status": "active" if enabled else "disabled"},
             )
 
+    supports_template_resync = True
+
+    async def resync_user_template(self, username: str) -> bool:
+        """service_id کاربر را با سرویس فعلی قالب یکی می‌کند."""
+        target = self._service_id()
+        async with self._session() as session:
+            _, current = await self._call(session, "GET", f"user/{username}", "دریافت اطلاعات کاربر")
+            if isinstance(current, dict) and str(current.get("service_id")) == str(target):
+                return False
+            await self._call(session, "PUT", f"user/{username}", "هم‌گام‌سازی سرویس کاربر", json={"service_id": target})
+        return True
+
     supports_data_limit_sync = True
 
     async def set_data_limit_bytes(self, username: str, limit_bytes: int, reenable: bool = False) -> None:

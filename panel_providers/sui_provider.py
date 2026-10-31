@@ -200,6 +200,22 @@ class SUIProvider(BasePanelProvider):
             updated["enable"] = bool(enabled)
             await self._save(session, "edit", updated, "تغییر وضعیت کاربر")
 
+    supports_template_resync = True
+
+    async def resync_user_template(self, username: str) -> bool:
+        """inbound های کلاینت را با قالب فعلی پنل در ربات یکی می‌کند."""
+        target = load_json(self.server["group_ids"])
+        if not isinstance(target, list) or not target:
+            return False
+        async with self._session() as session:
+            client = await self._find(session, username)
+            if self._norm_binding(client.get("inbounds")) == self._norm_binding(target):
+                return False
+            updated = dict(client)
+            updated["inbounds"] = target
+            await self._save(session, "edit", updated, "هم‌گام‌سازی inbound کاربر")
+        return True
+
     async def test_connection(self) -> bool:
         try:
             async with self._session() as session:

@@ -404,6 +404,38 @@ class PasarguardProvider(BasePanelProvider):
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 raise PanelError(f"خطا در اتصال به پنل: {e or 'پاسخی از سرور در زمان مقرر دریافت نشد (timeout)'}") from e
 
+    supports_template_resync = True
+
+    async def resync_user_template(self, username: str) -> bool:
+        """group_ids کاربر را با قالب فعلی پنل در ربات یکی می‌کند؛ برای کاربرانی که گروهشان بعد از تغییر نود/هاست بی‌اینباند شده."""
+        raw = self.server["group_ids"]
+        target = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        target = sorted(int(g) for g in target)
+        if not target:
+            return False
+        async with self._session() as session:
+            token = await self._get_token(session)
+            headers = {**self._auth(token), "accept": "application/json", "Content-Type": "application/json"}
+            try:
+                async with session.get(f"{self._base_url()}/api/user/{username}", headers=headers,
+                                       timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                    if resp.status == 404:
+                        raise PanelError(f"کاربری با نام «{username}» روی پنل پیدا نشد.")
+                    if resp.status >= 400:
+                        raise PanelError(f"خطا در دریافت کاربر (کد {resp.status})")
+                    current = await resp.json()
+                have = sorted(int(g) for g in (current.get("group_ids") or []))
+                if have == target:
+                    return False
+                async with session.put(f"{self._base_url()}/api/user/{username}", json={"group_ids": target},
+                                       headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise PanelError(f"خطا در هم‌گام‌سازی گروه کاربر (کد {resp.status}): {text[:300]}")
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                raise PanelError(f"خطا در اتصال به پنل: {e or 'timeout'}") from e
+        return True
+
     supports_data_limit_sync = True
 
     async def set_data_limit_bytes(self, username: str, limit_bytes: int, reenable: bool = False) -> None:

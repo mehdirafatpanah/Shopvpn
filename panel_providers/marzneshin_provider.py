@@ -260,6 +260,19 @@ class MarzneshinProvider(BasePanelProvider):
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 raise PanelError(f"خطا در اتصال به پنل: {e or 'پاسخی از سرور در زمان مقرر دریافت نشد (timeout)'}") from e
 
+    supports_template_resync = True
+
+    async def resync_user_template(self, username: str) -> bool:
+        """service_ids کاربر را با قالب فعلی پنل در ربات یکی می‌کند."""
+        raw = self.server["group_ids"]
+        target = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        if not target:
+            return False
+        async with self._session() as session:
+            token = await self._get_token(session)
+            headers = {"Authorization": f"Bearer {token}", "accept": "application/json", "Content-Type": "application/json"}
+            return await self._sync_binding(session, headers, f"/api/users/{username}", "service_ids", target)
+
     async def rename_user(self, username: str, new_username: str) -> str:
         """مرزنشین هم endpoint رسمی برای تغییر username ندارد؛ کاربر با
         همان service_ids/data_limit/expire ولی نام تازه ساخته می‌شود و کاربر

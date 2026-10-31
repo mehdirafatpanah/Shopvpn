@@ -290,6 +290,19 @@ class MarzbanProvider(BasePanelProvider):
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 raise PanelError(f"خطا در اتصال به پنل: {e or 'پاسخی از سرور در زمان مقرر دریافت نشد (timeout)'}") from e
 
+    supports_template_resync = True
+
+    async def resync_user_template(self, username: str) -> bool:
+        """inbounds کاربر را با قالب فعلی پنل در ربات یکی می‌کند."""
+        raw = self.server["group_ids"]
+        target = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        if not target:
+            return False
+        async with self._session() as session:
+            token = await self._get_token(session)
+            headers = {"Authorization": f"Bearer {token}", "accept": "application/json", "Content-Type": "application/json"}
+            return await self._sync_binding(session, headers, f"/api/user/{username}", "inbounds", target)
+
     supports_data_limit_sync = True
 
     async def set_data_limit_bytes(self, username: str, limit_bytes: int, reenable: bool = False) -> None:
