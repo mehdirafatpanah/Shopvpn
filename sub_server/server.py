@@ -37,6 +37,7 @@ from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, R
 from starlette.routing import Route
 
 import dedicated_sub as ds
+import panel_resync
 from config import DB_PATH, OWNER_ID
 from database import Database
 
@@ -322,6 +323,15 @@ async def sub_endpoint(request: Request) -> Response:
         if pool_info:
             info = pool_info
         uris = ds.extract_uris(up.body) if ok else []
+        if not uris and up.status == 200 and await panel_resync.heal_config(db, cc):
+            try:
+                up = await cache.get(_forward_query(cc["subscription_url"], {}), PAGE_UA, ttl, force=True)
+            except Exception:
+                pass
+            ok = up.status == 200 and bool(up.body)
+            if ok and not pool_info:
+                info = ds.parse_userinfo(up.headers.get("subscription-userinfo"))
+            uris = ds.extract_uris(up.body) if ok else []
         if not uris:
             # تشخیص: چرا هیچ کانفیگی از پنل استخراج نشد؟ (وضعیت، نوع پاسخ و ابتدای بدنه)
             log.warning("sub-diag: no uris cc=%s url=%s status=%s ok=%s fresh=%s stale=%s ctype=%s len=%s head=%r",
@@ -352,6 +362,11 @@ async def sub_endpoint(request: Request) -> Response:
         up = await cache.get(upstream_url, ua, ttl)
     except Exception:
         up = Upstream(0, {}, b"", fresh=False)
+    if up.status == 200 and not ds.extract_uris(up.body or b"") and await panel_resync.heal_config(db, cc):
+        try:
+            up = await cache.get(upstream_url, ua, ttl, force=True)
+        except Exception:
+            pass
     if up.status == 200 and up.fresh:
         await _snapshot_usage(cc, up.headers)
     # Keep the VPN client subscription headers consistent with the shared quota
