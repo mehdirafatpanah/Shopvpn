@@ -23,8 +23,12 @@
 - [🧠 AI Support Assistant](#ai-support)
 - [📣 AI Channel Posts](#channel-ai)
 - [💼 Telegram Business](#business)
+- [🔐 SSH, OpenVPN & WireGuard Nodes](#ssh-nodes)
+- [🏢 Reseller Tiers & Agency Requests](#reseller-tiers)
+- [🚨 Config Leak Detection](#leak-detection)
 - [💳 Payment Gateways](#payment-gateways)
 - [📲 Telegram Mini App](#miniapp)
+- [🛍️ Public Web Shop](#web-shop)
 - [🖥️ Standalone Web Admin Panel](#admin-panel)
 - [📱 Android Management App](#android-app)
 - [🔌 Supported VPN Panels](#vpn-panels)
@@ -37,6 +41,7 @@
 - [🧪 Technology Stack](#tech-stack)
 - [🆕 Recently Added Features](#new-features)
 - [🔎 Additional Features](#additional-features)
+- [🔗 Dedicated Subscription Server](#dedicated-sub)
 - [🤝 Contributing & License](#contributing)
 
 ---
@@ -69,6 +74,12 @@ The project is designed for real-world operation, with wallets, referrals, disco
 - 🌍 Server map and panel health monitoring
 - 🌐 Polling and Webhook support
 - 🚀 Anti-spam, reports, backups, cashback, coins, lottery, gifts and Integration API
+- 🛍️ Public web shop (own domain, Telegram or email login) next to the Mini App
+- 🔐 SSH, OpenVPN and WireGuard nodes with shared VPN+SSH quota pools
+- 🥉🥈🥇👑 Four reseller tiers with agency requests and postpaid credit
+- 🚨 Config leak detection with smart Telegram discovery
+- 🏆 Seasons, lucky boxes, streaks and a daily quiz
+- 🔄 One-button project updates from inside the bot (with automatic rollback)
 
 > **Detailed sections are collapsed below. Click any section to expand it.**
 
@@ -193,11 +204,19 @@ The AI layer answers repetitive customer questions before escalating to human su
 
 ---
 
-<a id="channel-ai"></a>
+<a id="leak-detection"></a>
 
 ## 🚨 Config Leak Detection & Smart Discovery
 
-The scanner (running on the userbot session) hashes every active service's credentials (UUID / password / subscription token) and checks public Telegram posts for matches. On a hit, admins get an alert with *Rotate link / Warn / Ignore* buttons.
+<details>
+<summary><strong>Click to expand</strong></summary>
+
+Customers sometimes post their config or subscription link in public channels. The leak scanner finds those posts and ties them to the owning service.
+
+- 🔐 **Fingerprint index** — for every active service on 3X-UI, PasarGuard and Hiddify, the secret values (UUID, protocol passwords, subscription token) are hashed with SHA-256 into a credential index; raw values are never stored. The index is rebuilt every few minutes, and a single service is refreshed right after a purchase or an access cut
+- 🔎 **Scanner on the userbot session** — it parses `vless` / `vmess` / `trojan` / `ss` links and subscription links inside public Telegram posts, hashes them and matches them against the index; listed channels are scanned for new posts and a global keyword search runs as well
+- 🚨 **Admin alert** — on a hit, admins get an alert (in the "🚨 config leak" topic when a report group is set) with *Rotate link / Warn / Ignore* buttons; a warning can be sent with or without automatic access revocation
+- 🛡️ **Account protection** — a per-minute request cap with random spacing, a full stop on Telegram FloodWait, and customers always come first: the scanner stays quiet for a few seconds after every incoming customer message
 
 **Smart discovery** (🚨 Leak detection → 🧭 Smart discovery) lets it find sources on its own instead of only watching channels you add by hand:
 
@@ -208,7 +227,15 @@ The scanner (running on the userbot session) hashes every active service's crede
 - **Real-time monitoring** of joined channels (new *and* edited posts), including links hidden behind text hyperlinks and buttons.
 - **Auto-leave** of channels the scanner joined that produced no configs or leaks after 14 days. Channels you were already in are never left.
 
-Everything is off by default (`leak_scanner_enabled`, `leak_discovery_enabled`). Because the scanner shares the userbot account, keep the join caps low, or give the scanner its own Telegram account: `python userbot.py login-scanner` (undo: `logout-scanner`, status: `status-scanner`). It starts without a restart and never touches the customer-facing account.
+Everything is off by default (`leak_scanner_enabled`, `leak_discovery_enabled`). Because the scanner shares the userbot account, keep the join caps low, or give the scanner its own Telegram account: `manage.sh` option 40 (Telegram accounts) or `python userbot.py login-scanner` (undo: `logout-scanner`, status: `status-scanner`). It starts without a restart and never touches the customer-facing account.
+
+Tests: `python -m unittest test_leak_scanner test_leak_discovery`
+
+</details>
+
+---
+
+<a id="channel-ai"></a>
 
 ## 📣 AI Channel Posts
 
@@ -261,6 +288,56 @@ The seller can connect the main bot to their own Telegram Business account (Sett
 - ⚙️ **Admin panel** — **Admin & Access → 💼 Telegram Business**: master switch, mark-as-read, edit/delete notices, purchase card switch, list of active connections, per-connection auto-reply switch, first message (sent once at the start of each new chat), exception list of customer IDs and the list of chats handed to a human
 
 > Inline callback buttons inside business chats are intentionally not used: URL buttons are used instead, because callback delivery in business chats has not been verified.
+
+</details>
+
+---
+
+<a id="reseller-tiers"></a>
+
+## 🏢 Reseller Tiers & Agency Requests
+
+<details>
+<summary><strong>Click to expand</strong></summary>
+
+Reseller access is organised into four admin-editable tiers (Telegram admin → Resellers, the web panel and the Mini App admin). Each tier has its own title, icon, summary and description, can be switched on or off, can carry a membership fee with a validity period (expiry and reminders are automatic) and can be set to auto-approve requests.
+
+| Tier | Model | What the reseller gets |
+|---|---|---|
+| 🥉 Bronze | Commission | A personal link inside the main bot; a percentage of every purchase made by customers who come through it is added to the reseller's wallet. No capital needed |
+| 🥈 Silver | Discount | No link and no bot: buys from the main bot at a permanent discount, and the more bought at once the bigger the discount (quantity-based discounts per tier) |
+| 🥇 Gold | Fixed products | Own web panel, Mini App and dedicated bot; buys ready-made products in bulk (prepaid, counted by quantity) and resells them |
+| 👑 VIP | Volume credit | Own web panel, Mini App and dedicated bot; buys a pool of traffic and creates any product at any price; services are provisioned directly on the panel assigned to the reseller (VIP has no config bank) |
+
+- 📝 **Agency requests from the bot** — a user asks for a tier with a button. For Bronze the user proposes the commission percentage (1–100) and the admin accepts it or answers with his own; for Silver the user asks for the discount tier and the admin sets the approved permanent discount (1–100); tiers marked auto-approve are activated immediately
+- 🧭 **Request form for Gold/VIP** — bot type (dedicated bot / personal link / no bot), web panel, Mini App and supply model (volume or ready products); the owner can remove any of these axes from the form entirely. Admins see requests, receipts and statuses in the bot, the web panel and the Mini App, and the membership fee is paid from the wallet or a gateway
+- 🪜 **Tier limits and upgrades** — minimum quantity and volume, commission range, permanent discount and per-tier quantity discounts; users can ask for an upgrade
+- 💳 **Postpaid credit** — a default credit limit per tier plus an optional per-reseller limit set by the admin from the reseller card. The wallet may go negative down to minus the limit; the wallet screen shows balance, limit, debt and spendable credit; purchases, renewals and auto-renew stop with a "top up first" message at the cap; wallet transfers use the real balance only. Every movement is written to the wallet ledger
+- 🌐 **Resellers without their own bot** can create services from their web panel (`/api/reseller/self-service`), and the bot can issue them a web-panel login link
+- 🔗 The older modes still exist next to the tiers: linked resellers with their own catalog and card number, and independent reseller bots with isolated databases
+
+</details>
+
+---
+
+<a id="ssh-nodes"></a>
+
+## 🔐 SSH, OpenVPN & WireGuard Nodes
+
+<details>
+<summary><strong>Click to expand</strong></summary>
+
+Besides VPN panels, ShopVPN can sell accounts on plain Linux servers over **SSH, OpenVPN and WireGuard**. These "nodes" behave like panel nodes: they are only used to create accounts, and users get them through the normal purchase, subscription and delivery flows.
+
+- 🧩 **Node agent** — each node runs a small authenticated agent (`ssh_node_agent.py`, TLS with a pinned certificate fingerprint) and the bot talks to it through a documented HTTP API instead of running raw root commands. Secrets are referenced from the environment (`env:NAME`) and never stored as raw values in SQLite
+- ⚡ **One-step install** — from the admin panel only an IP and the root password are needed: the panel connects over SSH, uploads and installs the agent, creates the token and certificate, limits agent access to the panel server's IP, registers the node and runs a real test (creating and deleting a trial account), with live install progress. The root password is used in memory only and is never stored or logged. Protocols can be added to an existing node later, or installed by hand with `deploy/install-shopvpn-ssh-agent.sh [ssh|openvpn|wireguard]`
+- 🔌 **SSH accounts** — every account gets its own isolated `sshd` listener on a unique port (the port range is configurable per node), and traffic is counted per account with nftables port counters
+- 🛡️ **OpenVPN and WireGuard** — per-account accounting for both, plus NAT services and an OpenVPN disconnect script in `deploy/`
+- 🌐 **Hosts** — like PasarGuard hosts: a node can have one or more host entries per protocol (the node's domain/IP or a tunnel/relay address, optional port). Only the user-facing output is built at display time, so editing a host also updates existing accounts
+- 📤 **Delivery formats** — `ssh://BASE64(user:pass)@host:port#remark` links, `.ovpn` files and WireGuard `.conf` files; SSH passwords are encrypted at rest (Fernet, key from `SHOPVPN_SSH_CREDENTIAL_KEY`) for user self-service delivery
+- 🔗 **Shared quota pools** — a combined service puts a VPN config and SSH accounts in one pool with one volume and one expiry. `quota_reconciler.py` reads VPN panel counters through the existing panel providers and node counters through the agents (a node counter is accepted only when the node reports accounting as ready, and a missing counter is never treated as zero), then enforces the shared limit. SSH usage is reflected on the VPN panel by lowering the user's volume limit there (limit = panel usage + what is left in the pool), so the panel itself cuts the user off the moment the shared volume runs out; renewals push the new expiry to the nodes
+- 🧰 **Management** — nodes, accounts and pools are managed from the Telegram admin bot, the web admin panel and the Mini App admin; the CLI `ssh_admin.py` covers operations from the shell. If a node is unreachable, "force delete" removes it from the panel only
+- ✅ Tests: `python -m unittest test_ssh_hosts test_ssh_uri test_ssh_order_row test_ssh_unreachable_node test_quota_panel_sync`
 
 </details>
 
@@ -327,6 +404,28 @@ The `miniapp/` directory contains a full Telegram Mini App with both a customer 
 - 🎫 Ticket/support management
 - 📝 System and admin logs
 - 🗄️ Backup and database restore
+
+</details>
+
+---
+
+<a id="web-shop"></a>
+
+## 🛍️ Public Web Shop
+
+<details>
+<summary><strong>Click to expand</strong></summary>
+
+`web_store/` is a public website on its own domain where customers can buy without opening Telegram: pick a plan, pay and get the subscription link right away. It is served by FastAPI (`uvicorn web_store.server:app`, port 8005 behind nginx and SSL) and works for the main bot only.
+
+- ⚙️ **Setup from `manage.sh`** — option 10 (domain + SSL + service), 11 remove, 12 update, `S` status; option 13 configures the email service (SMTP codes) and option 14 Cloudflare Turnstile
+- 🌐 **Persian and English pages** (`/` and `/en`) with automatic RTL/LTR, SEO tags, `robots.txt`, `sitemap.xml` and PWA installation
+- 🛒 **Catalog and checkout** — active categories and products with price, original price, volume, duration and stock; the same payment methods as the Mini App (wallet, crypto, Aban, Blupal, NoaPay, the extra and custom gateways, automatic card-to-card and receipt upload)
+- 🔐 **Login** — through the Telegram bot (start + poll) or an emailed verification code; Cloudflare Turnstile protects the login endpoints
+- 🔗 **Account merge** — a web account can be merged with a Telegram account with a code and `/merge CODE` in the bot, with a preview before confirming
+- 👤 **My services** — services, orders, QR codes, live usage from the subscription link, support tickets, terms acceptance and full renewal
+- 🗺️ **Live network map** on the front page — shop locations come from the config links of each product, with the products of each location and routes drawn from the visitor's country (taken from CDN headers such as Cloudflare); coastlines and country borders are served from the server's own cache, because the strict content-security policy blocks external CDNs
+- 🔒 **Security headers** — strict CSP, HSTS, `X-Frame-Options` and a restricted `Permissions-Policy`; the page can only be embedded in the admin panel's preview
 
 </details>
 
@@ -597,6 +696,15 @@ Shopvpn/
 ├── payment_*.py
 ├── ai_support.py
 ├── business_chat.py
+├── ssh_*.py, quota_reconciler.py   # SSH/OpenVPN/WireGuard nodes and shared quota pools
+├── leak_*.py                       # config leak detection
+├── seasons.py, engagement.py, daily_quiz.py
+├── updater.py, admin_update.py     # updates from inside the bot
+├── panel_providers/
+├── web_store/                      # public web shop
+├── sub_server/                     # dedicated subscription server
+├── api/                            # Integration API
+├── deploy/                         # node agent installer and services
 ├── db/
 ├── miniapp/
 │   ├── server.py
@@ -663,7 +771,7 @@ Manual card-to-card receipts are screened before they reach the admin chat. Most
 - ⚡ Strings missing from a language catalog are translated on the fly just before a message is sent
 - 📊 Admin-panel translation dashboard: status, health, providers, history, live logs, per-language and bulk sync
 - ✍️ Admin-written content (broadcasts, product names, etc.) is never auto-translated; background notifications use each recipient's language
-- 🧰 Languages are chosen at install time; `manage.sh` options 27, 28 and 30 repair the runtime, remove LibreTranslate and delete unwanted languages to free disk space
+- 🧰 Languages are chosen at install time; `manage.sh` options 33, 34 and 35 repair the runtime, remove LibreTranslate and delete unwanted languages to free disk space
 
 ### 🧠 AI Assistant Account Actions
 
@@ -712,7 +820,7 @@ Beyond answering questions, the assistant can prepare account actions that the b
 ### 🤖 Telegram Userbot (AI Replies in Your Personal Chats)
 
 - 🤝 An alternative to Telegram Business: the bot logs in to the owner's own Telegram account (MTProto) and answers customers in the owner's private chats through the AI support assistant. It is fully independent of Business, with its own settings, tables and admin menu (**Admin & Access → Userbot**)
-- 🔑 Login and logout happen on the server: `python userbot.py login`, or `manage.sh` options 31 (login) and 32 (logout)
+- 🔑 Login and logout happen on the server: `python userbot.py login`, or `manage.sh` option 40 (Telegram accounts)
 - ⏸️ Pauses automatically while the owner is active (per chat or globally) and resumes after a configurable away time; can run always or only outside working hours
 - 🧑‍💼 Human-handoff chats with an optional automatic return timer, an exception list, an option to skip saved contacts, a first message and a persona text
 - 🛒 Optional product cards, sending a customer's own config/QR inside the chat, voice/image understanding with an acknowledgement for other files, merging of quick consecutive messages and optional mark-as-read
@@ -737,16 +845,73 @@ Beyond answering questions, the assistant can prepare account actions that the b
 - ⏯️ One button enables or disables all of a user's panel-linked configs (admin user view)
 - 🌍 World map: the master subscription link is scanned (URI lists, Xray JSON and sing-box outbounds), server IPs are geolocated and real protocol-level health checks (including `httpupgrade`) decide online/offline, with CDN fallbacks and a local cache
 
-### 🧰 More `manage.sh` Options
+### 🏆 Seasons, Lucky Boxes, Streaks & Daily Quiz
+
+- 🏁 **Competitive referral seasons** — monthly seasons (Jalali months) ranked by points: points per new invite plus a bonus when the invited user buys. Ranks 1–3 get prizes (wallet credit, a discount code and/or a free product), badges (gold, silver, bronze and top 10) are recorded, users get a standings page, seasons start and close automatically and the result is announced in the promo channel; names are masked in public tables
+- 🎁 **Lucky boxes** — admin-defined box types with prize lists and odds; users buy and open them with an opening animation, with a daily purchase limit per user and a validity period for prize codes
+- 🔥 **Streaks and milestones** — consecutive days of use, successful invites and renewals are tracked with a progress bar, and reaching a milestone grants a reward (wallet credit or a time-limited discount code)
+- ❓ **Daily channel quiz** — a question is posted to the promo channel every day at a set hour (Tehran time); users answer through a bot deep link and the first correct answers win a time-limited discount code. Questions come from an admin-managed question bank with an AI fallback, and the quiz closes automatically
+- ⚙️ Every part is off by default and has its own switch, limits and prizes in the admin panel
+
+### 🔄 Update from Inside the Bot
+
+- 🔔 The bot reads the repository's `VERSION` file every few hours (default 6) and tells the owner and full admins when a newer version exists, with an "Update now" button
+- 🛡️ After confirmation, `update_runner.sh` runs detached from the bot process (`systemd-run`): database and code backup → fetch the new code → install packages → syntax check → restart services → health check. If any step fails it rolls back to the previous version automatically, and the result is reported back to the admin
+- 🧰 The update menu (owner and full admins, main bot only) shows the installed and latest versions, runs a manual check, shows release notes (`update.json`), updates with one button, rolls back to a previous snapshot and switches the automatic notice on or off
+- 📦 For maintainers, `release.sh <version> "note" ...` bumps `VERSION`, writes `update.json`, commits and pushes. Nothing is sent to the developer: only a few text files are read from GitHub (with a jsDelivr mirror as fallback)
+
+### 📞 Support Contact Methods
+
+- 🔘 Admins can switch each support method on or off from the bot: AI assistant, direct chat with an admin, new ticket, my tickets and the admin-chat button. A switched-off method answers "currently unavailable", and the direct-chat button only appears when the admin ID is set
+
+### 🧰 Full `manage.sh` Menu
 
 | Option | Action |
 |:---:|---|
-| 27 | Install/repair the local translation runtime (automatic) |
-| 28 | Remove LibreTranslate |
-| 29 | Full cleanup / factory reset |
-| 30 | Remove unwanted translation languages (free disk space) |
-| 31 | Log in the Telegram account for the userbot (AI support in your private chats) |
-| 32 | Log out the userbot Telegram account |
+| S | Web shop status |
+| 1 | Full bot install (first time) |
+| 2 | Update bot |
+| 3 | Completely remove the bot from the server |
+| 4 | View bot status |
+| 5 | View live logs |
+| 6 | Restart bot |
+| 7 | Stop bot |
+| 8 | View sales stats |
+| 9 | Change admin token or ID |
+| 10 | Set up the web shop (domain + SSL + service) |
+| 11 | Remove the web shop (service + nginx, SSL kept) |
+| 12 | Update the web shop |
+| 13 | Configure the email service (SMTP verification codes) |
+| 14 | Configure Cloudflare Turnstile (web shop protection) |
+| 15 | Set up the Mini App (automatic: domain + SSL + service) |
+| 16 | Remove the Mini App |
+| 17 | Update the Mini App |
+| 18 | Set up the admin panel (domain + SSL + service) |
+| 19 | Remove the admin panel |
+| 20 | Update the admin panel |
+| 21 | Generate VAPID keys (admin panel push) |
+| 22 | Add a domain proxy for a VPN panel (share port 443) |
+| 23 | List panel/config domain proxies |
+| 24 | Remove a VPN panel domain proxy |
+| 25 | Mini App / admin panel domains (view + delete) |
+| 26 | Set up the Integration API (domain + SSL + service) |
+| 27 | Remove the Integration API |
+| 28 | Update the Integration API |
+| 29 | Set up the dedicated sub server (domain + SSL + service) |
+| 30 | Turn the dedicated sub ON / OFF |
+| 31 | Update the dedicated sub server |
+| 32 | Remove the dedicated sub server |
+| D | Dedicated sub status |
+| 33 | Install/repair the local translation runtime (automatic) |
+| 34 | Remove LibreTranslate |
+| 35 | Remove unwanted translation languages (free disk space) |
+| 36 | Full cleanup / factory reset |
+| 37 | Restore a backup (new-server migration wizard) |
+| 38 | Bot update mode (Polling / Webhook) |
+| 39 | Change the admin panel username/password |
+| 40 | Telegram accounts: log in the userbot (AI replies to customers), log in a separate leak-scanner account (recommended) or use one account for both, show status, log out either account |
+| L | Language (English ⇄ فارسی) |
+| 0 | Exit |
 
 </details>
 
@@ -803,18 +968,20 @@ Beyond answering questions, the assistant can prepare account actions that the b
 
 ---
 
-<a id="contributing"></a>
+<a id="dedicated-sub"></a>
 
 ## 🔗 Dedicated Subscription Server
 
 Subscription links are served from your own domain (the panel address is never exposed). Opened in a browser, a link shows a web page (black-and-white design with light/dark mode) with usage, expiry, a usage chart, configs, QR codes, an "Add to app" button and app lists for iOS / Android / Windows / macOS / Linux; VPN apps receive the same link as a normal subscription.
 
-- **First-time setup (only from `manage.sh`)**: option 37 (domain, nginx, SSL, `v2raybot-sub` service on port 8004, saves `DEDICATED_SUB_URL`), 38 on/off, 39 update, 40 remove. Point the domain's A record to the server first.
+- **First-time setup (only from `manage.sh`)**: option 29 (domain, nginx, SSL, `v2raybot-sub` service on port 8004, saves `DEDICATED_SUB_URL`), 30 on/off, 31 update, 32 remove (`D` shows the status). Point the domain's A record to the server first.
 - **Everything else is configured in the Telegram bot**: Admin panel → Products & configs → Dedicated sub — on/off (no restart), page look (sections, brand, logo, notice, support, footer, theme), sub output (profile title, update interval, "first line" with remaining volume/days, placeholder config for expired/exhausted services), apps (hide/show, recommended, custom apps), FAQ, stats and access log.
 - Turning it off keeps already-issued links working (plain pass-through) while new links use the panel address again.
 - `/sub/smart/<token>` (`/smartsub`) is also served by this server and merges several subscriptions into one link.
 - Code: `dedicated_sub.py` (core), `sub_server/` (server + web page), `admin_dedicated_sub.py` (bot menu), `db/dedicated_sub.py`; tests: `python -m unittest test_dedicated_sub`.
 - The output format (Clash / sing-box / v2ray) is chosen by the panel from the app's User-Agent, which the sub server forwards. The "first line" and placeholder config apply only to link-list subscriptions (vless/vmess/...).
+
+<a id="contributing"></a>
 
 ## 🤝 Contributing & License
 
