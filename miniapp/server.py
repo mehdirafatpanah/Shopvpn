@@ -106,6 +106,7 @@ from test_config_provision import provision_test_plan, format_plan_amount, Provi
 from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
 from renewal_engine import execute_renewal, RenewalError
 from user_limit import price_for_users as _ul_price_for_users, renewal_users as _ul_renewal_users
+from panel_capabilities import all_panels_support, normalize_user_limit, USER_LIMIT
 from service_refund import (
     quote_service_refund, refund_quote_text, wallet_refund_amount, grant_service_refund_credit, refund_result_text,
 )
@@ -4919,6 +4920,9 @@ class ProductCreate(BaseModel):
     compare_price: Optional[int] = None  # قیمت قبل از تخفیف (نمایشی)
     discount_days: Optional[int] = None
     discount_max_uses: Optional[int] = None
+    base_users: int = 0
+    extra_user_price: int = 0
+    max_users: int = 0
 
 
 class ProductUpdate(BaseModel):
@@ -4932,6 +4936,9 @@ class ProductUpdate(BaseModel):
     compare_price: Optional[int] = None  # 0 یعنی حذف تخفیف
     discount_days: Optional[int] = None
     discount_max_uses: Optional[int] = None
+    base_users: Optional[int] = None
+    extra_user_price: Optional[int] = None
+    max_users: Optional[int] = None
 
 
 class ConfigsAdd(BaseModel):
@@ -5384,7 +5391,10 @@ def api_admin_panel_servers_lite(auth=Depends(require_senior_admin)):
     _, db, tenant = auth
     if not db.is_full_access_bot(not bool(tenant.tenant_id)):
         raise HTTPException(status_code=403, detail=tr("این بخش فقط برای بات اصلی یا نمایندگی کامل در دسترس است."))
-    return [{"id": s["id"], "name": s["name"]} for s in db.get_panel_servers(active_only=True)]
+    from panel_capabilities import provider_capabilities, USER_LIMIT
+    return [{"id": s["id"], "name": s["name"], "panel_type": s["panel_type"],
+             "supports_user_limit": provider_capabilities(s["panel_type"])[USER_LIMIT]}
+            for s in db.get_panel_servers(active_only=True)]
 
 
 @app.get("/api/admin/catalog-capabilities")
@@ -5410,6 +5420,7 @@ def api_admin_list_products(cat_id: int, auth=Depends(require_senior_admin)):
             "provision_server_id": p["provision_server_id"],
             "auto_provision_volume_gb": p["auto_provision_volume_gb"],
             "stock": None if p["is_auto_provision"] else db.count_available_configs(p["id"]),
+            "base_users": p["base_users"] or 0, "extra_user_price": p["extra_user_price"] or 0, "max_users": p["max_users"] or 0,
         }
         for p in products
     ]
@@ -5459,11 +5470,21 @@ def api_admin_create_product(body: ProductCreate, auth=Depends(require_senior_ad
         if body.auto_provision_volume_gb == 0 and not provision_server_id:
             raise HTTPException(status_code=400, detail=tr("حجم نامحدود فقط برای محصولات با اتصال مستقیم به پنل ممکن است."))
 
+    panel_rows = [db.get_panel_server(provision_server_id)] if provision_server_id else []
+    supports_limit = all_panels_support(panel_rows, USER_LIMIT)
+    try:
+        base_users, extra_user_price, max_users = normalize_user_limit(
+            body.base_users, body.extra_user_price, body.max_users, supported=supports_limit
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     product_id = db.add_product(
         body.category_id, body.name.strip(), body.price, body.description, body.duration_days,
         is_auto_provision=is_auto_provision, auto_provision_volume_gb=body.auto_provision_volume_gb,
         provision_server_id=provision_server_id, payment_methods=body.payment_methods,
         compare_price=max(int(body.compare_price or 0), 0),
+        base_users=base_users, extra_user_price=extra_user_price, max_users=max_users,
     )
     if int(body.compare_price or 0) > 0 and (body.discount_days is not None or body.discount_max_uses is not None):
         db.edit_product(product_id, compare_price=int(body.compare_price),
@@ -5553,6 +5574,11 @@ def api_admin_edit_product(product_id: int, body: ProductUpdate, auth=Depends(re
         edit_kwargs["provision_server_id"] = provision_server_id
     if body.auto_provision_volume_gb is not None and body.source != "bank":
         edit_kwargs["auto_provision_volume_gb"] = body.auto_provision_volume_gb
+    effective_product_server = provision_server_id if provision_server_id is not None else old_product["provision_server_id"]
+    desired_base = body.base_users if body.base_users is not None else old_product["base_users"]
+    desired_extra = body.extra_user_price if body.extra_user_price is not None else old_product["extra_user_price"]
+    desired_max = body.max_users if body.max_users is not None else old_product["max_users"]
+
     db.edit_product(
         product_id,
         name=body.name.strip() if body.name else None,
@@ -5561,6 +5587,17 @@ def api_admin_edit_product(product_id: int, body: ProductUpdate, auth=Depends(re
         duration_days=body.duration_days,
         **edit_kwargs,
     )
+    saved_product = db.get_product(product_id)
+    panel_rows = [db.get_panel_server(effective_product_server)] if effective_product_server else []
+    try:
+        bu, eup, mu = normalize_user_limit(
+            desired_base, desired_extra, desired_max,
+            supported=all_panels_support(panel_rows, USER_LIMIT),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    db.set_product_user_limit(product_id, eup, mu, bu)
+
     if body.price is not None and body.price != old_product["price"]:
         db.log_admin_action(
             admin_id, "product_price_edit",
