@@ -73,6 +73,7 @@ from stock_alerts import check_and_notify_low_stock
 import ai_support
 from renewal_engine import execute_renewal, RenewalError
 import leak_index
+from panel_capabilities import product_capabilities, normalize_user_limit, USER_LIMIT, node_capabilities, all_panels_support
 from panel_providers import (
     get_provider, PanelError, PanelUsernameTakenError, PANEL_TYPE_LABELS,
     PROVIDERS, SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES, TEMPLATE_BASED_PANEL_TYPES,
@@ -3873,6 +3874,9 @@ class ProductBody(BaseModel):
     compare_price: Optional[int] = None  # قیمت قبل از تخفیف (نمایشی)
     discount_days: Optional[int] = None  # مدت اعتبار تخفیف (روز)؛ 0 = بدون محدودیت زمانی
     discount_max_uses: Optional[int] = None  # سقف تعداد خرید با تخفیف؛ 0 = بدون سقف
+    base_users: int = 0
+    extra_user_price: int = 0
+    max_users: int = 0
 
 
 @app.get("/api/products")
@@ -3883,6 +3887,7 @@ def api_products(admin=Depends(require_permission("catalog"))):
         extra = db.get_product_extra_targets(p["id"])
         p["extra_panel_ids"] = extra["panels"]
         p["extra_ssh_node_ids"] = extra["ssh"]
+        p["capabilities"] = product_capabilities(db, p)
     return products
 
 
@@ -3896,15 +3901,26 @@ def api_products_multi_target_info(admin=Depends(require_permission("catalog")))
 @app.get("/api/panel-servers-lite")
 def api_panel_servers_lite(admin=Depends(require_permission("catalog"))):
     """لیست سبک پنل‌ها (فقط id/name) برای انتخاب پنل موقع ساخت محصول اتصال مستقیم."""
-    return [{"id": s["id"], "name": s["name"]} for s in db.get_panel_servers(active_only=True)]
+    from panel_capabilities import provider_capabilities
+    return [{"id": s["id"], "name": s["name"], "panel_type": s["panel_type"],
+             "supports_user_limit": provider_capabilities(s["panel_type"])[USER_LIMIT]}
+            for s in db.get_panel_servers(active_only=True)]
 
 @app.get("/api/ssh/nodes-lite")
 def api_ssh_nodes_lite(admin=Depends(require_permission("catalog")), _fa=Depends(require_full_access_tenant)):
     """Only active Linux Agent nodes can currently be attached to paid SSH products."""
     import ssh_service
-    return [{"id": int(n["id"]), "name": n["name"], "host": n["host"], "protocols": ssh_service.node_protocols(n)}
-            for n in db.list_ssh_nodes(active_only=True)
-            if n.get("node_type") == "linux" and "ssh" in ssh_service.node_protocols(n)]
+    from panel_capabilities import node_capabilities
+    result = []
+    for n in db.list_ssh_nodes(active_only=True):
+        if n.get("node_type") != "linux":
+            continue
+        protocols = ssh_service.node_protocols(n)
+        if "ssh" not in protocols:
+            continue
+        result.append({"id": int(n["id"]), "name": n["name"], "host": n["host"],
+                       "protocols": protocols, "capabilities": node_capabilities(n, protocols)})
+    return result
 
 
 class ProductReorderBody(BaseModel):
@@ -3943,6 +3959,17 @@ def api_add_product(body: ProductBody, admin=Depends(require_permission("catalog
     extra_panels, extra_nodes = _checked_extra_targets(
         body.provision_server_id, body.provision_ssh_node_id, body.extra_panel_ids, body.extra_ssh_node_ids,
         ssh_protocol, admin)
+    # محدودیت کاربر از Capability مرکزی محاسبه می‌شود؛ نودهای SSH عمداً در این
+    # تصمیم دخالت ندارند و همهٔ پنل‌های VPN باید این قابلیت را داشته باشند.
+    target_panel_ids = ([int(body.provision_server_id)] if body.provision_server_id else []) + [int(x) for x in (extra_panels or [])]
+    panel_rows = [db.get_panel_server(pid) for pid in target_panel_ids]
+    supports_limit = all_panels_support(panel_rows, USER_LIMIT)
+    try:
+        base_users, extra_user_price, max_users = normalize_user_limit(
+            body.base_users, body.extra_user_price, body.max_users, supported=supports_limit
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
     if body.duration_days == 0 and not direct_target:
         raise HTTPException(400, tr("مدت نامحدود فقط برای محصولات با اتصال مستقیم ممکن است."))
     if direct_target:
@@ -3963,6 +3990,7 @@ def api_add_product(body: ProductBody, admin=Depends(require_permission("catalog
         body.provision_server_id, payment_methods=body.payment_methods,
         compare_price=max(int(body.compare_price or 0), 0),
         provision_ssh_node_id=body.provision_ssh_node_id, provision_ssh_protocol=ssh_protocol,
+        base_users=base_users, extra_user_price=extra_user_price, max_users=max_users,
     )
     if extra_panels or extra_nodes:
         db.set_product_extra_targets(pid, extra_panels, extra_nodes)
@@ -4068,6 +4096,9 @@ class ProductEditBody(BaseModel):
     compare_price: Optional[int] = None  # 0 یعنی حذف تخفیف
     discount_days: Optional[int] = None
     discount_max_uses: Optional[int] = None
+    base_users: Optional[int] = None
+    extra_user_price: Optional[int] = None
+    max_users: Optional[int] = None
 
 
 @app.put("/api/products/{product_id}")
@@ -4210,6 +4241,13 @@ def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(requi
                 effective_server_id, effective_ssh_node_id, requested_panels, requested_nodes,
                 effective_protocol, admin, changed=True)
 
+    # مقدار جدید را از درخواست یا مقدار قبلی می‌گیریم؛ سپس بعد از ذخیره‌ی مقصدها،
+    # Capability واقعی همان محصول را دوباره محاسبه می‌کنیم تا تغییر پنل هم نتواند
+    # یک limit ناسازگار در دیتابیس باقی بگذارد.
+    desired_base = body.base_users if body.base_users is not None else old_product["base_users"]
+    desired_extra = body.extra_user_price if body.extra_user_price is not None else old_product["extra_user_price"]
+    desired_max = body.max_users if body.max_users is not None else old_product["max_users"]
+
     db.edit_product(
         product_id, body.name, body.price, body.description, body.duration_days,
         is_auto_provision=is_auto_provision, provision_server_id=provision_server_id,
@@ -4221,6 +4259,17 @@ def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(requi
     )
     if extras_changed or body.source is not None or provision_server_id is not ... or provision_ssh_node_id is not ...:
         db.set_product_extra_targets(product_id, final_extra_panels, final_extra_nodes)
+
+    saved_product = db.get_product(product_id)
+    try:
+        bu, eup, mu = normalize_user_limit(
+            desired_base, desired_extra, desired_max,
+            supported=product_capabilities(db, saved_product)[USER_LIMIT],
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    db.set_product_user_limit(product_id, eup, mu, bu)
+
     db.log_admin_action(admin["id"], "product_edit", f"#{product_id} (پنل وب - {admin['username']})", "product", product_id)
     return {"ok": True}
 
@@ -7310,7 +7359,10 @@ def _serialize_test_plan(p) -> dict:
 def api_test_config_panel_servers_lite(admin=Depends(require_permission("settings"))):
     """نسخه‌ی مخصوص تنظیمات کانفیگ تست از لیست سبک پنل‌ها، تا نیازی به
     دسترسی «کاتالوگ» برای مدیریت پلن‌های تست نباشد."""
-    return [{"id": s["id"], "name": s["name"]} for s in db.get_panel_servers(active_only=True)]
+    from panel_capabilities import provider_capabilities
+    return [{"id": s["id"], "name": s["name"], "panel_type": s["panel_type"],
+             "supports_user_limit": provider_capabilities(s["panel_type"])[USER_LIMIT]}
+            for s in db.get_panel_servers(active_only=True)]
 
 
 @app.get("/api/test-config/plans")
