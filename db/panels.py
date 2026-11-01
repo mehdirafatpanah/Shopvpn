@@ -147,6 +147,11 @@ class PanelsMixin:
                 "SELECT COUNT(*) AS c FROM custom_configs WHERE panel_server_id=? AND status='active'",
                 (server_id,),
             ).fetchone()["c"]
+            active += conn.execute(
+                "SELECT COUNT(*) AS c FROM config_panel_links l JOIN custom_configs c ON c.id=l.custom_config_id "
+                "WHERE l.panel_server_id=? AND l.status='active' AND c.status='active'",
+                (server_id,),
+            ).fetchone()["c"]
         limit = int(row["max_services"] or 0)
         remaining = None if limit <= 0 else max(0, limit - active)
         percent = 0.0 if limit <= 0 else (active / limit) * 100.0
@@ -206,6 +211,15 @@ class PanelsMixin:
                 f"این پنل {dependent} کانفیگ شخصی ثبت‌شده دارد و به همین دلیل قابل حذف نیست."
             )
         with self._get_conn() as conn:
+            for link in conn.execute(
+                "SELECT id FROM config_panel_links WHERE panel_server_id=? OR custom_config_id IN "
+                "(SELECT id FROM custom_configs WHERE panel_server_id=?)", (server_id, server_id)
+            ).fetchall():
+                sid = f"panel_link:{int(link['id'])}"
+                conn.execute("DELETE FROM usage_snapshots WHERE service_kind='vpn' AND service_id=?", (sid,))
+                conn.execute("DELETE FROM quota_enforcement_state WHERE service_kind='vpn' AND service_id=?", (sid,))
+                conn.execute("DELETE FROM quota_pool_members WHERE service_kind='vpn' AND service_id=?", (sid,))
+                conn.execute("DELETE FROM config_panel_links WHERE id=?", (int(link["id"]),))
             if dependent:
                 conn.execute("DELETE FROM custom_configs WHERE panel_server_id=?", (server_id,))
             # test_config_plans و custom_config_products هم FK به panel_servers دارند‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
@@ -214,6 +228,7 @@ class PanelsMixin:
             conn.execute("DELETE FROM test_config_plans WHERE panel_server_id=?", (server_id,))
             conn.execute("DELETE FROM wheel_prizes WHERE panel_server_id=?", (server_id,))
             conn.execute("DELETE FROM custom_config_products WHERE panel_server_id=?", (server_id,))
+            conn.execute("DELETE FROM product_extra_targets WHERE kind='panel' AND target_id=?", (server_id,))
             conn.execute("DELETE FROM panel_servers WHERE id=?", (server_id,))
         return dependent
 

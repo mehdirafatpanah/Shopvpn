@@ -271,7 +271,8 @@ class CatalogMixin:
                      provision_server_id: int = None, payment_methods=None,
                      base_users: int = 0, extra_user_price: int = 0, max_users: int = 0,
                      compare_price: int = 0, provision_ssh_node_id: int = None,
-                     provision_ssh_protocol: str = "ssh") -> int:
+                     provision_ssh_protocol: str = "ssh",
+                     extra_panel_ids=(), extra_ssh_node_ids=()) -> int:
         """payment_methods: None/[] یعنی «همه‌ی روش‌های پرداخت مجازند» (پیش‌فرض)،
         در غیر این صورت لیستی از کلیدهای مجاز - همان قراردادِ set_product_payment_methods.
 
@@ -296,7 +297,21 @@ class CatalogMixin:
                  base_users, extra_user_price, max_users, compare_price,
                  _normalize_ssh_protocols(provision_ssh_protocol) if provision_ssh_node_id else "ssh"),
             )
-            return cur.lastrowid
+            product_id = cur.lastrowid
+            position = 0
+            for kind, ids in (("panel", extra_panel_ids), ("ssh", extra_ssh_node_ids)):
+                seen = set()
+                for raw in ids or ():
+                    target = int(raw)
+                    if target <= 0 or target in seen:
+                        continue
+                    seen.add(target)
+                    conn.execute(
+                        "INSERT INTO product_extra_targets (product_id,kind,target_id,position) VALUES (?,?,?,?)",
+                        (product_id, kind, target, position),
+                    )
+                    position += 1
+            return product_id
 
 
     def expire_product_discounts(self) -> int:
@@ -535,6 +550,7 @@ class CatalogMixin:
         with self._get_conn() as conn:
             conn.execute("DELETE FROM products WHERE id=?", (product_id,))
             conn.execute("DELETE FROM product_waitlist WHERE product_id=?", (product_id,))
+            conn.execute("DELETE FROM product_extra_targets WHERE product_id=?", (product_id,))
 
     # -----------------------------------------------------------------------
     # مخزن کانفیگ (بانک لینک)

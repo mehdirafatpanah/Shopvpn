@@ -89,3 +89,26 @@ class MultiTargetMixin:
                 conn.execute("DELETE FROM quota_pool_members WHERE service_kind='vpn' AND service_id=?", (sid,))
                 conn.execute("DELETE FROM config_panel_links WHERE id=?", (int(link["id"]),))
         return links
+
+    def delete_config_panel_link(self, link_id: int) -> None:
+        sid = f"panel_link:{int(link_id)}"
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM usage_snapshots WHERE service_kind='vpn' AND service_id=?", (sid,))
+            conn.execute("DELETE FROM quota_enforcement_state WHERE service_kind='vpn' AND service_id=?", (sid,))
+            conn.execute("DELETE FROM quota_pool_members WHERE service_kind='vpn' AND service_id=?", (sid,))
+            conn.execute("DELETE FROM config_panel_links WHERE id=?", (int(link_id),))
+
+    def mark_config_panel_link_delete_pending(self, link_id: int) -> None:
+        sid = f"panel_link:{int(link_id)}"
+        with self._get_conn() as conn:
+            conn.execute("UPDATE config_panel_links SET status='delete_pending' WHERE id=?", (int(link_id),))
+            conn.execute("DELETE FROM quota_pool_members WHERE service_kind='vpn' AND service_id=?", (sid,))
+
+    def pending_delete_panel_links(self, limit: int = 200) -> list:
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT id,custom_config_id,panel_server_id,username FROM config_panel_links "
+                "WHERE status='delete_pending' ORDER BY id LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+        return [dict(r) for r in rows]
