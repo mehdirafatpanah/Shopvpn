@@ -3991,9 +3991,8 @@ def api_add_product(body: ProductBody, admin=Depends(require_permission("catalog
         compare_price=max(int(body.compare_price or 0), 0),
         provision_ssh_node_id=body.provision_ssh_node_id, provision_ssh_protocol=ssh_protocol,
         base_users=base_users, extra_user_price=extra_user_price, max_users=max_users,
+        extra_panel_ids=extra_panels, extra_ssh_node_ids=extra_nodes,
     )
-    if extra_panels or extra_nodes:
-        db.set_product_extra_targets(pid, extra_panels, extra_nodes)
     if int(body.compare_price or 0) > 0 and (body.discount_days is not None or body.discount_max_uses is not None):
         db.edit_product(pid, compare_price=int(body.compare_price),
                         discount_days=max(int(body.discount_days or 0), 0),
@@ -4001,6 +4000,14 @@ def api_add_product(body: ProductBody, admin=Depends(require_permission("catalog
     pm_log = "همه" if not body.payment_methods else "، ".join(body.payment_methods)
     db.log_admin_action(admin["id"], "product_add", f"{body.name} | پرداخت: {pm_log} (پنل وب - {admin['username']})", "product", pid)
     return {"id": pid}
+
+
+def _require_edit_panel(server_id, old_product, missing_status, missing_detail):
+    server = db.get_panel_server(server_id)
+    if not server:
+        raise HTTPException(status_code=missing_status, detail=tr(missing_detail))
+    if int(server_id) != int(old_product["provision_server_id"] or 0) and not server["is_active"]:
+        raise HTTPException(status_code=400, detail=tr("پنل VPN فعال پیدا نشد."))
 
 
 def _checked_extra_targets(server_id, node_id, extra_panels, extra_nodes, protocol, admin, changed=True):
@@ -4011,6 +4018,8 @@ def _checked_extra_targets(server_id, node_id, extra_panels, extra_nodes, protoc
     import ssh_service
     panels = [int(x) for x in dict.fromkeys(extra_panels or []) if int(x) > 0 and int(x) != int(server_id or 0)]
     nodes = [int(x) for x in dict.fromkeys(extra_nodes or []) if int(x) > 0 and int(x) != int(node_id or 0)]
+    if changed and (panels or nodes) and not (server_id or node_id):
+        raise HTTPException(400, tr("ابتدا مقصد اصلی محصول را انتخاب کنید."))
     total = (1 if server_id else 0) + (1 if node_id else 0) + len(panels) + len(nodes)
     if total <= 1 or not changed:
         return panels, nodes
@@ -4126,8 +4135,7 @@ def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(requi
             raise HTTPException(status_code=403, detail=tr("اتصال مستقیم به پنل فقط برای بات اصلی مجاز است."))
         if body.provision_server_id and body.provision_ssh_node_id:
             # محصول ترکیبی VPN+SSH (سهمیه مشترک)
-            if not db.get_panel_server(body.provision_server_id):
-                raise HTTPException(status_code=404, detail=tr("پنل VPN یافت نشد."))
+            _require_edit_panel(body.provision_server_id, old_product, 404, "پنل VPN یافت نشد.")
             node = next((n for n in db.list_ssh_nodes(active_only=True) if int(n["id"]) == int(body.provision_ssh_node_id)), None)
             if not node or node.get("node_type") != "linux":
                 raise HTTPException(status_code=404, detail="نود Linux Agent فعال پیدا نشد.")
@@ -4140,6 +4148,7 @@ def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(requi
             provision_ssh_node_id = int(body.provision_ssh_node_id)
             provision_server_id = None
         elif body.provision_server_id and db.get_panel_server(body.provision_server_id):
+            _require_edit_panel(body.provision_server_id, old_product, 404, "پنل VPN یافت نشد.")
             provision_server_id = body.provision_server_id
             provision_ssh_node_id = None
         else:
@@ -4165,8 +4174,7 @@ def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(requi
         if body.provision_server_id is not None:
             if admin["tenant"]:
                 raise HTTPException(status_code=403, detail=tr("اتصال مستقیم فقط برای بات اصلی مجاز است."))
-            if not db.get_panel_server(body.provision_server_id):
-                raise HTTPException(status_code=404, detail=tr("سرور پنل یافت نشد."))
+            _require_edit_panel(body.provision_server_id, old_product, 404, "سرور پنل یافت نشد.")
             provision_server_id = body.provision_server_id
             provision_ssh_node_id = None
         if body.provision_ssh_node_id is not None:
@@ -4248,6 +4256,16 @@ def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(requi
     desired_extra = body.extra_user_price if body.extra_user_price is not None else old_product["extra_user_price"]
     desired_max = body.max_users if body.max_users is not None else old_product["max_users"]
 
+    pre_panel_ids = list(dict.fromkeys(
+        ([int(effective_server_id)] if effective_server_id else []) + [int(x) for x in final_extra_panels]))
+    try:
+        bu, eup, mu = normalize_user_limit(
+            desired_base, desired_extra, desired_max,
+            supported=all_panels_support([db.get_panel_server(pid) for pid in pre_panel_ids], USER_LIMIT),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
     db.edit_product(
         product_id, body.name, body.price, body.description, body.duration_days,
         is_auto_provision=is_auto_provision, provision_server_id=provision_server_id,
@@ -4260,14 +4278,6 @@ def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(requi
     if extras_changed or body.source is not None or provision_server_id is not ... or provision_ssh_node_id is not ...:
         db.set_product_extra_targets(product_id, final_extra_panels, final_extra_nodes)
 
-    saved_product = db.get_product(product_id)
-    try:
-        bu, eup, mu = normalize_user_limit(
-            desired_base, desired_extra, desired_max,
-            supported=product_capabilities(db, saved_product)[USER_LIMIT],
-        )
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
     db.set_product_user_limit(product_id, eup, mu, bu)
 
     db.log_admin_action(admin["id"], "product_edit", f"#{product_id} (پنل وب - {admin['username']})", "product", product_id)
