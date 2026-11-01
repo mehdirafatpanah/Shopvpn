@@ -187,6 +187,22 @@ async def _send(db, order, service_name, before, after_cc, provider) -> None:
         logger.warning("ارسال لاگ تمدید سفارش #%s ناموفق بود.", order["id"], exc_info=True)
 
 
+async def _send_alert(db, text) -> None:
+    try:
+        token = await asyncio.to_thread(resolve_token, db)
+        if token:
+            await report_router.report_raw(token, db, TOPIC_KEY, text, senior_only=True)
+    except Exception:
+        logger.warning("ارسال هشدار تمدید ناقص ناموفق بود.", exc_info=True)
+
+
+def alert(db, text) -> None:
+    """هشدار پس‌زمینه به مدیران ارشد (مثلاً تمدید ناقص پنل‌های اضافه)."""
+    task = asyncio.get_running_loop().create_task(_send_alert(db, text))
+    _pending.add(task)
+    task.add_done_callback(_pending.discard)
+
+
 def notify(db, order, service_name, before=None, after_cc=None, provider=None) -> None:
     """ارسال لاگ تمدید در پس‌زمینه (گروه گزارش، تاپیک «تمدید»؛ در غیاب گروه مدیران ارشد)."""
     task = asyncio.get_running_loop().create_task(_send(db, order, service_name, before, after_cc, provider))

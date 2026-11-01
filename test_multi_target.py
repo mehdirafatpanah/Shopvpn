@@ -149,6 +149,88 @@ class MultiTargetTests(unittest.TestCase):
         self.assertEqual(fakes[ids[1]].deleted, [link["username"]])
         self.assertEqual(db.panel_links_for_config(cc_id, active_only=False), [])
 
+    def _provisioned(self, panels=3):
+        db, ids, fakes, product = make_world(panels=panels)
+        db.set_product_extra_targets(product["id"], ids[1:], [])
+        items = run(dpp.provision_direct(db, db.get_product(product["id"]), 1, user_id=100, order_id=None))
+        return db, ids, fakes, product, items[0]["custom_config_id"]
+
+    def test_extra_panel_counts_toward_capacity(self):
+        db, ids, fakes, product, cc_id = self._provisioned()
+        db.update_panel_server(ids[1], max_services=1)
+        info = db.get_panel_capacity_info(ids[1])
+        self.assertEqual(info["active_services"], 1)
+        self.assertFalse(db.panel_has_capacity(ids[1], 1))
+
+    def test_failed_link_delete_is_kept_for_retry(self):
+        import multi_target
+        db, ids, fakes, product, cc_id = self._provisioned()
+
+        class Down(FakePanel):
+            async def delete_user(self, username):
+                raise PanelError("down")
+
+        down = Down("down")
+        multi_target.get_provider = lambda server: down if int(server["id"]) == ids[1] else fakes[int(server["id"])]
+        self.assertFalse(run(multi_target.delete_linked_panel_users(db, cc_id)))
+        pending = db.pending_delete_panel_links()
+        self.assertEqual([l["panel_server_id"] for l in pending], [ids[1]])
+        self.assertEqual(len(db.panel_links_for_config(cc_id)), 0)
+        multi_target.get_provider = lambda server: fakes[int(server["id"])]
+        self.assertEqual(run(multi_target.retry_pending_link_deletes(db)), 1)
+        self.assertEqual(db.pending_delete_panel_links(), [])
+        self.assertEqual(db.panel_links_for_config(cc_id, active_only=False), [])
+
+    def test_set_linked_enabled_reports_failure(self):
+        import multi_target
+        db, ids, fakes, product, cc_id = self._provisioned()
+
+        class Down(FakePanel):
+            async def set_enabled(self, username, enabled):
+                raise PanelError("down")
+
+        multi_target.get_provider = lambda server: Down("d")
+        self.assertFalse(run(multi_target.set_linked_panel_users_enabled(db, cc_id, False)))
+        multi_target.get_provider = lambda server: fakes[int(server["id"])]
+        self.assertTrue(run(multi_target.set_linked_panel_users_enabled(db, cc_id, False)))
+
+    def test_delete_panel_cleans_extra_targets_and_links(self):
+        db, ids, fakes, product, cc_id = self._provisioned()
+        db.delete_panel_server(ids[1])
+        self.assertEqual(db.get_product_extra_targets(product["id"])["panels"], [ids[2]])
+        self.assertEqual([l["panel_server_id"] for l in db.panel_links_for_config(cc_id)], [ids[2]])
+        with db._get_conn() as conn:
+            members = conn.execute(
+                "SELECT COUNT(*) c FROM quota_pool_members WHERE service_id LIKE 'panel_link:%'").fetchone()["c"]
+        self.assertEqual(members, 1)
+
+    def test_delete_product_removes_extra_targets(self):
+        db, ids, fakes, product = make_world()
+        db.set_product_extra_targets(product["id"], [ids[1]], [])
+        db.delete_product(product["id"])
+        with db._get_conn() as conn:
+            left = conn.execute("SELECT COUNT(*) c FROM product_extra_targets").fetchone()["c"]
+        self.assertEqual(left, 0)
+
+    def test_add_product_saves_extra_targets_in_one_call(self):
+        db, ids, fakes, product = make_world()
+        cat = db.add_category("C2")
+        pid = db.add_product(cat, "M2", 1000, "", 30, True, 10, ids[0], extra_panel_ids=[ids[1], ids[2], ids[1]])
+        self.assertEqual(db.get_product_extra_targets(pid), {"panels": [ids[1], ids[2]], "ssh": []})
+
+    def test_merge_extra_uris(self):
+        import base64
+        import dedicated_sub as ds
+        extra = ["trojan://x@h:443#e"]
+        plain = ds.merge_extra_uris(b"vless://a@h:443#p\n", extra)
+        self.assertIn(b"trojan://x@h:443#e", plain)
+        down = ds.merge_extra_uris(b"", extra)
+        self.assertEqual(base64.b64decode(down).decode(), "trojan://x@h:443#e")
+        self.assertIsNone(ds.merge_extra_uris(b"proxies:\n  - name: a\n", extra))
+        reply = ds.compose_client_reply(502, {}, b"", {"status": "active"}, {}, "B", "", extra_uris=extra)
+        self.assertEqual(reply.status, 200)
+        self.assertIsNone(ds.compose_client_reply(502, {}, b"", {"status": "active"}, {}, "B", ""))
+
 
 if __name__ == "__main__":
     unittest.main()

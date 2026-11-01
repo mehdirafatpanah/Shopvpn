@@ -74,8 +74,7 @@ async def _notify_admins(bot: Bot, db, text: str):
             pass
 
 
-async def _provider_action(db, row, action):
-    """action = 'disable' | 'delete'. نتیجه False یعنی عملیات روی پنل قطعی نشده."""
+async def _primary_action(db, row, action):
     server = await asyncio.to_thread(db.get_panel_server, row["panel_server_id"])
     if not server or not server["is_active"]:
         return False, "پنل پیدا نشد یا غیرفعال است"
@@ -85,18 +84,25 @@ async def _provider_action(db, row, action):
             result = await provider.set_enabled(row["username"], False)
         else:
             result = await provider.delete_user(row["username"])
-        try:
-            import multi_target
-            if action == "disable":
-                await multi_target.set_linked_panel_users_enabled(db, row["id"], False)
-            elif result is not False:
-                await multi_target.delete_linked_panel_users(db, row["id"])
-        except (KeyError, IndexError, TypeError):
-            pass
-        # برخی providerها None برمی‌گردانند ولی بدون exception موفق‌اند.
         return (result is not False), "ok"
     except Exception as exc:
         return False, str(exc)
+
+
+async def _provider_action(db, row, action):
+    """action = 'disable' | 'delete'. نتیجه False یعنی عملیات روی پنل قطعی نشده."""
+    ok, reason = await _primary_action(db, row, action)
+    try:
+        import multi_target
+        if action == "disable":
+            linked_ok = await multi_target.set_linked_panel_users_enabled(db, row["id"], False)
+            if not linked_ok and ok:
+                ok, reason = False, "قطع پنل‌های اضافه ناموفق بود"
+        else:
+            await multi_target.delete_linked_panel_users(db, row["id"])
+    except (KeyError, IndexError, TypeError):
+        pass
+    return ok, reason
 
 
 def _tehran_now():
@@ -332,6 +338,13 @@ async def expire_stale_discount_orders_once(bot: Bot, db):
 async def cleanup_loop(bot: Bot, db, interval: int = 3600):
     """حلقه‌ی ساعتی پاکسازی؛ تنظیمات هر دور دوباره خوانده می‌شوند."""
     while True:
+        try:
+            import multi_target
+            await multi_target.retry_pending_link_deletes(db)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("خطا در تلاش مجدد حذف کاربران پنل‌های اضافه")
         try:
             await cleanup_once(bot, db)
             await delete_inactive_configs_once(bot, db)

@@ -553,6 +553,20 @@ def encode_uris(uris_text: str, was_b64: bool) -> bytes:
     return base64.b64encode(data) if was_b64 else data
 
 
+def merge_extra_uris(up_body: bytes, extra_uris: List[str]) -> Optional[bytes]:
+    """لینک‌های پنل‌های اضافه/SSH را به بدنه‌ی ساب اصلی اضافه می‌کند؛ اگر فرمت قابل ادغام نباشد None."""
+    raw = up_body or b""
+    if not raw.strip():
+        return encode_uris("\n".join(extra_uris), True)
+    body = parse_body(raw)
+    if body.kind == "uris":
+        return encode_uris(body.text.rstrip("\n") + "\n" + "\n".join(extra_uris), body.was_b64)
+    primary = extract_uris(raw)
+    if not primary:
+        return None
+    return encode_uris("\n".join(list(primary) + list(extra_uris)), True)
+
+
 def uri_remark(uri: str) -> str:
     try:
         if uri.lower().startswith("vmess://"):
@@ -738,7 +752,14 @@ def compose_client_reply(up_status: Optional[int], up_headers: Dict[str, str], u
         return finish(base64.b64encode(raw.encode("utf-8")), "text/plain; charset=utf-8")
 
     if body is None:
+        if extra_uris:
+            return finish(merge_extra_uris(b"", extra_uris), "text/plain; charset=utf-8")
         return None
+
+    if body.kind != "uris" and extra_uris:
+        merged = merge_extra_uris(up_body, extra_uris)
+        if merged is not None:
+            return finish(merged, "text/plain; charset=utf-8")
 
     if body.kind == "uris":
         out_text = body.text

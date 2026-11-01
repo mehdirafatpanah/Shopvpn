@@ -33,6 +33,26 @@ async def _update_panel_links_user_limit(db, custom_config_id: int, user_limit: 
         await link_provider.update_user(link["username"], **provider_kwargs(link_provider, user_limit))
 
 
+def _report_failed_link_renewals(db, pool, failed_links, add_days):
+    lines = []
+    for link, exc in failed_links:
+        try:
+            db.add_custom_config_history(
+                link["custom_config_id"], "extra_panel_renew_failed",
+                f"تمدید {add_days} روزه پنل #{link['panel_server_id']} ({link['username']}) ناموفق بود: {str(exc)[:200]}",
+            )
+        except Exception:
+            logger.exception("history write failed for link %s", link["id"])
+        lines.append(f"سرویس #{link['custom_config_id']} | پنل #{link['panel_server_id']} | {link['username']}")
+    text = ("⚠️ تمدید ناقص سرویس چندپنلی\n\n"
+            f"پرداخت و پنل اصلی تمدید شد ولی تمدید {add_days} روزه این پنل‌ها شکست خورد "
+            "و با تاریخ قبلی منقضی می‌شوند؛ دستی تمدید کنید:\n" + "\n".join(lines))
+    try:
+        renewal_log.alert(db, text)
+    except Exception:
+        logger.exception("failed-renewal alert could not be scheduled (pool=%s)", pool["id"])
+
+
 def _renew_quota_pool(db, pool, mode, add_volume, add_days, fresh=False):
     """تمدید استخر سهمیه‌ی مشترک VPN+SSH. برای سرویس ترکیبی، حجم و انقضای واقعی در
     استخر نگهداری می‌شود (پنل VPN با سقف نامحدود ساخته شده و reconciler سقف آن را از
@@ -76,6 +96,7 @@ async def renew_pooled_service(db, provider, username, pool, mode, add_volume, a
         username, add_volume_gb=0, add_days=add_days, reset_usage=False,
         preserve_remaining=False, unlimited_volume=False, **(user_kwargs or {}),
     )
+    failed_links = []
     for link in db.panel_links_for_pool(pool["id"]):
         try:
             link_server = db.get_panel_server(link["panel_server_id"])
@@ -85,9 +106,12 @@ async def renew_pooled_service(db, provider, username, pool, mode, add_volume, a
                 preserve_remaining=False, unlimited_volume=False,
                 **(user_kwargs or {}),
             )
-        except Exception:
+        except Exception as exc:
             logger.exception("multi-panel renewal: extra panel renew failed (pool=%s, link=%s)",
                              pool["id"], link["id"])
+            failed_links.append((link, exc))
+    if failed_links:
+        _report_failed_link_renewals(db, pool, failed_links, add_days)
     new_limit_gb = _renew_quota_pool(db, pool, mode, add_volume, add_days, fresh=fresh)
     try:
         from quota_reconciler import QuotaReconciler
