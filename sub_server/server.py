@@ -299,6 +299,19 @@ async def sub_endpoint(request: Request) -> Response:
         try:
             up = await cache.get(upstream_url, ua, ttl)
         except Exception:
+            up = None
+        extra_uris = await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc)
+        extra_uris = list(extra_uris) + await _linked_panel_uris(cc, query, ua, ttl)
+        if extra_uris:
+            primary_ok = up is not None and up.status == 200 and bool(up.body)
+            merged = ds.merge_extra_uris(up.body if primary_ok else b"", extra_uris)
+            if merged is not None:
+                headers = _clean_headers(
+                    {k: v for k, v in up.headers.items() if k in ds._PASS_HEADERS} if primary_ok else {})
+                headers["cache-control"] = "no-store"
+                await _log(cc["id"], request, "sub", 200, settings)
+                return _raw(200, headers, "text/plain; charset=utf-8", merged)
+        if up is None:
             return PlainTextResponse("Upstream unavailable", status_code=502)
         headers = _clean_headers({k: v for k, v in up.headers.items() if k in ds._PASS_HEADERS or k == "content-type"})
         ctype = headers.pop("content-type", "text/plain; charset=utf-8")
@@ -340,10 +353,8 @@ async def sub_endpoint(request: Request) -> Response:
                         (up.body or b"")[:160])
         ovpn_files = await asyncio.to_thread(ds.ovpn_files_for_config, db, cc["id"], cc)
         wg_files = await asyncio.to_thread(ds.wg_files_for_config, db, cc["id"], cc)
-        if ok:
-            # حساب‌های SSH و پنل‌های اضافه‌ی متصل به همین سرویس را در صفحه‌ی اشتراک هم نشان بده.
-            uris.extend(await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc))
-            uris.extend(await _linked_panel_uris(cc, {}, PAGE_UA, ttl))
+        uris.extend(await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc))
+        uris.extend(await _linked_panel_uris(cc, {}, PAGE_UA, ttl))
         if ok and up.fresh:
             await _snapshot_usage(cc, up.headers)
         series = None
