@@ -3590,10 +3590,50 @@ function productProvisionFieldsHtml(panelServers, sshNodes = [], prefill = null)
         </div>
         <span class="card-sub">این گزینه فقط وقتی فعال است که تمام پنل‌های VPN انتخاب‌شده از محدودیت کاربر پشتیبانی کنند.</span>
       </div>
+      ${renewRulesHtml(prefill)}
     </div>`;
 }
 
+// «قوانین تمدید کامل» هر محصول (renewal_rules.py در بک‌اند). پیش‌فرض‌ها رفتار قبلی را حفظ می‌کنند.
+function renewRulesHtml(prefill) {
+  const v = (k, d) => (prefill && prefill[k] != null ? Number(prefill[k]) : d);
+  const reset = v('renew_reset', 0) === 1;
+  const row = (id, label, on, hint, disabled) => `<label class="field field-row"><span>${label}${hint ? `<small class="card-sub" style="display:block">${hint}</small>` : ''}</span><input type="checkbox" id="${id}" ${on ? 'checked' : ''} ${disabled ? 'disabled' : ''}></label>`;
+  return `<div id="prod-renew-rules" style="grid-column:1/-1;border-top:1px dashed var(--border, #8884);margin-top:10px;padding-top:10px">
+    <div class="card-sub">🔄 قوانین تمدید کامل</div>
+    ${row('prod-renew-enabled', 'قابل تمدید کامل باشد', v('renew_full_enabled', 1) === 1, 'اگر خاموش باشد این محصول در لیست تمدید کامل نمایش داده نمی‌شود.')}
+    ${row('prod-renew-same-type', 'فقط برای سرویس‌های هم‌نوع', v('renew_same_type_only', 1) === 1, 'نامحدود فقط به سرویس نامحدود و حجمی فقط به سرویس حجمی نمایش داده می‌شود.')}
+    ${row('prod-renew-reset', 'ریست کامل بعد از تمدید', reset, 'حجم و زمان باقیمانده حذف و فقط بسته‌ی جدید اعمال می‌شود.')}
+    ${row('prod-renew-carry-volume', 'انتقال حجم باقیمانده', !reset && v('renew_carry_volume', 1) === 1, 'حجم باقیمانده به محصول جدید اضافه می‌شود.', reset)}
+    ${row('prod-renew-carry-time', 'انتقال زمان باقیمانده', !reset && v('renew_carry_time', 1) === 1, 'روزهای باقیمانده به محصول جدید اضافه می‌شود.', reset)}
+  </div>`;
+}
+
+function wireRenewRules(b) {
+  const reset = $('#prod-renew-reset', b);
+  if (!reset) return;
+  const cv = $('#prod-renew-carry-volume', b), ct = $('#prod-renew-carry-time', b);
+  reset.addEventListener('change', () => {
+    if (reset.checked) { cv.checked = false; ct.checked = false; }
+    cv.disabled = ct.disabled = reset.checked;
+  });
+}
+
+function collectRenewRules(b) {
+  const en = $('#prod-renew-enabled', b);
+  if (!en) return undefined;
+  const reset = $('#prod-renew-reset', b).checked;
+  return {
+    renew_full_enabled: en.checked ? 1 : 0,
+    renew_same_type_only: $('#prod-renew-same-type', b).checked ? 1 : 0,
+    renew_reset: reset ? 1 : 0,
+    renew_carry_volume: !reset && $('#prod-renew-carry-volume', b).checked ? 1 : 0,
+    renew_carry_time: !reset && $('#prod-renew-carry-time', b).checked ? 1 : 0,
+  };
+}
+
 function wireProductProvisionToggle(b) {
+  wireRenewRules(b);
   $$('input[name="prod-source"]', b).forEach(r => r.addEventListener('change', () => {
     const df = $('#prod-direct-fields', b);
     if (df) df.style.display = $('input[name="prod-source"]:checked', b).value === 'direct' ? '' : 'none';
@@ -3701,7 +3741,7 @@ function readProductProvisionFields(b) {
   const durationUnlimited = isDirect && durUnlimitedCb && durUnlimitedCb.checked;
   const durInput = $('#prod-duration', b);
   const duration_days = durationUnlimited ? 0 : (Number(durInput ? durInput.value : 0) || 30);
-  const userLimit = () => ({ base_users: Number($('#prod-base-users', b)?.value || 0), extra_user_price: Number($('#prod-extra-user-price', b)?.value || 0), max_users: Number($('#prod-max-users', b)?.value || 0) });
+  const userLimit = () => ({ base_users: Number($('#prod-base-users', b)?.value || 0), extra_user_price: Number($('#prod-extra-user-price', b)?.value || 0), max_users: Number($('#prod-max-users', b)?.value || 0), renew_rules: collectRenewRules(b) });
   if (!isDirect) return { ok: true, source: 'bank', provision_server_id: null, provision_ssh_node_id: null, extra_panel_ids: [], extra_ssh_node_ids: [], auto_provision_volume_gb: null, duration_days, ...userLimit() };
   const target = $('#prod-target-type', b)?.value || 'vpn';
   const volUnlimitedCb = $('#prod-volume-unlimited', b);
@@ -3870,7 +3910,7 @@ function openProductEditModal(product, categories, panelServers, sshNodes) {
         payload.extra_panel_ids = prov.extra_panel_ids;
         payload.extra_ssh_node_ids = prov.extra_ssh_node_ids;
         payload.auto_provision_volume_gb = prov.auto_provision_volume_gb;
-        payload.base_users = prov.base_users; payload.extra_user_price = prov.extra_user_price; payload.max_users = prov.max_users;
+        payload.base_users = prov.base_users; payload.extra_user_price = prov.extra_user_price; payload.max_users = prov.max_users; payload.renew_rules = prov.renew_rules;
       }
       try {
         await apiPut(`/products/${product.id}`, payload);
@@ -3979,7 +4019,7 @@ async function renderCatalog() {
           category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
           description: $('#prod-desc', b).value, duration_days: prov.duration_days,
           provision_server_id: prov.provision_server_id, provision_target_values: prov.provision_target_values, extra_panel_target_values: prov.extra_panel_target_values, provision_ssh_node_id: prov.provision_ssh_node_id, provision_ssh_protocol: prov.provision_ssh_protocol, extra_panel_ids: prov.extra_panel_ids, extra_ssh_node_ids: prov.extra_ssh_node_ids,
-          auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods, base_users: prov.base_users, extra_user_price: prov.extra_user_price, max_users: prov.max_users,
+          auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods, base_users: prov.base_users, extra_user_price: prov.extra_user_price, max_users: prov.max_users, renew_rules: prov.renew_rules,
         });
         toast('محصول اضافه شد.'); close(); renderCatalog();
       } catch (e) { handleErr(e); }
@@ -4114,7 +4154,7 @@ function renderCatalogBento(categories, products, panelServers, sshNodes, paymen
           category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
           description: $('#prod-desc', b).value, duration_days: prov.duration_days,
           provision_server_id: prov.provision_server_id, provision_target_values: prov.provision_target_values, extra_panel_target_values: prov.extra_panel_target_values, provision_ssh_node_id: prov.provision_ssh_node_id, provision_ssh_protocol: prov.provision_ssh_protocol, extra_panel_ids: prov.extra_panel_ids, extra_ssh_node_ids: prov.extra_ssh_node_ids,
-          auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods, base_users: prov.base_users, extra_user_price: prov.extra_user_price, max_users: prov.max_users,
+          auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods, base_users: prov.base_users, extra_user_price: prov.extra_user_price, max_users: prov.max_users, renew_rules: prov.renew_rules,
         });
         toast('محصول اضافه شد.'); close(); renderCatalog();
       } catch (e) { handleErr(e); }
@@ -4248,7 +4288,7 @@ function renderCatalogBrutalist(categories, products, panelServers, sshNodes, pa
           category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
           description: $('#prod-desc', b).value, duration_days: prov.duration_days,
           provision_server_id: prov.provision_server_id, provision_target_values: prov.provision_target_values, extra_panel_target_values: prov.extra_panel_target_values, provision_ssh_node_id: prov.provision_ssh_node_id, provision_ssh_protocol: prov.provision_ssh_protocol, extra_panel_ids: prov.extra_panel_ids, extra_ssh_node_ids: prov.extra_ssh_node_ids,
-          auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods, base_users: prov.base_users, extra_user_price: prov.extra_user_price, max_users: prov.max_users,
+          auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods, base_users: prov.base_users, extra_user_price: prov.extra_user_price, max_users: prov.max_users, renew_rules: prov.renew_rules,
         });
         toast('محصول اضافه شد.'); close(); renderCatalog();
       } catch (e) { handleErr(e); }
