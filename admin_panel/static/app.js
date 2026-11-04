@@ -146,6 +146,13 @@ const ICONS = {
   empty: '<path d="M22 12h-6l-2 3h-4l-2-3H2"></path><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11Z"></path>',
   buttons: '<rect x="3" y="4" width="7" height="7" rx="2"></rect><rect x="14" y="4" width="7" height="7" rx="2"></rect><rect x="3" y="15" width="7" height="7" rx="2"></rect><rect x="14" y="15" width="7" height="7" rx="2"></rect>',
   bottexts: '<line x1="4" y1="6" x2="20" y2="6"></line><line x1="4" y1="12" x2="20" y2="12"></line><line x1="4" y1="18" x2="14" y2="18"></line>',
+  banners: '<rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline>',
+  globe: '<circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>',
+  terminal: '<polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line>',
+  layers: '<polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline>',
+  sliders: '<line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line><line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line>',
+  send: '<line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>',
+  search: '<circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line>',
 };
 const svg = (name, cls = '') => `<svg class="icon ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>`;
 const fmt = n => (n === null || n === undefined) ? '—' : Number(n).toLocaleString('fa-IR');
@@ -364,47 +371,105 @@ function openModal(title, bodyHtml, onMount, opts = {}) {
 }
 
 /* ============================================================== nav === */
-const NAV = [
-  // نمای کلی
-  { key: 'dashboard', label: 'داشبورد', icon: 'dashboard', role: 'any', section: null },
-  { key: 'analytics', label: 'آمار پیشرفته', icon: 'revenue', role: 'any', section: null },
-  { key: 'reseller-self', label: 'نمایندگی من', icon: 'resellers', role: 'reseller-self', section: 'عملیات نمایندگی' },
-
-  // عملیات مالی
-  { key: 'orders', label: 'سفارش‌ها', icon: 'orders', role: 'any', section: 'عملیات مالی' },
-  { key: 'topups', label: 'شارژ کیف پول', icon: 'topups', role: 'any', section: 'عملیات مالی' },
-
-  // کاربران و پشتیبانی
-  { key: 'users', label: 'کاربران', icon: 'users', role: 'any', section: 'کاربران و پشتیبانی' },
-  { key: 'tickets', label: 'تیکت‌ها', icon: 'tickets', role: 'any', section: 'کاربران و پشتیبانی' },
-  { key: 'support', label: 'چت زنده', icon: 'support', role: 'any', section: 'کاربران و پشتیبانی' },
-
-  // محصولات و بازاریابی
-  { key: 'catalog', label: 'محصولات و بانک کانفیگ', icon: 'catalog', role: 'catalog', section: 'محصولات و بازاریابی' },
-  { key: 'discounts', label: 'کدهای تخفیف', icon: 'discounts', role: 'discounts', section: 'محصولات و بازاریابی' },
-  { key: 'broadcast', label: 'پیام همگانی', icon: 'broadcast', role: 'broadcast', section: 'محصولات و بازاریابی' },
-  { key: 'banners', label: 'بنرها', icon: 'catalog', role: 'settings', section: 'محصولات و بازاریابی' },
-
-  // شبکه و همکاران
-  { key: 'resellers', label: 'نمایندگی‌ها', icon: 'resellers', role: 'resellers', section: 'شبکه و همکاران' },
-  { key: 'reseller_tiers', label: 'سطوح نمایندگی', icon: 'resellers', role: 'resellers', section: 'شبکه و همکاران' },
-  { key: 'panels', label: 'پنل‌های VPN', icon: 'panels', role: 'panels', section: 'شبکه و همکاران' },
-  { key: 'ssh', label: 'نودها و سهمیه SSH', icon: 'system', role: 'panels', section: 'شبکه و همکاران' },
-
-  // تنظیمات و سیستم — نگهداری، دسترسی و پیکربندی
-  { key: 'settings', label: 'تنظیمات و برندینگ', icon: 'settings', role: 'settings', section: 'تنظیمات و سیستم' },
-  { key: 'languages', label: '\u0632\u0628\u0627\u0646\u200c\u0647\u0627', icon: 'settings', role: 'settings', section: '\u062a\u0646\u0638\u06cc\u0645\u0627\u062a \u0648 \u0633\u06cc\u0633\u062a\u0645' },
-  { key: 'buttons', label: 'دکمه‌های ربات', icon: 'buttons', role: 'settings', section: 'تنظیمات و سیستم' },
-  { key: 'bottexts', label: 'متن‌های ربات', icon: 'bottexts', role: 'settings', section: 'تنظیمات و سیستم' },
-  { key: 'salessettings', label: 'تنظیمات فروش', icon: 'settings', role: 'settings', section: 'تنظیمات و سیستم' },
-  { key: 'webadmins', label: 'کاربران پنل', icon: 'webadmins', role: 'owner', section: 'تنظیمات و سیستم' },
-  { key: 'tgadmins', label: 'ادمین‌های ربات', icon: 'webadmins', role: 'owner', section: 'تنظیمات و سیستم' },
-  { key: 'system', label: 'سیستم و نگهداری', icon: 'system', role: 'system', section: 'تنظیمات و سیستم' },
-  { key: 'logs', label: 'لاگ فعالیت ادمین‌ها', icon: 'logs', role: 'system', section: 'تنظیمات و سیستم' },
-
-  // حساب کاربری
-  { key: 'account', label: 'حساب من', icon: 'account', role: 'any', section: 'حساب کاربری' },
+// ساختار منو: «گروه ← صفحه ← زیرمنو».
+// هر زیرمنو مستقیماً به یک تب/بخش داخل همان صفحه می‌رود (وضعیت سفارش، تب تنظیمات،
+// بخش‌های تنظیمات فروش و ...). ترتیب گروه‌ها از «روزمره» به «پیکربندی» است.
+const _ORDER_SUBS = [['pending', 'در انتظار تایید'], ['approved', 'تایید شده'], ['rejected', 'رد شده']];
+const NAV_GROUPS = [
+  { id: 'overview', label: 'نمای کلی', items: [
+    { key: 'dashboard', label: 'داشبورد', icon: 'dashboard', role: 'any' },
+    { key: 'analytics', label: 'آمار پیشرفته', icon: 'revenue', role: 'any' },
+    { key: 'reseller-self', label: 'نمایندگی من', icon: 'resellers', role: 'reseller-self' },
+  ] },
+  { id: 'sales', label: 'فروش و مالی', items: [
+    { key: 'orders', label: 'سفارش‌ها', icon: 'orders', role: 'any', subs: _ORDER_SUBS },
+    { key: 'topups', label: 'شارژ کیف پول', icon: 'topups', role: 'any', subs: _ORDER_SUBS },
+    { key: 'discounts', label: 'کدهای تخفیف', icon: 'discounts', role: 'discounts' },
+  ] },
+  { id: 'customers', label: 'مشتریان و پشتیبانی', items: [
+    { key: 'users', label: 'کاربران', icon: 'users', role: 'any' },
+    { key: 'tickets', label: 'تیکت‌ها', icon: 'tickets', role: 'any',
+      subs: [['all', 'همه'], ['open', 'باز'], ['answered', 'پاسخ‌داده‌شده'], ['closed', 'بسته']] },
+    { key: 'support', label: 'چت زنده', icon: 'support', role: 'any' },
+  ] },
+  { id: 'marketing', label: 'محصولات و بازاریابی', items: [
+    { key: 'catalog', label: 'محصولات و بانک کانفیگ', icon: 'catalog', role: 'catalog',
+      subs: [['products', 'محصولات'], ['categories', 'دسته‌بندی‌ها']] },
+    { key: 'salessettings', label: 'تنظیمات فروش', icon: 'sliders', role: 'settings',
+      subs: [['referral', 'رفرال و جذب'], ['renewal', 'تمدید و نگهداشت'], ['access', 'تست، عضویت و موجودی']] },
+    { key: 'broadcast', label: 'پیام همگانی', icon: 'broadcast', role: 'broadcast' },
+    { key: 'banners', label: 'بنرها', icon: 'banners', role: 'settings' },
+  ] },
+  { id: 'infra', label: 'شبکه و زیرساخت', items: [
+    { key: 'panels', label: 'پنل‌های VPN', icon: 'panels', role: 'panels' },
+    { key: 'ssh', label: 'نودها و سهمیه SSH', icon: 'terminal', role: 'panels' },
+  ] },
+  { id: 'partners', label: 'نمایندگی‌ها', items: [
+    { key: 'resellers', label: 'مدیریت نمایندگی‌ها', icon: 'resellers', role: 'resellers',
+      subs: [['bots', 'نماینده‌های بات'], ['credit', 'نمایندگی اعتباری'], ['commission', 'نمایندگی کمیسیونی'], ['requests', 'درخواست‌ها']] },
+    { key: 'reseller_tiers', label: 'سطوح نمایندگی', icon: 'layers', role: 'resellers' },
+  ] },
+  { id: 'botconfig', label: 'ربات و تنظیمات', items: [
+    { key: 'settings', label: 'تنظیمات و برندینگ', icon: 'settings', role: 'settings',
+      subs: [['content', 'محتوا و متن‌ها'], ['payment', 'پرداخت و مالی'], ['services', 'سرویس‌های ویژه'], ['mobile_app', 'اپ موبایل'], ['extra', 'تنظیمات تکمیلی']] },
+    { key: 'buttons', label: 'دکمه‌های ربات', icon: 'buttons', role: 'settings' },
+    { key: 'bottexts', label: 'متن‌های ربات', icon: 'bottexts', role: 'settings' },
+    { key: 'languages', label: 'زبان‌ها', icon: 'globe', role: 'settings' },
+  ] },
+  { id: 'admin', label: 'مدیریت و امنیت', items: [
+    { key: 'webadmins', label: 'کاربران پنل', icon: 'webadmins', role: 'owner' },
+    { key: 'tgadmins', label: 'ادمین‌های ربات', icon: 'send', role: 'owner' },
+    { key: 'logs', label: 'لاگ فعالیت ادمین‌ها', icon: 'logs', role: 'system' },
+    { key: 'system', label: 'سیستم و نگهداری', icon: 'system', role: 'system',
+      subs: [['jobs', 'وضعیت اجراها و موجودی'], ['backup', 'بکاپ و بازیابی'], ['danger', 'نگهداری و منطقه خطر']] },
+  ] },
+  { id: 'account', label: 'حساب کاربری', items: [
+    { key: 'account', label: 'حساب من', icon: 'account', role: 'any',
+      subs: [['appearance', 'ظاهر پنل'], ['security', 'امنیت حساب']] },
+  ] },
 ];
+// لیست تخت (سازگار با کدهای قبلی که NAV.find(...) می‌زنند)
+const NAV = NAV_GROUPS.flatMap(g => g.items.map(i => ({ ...i, section: g.label, group: g.id, groupLabel: g.label })));
+
+/* وضعیت زیرمنو هر صفحه: متغیرهای قدیمیِ هر صفحه را می‌خواند/می‌نویسد تا تب‌های
+   داخل صفحه و زیرمنوی کناری همیشه یکی باشند. */
+const SECTION_STATE = {};
+const NAV_SUB_STATE = {
+  orders: { get: () => ordersStatus, set: v => { ordersStatus = v; } },
+  topups: { get: () => topupsStatus, set: v => { topupsStatus = v; } },
+  tickets: { get: () => ticketsStatusFilter || 'all', set: v => { ticketsStatusFilter = v === 'all' ? '' : v; } },
+  catalog: { get: () => catalogTab, set: v => { catalogTab = v; } },
+  resellers: { get: () => resellersSubTab, set: v => { resellersSubTab = v; } },
+  settings: { get: () => settingsActiveTab, set: v => { settingsActiveTab = v; } },
+};
+function navSubGet(tab) {
+  if (NAV_SUB_STATE[tab]) return NAV_SUB_STATE[tab].get();
+  const item = NAV.find(n => n.key === tab);
+  return SECTION_STATE[tab] || (item?.subs ? item.subs[0][0] : null);
+}
+function navSubSet(tab, sub) {
+  if (NAV_SUB_STATE[tab]) NAV_SUB_STATE[tab].set(sub);
+  else SECTION_STATE[tab] = sub;
+}
+
+/* بخش‌بندی صفحه‌های «کارت روی کارت» (تنظیمات فروش، سیستم، حساب): کارت‌ها بر اساس
+   عنوان‌شان در چند بخش تب‌دار دسته‌بندی می‌شوند و فقط بخش فعال دیده می‌شود. */
+const SECTION_PAGES = {
+  salessettings: [
+    { key: 'referral', label: '🔗 رفرال و جذب', match: ['رفرال', 'گردونه', 'زیرمجموعه‌گیری فیک'] },
+    { key: 'renewal', label: '⏳ تمدید و نگهداشت', match: ['یادآوری تمدید', 'پیش‌بینی ریزش', 'یادآوری بر اساس حجم', 'هشدار اتصال', 'تخفیف تمدید'] },
+    { key: 'access', label: '🧪 تست، عضویت و موجودی', match: ['کانفیگ تست', 'عضویت اجباری', 'هشدار موجودی'] },
+  ],
+  system: [
+    { key: 'jobs', label: '📊 وضعیت اجراها و موجودی', match: ['یادآوری‌های تمدید', 'وضعیت لحظه‌ای موجودی'] },
+    { key: 'backup', label: '💾 بکاپ و بازیابی', match: ['بکاپ دیتابیس'] },
+    { key: 'danger', label: '🛠 نگهداری و منطقه خطر', match: ['بازگشت به حالت کارخانه', 'فایل‌های دیتابیس یتیم'] },
+  ],
+  account: [
+    { key: 'appearance', label: '🎨 ظاهر پنل', match: ['تم پنل'] },
+    { key: 'security', label: '🔐 امنیت حساب', match: ['تغییر پسورد'] },
+  ],
+};
 function hasPerm(perm) {
   return ME.role === 'owner' || (ME.permissions || []).includes(perm);
 }
@@ -453,35 +518,184 @@ function applyResellerTierChrome() {
   if (brand) brand.innerHTML = `<strong>${esc(p.tier_title || 'نمایندگی')}</strong><span>پنل اختصاصی ShopVPN</span>`;
 }
 
+/* ---- وضعیت منو: گروه‌های جمع‌شده + عبارت جستجو ---- */
+let NAV_COLLAPSED = new Set();
+try { NAV_COLLAPSED = new Set(JSON.parse(localStorage.getItem('admin_nav_collapsed') || '[]')); } catch (e) {}
+let NAV_QUERY = '';
+function saveNavCollapsed() {
+  try { localStorage.setItem('admin_nav_collapsed', JSON.stringify([...NAV_COLLAPSED])); } catch (e) {}
+}
+// یکسان‌سازی نوشتار فارسی/عربی برای جستجو (ی/ي، ک/ك، نیم‌فاصله)
+const navNorm = s => String(s || '').toLowerCase().replace(/ي/g, 'ی').replace(/ك/g, 'ک').replace(/‌/g, ' ').trim();
+
+function navGroupOf(tab) { return NAV.find(n => n.key === tab)?.group || null; }
+
 function renderNav() {
   const el = $('#nav-tunnel');
+  if (!el) return;
   const CYCLE = ['nav-c1', 'nav-c2', 'nav-c3', 'nav-c4'];
-  const visible = NAV.filter(n => canSee(n.role));
+  const q = navNorm(NAV_QUERY);
+  const activeGroup = navGroupOf(CURRENT_TAB);
   let html = '';
-  let lastSection = undefined;
-  visible.forEach((n, i) => {
-    if (n.section !== lastSection) {
-      if (n.section) html += `<div class="nav-section">${n.section}</div>`;
-      lastSection = n.section;
+  let i = 0;
+  NAV_GROUPS.forEach(g => {
+    let items = g.items.filter(n => canSee(n.role));
+    if (!items.length) return;
+    // در حالت جستجو: فقط صفحه‌هایی که خودشان یا یکی از زیرمنوهایشان مطابقت دارد
+    let subFilter = null;
+    if (q) {
+      subFilter = {};
+      items = items.filter(n => {
+        const selfHit = navNorm(n.label).includes(q) || navNorm(g.label).includes(q);
+        const subHits = (n.subs || []).filter(([, l]) => navNorm(l).includes(q)).map(s => s[0]);
+        subFilter[n.key] = selfHit ? null : subHits;
+        return selfHit || subHits.length;
+      });
+      if (!items.length) return;
     }
-    const count = NOTIF_COUNTS[n.key] || 0;
-    html += `
-    <div class="nav-item ${CYCLE[i % 4]} ${n.key === CURRENT_TAB ? 'active' : ''}" data-tab="${n.key}">
+    const collapsed = !q && NAV_COLLAPSED.has(g.id) && g.id !== activeGroup;
+    const groupCount = items.reduce((s, n) => s + (NOTIF_COUNTS[n.key] || 0), 0);
+    html += `<div class="nav-section nav-group-head ${collapsed ? 'is-collapsed' : ''}" data-group="${g.id}" role="button" tabindex="0" aria-expanded="${collapsed ? 'false' : 'true'}">${g.label}${collapsed && groupCount ? `<b class="nav-group-badge">${groupCount > 99 ? '99+' : groupCount}</b>` : ''}</div>`;
+    items.forEach(n => {
+      const count = NOTIF_COUNTS[n.key] || 0;
+      const isActive = n.key === CURRENT_TAB;
+      const hasSubs = !!(n.subs && n.subs.length);
+      html += `
+    <div class="nav-item ${CYCLE[i++ % 4]} ${isActive ? 'active' : ''} ${hasSubs ? 'has-subs' : ''} ${collapsed ? 'nav-hidden' : ''}" data-tab="${n.key}" data-group="${g.id}">
       <span class="nav-icon">${svg(n.icon)}</span><span>${n.label}</span>${count ? `<span class="dot-count">${count > 99 ? '99+' : count}</span>` : ''}
     </div>`;
+      // زیرمنو: فقط برای صفحه‌ی فعال (یا نتیجه‌ی جستجو) باز می‌شود
+      if (hasSubs && !collapsed && (isActive || (q && subFilter[n.key] && subFilter[n.key].length))) {
+        const cur = isActive ? navSubGet(n.key) : null;
+        const subs = (q && subFilter[n.key]) ? n.subs.filter(s => subFilter[n.key].includes(s[0])) : n.subs;
+        html += `<div class="nav-sublist" data-for="${n.key}">${subs.map(([k, l]) =>
+          `<div class="nav-sub ${cur === k ? 'active' : ''}" data-tab="${n.key}" data-sub="${k}"><i></i><span>${l}</span></div>`).join('')}</div>`;
+      }
+    });
   });
+  if (!html) html = `<div class="nav-empty">موردی پیدا نشد</div>`;
   el.innerHTML = html;
   $$('.nav-item', el).forEach(item => item.addEventListener('click', () => { goTo(item.dataset.tab); closeSidebar(); }));
+  $$('.nav-sub', el).forEach(item => item.addEventListener('click', e => { e.stopPropagation(); goTo(item.dataset.tab, item.dataset.sub); closeSidebar(); }));
+  $$('.nav-group-head', el).forEach(h => {
+    const toggle = () => {
+      const id = h.dataset.group;
+      if (NAV_COLLAPSED.has(id)) NAV_COLLAPSED.delete(id); else NAV_COLLAPSED.add(id);
+      saveNavCollapsed();
+      renderNav();
+    };
+    h.addEventListener('click', toggle);
+    h.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+  });
 }
 
-function goTo(tab) {
+function updatePageHeading() {
+  const n = NAV.find(x => x.key === CURRENT_TAB);
+  const title = $('#page-title');
+  if (title) title.textContent = n?.label || '';
+  const crumb = $('#page-crumb');
+  if (!crumb) return;
+  if (!n) { crumb.innerHTML = ''; return; }
+  let html = `<span>${n.groupLabel}</span>`;
+  if (n.subs) {
+    const cur = navSubGet(n.key);
+    const lbl = n.subs.find(s => s[0] === cur)?.[1];
+    if (lbl) html += `<i>›</i><span class="crumb-cur">${lbl}</span>`;
+  }
+  crumb.innerHTML = html;
+}
+
+function goTo(tab, sub) {
   stopSupportPoll();
+  const sameTab = tab === CURRENT_TAB;
   CURRENT_TAB = tab;
   try { localStorage.setItem('admin_current_tab', tab); } catch (e) {}
+  if (sub) navSubSet(tab, sub);
+  // صفحه‌ی مقصد باید گروهش باز باشد
+  const g = navGroupOf(tab);
+  if (g && NAV_COLLAPSED.delete(g)) saveNavCollapsed();
   renderNav();
-  $('#page-title').textContent = NAV.find(n => n.key === tab)?.label || '';
+  { const act = $('#nav-tunnel .nav-item.active'); const tail = act?.nextElementSibling?.classList.contains('nav-sublist') ? act.nextElementSibling : act; tail?.scrollIntoView({ block: 'nearest' }); }
+  updatePageHeading();
+  // اگر همین صفحه باز است و تب/بخش داخلی دارد، بدون بارگذاری مجدد جابه‌جا شو
+  if (sameTab && sub) {
+    if (tab === 'settings' && $('#settings-tabs-nav', content())) { switchSettingsTab(sub, content()); return; }
+    if (SECTION_PAGES[tab] && $('.section-nav', content())) { showSection(tab, sub); return; }
+  }
   renderPage(tab);
 }
+
+/* ---- بخش‌های تب‌دار برای صفحه‌های کارتی ---- */
+function enhanceSections() {
+  const cfg = SECTION_PAGES[CURRENT_TAB];
+  const root = content();
+  if (!cfg || !root || root.querySelector(':scope > .section-nav')) return;
+  const cards = Array.from(root.children).filter(el => el.matches('.card') || el.querySelector('h3'));
+  if (cards.length < 2) return;
+  let last = cfg[0].key;
+  cards.forEach(el => {
+    const h = el.querySelector('h3')?.textContent || '';
+    const hit = cfg.find(s => s.match.some(m => h.includes(m)));
+    el.dataset.sec = hit ? hit.key : last;
+    last = el.dataset.sec;
+  });
+  const present = cfg.filter(s => cards.some(c => c.dataset.sec === s.key));
+  if (present.length < 2) { cards.forEach(c => delete c.dataset.sec); return; }
+  const cur = present.find(s => s.key === SECTION_STATE[CURRENT_TAB]) ? SECTION_STATE[CURRENT_TAB] : present[0].key;
+  SECTION_STATE[CURRENT_TAB] = cur;
+  const nav = document.createElement('div');
+  nav.className = 'tabs section-nav';
+  nav.setAttribute('role', 'tablist');
+  nav.innerHTML = present.map(s => {
+    const n = cards.filter(c => c.dataset.sec === s.key).length;
+    return `<button type="button" class="tab-btn ${s.key === cur ? 'active' : ''}" data-sec="${s.key}" role="tab">${s.label}<small class="tab-count">${n}</small></button>`;
+  }).join('');
+  nav.addEventListener('click', e => {
+    const b = e.target.closest('[data-sec]');
+    if (b) showSection(CURRENT_TAB, b.dataset.sec);
+  });
+  root.insertBefore(nav, root.firstChild);
+  showSection(CURRENT_TAB, cur);
+}
+
+function showSection(tab, key) {
+  const root = content();
+  SECTION_STATE[tab] = key;
+  $$(':scope > [data-sec]', root).forEach(el => { el.style.display = el.dataset.sec === key ? '' : 'none'; });
+  $$('.section-nav [data-sec]', root).forEach(b => b.classList.toggle('active', b.dataset.sec === key));
+  updatePageHeading();
+  renderNav();
+}
+
+// صفحه‌ها بعد از هر رندر (حتی رندرهای مجدد پس از ذخیره) دوباره بخش‌بندی می‌شوند
+new MutationObserver(() => { if (SECTION_PAGES[CURRENT_TAB]) enhanceSections(); })
+  .observe(document.getElementById('content'), { childList: true });
+
+// تب‌های داخل صفحه (وضعیت سفارش، تب‌های تنظیمات و ...) را با زیرمنوی کناری هماهنگ نگه می‌دارد
+document.getElementById('content').addEventListener('click', e => {
+  if (e.target.closest('.tab-btn, .bn-seg-btn, .bru-seg-btn')) setTimeout(() => { renderNav(); updatePageHeading(); }, 80);
+});
+
+/* ---- جستجوی منو (کلید / یا Ctrl+K) ---- */
+(function initNavSearch() {
+  const input = document.getElementById('nav-search-input');
+  if (!input) return;
+  input.addEventListener('input', () => { NAV_QUERY = input.value; renderNav(); });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { input.value = ''; NAV_QUERY = ''; renderNav(); input.blur(); }
+    if (e.key === 'Enter') {
+      const first = $('#nav-tunnel .nav-sub, #nav-tunnel .nav-item');
+      if (first) { goTo(first.dataset.tab, first.dataset.sub); input.value = ''; NAV_QUERY = ''; renderNav(); closeSidebar(); }
+    }
+  });
+  document.addEventListener('keydown', e => {
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '') || document.activeElement?.isContentEditable;
+    if ((e.key === '/' && !typing) || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k')) {
+      if ($('#app')?.hidden) return;
+      e.preventDefault(); openSidebar(); input.focus(); input.select();
+    }
+  });
+})();
 
 /* ---- صدای هشدار برای موارد جدید (بدون فایل صوتی، سنتز با Web Audio) ---- */
 let NOTIF_AUDIO_CTX = null;
@@ -639,7 +853,11 @@ function showApp() {
   let queryTab = null;
   try { queryTab = new URLSearchParams(location.search).get('tab'); } catch (e) {}
   const queryValid = queryTab && NAV.find(n => n.key === queryTab && canSee(n.role));
-  goTo(queryValid ? queryTab : (savedValid ? saved : 'dashboard'));
+  let querySub = null;
+  try { querySub = new URLSearchParams(location.search).get('sub'); } catch (e) {}
+  const startTab = queryValid ? queryTab : (savedValid ? saved : 'dashboard');
+  const startItem = NAV.find(n => n.key === startTab);
+  goTo(startTab, queryValid && querySub && startItem?.subs?.some(s => s[0] === querySub) ? querySub : undefined);
 }
 
 /* ==================================================== web push (level 2) ===
