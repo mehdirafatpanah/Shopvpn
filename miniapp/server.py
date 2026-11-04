@@ -105,6 +105,7 @@ from reseller_auto_provision import provision_auto_config, provision_test_config
 from test_config_provision import provision_test_plan, format_plan_amount, ProvisionError as TestPlanProvisionError
 from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
 from renewal_engine import execute_renewal, RenewalError
+import renewal_rules
 from user_limit import price_for_users as _ul_price_for_users, renewal_users as _ul_renewal_users
 from panel_capabilities import all_panels_support, normalize_user_limit, USER_LIMIT
 from service_refund import (
@@ -1049,6 +1050,8 @@ def api_custom_config_renewal_full_plans(custom_config_id: int, auth=Depends(get
     cc = _owned_custom_config_or_404(db, custom_config_id, tg_id)
     all_products = [p for p in db.get_all_products() if p["is_auto_provision"] and p["is_active"]]
     products = [p for p in all_products if p["provision_server_id"] == cc["panel_server_id"]]
+    # قوانین «تمدید کامل» هر محصول (خاموش‌بودن تمدید / فقط-هم‌نوع)
+    products = renewal_rules.filter_products(products, cc)
     discount_percent = _early_renewal_discount_percent(db, cc)
     result = []
     for p in products:
@@ -1060,6 +1063,10 @@ def api_custom_config_renewal_full_plans(custom_config_id: int, auth=Depends(get
             "original_price": price if discount_percent else None,
             "discount_percent": discount_percent or None,
             "volume_gb": p["auto_provision_volume_gb"], "duration_days": p["duration_days"],
+            "renew_reset": not renewal_rules.product_rules(p)["renew_carry_volume"]
+                           and not renewal_rules.product_rules(p)["renew_carry_time"],
+            "carry_volume": bool(renewal_rules.product_rules(p)["renew_carry_volume"]),
+            "carry_time": bool(renewal_rules.product_rules(p)["renew_carry_time"]),
         })
     return result
 
@@ -1078,6 +1085,9 @@ async def api_custom_config_renew_full(custom_config_id: int, body: RenewFullBod
         raise HTTPException(status_code=400, detail=tr("این پلن یافت نشد."))
     if product["provision_server_id"] != cc["panel_server_id"]:
         raise HTTPException(status_code=400, detail=tr("این پلن روی پنل این سرویس تعریف نشده است."))
+    if not renewal_rules.is_renewable_for(product, cc):
+        raise HTTPException(status_code=400, detail=tr("این پلن برای تمدید کامل این سرویس مجاز نیست."))
+    carry_volume, carry_time = renewal_rules.order_flags(product)
 
     user_row = db.get_user(tg_id)
     if user_row and user_row["is_blocked"]:
@@ -1100,7 +1110,7 @@ async def api_custom_config_renew_full(custom_config_id: int, body: RenewFullBod
 
     order_id = db.create_renewal_order(
         tg_id, "custom", cc["id"], "full", add_volume, add_days, price, wallet_used,
-        user_limit=users or None,
+        user_limit=users or None, carry_volume=carry_volume, carry_time=carry_time,
     )
     order = db.get_order(order_id)
 
@@ -4926,6 +4936,7 @@ class ProductCreate(BaseModel):
     base_users: int = 0
     extra_user_price: int = 0
     max_users: int = 0
+    renew_rules: Optional[dict] = None  # قوانین تمدید کامل (renewal_rules.py)
 
 
 class ProductUpdate(BaseModel):
@@ -4943,6 +4954,7 @@ class ProductUpdate(BaseModel):
     base_users: Optional[int] = None
     extra_user_price: Optional[int] = None
     max_users: Optional[int] = None
+    renew_rules: Optional[dict] = None
 
 
 class ConfigsAdd(BaseModel):
@@ -5426,6 +5438,7 @@ def api_admin_list_products(cat_id: int, auth=Depends(require_senior_admin)):
             "auto_provision_volume_gb": p["auto_provision_volume_gb"],
             "stock": None if p["is_auto_provision"] else db.count_available_configs(p["id"]),
             "base_users": p["base_users"] or 0, "extra_user_price": p["extra_user_price"] or 0, "max_users": p["max_users"] or 0,
+            **renewal_rules.product_rules(p),
         }
         for p in products
     ]
@@ -5552,6 +5565,7 @@ async def api_admin_create_product(body: ProductCreate, auth=Depends(require_sen
         base_users=base_users, extra_user_price=extra_user_price, max_users=max_users,
         provision_target_config=target_config, extra_panel_ids=extra_panel_ids,
         extra_panel_target_configs=extra_panel_target_configs,
+        renew_rules=body.renew_rules,
     )
     if int(body.compare_price or 0) > 0 and (body.discount_days is not None or body.discount_max_uses is not None):
         db.edit_product(product_id, compare_price=int(body.compare_price),
@@ -5717,6 +5731,8 @@ async def api_admin_edit_product(product_id: int, body: ProductUpdate, auth=Depe
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     db.set_product_user_limit(product_id, eup, mu, bu)
+    if body.renew_rules is not None:
+        db.set_product_renew_rules(product_id, body.renew_rules)
 
     if body.price is not None and body.price != old_product["price"]:
         db.log_admin_action(
