@@ -1436,6 +1436,7 @@ async function openRenewFullOverlay(customConfigId, onChanged) {
           <button class="btn outline renew-full-plan-btn" data-plan-id="${p.id}">
             ${escHtml(p.name)} — ${fmt(p.volume_gb)} گیگ / ${fmt(p.duration_days)} روز —
             ${p.discount_percent ? `<s class="hint-text">${fmt(p.original_price)}</s> ${fmt(p.price)} تومان (🎁 ${p.discount_percent}٪ تخفیف)` : `${fmt(p.price)} تومان`}
+            ${p.carry_volume && p.carry_time ? "" : `<div class="hint-text" style="font-size:11px;margin-top:4px">${p.renew_reset ? "ریست کامل: حجم و زمان باقی‌مانده حذف می‌شود" : (p.carry_volume ? "زمان باقی‌مانده منتقل نمی‌شود" : "حجم باقی‌مانده منتقل نمی‌شود")}</div>`}
           </button>
         `).join("")}
       </div>
@@ -5404,6 +5405,48 @@ async function loadMiniExtraPanelTargets() {
     }
   }
 }
+// «قوانین تمدید کامل» هر محصول (renewal_rules.py در بک‌اند)؛ پیش‌فرض‌ها رفتار قبلی را حفظ می‌کنند.
+function miniRenewRulesHtml(prefix, p) {
+  const v = (k, d) => (p && p[k] != null ? Number(p[k]) : d);
+  const reset = v("renew_reset", 0) === 1;
+  const row = (id, label, hint, on, disabled, extra = "") => `
+    <label style="display:flex;align-items:flex-start;gap:8px;margin-bottom:8px">
+      <input type="checkbox" id="${prefix}-${id}" ${on ? "checked" : ""} ${disabled ? "disabled" : ""} ${extra} style="margin-top:3px" />
+      <span>${label}<br><small class="hint-text">${hint}</small></span>
+    </label>`;
+  return `<div id="${prefix}-renew-rules" style="margin-bottom:10px;border-top:1px dashed var(--border, #8884);padding-top:10px">
+    <label class="field-label">🔄 قوانین تمدید کامل</label>
+    ${row("renew-enabled", "قابل تمدید کامل باشد", "اگر خاموش باشد در لیست تمدید کامل نمایش داده نمی‌شود.", v("renew_full_enabled", 1) === 1, false)}
+    ${row("renew-same-type", "فقط برای سرویس‌های هم‌نوع", "نامحدود فقط به سرویس نامحدود و حجمی فقط به سرویس حجمی نمایش داده می‌شود.", v("renew_same_type_only", 1) === 1, false)}
+    ${row("renew-reset", "ریست کامل بعد از تمدید", "حجم و زمان باقیمانده حذف و فقط بسته‌ی جدید اعمال می‌شود.", reset, false, `data-renew-reset="${prefix}"`)}
+    ${row("renew-carry-volume", "انتقال حجم باقیمانده", "حجم باقیمانده به محصول جدید اضافه می‌شود.", !reset && v("renew_carry_volume", 1) === 1, reset)}
+    ${row("renew-carry-time", "انتقال زمان باقیمانده", "روزهای باقیمانده به محصول جدید اضافه می‌شود.", !reset && v("renew_carry_time", 1) === 1, reset)}
+  </div>`;
+}
+function collectMiniRenewRules(prefix) {
+  const en = document.getElementById(`${prefix}-renew-enabled`);
+  if (!en) return undefined;
+  const g = (id) => document.getElementById(`${prefix}-${id}`)?.checked;
+  const reset = !!g("renew-reset");
+  return {
+    renew_full_enabled: en.checked ? 1 : 0,
+    renew_same_type_only: g("renew-same-type") ? 1 : 0,
+    renew_reset: reset ? 1 : 0,
+    renew_carry_volume: !reset && g("renew-carry-volume") ? 1 : 0,
+    renew_carry_time: !reset && g("renew-carry-time") ? 1 : 0,
+  };
+}
+// ریست کامل → دو گزینه‌ی انتقال خاموش و غیرفعال می‌شوند (delegation تا ترتیب رندر مهم نباشد).
+document.addEventListener("change", (e) => {
+  const prefix = e.target && e.target.dataset ? e.target.dataset.renewReset : null;
+  if (!prefix) return;
+  const cv = document.getElementById(`${prefix}-renew-carry-volume`);
+  const ct = document.getElementById(`${prefix}-renew-carry-time`);
+  if (!cv || !ct) return;
+  if (e.target.checked) { cv.checked = false; ct.checked = false; }
+  cv.disabled = ct.disabled = e.target.checked;
+});
+
 function productProvisionFieldsHtml(panelServers, bankAllowed = true) {
   window.__adminPanelServers = panelServers || [];
   if (!bankAllowed) {
@@ -5542,6 +5585,7 @@ async function renderAdminProducts(body) {
         <input class="input" id="new-prod-max-users" type="number" min="0" max="20" value="0" placeholder="سقف کاربران" />
         <p class="hint-text">این بخش فقط وقتی نمایش داده می‌شود که پنل VPN انتخاب‌شده این قابلیت را پشتیبانی کند.</p>
       </div>
+      ${miniRenewRulesHtml("new-prod", null)}
       ${productPaymentMethodsFieldsHtml(paymentMethods)}
       <div class="field-error" id="new-prod-error"></div>
       <button class="btn" id="new-prod-save">➕ افزودن محصول</button>
@@ -5641,6 +5685,7 @@ async function renderAdminProducts(body) {
       base_users: Number(document.getElementById("new-prod-base-users")?.value || 0),
       extra_user_price: Number(document.getElementById("new-prod-extra-user-price")?.value || 0),
       max_users: Number(document.getElementById("new-prod-max-users")?.value || 0) };
+    if (isDirect) payload.renew_rules = collectMiniRenewRules("new-prod");
     if (isDirect) {
       const provision_server_id = Number(document.getElementById("new-prod-server").value);
       const volumeUnlimited = newVolUnlimitedCb && newVolUnlimitedCb.checked;
@@ -5737,6 +5782,7 @@ async function renderAdminEditProduct(body) {
         <input class="input" id="edit-prod-extra-user-price" type="number" min="0" value="${Number(p.extra_user_price || 0)}" placeholder="قیمت هر کاربر اضافه" style="margin-bottom:6px" />
         <input class="input" id="edit-prod-max-users" type="number" min="0" max="20" value="${Number(p.max_users || 0)}" placeholder="سقف کاربران" />
       </div>
+      ${miniRenewRulesHtml("edit-prod", p)}
       <p class="hint-text">🔌 با تغییر پنل یا منبع، ساخت‌های بعدیِ همین محصول طبق تنظیم جدید انجام می‌شود؛ سرویس‌های قبلاً ساخته‌شده و کانفیگ‌های باقی‌مانده در بانک تغییر نمی‌کنند.</p>
       </div>
       ` : (isCreditAuto ? `<p class="hint-text">🔌 این محصول به‌صورت خودکار (${p.auto_provision_volume_gb ? p.auto_provision_volume_gb + " گیگ" : "نامحدود"}) ساخته می‌شود. برای تغییر پنل/اینباند باید نمایندگی باشی.</p>` : "")}
@@ -5808,6 +5854,8 @@ async function renderAdminEditProduct(body) {
       base_users: Number(document.getElementById("edit-prod-base-users")?.value || 0),
       extra_user_price: Number(document.getElementById("edit-prod-extra-user-price")?.value || 0),
       max_users: Number(document.getElementById("edit-prod-max-users")?.value || 0) };
+    const editRenewRules = collectMiniRenewRules("edit-prod");
+    if (editRenewRules) payload.renew_rules = editRenewRules;
     const serverSel = document.getElementById("edit-prod-server");
     if (editSourceEl) payload.source = editIsDirect ? "direct" : "bank";
     if (serverSel && editIsDirect) {
