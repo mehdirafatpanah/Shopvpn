@@ -3501,7 +3501,7 @@ async function loadMultiPanelTargetPickers(b, prefillConfigs = {}) {
     try {
       const info = await apiGet(`/panel-servers/${sid}/product-targets`);
       const choices = Array.isArray(info.choices) ? info.choices : [];
-      const cfg = prefillConfigs[sid] || prefillConfigs[String(sid)] || null;
+      const cfg = prefillConfigs[sid] || prefillConfigs[String(sid)] || window.__productPrefillTargetConfig || null;
       const selected = new Set(productTargetValuesFromConfig(cfg, sid));
       if (!choices.length) {
         section.dataset.hasChoices = '0';
@@ -3566,6 +3566,7 @@ function productProvisionFieldsHtml(panelServers, sshNodes = [], prefill = null)
       <div id="prod-multi-fields" style="display:${target === 'multi' ? '' : 'none'}">
         <div class="card-sub">پنل‌های VPN (هر تعداد)</div>
         ${panelServers.map(s2 => `<label class="field field-row"><span>${esc(s2.name)}</span><input type="checkbox" class="prod-multi-panel" value="${s2.id}" ${selPanels.includes(Number(s2.id)) ? 'checked' : ''}></label>`).join('') || '<div class="card-sub">پنلی نیست</div>'}
+        <div id="prod-multi-target-pickers" style="display:grid;gap:8px"></div>
         <div class="card-sub">نودهای SSH (هر تعداد)</div>
         ${sshNodes.map(n2 => `<label class="field field-row"><span>${esc(n2.name)} · ${esc(n2.host || '')}</span><input type="checkbox" class="prod-multi-node" value="${n2.id}" data-protocols="${esc((n2.protocols || ['ssh']).join(','))}" ${selNodes.includes(Number(n2.id)) ? 'checked' : ''}></label>`).join('') || '<div class="card-sub">نودی نیست</div>'}
         <span class="card-sub">حجم و زمان بین همه‌ی مقصدها مشترک است و خروجی همه در یک لینک ساب اختصاصی ادغام می‌شود.</span>
