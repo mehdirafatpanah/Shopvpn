@@ -3880,6 +3880,7 @@ class ProductBody(BaseModel):
     base_users: int = 0
     extra_user_price: int = 0
     max_users: int = 0
+    renew_rules: Optional[dict] = None  # قوانین تمدید کامل (renewal_rules.py)
 
 
 @app.get("/api/products")
@@ -4049,6 +4050,7 @@ async def api_add_product(body: ProductBody, admin=Depends(require_permission("c
         base_users=base_users, extra_user_price=extra_user_price, max_users=max_users,
         extra_panel_ids=extra_panels, extra_ssh_node_ids=extra_nodes,
         provision_target_config=target_config, extra_panel_target_configs=extra_panel_target_configs,
+        renew_rules=body.renew_rules,
     )
     if int(body.compare_price or 0) > 0 and (body.discount_days is not None or body.discount_max_uses is not None):
         db.edit_product(pid, compare_price=int(body.compare_price),
@@ -4167,6 +4169,7 @@ class ProductEditBody(BaseModel):
     base_users: Optional[int] = None
     extra_user_price: Optional[int] = None
     max_users: Optional[int] = None
+    renew_rules: Optional[dict] = None
 
 
 @app.put("/api/products/{product_id}")
@@ -4411,6 +4414,8 @@ async def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends
         db.set_product_extra_targets(product_id, final_extra_panels, final_extra_nodes, final_extra_target_configs)
 
     db.set_product_user_limit(product_id, eup, mu, bu)
+    if body.renew_rules is not None:
+        db.set_product_renew_rules(product_id, body.renew_rules)
 
     db.log_admin_action(admin["id"], "product_edit", f"#{product_id} (پنل وب - {admin['username']})", "product", product_id)
     return {"ok": True}
