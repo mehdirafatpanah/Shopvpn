@@ -217,6 +217,8 @@ class OrdersMixin:
         user_limit: int = None,
         discount_code_id: int = None,
         discount_amount: int = 0,
+        carry_volume: int = None,
+        carry_time: int = None,
     ) -> int:
         """سفارش «تمدید سرویس» از حساب کاربری - مثل is_custom_config از همان جدول
         orders با product_id=0 سنتینل استفاده می‌کند تا همه‌ی روش‌های پرداخت
@@ -229,10 +231,11 @@ class OrdersMixin:
             cur = conn.execute(
                 "INSERT INTO orders (user_id, product_id, status, base_price, wallet_used, final_price, "
                 "quantity, is_renewal, renewal_target_kind, renewal_target_id, renewal_mode, "
-                "renewal_add_volume_gb, renewal_add_days, renewal_user_limit, discount_code_id, discount_amount) "
-                "VALUES (?, 0, 'pending', ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "renewal_add_volume_gb, renewal_add_days, renewal_user_limit, discount_code_id, discount_amount, "
+                "renewal_carry_volume, renewal_carry_time) "
+                "VALUES (?, 0, 'pending', ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (user_tg_id, base_price, wallet_used, final_price, target_kind, target_id, mode, add_volume_gb, add_days,
-                 user_limit, discount_code_id, discount_amount),
+                 user_limit, discount_code_id, discount_amount, carry_volume, carry_time),
             )
             order_id = cur.lastrowid
             if discount_code_id:

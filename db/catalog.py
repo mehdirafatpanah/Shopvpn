@@ -272,7 +272,7 @@ class CatalogMixin:
                      base_users: int = 0, extra_user_price: int = 0, max_users: int = 0,
                      compare_price: int = 0, provision_ssh_node_id: int = None,
                      provision_ssh_protocol: str = "ssh",
-                     extra_panel_ids=(), extra_ssh_node_ids=(), provision_target_config=None, extra_panel_target_configs=None) -> int:
+                     extra_panel_ids=(), extra_ssh_node_ids=(), provision_target_config=None, extra_panel_target_configs=None, renew_rules=None) -> int:
         """payment_methods: None/[] یعنی «همه‌ی روش‌های پرداخت مجازند» (پیش‌فرض)،
         در غیر این صورت لیستی از کلیدهای مجاز - همان قراردادِ set_product_payment_methods.
 
@@ -299,6 +299,13 @@ class CatalogMixin:
                  json.dumps(provision_target_config, ensure_ascii=False) if provision_target_config else None),
             )
             product_id = cur.lastrowid
+            if renew_rules:
+                from renewal_rules import normalize, RULE_KEYS
+                rules = normalize(renew_rules)
+                conn.execute(
+                    "UPDATE products SET " + ", ".join(f"{k}=?" for k in RULE_KEYS) + " WHERE id=?",
+                    [rules[k] for k in RULE_KEYS] + [product_id],
+                )
             position = 0
             for kind, ids in (("panel", extra_panel_ids), ("ssh", extra_ssh_node_ids)):
                 seen = set()
@@ -528,6 +535,21 @@ class CatalogMixin:
                     changed += 1
         return changed
 
+
+    def set_product_renew_rules(self, product_id: int, rules: dict) -> dict:
+        """ذخیره‌ی «قوانین تمدید کامل» محصول. کلیدهای ارسال‌نشده مقدار فعلیِ محصول را نگه می‌دارند."""
+        from renewal_rules import normalize, RULE_KEYS
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone()
+            if not row:
+                return None
+            merged = {k: (rules[k] if k in (rules or {}) and rules[k] is not None else row[k]) for k in RULE_KEYS}
+            final = normalize(merged)
+            conn.execute(
+                "UPDATE products SET " + ", ".join(f"{k}=?" for k in RULE_KEYS) + " WHERE id=?",
+                [final[k] for k in RULE_KEYS] + [product_id],
+            )
+            return final
 
     def set_product_user_limit(self, product_id: int, extra_user_price: int, max_users: int,
                                base_users: int = None):
@@ -1592,7 +1614,8 @@ class CatalogMixin:
 
 
     def apply_custom_config_renewal(self, custom_config_id: int, add_volume_gb: int = 0, add_days: int = 0,
-                                     full_reset: bool = False, set_volume_gb: float = None) -> dict:
+                                     full_reset: bool = False, set_volume_gb: float = None,
+                                     reset_time: bool = False) -> dict:
         """بعد از موفقیت‌آمیز بودن به‌روزرسانی روی خودِ پنل (provider.update_user)،
         رکورد بوکینگ محلی (حجم/مدت/تاریخ انقضا) را هم‌سو با آن به‌روز می‌کند.
         set_volume_gb (اختیاری): اگر داده شود، همان مقدار دقیقاً به‌عنوان سقف جدید
@@ -1616,6 +1639,9 @@ class CatalogMixin:
                         base = current_dt
                 except ValueError:
                     pass
+            if reset_time and add_days:
+                # «ریست زمان»: زمان باقیمانده حذف می‌شود و بسته‌ی جدید از همین الان شروع می‌شود.
+                base = now
             new_expires_at = (base + timedelta(days=add_days)).isoformat() if add_days else current_expires_at
             if set_volume_gb is not None:
                 new_volume = set_volume_gb
@@ -1623,7 +1649,10 @@ class CatalogMixin:
                 new_volume = add_volume_gb if full_reset else (row["volume_gb"] or 0) + add_volume_gb
             else:
                 new_volume = row["volume_gb"]
-            new_duration = (row["duration_days"] or 0) + add_days if add_days else row["duration_days"]
+            if reset_time and add_days:
+                new_duration = add_days
+            else:
+                new_duration = (row["duration_days"] or 0) + add_days if add_days else row["duration_days"]
             rearm_time = bool(add_days) or full_reset
             rearm_volume = bool(add_volume_gb) or set_volume_gb is not None or full_reset
             conn.execute(

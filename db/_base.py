@@ -1983,6 +1983,15 @@ class DatabaseBase:
             ("products", "discount_used_count", "INTEGER DEFAULT 0"),
             ("orders", "user_limit", "INTEGER"),
             ("orders", "renewal_user_limit", "INTEGER"),
+            # قوانین «تمدید کامل» هر محصول (renewal_rules.py)؛ پیش‌فرض‌ها رفتار قبلی را حفظ می‌کنند.
+            ("products", "renew_full_enabled", "INTEGER DEFAULT 1"),
+            ("products", "renew_same_type_only", "INTEGER DEFAULT 1"),
+            ("products", "renew_reset", "INTEGER DEFAULT 0"),
+            ("products", "renew_carry_volume", "INTEGER DEFAULT 1"),
+            ("products", "renew_carry_time", "INTEGER DEFAULT 1"),
+            # snapshot قوانین انتقال روی سفارش تمدید (NULL = رفتار قدیمی: هر دو منتقل شوند)
+            ("orders", "renewal_carry_volume", "INTEGER"),
+            ("orders", "renewal_carry_time", "INTEGER"),
             ("custom_configs", "user_limit", "INTEGER"),
             # مقصد اصلی سرویس برای تمدید/ترمیم؛ برای سرویس‌های قدیمی NULL می‌ماند.
             ("custom_configs", "panel_target_config", "TEXT"),
