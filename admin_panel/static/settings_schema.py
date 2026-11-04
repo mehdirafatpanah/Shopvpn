@@ -35,6 +35,18 @@ SETTINGS_FORM_SECTIONS = [
                     {"key": "after_buy_text", "label": "متن راهنمای پرداخت (بعد از انتخاب محصول)", "type": "textarea"},
                 ],
             },
+        ],
+    },
+    {
+        "title": "💳 پرداخت و مالی",
+        "groups": [
+            {
+                "title": "کارت بانکی",
+                "fields": [
+                    {"key": "card_number", "label": "شماره کارت", "type": "text"},
+                    {"key": "card_holder", "label": "نام صاحب کارت", "type": "text"},
+                ],
+            },
             {
                 "title": "🔗 برندینگ صفحه لینک ساب",
                 "fields": [
@@ -51,16 +63,12 @@ SETTINGS_FORM_SECTIONS = [
                     {"key": "dsub_show_faq", "label": "نمایش بخش عیب‌یابی", "type": "bool"},
                 ],
             },
-        ],
-    },
-    {
-        "title": "💳 پرداخت و مالی",
-        "groups": [
             {
-                "title": "کارت بانکی",
+                "title": "قابلیت ۸۶: انقضای سفارش‌های رهاشده با کد تخفیف",
                 "fields": [
-                    {"key": "card_number", "label": "شماره کارت", "type": "text"},
-                    {"key": "card_holder", "label": "نام صاحب کارت", "type": "text"},
+                    {"key": "discount_order_expiry_minutes",
+                     "label": "مهلت لغو خودکار سفارش (دقیقه) اگر رسید کارت‌به‌کارت فرستاده نشود؛ ۰ = غیرفعال",
+                     "type": "number"},
                 ],
             },
             {
@@ -131,7 +139,14 @@ SETTINGS_FORM_SECTIONS = [
                 "title": "📊 گزارش روزانه‌ی فروش",
                 "fields": [
                     {"key": "daily_report_enabled", "label": "ارسال گزارش روزانه‌ی فروش به مدیران", "type": "bool"},
+                    {"key": "inactive_config_delete_time", "label": "ساعت حذف خودکار کانفیگ‌های غیرفعال (HH:MM به وقت تهران؛ خالی = خاموش)", "type": "text"},
                     {"key": "daily_report_time", "label": "ساعت ارسال به وقت تهران (مثل 23:45)", "type": "text"},
+                ],
+            },
+            {
+                "title": "📣 گروه گزارش تاپیک‌دار",
+                "fields": [
+                    {"key": "report_chat_id", "label": "آیدی عددی سوپرگروه فوروم (مثل -100123456789)؛ خالی یعنی ارسال به پیام خصوصی مدیران. برای گرفتن آیدی، @myidbot را به گروه اضافه کن و /getgroupid@myidbot را در گروه بفرست", "type": "text"},
                 ],
             },
             {
@@ -182,6 +197,7 @@ SETTINGS_FORM_SECTIONS = [
                     {"key": "svc_show_update_config", "label": "دکمه «بروزرسانی کانفیگ»", "type": "bool"},
                     {"key": "svc_show_qr", "label": "دکمه «کیوآر کانفیگ»", "type": "bool"},
                     {"key": "svc_show_delete", "label": "دکمه «حذف کامل سرویس»", "type": "bool"},
+                    {"key": "svc_refund_window_hours", "label": "مهلت بازگشت وجه هنگام حذف سرویس (ساعت پس از خرید؛ ۰ = غیرفعال)", "type": "number"},
                     {"key": "svc_show_toggle", "label": "دکمه «فعال/غیرفعال کردن کانفیگ»", "type": "bool"},
                     {"key": "svc_show_rename", "label": "دکمه «تغییر نام کانفیگ»", "type": "bool"},
                     {"key": "svc_show_auto_renew", "label": "دکمه «تمدید خودکار»", "type": "bool"},
@@ -219,6 +235,18 @@ SALES_SETTINGS_STATIC_CARDS = [
             {"key": "invite_bonus_enabled", "label": "③ شارژ ثابت کیف‌پول به‌ازای هر دعوت — فعال", "type": "bool"},
             {"key": "invite_bonus_amount", "label": "مبلغ شارژ (تومان)", "type": "number"},
             {"key": "invite_bonus_max_count", "label": "سقف تعداد دعوت‌های مشمول (۰ = نامحدود)", "type": "number"},
+        ],
+    },
+    {
+        "title": "🚨 هشدار زیرمجموعه‌گیری فیک",
+        "load_url": "/api/settings/referral-fraud", "submit_url": "/api/settings/referral-fraud",
+        "fields": [
+            {"key": "detection_enabled", "label": "فعال", "type": "bool"},
+            {"key": "burst_count", "label": "تعداد دعوت که یعنی «انبوه»", "type": "number"},
+            {"key": "burst_minutes", "label": "بازه‌ی زمانی دعوت انبوه (دقیقه)", "type": "number"},
+            {"key": "min_invites", "label": "حداقل تعداد دعوت لازم برای بررسی نرخ بی‌خریدی", "type": "number"},
+            {"key": "zero_purchase_ratio", "label": "درصد بی‌خریدی که یعنی مشکوک", "type": "number"},
+            {"key": "auto_suspend", "label": "توقف خودکار پاداش رفرال کاربر مشکوک تا بررسی دستی", "type": "bool"},
         ],
     },
     {

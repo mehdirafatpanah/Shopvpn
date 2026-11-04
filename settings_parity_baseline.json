@@ -1,0 +1,17 @@
+{
+ "web_only": [
+  "abangateway_webhook_secret",
+  "btn_custom_config",
+  "dsub_custom_template",
+  "dsub_custom_template_enabled",
+  "firebase_api_key",
+  "firebase_app_id",
+  "firebase_project_id",
+  "firebase_sender_id",
+  "master_sub_link",
+  "netmap_locations"
+ ],
+ "mini_only": [
+  "header_image_data"
+ ]
+}

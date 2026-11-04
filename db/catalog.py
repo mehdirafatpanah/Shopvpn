@@ -272,7 +272,7 @@ class CatalogMixin:
                      base_users: int = 0, extra_user_price: int = 0, max_users: int = 0,
                      compare_price: int = 0, provision_ssh_node_id: int = None,
                      provision_ssh_protocol: str = "ssh",
-                     extra_panel_ids=(), extra_ssh_node_ids=()) -> int:
+                     extra_panel_ids=(), extra_ssh_node_ids=(), provision_target_config=None, extra_panel_target_configs=None) -> int:
         """payment_methods: None/[] یعنی «همه‌ی روش‌های پرداخت مجازند» (پیش‌فرض)،
         در غیر این صورت لیستی از کلیدهای مجاز - همان قراردادِ set_product_payment_methods.
 
@@ -290,12 +290,13 @@ class CatalogMixin:
             cur = conn.execute(
                 "INSERT INTO products (category_id, name, price, description, duration_days, "
                 "is_auto_provision, auto_provision_volume_gb, provision_server_id, provision_ssh_node_id, payment_methods, "
-                "base_users, extra_user_price, max_users, compare_price, provision_ssh_protocol) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "base_users, extra_user_price, max_users, compare_price, provision_ssh_protocol, provision_target_config) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (category_id, name, price, description, duration_days,
                  1 if is_auto_provision else 0, auto_provision_volume_gb, provision_server_id, provision_ssh_node_id, pm_value,
                  base_users, extra_user_price, max_users, compare_price,
-                 _normalize_ssh_protocols(provision_ssh_protocol) if provision_ssh_node_id else "ssh"),
+                 _normalize_ssh_protocols(provision_ssh_protocol) if provision_ssh_node_id else "ssh",
+                 json.dumps(provision_target_config, ensure_ascii=False) if provision_target_config else None),
             )
             product_id = cur.lastrowid
             position = 0
@@ -306,9 +307,13 @@ class CatalogMixin:
                     if target <= 0 or target in seen:
                         continue
                     seen.add(target)
+                    target_config = None
+                    if kind == "panel" and extra_panel_target_configs:
+                        target_config = extra_panel_target_configs.get(target, extra_panel_target_configs.get(str(target)))
                     conn.execute(
-                        "INSERT INTO product_extra_targets (product_id,kind,target_id,position) VALUES (?,?,?,?)",
-                        (product_id, kind, target, position),
+                        "INSERT INTO product_extra_targets (product_id,kind,target_id,position,target_config) VALUES (?,?,?,?,?)",
+                        (product_id, kind, target, position,
+                         json.dumps(target_config, ensure_ascii=False) if target_config else None),
                     )
                     position += 1
             return product_id
@@ -424,7 +429,7 @@ class CatalogMixin:
                       is_auto_provision=..., auto_provision_volume_gb=...,
                       provision_server_id=..., payment_methods=..., category_id: int = None,
                       provision_ssh_node_id=..., provision_ssh_protocol=...,
-                      compare_price=..., discount_days=..., discount_max_uses=...):
+                      compare_price=..., discount_days=..., discount_max_uses=..., provision_target_config=...):
         # نکته: is_auto_provision/auto_provision_volume_gb/provision_server_id از سنتینل
         # Ellipsis استفاده می‌کنند (مثل payment_methods) چون باید بتوان آن‌ها را عمداً
         # NULL/False کرد (مثلاً وقتی محصول از «اتصال مستقیم به پنل» به «بانک کانفیگ»
@@ -446,6 +451,9 @@ class CatalogMixin:
             fields.append("auto_provision_volume_gb=?"); values.append(auto_provision_volume_gb)
         if provision_server_id is not ...:
             fields.append("provision_server_id=?"); values.append(provision_server_id)
+        if provision_target_config is not ...:
+            fields.append("provision_target_config=?")
+            values.append(json.dumps(provision_target_config, ensure_ascii=False) if provision_target_config else None)
         if provision_ssh_node_id is not ...:
             fields.append("provision_ssh_node_id=?"); values.append(provision_ssh_node_id)
         if provision_ssh_protocol is not ...:
@@ -1446,7 +1454,7 @@ class CatalogMixin:
                            volume_gb: int, duration_days: int, subscription_url: str,
                            order_id: int = None, expires_at: str = None, source: str = "custom_config",
                            product_id: int = None, start_on_first_use: bool = None,
-                           reseller_product_id: int = None, user_limit: int = None) -> int:
+                           reseller_product_id: int = None, user_limit: int = None, panel_target_config=None) -> int:
         """source: 'custom_config' (خرید شخصی)، 'test' (کانفیگ تست پنلی)، یا 'reseller'.
         duration_days=0 یعنی سرویس نامحدود/بدون انقضاست؛ در این حالت expires_at
         خالی (NULL) می‌ماند تا همه‌جا به‌صورت «نامحدود» نمایش داده شود. product_id
@@ -1463,9 +1471,10 @@ class CatalogMixin:
             cur = conn.execute(
                 "INSERT INTO custom_configs (order_id, user_id, panel_server_id, username, volume_gb, "
                 "duration_days, subscription_url, expires_at, source, product_id, start_on_first_use, reseller_product_id, "
-                "user_limit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "user_limit, panel_target_config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (order_id, user_id, panel_server_id, username, volume_gb, duration_days, subscription_url,
-                 expires_at, source, product_id, int(bool(start_on_first_use)), reseller_product_id, user_limit),
+                 expires_at, source, product_id, int(bool(start_on_first_use)), reseller_product_id, user_limit,
+                 json.dumps(panel_target_config, ensure_ascii=False) if panel_target_config else None),
             )
             new_id = cur.lastrowid
         self.add_custom_config_history(new_id, "purchase", f"{volume_gb} گیگ / {duration_days} روز")

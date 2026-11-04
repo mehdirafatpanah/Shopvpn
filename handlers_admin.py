@@ -55,6 +55,7 @@ import ai_admin
 import admin_help
 import ai_media
 import admin_tools
+import admin_extra_settings
 import admin_dedicated_sub
 import admin_update
 import admin_campaign
@@ -2235,14 +2236,79 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if server_id is None:
             await call.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
             return
-        await state.update_data(provision_server_id=server_id)
+        await state.update_data(provision_server_id=server_id, provision_target_config=None)
+        server = await asyncio.to_thread(db.get_panel_server, server_id)
+        try:
+            from product_targets import list_product_targets
+            target_info = await list_product_targets(server)
+        except Exception as exc:
+            logger.warning("product target discovery failed for panel %s: %s", server_id, exc)
+            await call.answer(tr(f"دریافت فهرست مقصدهای پنل ناموفق بود: {str(exc)[:220]}\nمحصول ساخته نشد؛ اتصال پنل را بررسی و دوباره تلاش کن."), show_alert=True)
+            return
+        choices = target_info.get("choices") or []
+        if choices:
+            await state.update_data(
+                provision_target_field=target_info.get("field", "group_ids"),
+                provision_target_kind=target_info.get("kind", "list"),
+                provision_target_choices=choices,
+                provision_target_info={"field": target_info.get("field", "group_ids"), "kind": target_info.get("kind", "list"), "choices": choices},
+                provision_target_selected=[],
+            )
+            await state.set_state(AdminAddProduct.waiting_provision_target)
+            await safe_edit(
+                call,
+                tr("🎯 مقصد ساخت سرویس این محصول را انتخاب کن.\nمی‌توانی یک یا چند گروه / Inbound را انتخاب کنی. این انتخاب فقط برای همین محصول ذخیره می‌شود."),
+                reply_markup=kb.admin_newprod_targets_kb(choices, []),
+            )
+            await call.answer()
+            return
+        # پنل‌هایی که انتخاب مستقل مقصد ندارند، بدون تغییر از قالب قدیمی سرور استفاده می‌کنند.
         data = await state.get_data()
         await state.set_state(AdminAddProduct.waiting_provision_duration_mode)
-        await safe_edit(call, 
+        await safe_edit(call,
             db.get_text('handlers_admin.auto_41f1c921', '⏳ مدت اعتبار این محصول چطور باشد؟\n\n«محدود» یعنی همان مدتی که قبلاً وارد کردید؛ «نامحدود» یعنی این سرویس هیچ\u200cوقت روی پنل منقضی نمی\u200cشود.'),
             reply_markup=kb.admin_newprod_duration_mode_kb(data.get("duration_days", 30)),
         )
         await call.answer()
+
+    @router.callback_query(AdminAddProduct.waiting_provision_target, F.data.startswith("adm_newprod_target_tgl:"))
+    async def cb_newprod_target_toggle(call: CallbackQuery, state: FSMContext):
+        value = call.data.split(":", 1)[1]
+        data = await state.get_data()
+        choices = data.get("provision_target_choices") or []
+        allowed = {str(item.get("value")) for item in choices}
+        if value not in allowed:
+            return await call.answer(tr("مقصد انتخاب‌شده معتبر نیست."), show_alert=True)
+        selected = set(str(x) for x in (data.get("provision_target_selected") or []))
+        if value in selected:
+            selected.remove(value)
+        else:
+            selected.add(value)
+        selected = sorted(selected, key=lambda x: next((i for i, c in enumerate(choices) if str(c.get("value")) == x), 999999))
+        await state.update_data(provision_target_selected=selected)
+        await safe_edit(call, tr("🎯 مقصد ساخت سرویس این محصول را انتخاب کن.\nمی‌توانی یک یا چند گروه / Inbound را انتخاب کنی."),
+                        reply_markup=kb.admin_newprod_targets_kb(choices, selected))
+        await call.answer()
+
+    @router.callback_query(AdminAddProduct.waiting_provision_target, F.data == "adm_newprod_target_done")
+    async def cb_newprod_target_done(call: CallbackQuery, state: FSMContext):
+        data = await state.get_data()
+        selected = data.get("provision_target_selected") or []
+        if not selected:
+            return await call.answer(tr("حداقل یک گروه یا Inbound انتخاب کن."), show_alert=True)
+        server = await asyncio.to_thread(db.get_panel_server, int(data["provision_server_id"]))
+        try:
+            from product_targets import build_target_config
+            target_cfg = build_target_config(server, selected, data.get("provision_target_info"))
+        except Exception as exc:
+            return await call.answer(tr(str(exc)), show_alert=True)
+        await state.update_data(provision_target_config=target_cfg)
+        await state.set_state(AdminAddProduct.waiting_provision_duration_mode)
+        await safe_edit(call,
+            db.get_text('handlers_admin.auto_41f1c921', '⏳ مدت اعتبار این محصول چطور باشد؟\n\n«محدود» یعنی همان مدتی که قبلاً وارد کردید؛ «نامحدود» یعنی این سرویس هیچ\u200cوقت روی پنل منقضی نمی\u200cشود.'),
+            reply_markup=kb.admin_newprod_duration_mode_kb(data.get("duration_days", 30)),
+        )
+        await call.answer(tr("مقصدهای این محصول ذخیره شد."))
 
     @router.callback_query(AdminAddProduct.waiting_provision_duration_mode, F.data.startswith("adm_newprod_durmode:"))
     async def cb_pick_provision_duration_mode(call: CallbackQuery, state: FSMContext):
@@ -2421,6 +2487,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             base_users=int(data.get("base_users") or 0),
             extra_user_price=int(data.get("user_extra_price") or 0),
             max_users=int(data.get("user_max") or 0),
+            provision_target_config=data.get("provision_target_config"),
         ))
         pm_log = "همه" if payment_methods is None else "، ".join(payment_methods)
         if auto_provision_volume_gb is not None:
@@ -15436,6 +15503,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         deny_support, deny_mid, safe_edit, replace_admin_view,
     )
 
+    admin_extra_settings.register(router, db, senior_admin_only, deny_mid, replace_admin_view)
     admin_campaign.register(router, db, senior_admin_only, deny_mid)
     admin_dedicated_sub.register(router, db, senior_admin_only, deny_mid, replace_admin_view)
     if is_main_bot:

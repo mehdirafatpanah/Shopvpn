@@ -90,6 +90,26 @@ class SUIProvider(BasePanelProvider):
         netloc = f"{host}:{port}" if port else host
         return f"{parsed.scheme}://{netloc}{path}{username}"
 
+    async def list_product_targets(self):
+        """دریافت Inboundهای S-UI از REST API رسمی /apiv2/inbounds."""
+        async with self._session() as session:
+            data = await self._api(session, "GET", "inbounds", "دریافت فهرست inboundهای S-UI")
+        obj = data.get("obj") or {}
+        items = obj.get("inbounds", []) if isinstance(obj, dict) else obj
+        if not isinstance(items, list):
+            raise PanelError("ساختار پاسخ فهرست inboundهای S-UI قابل شناسایی نیست.")
+        choices = []
+        for item in items:
+            if not isinstance(item, dict) or item.get("id") is None:
+                continue
+            inbound_id = item["id"]
+            label = item.get("tag") or item.get("remark") or item.get("name") or f"Inbound {inbound_id}"
+            proto = item.get("type") or item.get("protocol") or ""
+            choices.append({"value": str(inbound_id), "label": f"{label} · {proto}".strip(" ·")})
+        if not choices:
+            raise PanelError("هیچ Inbound قابل انتخابی از S-UI دریافت نشد.")
+        return {"field": "group_ids", "kind": "list", "choices": choices}
+
     async def fetch_template_from_user(self, sample_username: str) -> dict:
         async with self._session() as session:
             client = await self._find(session, sample_username)

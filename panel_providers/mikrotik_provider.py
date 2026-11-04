@@ -40,6 +40,23 @@ class MikroTikProvider(BasePanelProvider):
             raise PanelError(f"خطا در {action} (کد {status}): {detail or (text or '')[:300]}")
         return data
 
+    async def list_product_targets(self):
+        """فهرست User Manager Profileها را از RouterOS REST API می‌خواند."""
+        async with self._session() as session:
+            data = await self._api(session, "GET", "user-manager/profile", "دریافت فهرست profileها")
+        if not isinstance(data, list):
+            raise PanelError("ساختار پاسخ فهرست profileهای MikroTik قابل شناسایی نیست.")
+        choices = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if name:
+                choices.append({"value": str(name), "label": str(name)})
+        if not choices:
+            raise PanelError("هیچ User Manager Profile قابل انتخابی در MikroTik پیدا نشد.")
+        return {"field": "group_ids", "kind": "scalar", "choices": choices}
+
     def _profile(self) -> str:
         name = load_json(self.server["group_ids"])
         if not isinstance(name, str) or not name:

@@ -60,6 +60,25 @@ class WGDashboardProvider(BasePanelProvider):
     def _session(self):
         return new_session(headers={"wg-dashboard-apikey": self.server["api_password"], "Accept": "application/json"}, server=self.server)
 
+    async def list_product_targets(self):
+        """فهرست interface/configurationهای WireGuard را از WGDashboard می‌خواند."""
+        async with self._session() as session:
+            data = await self._api(session, "GET", "getWireguardConfigurations", "دریافت فهرست configurationها")
+        items = data.get("data") or data.get("configurations") or data.get("configs") or []
+        if isinstance(items, dict):
+            items = items.get("configurations") or items.get("configs") or items.get("items") or list(items.keys())
+        choices = []
+        for item in items if isinstance(items, list) else []:
+            if isinstance(item, dict):
+                name = item.get("configurationName") or item.get("Name") or item.get("name") or item.get("config")
+            else:
+                name = item
+            if name:
+                choices.append({"value": str(name), "label": str(name)})
+        if not choices:
+            raise PanelError("هیچ configuration قابل انتخابی از WGDashboard دریافت نشد.")
+        return {"field": "group_ids", "kind": "scalar", "choices": choices}
+
     def _config(self) -> str:
         name = load_json(self.server["group_ids"])
         if not isinstance(name, str) or not name:

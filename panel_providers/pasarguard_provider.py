@@ -131,6 +131,47 @@ class PasarguardProvider(BasePanelProvider):
             cleaned[proto] = settings
         return cleaned
 
+    async def list_groups(self) -> list:
+        """دریافت گروه‌های قابل انتخاب از API پاسارگارد.
+
+        پاسخ نسخه‌های مختلف ممکن است آرایه یا آبجکت حاوی groups باشد؛
+        خروجی نرمال‌شده همیشه شامل id و name است.
+        """
+        async with self._session() as session:
+            token = await self._get_token(session)
+            try:
+                async with session.get(
+                    f"{self._base_url()}/api/groups",
+                    headers={**self._auth(token), "accept": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status >= 400:
+                        body = await resp.text()
+                        raise PanelError(f"خطا در دریافت گروه‌های PasarGuard (کد {resp.status}): {body[:300]}")
+                    payload = await resp.json()
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                raise PanelError(f"خطا در اتصال برای دریافت گروه‌ها: {e}") from e
+        if isinstance(payload, dict):
+            items = payload.get("groups") or payload.get("items") or payload.get("data") or payload.get("results") or []
+        else:
+            items = payload if isinstance(payload, list) else []
+        normalized = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            gid = item.get("id", item.get("group_id"))
+            name = item.get("name") or item.get("remark") or item.get("title") or str(gid or "")
+            if gid is None:
+                continue
+            try:
+                gid = int(gid)
+            except (TypeError, ValueError):
+                continue
+            normalized.append({"id": gid, "name": str(name)})
+        if not normalized:
+            raise PanelError("فهرست گروه‌ها خالی است یا ساختار پاسخ API شناخته نشد. دسترسی API و نسخه PasarGuard را بررسی کن.")
+        return normalized
+
     async def fetch_template_from_user(self, sample_username: str) -> dict:
         """اطلاعات یک کاربر نمونه‌ی موجود روی پنل را می‌خواند و group_ids/proxy_settings
         (پاک‌شده از مقادیر حساس) را برای ذخیره به‌عنوان قالب برمی‌گرداند."""

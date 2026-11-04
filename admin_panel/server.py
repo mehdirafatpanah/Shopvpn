@@ -1175,6 +1175,7 @@ def api_i18n_translate_batch(payload: Dict[str, Any], auth=Depends(get_current_a
     admin = auth
     tenant = _current_tenant.get()
     db = tenant.db
+    from i18n import is_language_enabled
     language = normalize_language(payload.get("language"))
     if not is_language_enabled(db, language):
         raise HTTPException(400, tr("این زبان در حال حاضر فعال نیست."))
@@ -3866,6 +3867,8 @@ class ProductBody(BaseModel):
     is_auto_provision: bool = False
     auto_provision_volume_gb: Optional[int] = None
     provision_server_id: Optional[int] = None
+    provision_target_values: Optional[List[str]] = None
+    extra_panel_target_values: Optional[Dict[str, List[str]]] = None
     provision_ssh_node_id: Optional[int] = None
     provision_ssh_protocol: Optional[str] = None
     extra_panel_ids: Optional[List[int]] = None
@@ -3887,6 +3890,7 @@ def api_products(admin=Depends(require_permission("catalog"))):
         extra = db.get_product_extra_targets(p["id"])
         p["extra_panel_ids"] = extra["panels"]
         p["extra_ssh_node_ids"] = extra["ssh"]
+        p["extra_panel_target_configs"] = extra.get("panel_target_configs", {})
         p["capabilities"] = product_capabilities(db, p)
     return products
 
@@ -3905,6 +3909,20 @@ def api_panel_servers_lite(admin=Depends(require_permission("catalog"))):
     return [{"id": s["id"], "name": s["name"], "panel_type": s["panel_type"],
              "supports_user_limit": provider_capabilities(s["panel_type"])[USER_LIMIT]}
             for s in db.get_panel_servers(active_only=True)]
+
+@app.get("/api/panel-servers/{server_id}/product-targets")
+async def api_panel_product_targets(server_id: int, admin=Depends(require_permission("catalog"))):
+    """Fetch live selectable destinations for one connected VPN panel."""
+    server = db.get_panel_server(server_id)
+    if not server or not server["is_active"]:
+        raise HTTPException(404, tr("پنل فعال یافت نشد."))
+    try:
+        from product_targets import list_product_targets
+        return await list_product_targets(server)
+    except Exception as exc:
+        logger.warning("web admin product-target discovery failed for panel %s: %s", server_id, exc)
+        raise HTTPException(400, tr(f"دریافت فهرست مقصدهای پنل ناموفق بود: {str(exc)[:220]}"))
+
 
 @app.get("/api/ssh/nodes-lite")
 def api_ssh_nodes_lite(admin=Depends(require_permission("catalog")), _fa=Depends(require_full_access_tenant)):
@@ -3939,7 +3957,7 @@ def api_reorder_products(body: ProductReorderBody, admin=Depends(require_permiss
 
 
 @app.post("/api/products")
-def api_add_product(body: ProductBody, admin=Depends(require_permission("catalog"))):
+async def api_add_product(body: ProductBody, admin=Depends(require_permission("catalog"))):
     if body.duration_days < 0:
         raise HTTPException(400, tr("مدت اعتبار نامعتبر است."))
     # هر دو مقصد همزمان مجاز است: محصول ترکیبی VPN+SSH با سهمیه مشترک.
@@ -3956,9 +3974,47 @@ def api_add_product(body: ProductBody, admin=Depends(require_permission("catalog
         body.provision_ssh_protocol, body.provision_server_id, ssh_node,
         multi=bool(body.extra_panel_ids or body.extra_ssh_node_ids))
     direct_target = bool(body.provision_server_id or body.provision_ssh_node_id)
+    target_config = None
+    if body.provision_server_id:
+        try:
+            from product_targets import list_product_targets, build_target_config
+            target_info = await list_product_targets(vpn_server)
+            choices = target_info.get("choices") or []
+            if choices:
+                if body.provision_target_values:
+                    target_config = build_target_config(vpn_server, body.provision_target_values, target_info)
+                elif not (body.extra_panel_ids or body.extra_ssh_node_ids):
+                    raise ValueError("برای این پنل حداقل یک گروه یا Inbound انتخاب کنید.")
+                # In multi-panel mode the UI submits a separate target list for the
+                # primary panel; extra panels are validated independently below.
+            elif body.provision_target_values:
+                raise ValueError("این پنل مقصد قابل انتخاب زنده‌ای ارائه نمی‌کند.")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except Exception as exc:
+            logger.warning("product target validation failed for panel %s: %s", body.provision_server_id, exc)
+            raise HTTPException(400, tr(f"بررسی مقصدهای پنل ناموفق بود: {str(exc)[:220]}"))
     extra_panels, extra_nodes = _checked_extra_targets(
         body.provision_server_id, body.provision_ssh_node_id, body.extra_panel_ids, body.extra_ssh_node_ids,
         ssh_protocol, admin)
+    extra_panel_target_configs = {}
+    if extra_panels:
+        from product_targets import list_product_targets, build_target_config
+        supplied = body.extra_panel_target_values or {}
+        for extra_sid in extra_panels:
+            extra_server = db.get_panel_server(extra_sid)
+            try:
+                info = await list_product_targets(extra_server)
+                choices = info.get("choices") or []
+                values = supplied.get(str(extra_sid), supplied.get(extra_sid))
+                if choices and not values:
+                    raise ValueError(f"برای پنل {extra_server['name']} باید مقصد مستقل انتخاب کنید.")
+                if values:
+                    extra_panel_target_configs[int(extra_sid)] = build_target_config(extra_server, values, info)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc))
+            except Exception as exc:
+                raise HTTPException(400, tr(f"دریافت مقصدهای پنل {extra_sid} ناموفق بود: {str(exc)[:180]}"))
     # محدودیت کاربر از Capability مرکزی محاسبه می‌شود؛ نودهای SSH عمداً در این
     # تصمیم دخالت ندارند و همهٔ پنل‌های VPN باید این قابلیت را داشته باشند.
     target_panel_ids = ([int(body.provision_server_id)] if body.provision_server_id else []) + [int(x) for x in (extra_panels or [])]
@@ -3992,6 +4048,7 @@ def api_add_product(body: ProductBody, admin=Depends(require_permission("catalog
         provision_ssh_node_id=body.provision_ssh_node_id, provision_ssh_protocol=ssh_protocol,
         base_users=base_users, extra_user_price=extra_user_price, max_users=max_users,
         extra_panel_ids=extra_panels, extra_ssh_node_ids=extra_nodes,
+        provision_target_config=target_config, extra_panel_target_configs=extra_panel_target_configs,
     )
     if int(body.compare_price or 0) > 0 and (body.discount_days is not None or body.discount_max_uses is not None):
         db.edit_product(pid, compare_price=int(body.compare_price),
@@ -4097,6 +4154,8 @@ class ProductEditBody(BaseModel):
     # قبلاً فقط موقع «ساخت» محصول بود و بعد از آن دیگر قابل تغییر نبود).
     source: Optional[str] = None
     provision_server_id: Optional[int] = None
+    provision_target_values: Optional[List[str]] = None
+    extra_panel_target_values: Optional[Dict[str, List[str]]] = None
     provision_ssh_node_id: Optional[int] = None
     provision_ssh_protocol: Optional[str] = None
     extra_panel_ids: Optional[List[int]] = None
@@ -4111,7 +4170,7 @@ class ProductEditBody(BaseModel):
 
 
 @app.put("/api/products/{product_id}")
-def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(require_permission("catalog"))):
+async def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(require_permission("catalog"))):
     old_product = db.get_product(product_id)
     if not old_product:
         raise HTTPException(status_code=404, detail=tr("محصول یافت نشد."))
@@ -4197,6 +4256,39 @@ def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(requi
         provision_ssh_node_id if provision_ssh_node_id is not ... else old_product["provision_ssh_node_id"]
     )
 
+    target_config_update = ...
+    if body.source == "bank" or not effective_server_id:
+        if body.source == "bank" or (provision_server_id is not ... and not effective_server_id):
+            target_config_update = None
+    elif body.provision_target_values is not None:
+        server = db.get_panel_server(effective_server_id)
+        try:
+            from product_targets import list_product_targets, build_target_config
+            target_info = await list_product_targets(server)
+            choices = target_info.get("choices") or []
+            if choices:
+                target_config_update = build_target_config(server, body.provision_target_values, target_info)
+            elif body.provision_target_values:
+                raise ValueError("این پنل مقصد قابل انتخاب زنده‌ای ارائه نمی‌کند.")
+            else:
+                target_config_update = None
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except Exception as exc:
+            raise HTTPException(400, tr(f"بررسی مقصدهای پنل ناموفق بود: {str(exc)[:220]}"))
+    elif provision_server_id is not ... and int(effective_server_id or 0) != int(old_product["provision_server_id"] or 0):
+        # A changed panel must not silently fall back when it exposes selectable targets.
+        try:
+            from product_targets import list_product_targets
+            changed_target_info = await list_product_targets(db.get_panel_server(effective_server_id))
+            if changed_target_info.get("choices"):
+                raise ValueError("پنل محصول تغییر کرده است؛ فهرست مقصدها را بارگذاری و حداقل یک گروه یا Inbound انتخاب کنید.")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except Exception as exc:
+            raise HTTPException(400, tr(f"بررسی مقصدهای پنل جدید ناموفق بود: {str(exc)[:220]}"))
+        target_config_update = None
+
     ssh_protocol = ...
     if effective_ssh_node_id:
         if body.provision_ssh_protocol is not None:
@@ -4249,6 +4341,45 @@ def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(requi
                 effective_server_id, effective_ssh_node_id, requested_panels, requested_nodes,
                 effective_protocol, admin, changed=True)
 
+    # مقصد مستقل هر پنل اضافه: تنظیمات قبلی برای پنل‌های بدون تغییر حفظ می‌شود.
+    final_extra_target_configs = dict(old_extra.get("panel_target_configs") or {})
+    if body.extra_panel_target_values is not None:
+        from product_targets import list_product_targets, build_target_config
+        supplied = body.extra_panel_target_values or {}
+        final_extra_target_configs = {}
+        for extra_sid in final_extra_panels:
+            extra_server = db.get_panel_server(extra_sid)
+            values = supplied.get(str(extra_sid), supplied.get(extra_sid))
+            if values is None and int(extra_sid) in (old_extra.get("panel_target_configs") or {}):
+                final_extra_target_configs[int(extra_sid)] = old_extra["panel_target_configs"][int(extra_sid)]
+                continue
+            try:
+                info = await list_product_targets(extra_server)
+                choices = info.get("choices") or []
+                if choices and not values:
+                    raise ValueError(f"برای پنل {extra_server['name']} باید مقصد مستقل انتخاب کنید.")
+                if values:
+                    final_extra_target_configs[int(extra_sid)] = build_target_config(extra_server, values, info)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc))
+            except Exception as exc:
+                raise HTTPException(400, tr(f"دریافت مقصدهای پنل {extra_sid} ناموفق بود: {str(exc)[:180]}"))
+    else:
+        # پنل‌های جدیدی که به محصول اضافه می‌شوند باید مقصدشان مشخص شود؛ پنل‌های قدیمی
+        # بدون override به‌صورت Legacy حفظ می‌شوند تا محصولات قدیمی خراب نشوند.
+        added_panel_ids = set(final_extra_panels) - set(old_extra["panels"])
+        if added_panel_ids:
+            from product_targets import list_product_targets
+            for extra_sid in added_panel_ids:
+                try:
+                    info = await list_product_targets(db.get_panel_server(extra_sid))
+                    if info.get("choices"):
+                        raise HTTPException(400, f"برای پنل جدید #{extra_sid} مقصد مستقل انتخاب کنید.")
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    raise HTTPException(400, tr(f"دریافت مقصدهای پنل {extra_sid} ناموفق بود: {str(exc)[:180]}"))
+
     # مقدار جدید را از درخواست یا مقدار قبلی می‌گیریم؛ سپس بعد از ذخیره‌ی مقصدها،
     # Capability واقعی همان محصول را دوباره محاسبه می‌کنیم تا تغییر پنل هم نتواند
     # یک limit ناسازگار در دیتابیس باقی بگذارد.
@@ -4274,9 +4405,10 @@ def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends(requi
         compare_price=(max(int(body.compare_price), 0) if body.compare_price is not None else ...),
         discount_days=(max(int(body.discount_days), 0) if body.discount_days is not None else ...),
         discount_max_uses=(max(int(body.discount_max_uses), 0) if body.discount_max_uses is not None else ...),
+        provision_target_config=target_config_update,
     )
-    if extras_changed or body.source is not None or provision_server_id is not ... or provision_ssh_node_id is not ...:
-        db.set_product_extra_targets(product_id, final_extra_panels, final_extra_nodes)
+    if extras_changed or body.extra_panel_target_values is not None or body.source is not None or provision_server_id is not ... or provision_ssh_node_id is not ...:
+        db.set_product_extra_targets(product_id, final_extra_panels, final_extra_nodes, final_extra_target_configs)
 
     db.set_product_user_limit(product_id, eup, mu, bu)
 
@@ -6609,6 +6741,51 @@ def api_set_extra_settings(body: ExtraSettingsBody, admin=Depends(require_permis
                         f"extra settings: {', '.join(changed)} (پنل وب - {admin['username']})",
                         "setting", "extra")
     return {"ok": True, "changed": changed}
+
+
+# ---- پس‌زمینه‌ی QR (همان فایل مشترک qr_background.png که بات هم استفاده می‌کند) ----
+def _qr_bg_status():
+    import config_delivery as _cd
+    return {"has": _cd.has_qr_background(), "enabled": _cd.qr_background_enabled(db)}
+
+
+@app.get("/api/settings/qr-background")
+def api_get_qr_background(admin=Depends(require_permission("settings"))):
+    return _qr_bg_status()
+
+
+@app.get("/api/settings/qr-background/preview")
+def api_qr_background_preview(admin=Depends(require_permission("settings"))):
+    import config_delivery as _cd
+    if not _cd.has_qr_background():
+        raise HTTPException(404, tr("هنوز تصویر پس‌زمینه‌ای آپلود نشده است."))
+    png = _cd.build_qr_bytes("https://t.me/", db=db)
+    return {"image": "data:image/png;base64," + base64.b64encode(png).decode("ascii")}
+
+
+@app.post("/api/settings/qr-background")
+async def api_set_qr_background(photo: UploadFile = File(...), admin=Depends(require_permission("settings"))):
+    import config_delivery as _cd
+    if not photo.content_type or not photo.content_type.startswith("image/"):
+        raise HTTPException(400, tr("فقط فایل تصویری مجاز است."))
+    content = await photo.read(_cd.QR_BACKGROUND_MAX_BYTES + 1)
+    try:
+        await asyncio.to_thread(_cd.save_qr_background_bytes, content)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    db.set_setting("qr_background_enabled", "1")
+    db.log_admin_action(admin["id"], "qr_background_change",
+                        f"تصویر پس‌زمینه‌ی QR تغییر کرد (پنل وب - {admin['username']})")
+    return _qr_bg_status()
+
+
+@app.delete("/api/settings/qr-background")
+def api_delete_qr_background(admin=Depends(require_permission("settings"))):
+    import config_delivery as _cd
+    _cd.remove_qr_background()
+    db.log_admin_action(admin["id"], "qr_background_remove",
+                        f"تصویر پس‌زمینه‌ی QR حذف شد (پنل وب - {admin['username']})")
+    return _qr_bg_status()
 
 
 # قابلیت ۵۰: «متن‌های ربات» - رجیستری کامل (کاربر + ادمین) که با اسکن خودکار

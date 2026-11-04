@@ -77,6 +77,36 @@ def save_qr_background(source_path: str) -> None:
         img.save(QR_BACKGROUND_PATH, format="PNG")
 
 
+QR_BACKGROUND_MAX_BYTES = 8 * 1024 * 1024
+QR_BACKGROUND_MIN_SIDE = 300
+
+
+def save_qr_background_bytes(data: bytes) -> None:
+    """مثل مسیر آپلود داخل بات (handlers_admin.on_qr_background_photo)، ولی از روی بایت‌ها؛
+    برای پنل وب و مینی‌اپ. در صورت مشکل ValueError با پیام فارسی می‌دهد."""
+    import tempfile
+    from io import BytesIO as _BytesIO
+    from PIL import Image
+    if not data:
+        raise ValueError(tr("فایلی ارسال نشد."))
+    if len(data) > QR_BACKGROUND_MAX_BYTES:
+        raise ValueError(tr("حجم تصویر نباید بیشتر از ۸ مگابایت باشد."))
+    try:
+        with Image.open(_BytesIO(data)) as probe:
+            probe.verify()
+        with Image.open(_BytesIO(data)) as probe:
+            width, height = probe.size
+    except Exception:
+        raise ValueError(tr("فایل تصویر سالم نیست؛ یک JPG یا PNG بفرستید."))
+    if width < QR_BACKGROUND_MIN_SIDE or height < QR_BACKGROUND_MIN_SIDE:
+        raise ValueError(tr("ابعاد تصویر خیلی کوچک است (حداقل ۳۰۰×۳۰۰؛ ۵۰۰×۵۰۰ یا بیشتر پیشنهاد می‌شود)."))
+    with tempfile.TemporaryDirectory(prefix="qr_bg_") as tmp_dir:
+        tmp_path = os.path.join(tmp_dir, "uploaded")
+        with open(tmp_path, "wb") as f:
+            f.write(data)
+        save_qr_background(tmp_path)
+
+
 def remove_qr_background() -> bool:
     """حذف تصویر پس‌زمینه‌ی فعلی (اگر وجود داشته باشد)."""
     if has_qr_background():

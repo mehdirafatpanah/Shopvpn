@@ -2216,3 +2216,18 @@ EXTRA_PHRASES.update({
 })
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 # 		   		 		  	 	 		 		   		  	 	 		 			  		 				 			  	 
+
+EXTRA_PHRASES.update({
+    '🧩 تنظیمات تکمیلی\n\nیک گروه را انتخاب کن. همین گزینه\u200cها در مینی\u200cاپ هم هستند.': '🧩 Extra settings\n\nPick a group. The same options are also in the mini app.',
+    '✅ به پیش\u200cفرض برگشت.': '✅ Restored to default.',
+    'این گزینه دیگر وجود ندارد.': 'This option no longer exists.',
+    '↩️ بازگشت به پیش\u200cفرض': '↩️ Restore default',
+})
+
+EXTRA_PHRASES.update({
+    'فایلی ارسال نشد.': 'No file was sent.',
+    'حجم تصویر نباید بیشتر از ۸ مگابایت باشد.': 'The image must not be larger than 8 MB.',
+    'ابعاد تصویر خیلی کوچک است (حداقل ۳۰۰×۳۰۰؛ ۵۰۰×۵۰۰ یا بیشتر پیشنهاد می\u200cشود).': 'The image is too small (minimum 300×300; 500×500 or larger is recommended).',
+    'فایل تصویر سالم نیست؛ یک JPG یا PNG بفرستید.': 'The image file is not valid; send a JPG or PNG.',
+    'هنوز تصویر پس\u200cزمینه\u200cای آپلود نشده است.': 'No background image has been uploaded yet.',
+})

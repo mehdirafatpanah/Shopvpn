@@ -48,6 +48,22 @@ SETTINGS_FORM_SECTIONS = [
                 ],
             },
             {
+                "title": "🔗 برندینگ صفحه لینک ساب",
+                "fields": [
+                    {"key": "dsub_brand", "label": "نام برند صفحه لینک ساب", "type": "text"},
+                    {"key": "dsub_logo_url", "label": "لوگوی صفحه لینک ساب", "type": "text"},
+                    {"key": "dsub_notice", "label": "اعلان بالای صفحه", "type": "textarea"},
+                    {"key": "dsub_support_url", "label": "لینک پشتیبانی صفحه ساب", "type": "text"},
+                    {"key": "dsub_footer_text", "label": "متن پایین صفحه", "type": "text"},
+                    {"key": "dsub_theme", "label": "تم صفحه ساب", "type": "select", "options": [["auto", "خودکار"], ["light", "روشن"], ["dark", "تیره"]]},
+                    {"key": "dsub_show_configs", "label": "نمایش کانفیگ‌ها", "type": "bool"},
+                    {"key": "dsub_show_chart", "label": "نمایش نمودار مصرف", "type": "bool"},
+                    {"key": "dsub_show_qr", "label": "نمایش QR", "type": "bool"},
+                    {"key": "dsub_show_apps", "label": "نمایش برنامه‌ها", "type": "bool"},
+                    {"key": "dsub_show_faq", "label": "نمایش بخش عیب‌یابی", "type": "bool"},
+                ],
+            },
+            {
                 "title": "قابلیت ۸۶: انقضای سفارش‌های رهاشده با کد تخفیف",
                 "fields": [
                     {"key": "discount_order_expiry_minutes",

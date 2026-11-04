@@ -71,6 +71,44 @@ class MarzneshinProvider(BasePanelProvider):
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             raise PanelError(f"خطا در اتصال به پنل: {e or 'پاسخی از سرور در زمان مقرر دریافت نشد (timeout)'}") from e
 
+    async def list_product_targets(self):
+        """دریافت Serviceهای موجود Marzneshin؛ مستقل از سرویس کاربر نمونه."""
+        async with self._session() as session:
+            token = await self._get_token(session)
+            try:
+                async with session.get(
+                    f"{self._base_url()}/api/services",
+                    headers={"Authorization": f"Bearer {token}", "accept": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status >= 400:
+                        body = await resp.text()
+                        raise PanelError(f"خطا در دریافت Serviceهای Marzneshin (کد {resp.status}): {body[:300]}")
+                    payload = await resp.json()
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                raise PanelError(f"خطا در اتصال برای دریافت Serviceهای Marzneshin: {exc or 'timeout'}") from exc
+
+        if isinstance(payload, dict):
+            items = payload.get("items") or payload.get("services") or payload.get("data") or payload.get("results") or []
+            if isinstance(items, dict):
+                items = items.get("items") or items.get("services") or items.get("results") or []
+        else:
+            items = payload
+        if not isinstance(items, list):
+            raise PanelError("ساختار پاسخ API سرویس‌های Marzneshin قابل شناسایی نیست.")
+        choices = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            service_id = item.get("id") or item.get("service_id")
+            if service_id is None:
+                continue
+            label = item.get("name") or item.get("title") or item.get("remark") or f"Service {service_id}"
+            choices.append({"value": str(service_id), "label": f"{label} · ID {service_id}"})
+        if not choices:
+            raise PanelError("هیچ Service قابل انتخابی از Marzneshin دریافت نشد.")
+        return {"field": "group_ids", "kind": "list", "choices": choices}
+
     async def fetch_template_from_user(self, sample_username: str) -> dict:
         """service_ids کاربر نمونه‌ی موجود روی پنل را می‌خواند و به‌عنوان قالب
         برمی‌گرداند (در ستون group_ids ذخیره می‌شود؛ proxy_settings برای این

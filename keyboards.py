@@ -1683,6 +1683,7 @@ ADMIN_PANEL_ITEMS = [
     ("adm_season_quiz", "🏆 فصل رقابتی و کوییز", "ssq_adm"),
     ("adm_engage", "🎁 صندوق شانس و پیشرفت", "eng_adm"),
     ("adm_spam_settings", "🛡 ضداسپم کاربران", "adm_spam_settings"),
+    ("adm_extra_settings", "🧩 تنظیمات تکمیلی (متن‌ها و گزینه‌ها)", "adm_xs"),
     ("adm_gswitch", "🔌 سوئیچ سراسری ربات (خاموش/روشن)", "adm_gswitch"),
     ("adm_update", "🔄 آپدیت پروژه", "adm_update"),
     ("adm_dsub", "🔗 ساب اختصاصی (دامنه، صفحه‌ی وب، اپ‌ها)", "adm_dsub"),
@@ -1821,6 +1822,7 @@ ADMIN_PANEL_CATEGORIES = [
         "adm_backup_menu",
         "adm_report_group",
         "adm_spam_settings",
+        "adm_extra_settings",
     ]),
 ]
 
@@ -3129,6 +3131,22 @@ def admin_pick_provision_server_kb(servers) -> InlineKeyboardMarkup:
     rows = []
     for s in servers:
         rows.append([InlineKeyboardButton(text=f"🖥 {s['name']}", callback_data=f"adm_newprod_srv:{s['id']}")])
+    rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:products")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_newprod_targets_kb(choices, selected=None) -> InlineKeyboardMarkup:
+    """انتخاب چند مقصد گروه/اینباند برای یک محصول؛ انتخاب‌ها در FSM ذخیره می‌شوند."""
+    selected = {str(x) for x in (selected or [])}
+    rows = []
+    for item in choices or []:
+        value = str(item.get("value", ""))
+        if not value:
+            continue
+        mark = "✅" if value in selected else "▫️"
+        label = str(item.get("label") or value)
+        rows.append([InlineKeyboardButton(text=f"{mark} {label}"[:60], callback_data=f"adm_newprod_target_tgl:{value}")])
+    rows.append([InlineKeyboardButton(text=tr("✅ تأیید مقصدهای انتخاب‌شده"), callback_data="adm_newprod_target_done")])
     rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:products")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

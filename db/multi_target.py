@@ -1,20 +1,30 @@
 # -*- coding: utf-8 -*-
 """مقصدهای چندگانه‌ی محصول (چند پنل VPN و چند نود SSH) و لینک پنل‌های اضافه‌ی هر سرویس."""
 
+import json
+
 
 class MultiTargetMixin:
     def get_product_extra_targets(self, product_id: int) -> dict:
         with self._get_conn() as conn:
             rows = conn.execute(
-                "SELECT kind,target_id FROM product_extra_targets WHERE product_id=? ORDER BY position,id",
+                "SELECT kind,target_id,target_config FROM product_extra_targets WHERE product_id=? ORDER BY position,id",
                 (int(product_id),),
             ).fetchall()
+        panel_configs = {}
+        for r in rows:
+            if r["kind"] == "panel" and r["target_config"]:
+                try:
+                    panel_configs[int(r["target_id"])] = json.loads(r["target_config"])
+                except (TypeError, ValueError):
+                    continue
         return {
             "panels": [int(r["target_id"]) for r in rows if r["kind"] == "panel"],
             "ssh": [int(r["target_id"]) for r in rows if r["kind"] == "ssh"],
+            "panel_target_configs": panel_configs,
         }
 
-    def set_product_extra_targets(self, product_id: int, panel_ids=(), ssh_node_ids=()) -> None:
+    def set_product_extra_targets(self, product_id: int, panel_ids=(), ssh_node_ids=(), panel_target_configs=None) -> None:
         pid = int(product_id)
         with self._get_conn() as conn:
             conn.execute("DELETE FROM product_extra_targets WHERE product_id=?", (pid,))
@@ -26,9 +36,13 @@ class MultiTargetMixin:
                     if target <= 0 or target in seen:
                         continue
                     seen.add(target)
+                    target_config = None
+                    if kind == "panel" and panel_target_configs:
+                        target_config = panel_target_configs.get(target, panel_target_configs.get(str(target)))
                     conn.execute(
-                        "INSERT INTO product_extra_targets (product_id,kind,target_id,position) VALUES (?,?,?,?)",
-                        (pid, kind, target, position),
+                        "INSERT INTO product_extra_targets (product_id,kind,target_id,position,target_config) VALUES (?,?,?,?,?)",
+                        (pid, kind, target, position,
+                         json.dumps(target_config, ensure_ascii=False) if target_config else None),
                     )
                     position += 1
 
@@ -49,17 +63,18 @@ class MultiTargetMixin:
         return {"panels": list(dict.fromkeys(panels)), "ssh": list(dict.fromkeys(nodes))}
 
     def add_config_panel_link(self, custom_config_id: int, panel_server_id: int, username: str,
-                              subscription_url: str) -> int:
+                              subscription_url: str, target_config=None) -> int:
         with self._get_conn() as conn:
             cur = conn.execute(
-                "INSERT INTO config_panel_links (custom_config_id,panel_server_id,username,subscription_url) "
-                "VALUES (?,?,?,?)",
-                (int(custom_config_id), int(panel_server_id), str(username), str(subscription_url or "")),
+                "INSERT INTO config_panel_links (custom_config_id,panel_server_id,username,subscription_url,target_config) "
+                "VALUES (?,?,?,?,?)",
+                (int(custom_config_id), int(panel_server_id), str(username), str(subscription_url or ""),
+                 json.dumps(target_config, ensure_ascii=False) if target_config else None),
             )
             return int(cur.lastrowid)
 
     def panel_links_for_config(self, custom_config_id: int, active_only: bool = True) -> list:
-        sql = ("SELECT l.id,l.custom_config_id,l.panel_server_id,l.username,l.subscription_url,l.status,"
+        sql = ("SELECT l.id,l.custom_config_id,l.panel_server_id,l.username,l.subscription_url,l.target_config,l.status,"
                "s.name AS panel_name FROM config_panel_links l LEFT JOIN panel_servers s ON s.id=l.panel_server_id "
                "WHERE l.custom_config_id=?")
         if active_only:

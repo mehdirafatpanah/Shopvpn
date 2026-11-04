@@ -1239,6 +1239,7 @@ class DatabaseBase:
                     kind TEXT NOT NULL CHECK(kind IN ('panel','ssh')),
                     target_id INTEGER NOT NULL,
                     position INTEGER NOT NULL DEFAULT 0,
+                    target_config TEXT,
                     UNIQUE(product_id,kind,target_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_product_extra_targets_product ON product_extra_targets(product_id);
@@ -1249,6 +1250,7 @@ class DatabaseBase:
                     panel_server_id INTEGER NOT NULL,
                     username TEXT NOT NULL,
                     subscription_url TEXT NOT NULL,
+                    target_config TEXT,
                     status TEXT NOT NULL DEFAULT 'active',
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
@@ -1773,6 +1775,12 @@ class DatabaseBase:
 
 
     def _migrate_columns(self, conn):
+        if self._column_exists(conn, "product_extra_targets", "id") and not self._column_exists(conn, "product_extra_targets", "target_config"):
+            conn.execute("ALTER TABLE product_extra_targets ADD COLUMN target_config TEXT")
+
+        if self._column_exists(conn, "config_panel_links", "id") and not self._column_exists(conn, "config_panel_links", "target_config"):
+            conn.execute("ALTER TABLE config_panel_links ADD COLUMN target_config TEXT")
+
         if self._column_exists(conn, "ssh_accounts", "id") and not self._column_exists(conn, "ssh_accounts", "credential_enc"):
             conn.execute("ALTER TABLE ssh_accounts ADD COLUMN credential_enc TEXT")
         if self._column_exists(conn, "ssh_accounts", "id") and not self._column_exists(conn, "ssh_accounts", "custom_config_id"):
@@ -1959,6 +1967,8 @@ class DatabaseBase:
             ("products", "is_auto_provision", "INTEGER DEFAULT 0"),
             ("products", "auto_provision_volume_gb", "INTEGER"),
             ("products", "provision_server_id", "INTEGER"),
+            # مقصدهای مستقل هر محصول؛ NULL یعنی استفاده از تنظیمات legacy سرور.
+            ("products", "provision_target_config", "TEXT"),
             ("products", "provision_ssh_node_id", "INTEGER"),
             ("products", "provision_ssh_protocol", "TEXT DEFAULT 'ssh'"),
             ("products", "extra_user_price", "INTEGER DEFAULT 0"),
@@ -1974,6 +1984,8 @@ class DatabaseBase:
             ("orders", "user_limit", "INTEGER"),
             ("orders", "renewal_user_limit", "INTEGER"),
             ("custom_configs", "user_limit", "INTEGER"),
+            # مقصد اصلی سرویس برای تمدید/ترمیم؛ برای سرویس‌های قدیمی NULL می‌ماند.
+            ("custom_configs", "panel_target_config", "TEXT"),
             ("users", "is_reseller", "INTEGER DEFAULT 0"),
             ("users", "reseller_credit_gb", "INTEGER DEFAULT 0"),
             ("custom_configs", "renewal_reminder_sent", "INTEGER DEFAULT 0"),

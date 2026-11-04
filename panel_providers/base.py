@@ -77,6 +77,31 @@ class BasePanelProvider(ABC):
     def _build_connector(self, ssl: bool = False):
         return build_connector(self.server, ssl=ssl)
 
+    async def list_product_targets(self):
+        """فهرست مقصدهای قابل انتخاب برای یک محصول را با قرارداد مشترک برمی‌گرداند.
+
+        خروجی استاندارد: {field, kind, choices}. Providerهایی که API فهرست
+        مقصد دارند می‌توانند این متد را override کنند. برای Providerهای قدیمی
+        که list_groups/list_inbounds دارند، این adapter سازگاری را فراهم می‌کند.
+        """
+        list_groups = getattr(self, "list_groups", None)
+        if callable(list_groups):
+            rows = await list_groups()
+            choices = [
+                {"value": str(item["id"]), "label": str(item.get("name") or item["id"])}
+                for item in (rows or []) if isinstance(item, dict) and item.get("id") is not None
+            ]
+            return {"field": "group_ids", "kind": "list", "choices": choices} if choices else None
+        list_inbounds = getattr(self, "list_inbounds", None)
+        if callable(list_inbounds):
+            rows = await list_inbounds()
+            choices = [
+                {"value": str(item["id"]), "label": f'{item.get("remark") or item["id"]} · {item.get("protocol") or ""} · {item.get("port") or ""}'.strip(" ·")}
+                for item in (rows or []) if isinstance(item, dict) and item.get("id") is not None
+            ]
+            return {"field": "xui_inbound_ids", "kind": "list", "choices": choices} if choices else None
+        return None
+
     @abstractmethod
     async def create_user(self, username: str, volume_gb: int, duration_days: int, start_on_first_use: bool = False) -> PanelUserResult:
         """کاربر جدید روی پنل می‌سازد و لینک اشتراک را برمی‌گرداند."""

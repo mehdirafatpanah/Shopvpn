@@ -83,11 +83,47 @@ class MultiTargetTests(unittest.TestCase):
     def test_extra_targets_roundtrip_and_counts(self):
         db, ids, _, product = make_world()
         db.set_product_extra_targets(product["id"], [ids[1], ids[2], ids[1]], [])
-        self.assertEqual(db.get_product_extra_targets(product["id"]), {"panels": [ids[1], ids[2]], "ssh": []})
+        self.assertEqual({k: v for k, v in db.get_product_extra_targets(product["id"]).items() if k != "panel_target_configs"}, {"panels": [ids[1], ids[2]], "ssh": []})
         counts = db.product_target_counts(db.get_product(product["id"]))
         self.assertEqual(counts["panels"], ids)
         db.edit_product(product["id"], provision_server_id=ids[0])
-        self.assertEqual(db.get_product_extra_targets(product["id"]), {"panels": [], "ssh": []})
+        self.assertEqual({k: v for k, v in db.get_product_extra_targets(product["id"]).items() if k != "panel_target_configs"}, {"panels": [], "ssh": []})
+
+    def test_each_extra_panel_keeps_its_own_product_destination(self):
+        db, ids, _, product = make_world()
+        configs = {ids[1]: {"field": "group_ids", "value": [22]},
+                   ids[2]: {"field": "group_ids", "value": [33]}}
+        db.set_product_extra_targets(product["id"], ids[1:], [], configs)
+        saved = db.get_product_extra_targets(product["id"])
+        self.assertEqual(saved["panel_target_configs"], configs)
+        # Editing the extra targets without changing IDs can preserve each mapping.
+        db.set_product_extra_targets(product["id"], ids[1:], [], saved["panel_target_configs"])
+        self.assertEqual(db.get_product_extra_targets(product["id"])["panel_target_configs"], configs)
+
+    def test_multi_panel_provision_applies_independent_target_to_each_panel(self):
+        import json
+        db, ids, fakes, product = make_world()
+        primary_cfg = {"field": "group_ids", "value": [101], "panel_server_id": ids[0]}
+        extra_cfg = {ids[1]: {"field": "group_ids", "value": [202], "panel_server_id": ids[1]}}
+        db.edit_product(product["id"], provision_target_config=primary_cfg)
+        db.set_product_extra_targets(product["id"], [ids[1]], [], extra_cfg)
+        seen = {}
+        original = dpp.get_provider
+        def capture(server):
+            raw = server.get("group_ids")
+            try:
+                seen[int(server["id"])] = json.loads(raw) if isinstance(raw, str) else raw
+            except Exception:
+                seen[int(server["id"])] = raw
+            return fakes[int(server["id"])]
+        dpp.get_provider = capture
+        try:
+            run(dpp.provision_direct(db, db.get_product(product["id"]), 1, user_id=100, order_id=None))
+        finally:
+            dpp.get_provider = original
+        with db._get_conn() as conn:
+            link_row = conn.execute("SELECT target_config FROM config_panel_links ORDER BY id LIMIT 1").fetchone()
+        self.assertEqual(json.loads(link_row["target_config"])["value"], [202])
 
     def test_multi_panel_blocked_without_dsub(self):
         db, ids, fakes, product = make_world(dsub=False)
@@ -216,7 +252,7 @@ class MultiTargetTests(unittest.TestCase):
         db, ids, fakes, product = make_world()
         cat = db.add_category("C2")
         pid = db.add_product(cat, "M2", 1000, "", 30, True, 10, ids[0], extra_panel_ids=[ids[1], ids[2], ids[1]])
-        self.assertEqual(db.get_product_extra_targets(pid), {"panels": [ids[1], ids[2]], "ssh": []})
+        self.assertEqual({k: v for k, v in db.get_product_extra_targets(pid).items() if k != "panel_target_configs"}, {"panels": [ids[1], ids[2]], "ssh": []})
 
     def test_merge_extra_uris(self):
         import base64

@@ -105,6 +105,46 @@ class MarzbanProvider(BasePanelProvider):
             cleaned[proto] = settings
         return cleaned
 
+    async def list_product_targets(self):
+        """دریافت Inboundهای واقعی Marzban از API؛ مستقل از کاربر نمونه."""
+        async with self._session() as session:
+            token = await self._get_token(session)
+            try:
+                async with session.get(
+                    f"{self._base_url()}/api/inbounds",
+                    headers={"Authorization": f"Bearer {token}", "accept": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status >= 400:
+                        body = await resp.text()
+                        raise PanelError(f"خطا در دریافت Inboundهای Marzban (کد {resp.status}): {body[:300]}")
+                    payload = await resp.json()
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                raise PanelError(f"خطا در اتصال برای دریافت Inboundهای Marzban: {exc or 'timeout'}") from exc
+
+        # API استاندارد Marzban یک map از protocol به فهرست نام inbound می‌دهد.
+        if isinstance(payload, dict):
+            payload = payload.get("inbounds", payload.get("data", payload))
+        if not isinstance(payload, dict):
+            raise PanelError("ساختار پاسخ API Inboundهای Marzban قابل شناسایی نیست.")
+        choices = []
+        for protocol, entries in payload.items():
+            if isinstance(entries, dict):
+                entries = entries.get("inbounds") or entries.get("items") or entries.get("data") or []
+            if not isinstance(entries, (list, tuple)):
+                continue
+            for entry in entries:
+                if isinstance(entry, dict):
+                    name = entry.get("tag") or entry.get("name") or entry.get("remark") or entry.get("id")
+                else:
+                    name = entry
+                if name not in (None, ""):
+                    value = f"{protocol}::{name}"
+                    choices.append({"value": value, "label": f"{str(protocol).upper()} · {name}"})
+        if not choices:
+            raise PanelError("هیچ Inbound قابل انتخابی از Marzban دریافت نشد.")
+        return {"field": "group_ids", "kind": "protocol_map", "choices": choices}
+
     async def fetch_template_from_user(self, sample_username: str) -> dict:
         """اطلاعات یک کاربر نمونه‌ی موجود روی پنل را می‌خواند و inbounds/proxies
         (پاک‌شده از مقادیر حساس) را برای ذخیره به‌عنوان قالب برمی‌گرداند.

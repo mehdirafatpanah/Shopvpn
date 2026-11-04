@@ -145,6 +145,14 @@ async def execute_renewal(db, order) -> str:
         server = db.get_panel_server(cc["panel_server_id"])
         if not server or not server["is_active"]:
             raise RenewalError("سرور پنل مربوط به این سرویس یافت نشد یا غیرفعال است.")
+        # مقصد اختصاصیِ محصول در زمان ساخت سرویس روی خود رکورد سرویس snapshot شده؛
+        # برای تمدید همان مقصد اعمال می‌شود. سرویس‌های قدیمی مقدار NULL دارند و
+        # دقیقاً مثل قبل از تنظیمات سراسری پنل استفاده می‌کنند.
+        try:
+            from product_targets import apply_target_config
+            server = apply_target_config(server, cc["panel_target_config"])
+        except (KeyError, IndexError, TypeError):
+            pass
         set_volume_gb = None
         renewal_users = order["renewal_user_limit"] if "renewal_user_limit" in order.keys() else None
         if mode == "users":
