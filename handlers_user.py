@@ -49,6 +49,7 @@ from config_delivery import deliver_config_to_user, send_individual_configs, bui
 import dedicated_sub
 from renewal_engine import execute_renewal, RenewalError
 import renewal_log
+import renewal_rules
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 from temp_messages import schedule_message_autodelete
 from force_join import is_channel_member, CHECK_CALLBACK, TERMS_ACCEPT_CALLBACK, terms_keyboard, _join_keyboard
@@ -5080,6 +5081,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         add_volume: int, add_days: int, price: int, summary_label: str,
         state: FSMContext, edit_fn, send_fn, bot: Bot, user_limit: int = None,
         discount_code_id: int = None, discount_amount: int = 0,
+        carry_volume: int = None, carry_time: int = None,
     ) -> None:
         """ساخت سفارش تمدید + مسیر پرداخت مشترک، هم برای «تمدید کامل» (بر اساس
         قیمت پلن انتخابی) و هم برای «تمدید حجم/زمان» (بر اساس نرخ ثابت هر واحد).
@@ -5100,6 +5102,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         order_id = (await asyncio.to_thread(
             db.create_renewal_order, user_tg_id, target_kind, target_id, mode,
             add_volume, add_days, price, wallet_used, user_limit, discount_code_id, discount_amount,
+            carry_volume, carry_time,
         ))
         order = (await asyncio.to_thread(db.get_order, order_id))
 
@@ -5209,6 +5212,13 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 products = all_products
             if not products:
                 await call.answer(db.get_text('handlers_user.auto_4559ece1', 'در حال حاضر پلن تمدیدی روی همین پنل VPN تعریف نشده.'), show_alert=True)
+                return
+            # قوانین «تمدید کامل» هر محصول: خاموش‌بودن تمدید، و فقط-هم‌نوع (نامحدود/حجمی)
+            products = renewal_rules.filter_products(products, item["custom"])
+            if not products:
+                await call.answer(db.get_text(
+                    'handlers_user.renewal.no_matching_plan',
+                    'برای نوع این سرویس پلنی برای تمدید کامل در دسترس نیست.'), show_alert=True)
                 return
             await call.answer()
             await _safe_edit(
@@ -5349,6 +5359,14 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await call.answer(db.get_text('handlers_user.auto_6ecda637', 'این پلن یافت نشد.'), show_alert=True)
             return
 
+        carry_volume = carry_time = None
+        if mode == "full" and item["kind"] == "custom":
+            if not renewal_rules.is_renewable_for(product, item["custom"]):
+                await call.answer(db.get_text(
+                    'handlers_user.renewal.plan_not_allowed',
+                    'این پلن برای تمدید کامل این سرویس مجاز نیست.'), show_alert=True)
+                return
+            carry_volume, carry_time = renewal_rules.order_flags(product)
         add_volume = product["auto_provision_volume_gb"] if mode in ("full", "volume") else 0
         add_days = product["duration_days"] if mode in ("full", "time") else 0
         target_kind = item["kind"]
@@ -5408,13 +5426,16 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if mode == "full":
             renew_warning = ""
             if target_kind == "custom":
-                renew_warning = renewal_log.warning_text(await renewal_log.service_snapshot(db, item["custom"]))
+                renew_warning = renewal_log.warning_text(
+                    await renewal_log.service_snapshot(db, item["custom"]),
+                    carry_volume=carry_volume, carry_time=carry_time,
+                )
             await state.update_data(
                 renew_full_ctx={
                     "cb_id": cb_id, "target_kind": target_kind, "target_id": target_id,
                     "add_volume": add_volume, "add_days": add_days, "price": price,
                     "product_label": product_label, "product_id": product["id"], "user_limit": users or None,
-                    "warning": renew_warning,
+                    "warning": renew_warning, "carry_volume": carry_volume, "carry_time": carry_time,
                 },
                 renew_full_discount_code_id=None, renew_full_discount_amount=0, renew_full_discount_label=None,
             )
@@ -5545,6 +5566,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             call.from_user.id, cb_id, "full", ctx["target_kind"], ctx["target_id"],
             ctx["add_volume"], ctx["add_days"], ctx["price"], ctx["product_label"], state, edit_fn, send_fn, call.bot,
             user_limit=ctx["user_limit"], discount_code_id=discount_code_id, discount_amount=discount_amount,
+            carry_volume=ctx.get("carry_volume"), carry_time=ctx.get("carry_time"),
         )
 
     @router.callback_query(F.data == "pay_card2card", RenewalFlow.waiting_receipt)

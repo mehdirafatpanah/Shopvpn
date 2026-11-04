@@ -8,6 +8,7 @@ from i18n import tr
 هر بات (اصلی یا نمایندگی) پنل مدیریت کامل و مستقل خودش را از همین یک کد می‌سازد.
 """
 
+import renewal_rules
 import os
 import re
 import secrets
@@ -1719,6 +1720,63 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await message.answer(tr("با این درصد قیمت تغییری نمی‌کند. درصد بزرگ‌تری وارد کنید."))
         await _ask_discount_days(message, state, product, value, percent)
 
+    def _prod_renew_rules_view(product):
+        rules = renewal_rules.product_rules(product)
+        back_cb = f"adm_prod_cat:{product['category_id']}" if product["category_id"] is not None else "adm_products"
+        return (
+            tr("🔄 قوانین تمدید کامل «" + product["name"] + "»\n\nبا لمس هر گزینه، همان لحظه ذخیره می‌شود.\n"
+               "• «ریست کامل» روشن باشد، حجم و زمان باقیمانده حذف و فقط بسته‌ی جدید اعمال می‌شود.\n"
+               "• در غیر این صورت انتقال حجم و زمان باقیمانده را جداگانه تنظیم کنید."),
+            kb.admin_renew_rules_kb(rules, f"adm_prodrr_t:{product['id']}", f"adm_prodrr_close:{product['id']}", "✅ تمام", None),
+        )
+
+    @router.callback_query(F.data.startswith("adm_prodrr:"))
+    async def cb_admin_prod_renew_rules(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_prodrr")
+        product = (await asyncio.to_thread(db.get_product, product_id)) if product_id is not None else None
+        if not product or not product["is_auto_provision"]:
+            return await call.answer(db.get_text('handlers_admin.auto_d0d88ea3', '⚠️ این محصول خودکار نیست.'), show_alert=True)
+        text_rr, markup_rr = _prod_renew_rules_view(product)
+        await safe_edit(call, text_rr, reply_markup=markup_rr)
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_prodrr_t:"))
+    async def cb_admin_prod_renew_rules_toggle(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        try:
+            _, pid_s, short = call.data.split(":")
+            product_id = int(pid_s)
+        except ValueError:
+            return await call.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
+        product = await asyncio.to_thread(db.get_product, product_id)
+        if not product or not product["is_auto_provision"]:
+            return await call.answer(db.get_text('handlers_admin.auto_d0d88ea3', '⚠️ این محصول خودکار نیست.'), show_alert=True)
+        rules, err = renewal_rules.toggle(renewal_rules.product_rules(product), short)
+        if err:
+            return await call.answer(tr(err), show_alert=True)
+        await asyncio.to_thread(db.set_product_renew_rules, product_id, rules)
+        await asyncio.to_thread(db.log_admin_action, call.from_user.id, "product_renew_rules",
+                                f"#{product_id}: " + ", ".join(f"{k}={v}" for k, v in rules.items()))
+        product = await asyncio.to_thread(db.get_product, product_id)
+        text_rr, markup_rr = _prod_renew_rules_view(product)
+        await safe_edit(call, text_rr, reply_markup=markup_rr)
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_prodrr_close:"))
+    async def cb_admin_prod_renew_rules_close(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_prodrr_close")
+        product = (await asyncio.to_thread(db.get_product, product_id)) if product_id is not None else None
+        if not product:
+            return await call.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
+        await call.answer(tr("✅ ذخیره شد."))
+        back_cb = f"adm_prod_cat:{product['category_id']}" if product["category_id"] is not None else "adm_products"
+        await safe_edit(call, tr("✅ قوانین تمدید کامل ذخیره شد."), reply_markup=kb.admin_back_kb(back_cb))
+
     @router.callback_query(F.data.startswith("adm_prod_users:"))
     async def cb_admin_prod_users(call: CallbackQuery, state: FSMContext):
         if not senior_admin_only(call.from_user.id):
@@ -2383,13 +2441,41 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 ),
                 None,
             )
-        await state.set_state(AdminAddProduct.waiting_payment_methods)
-        return _newprod_payment_prompt()
+        await state.set_state(AdminAddProduct.waiting_renew_rules)
+        await state.update_data(renew_rules=dict(renewal_rules.DEFAULTS))
+        return _newprod_renew_prompt(dict(renewal_rules.DEFAULTS))
+
+    def _newprod_renew_prompt(rules):
+        return (
+            tr("🔄 قوانین تمدید کامل این محصول\n\nبا لمس هر گزینه، فعال/غیرفعال می‌شود.\n• «ریست کامل» روشن باشد، حجم و زمان باقیمانده حذف و فقط بسته‌ی جدید اعمال می‌شود.\n• در غیر این صورت می‌توانید انتقال حجم و زمان باقیمانده را جداگانه روشن/خاموش کنید."),
+            kb.admin_renew_rules_kb(rules, "newprodrr", "newprodrr_done", "➡️ ادامه (روش‌های پرداخت)"),
+        )
 
     async def _newprod_to_payment_methods(message: Message, state: FSMContext):
+        await state.set_state(AdminAddProduct.waiting_renew_rules)
+        await state.update_data(renew_rules=dict(renewal_rules.DEFAULTS))
+        text_rr, markup_rr = _newprod_renew_prompt(dict(renewal_rules.DEFAULTS))
+        await message.answer(text_rr, reply_markup=markup_rr)
+
+    @router.callback_query(AdminAddProduct.waiting_renew_rules, F.data.startswith("newprodrr:"))
+    async def cb_newprod_renew_toggle(call: CallbackQuery, state: FSMContext):
+        short = call.data.split(":", 1)[1]
+        data = await state.get_data()
+        rules, err = renewal_rules.toggle(data.get("renew_rules") or dict(renewal_rules.DEFAULTS), short)
+        if err:
+            return await call.answer(tr(err), show_alert=True)
+        await state.update_data(renew_rules=rules)
+        text_rr, markup_rr = _newprod_renew_prompt(rules)
+        await safe_edit(call, text_rr, reply_markup=markup_rr)
+        await call.answer()
+
+    @router.callback_query(AdminAddProduct.waiting_renew_rules, F.data == "newprodrr_done")
+    async def cb_newprod_renew_done(call: CallbackQuery, state: FSMContext):
+        await state.update_data(payment_methods=None)
         await state.set_state(AdminAddProduct.waiting_payment_methods)
         text_pm, markup_pm = _newprod_payment_prompt()
-        await message.answer(text_pm, reply_markup=markup_pm)
+        await safe_edit(call, text_pm, reply_markup=markup_pm)
+        await call.answer()
 
     @router.message(AdminAddProduct.waiting_base_users)
     async def process_newprod_base_users(message: Message, state: FSMContext):
@@ -2488,6 +2574,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             extra_user_price=int(data.get("user_extra_price") or 0),
             max_users=int(data.get("user_max") or 0),
             provision_target_config=data.get("provision_target_config"),
+            renew_rules=data.get("renew_rules"),
         ))
         pm_log = "همه" if payment_methods is None else "، ".join(payment_methods)
         if auto_provision_volume_gb is not None:

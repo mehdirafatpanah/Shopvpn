@@ -94,6 +94,10 @@ async def _http_get(session, url: str):
         return None
 
 
+def release_url(version: str) -> str:
+    return f"https://github.com/{REPO_OWNER}/{REPO_NAME}/releases/tag/v{version}"
+
+
 async def fetch_latest():
     """{"version", "critical", "notes"} یا None اگر هیچ منبعی در دسترس نبود."""
     import aiohttp
@@ -105,7 +109,8 @@ async def fetch_latest():
             version = version_text.strip().splitlines()[0].strip() if version_text.strip() else ""
             if not re.fullmatch(r"v?\d+(\.\d+){0,3}", version):
                 continue
-            info = {"version": version.lstrip("v"), "critical": False, "notes": []}
+            info = {"version": version.lstrip("v"), "critical": False, "notes": [],
+                    "url": release_url(version.lstrip("v"))}
             meta_text = await _http_get(session, f"{base}/update.json?t={int(time.time())}")
             if meta_text:
                 try:
@@ -118,6 +123,9 @@ async def fetch_latest():
                         if isinstance(notes, str):
                             notes = [notes]
                         info["notes"] = [str(n)[:300] for n in list(notes)[:15]]
+                        url = str(meta.get("url") or "").strip()
+                        if url.startswith("https://"):
+                            info["url"] = url
                 except (ValueError, AttributeError):
                     pass
             return info
@@ -150,6 +158,7 @@ async def check(db, force: bool = False) -> dict:
         "available": bool(latest) and is_newer(latest, cur),
         "critical": bool(cached.get("critical")) if cached else False,
         "notes": cached.get("notes", []) if cached else [],
+        "url": (cached.get("url") or release_url(latest)) if latest else "",
         "checked": checked,
     }
 
@@ -179,6 +188,8 @@ def build_notice(info: dict) -> str:
     notes = format_notes(info["notes"])
     if notes:
         lines += ["", "تغییرات:", notes]
+    if info.get("url"):
+        lines += ["", f"🔗 جزئیات کامل: {info['url']}"]
     lines += ["", "قبل از آپدیت خودکار از دیتابیس و کد بکاپ گرفته می‌شود و اگر مشکلی پیش بیاید به نسخه‌ی قبل برمی‌گردد. "
                   "ربات حدود ۳۰ ثانیه آفلاین می‌شود."]
     return "\n".join(lines)
@@ -186,7 +197,9 @@ def build_notice(info: dict) -> str:
 
 async def notify_admins(bot, db, info: dict) -> int:
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    link_row = [[InlineKeyboardButton(text="📄 تغییرات نسخه", url=info["url"])]] if info.get("url") else []
     markup = InlineKeyboardMarkup(inline_keyboard=[
+        *link_row,
         [InlineKeyboardButton(text="🔄 آپدیت الان", callback_data="adm_update_ask")],
         [InlineKeyboardButton(text="🔕 بعداً", callback_data="adm_update_later"),
          InlineKeyboardButton(text="⚙️ تنظیمات آپدیت", callback_data="adm_update")],

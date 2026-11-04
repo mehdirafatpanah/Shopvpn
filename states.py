@@ -157,6 +157,7 @@ class AdminAddProduct(StatesGroup):
     waiting_base_users = State()
     waiting_user_extra_price = State()
     waiting_user_max = State()
+    waiting_renew_rules = State()
     waiting_payment_methods = State()
 
 

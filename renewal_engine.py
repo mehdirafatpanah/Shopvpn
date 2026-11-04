@@ -129,6 +129,15 @@ class RenewalError(Exception):
     pass
 
 
+def _carry_flags(order):
+    """(carry_volume, carry_time) از snapshot سفارش؛ NULL یعنی رفتار قدیمی (انتقال)."""
+    keys = order.keys() if hasattr(order, "keys") else ()
+    def flag(name):
+        value = order[name] if name in keys else None
+        return True if value is None else bool(value)
+    return flag("renewal_carry_volume"), flag("renewal_carry_time")
+
+
 async def execute_renewal(db, order) -> str:
     """تمدید واقعی را روی پنل/بوکینگ محلی اعمال می‌کند و متن نتیجه را برمی‌گرداند.
     در صورت شکست RenewalError صادر می‌شود (مبلغ را خودِ فراخوان باید مدیریت کند)."""
@@ -179,9 +188,24 @@ async def execute_renewal(db, order) -> str:
             # فقط وقتی سقف فعلی مشخص و محدود نباشد (سرویس نامحدود/وضعیت نامعلوم)، رفتار قبلی حفظ می‌شود.
             reset_usage = (mode == "full")
             preserve_remaining = (mode == "full")
-            if mode == "full" and add_volume and before.get("total_bytes"):
+            # قوانین «تمدید کامل» محصول (snapshot روی سفارش)؛ NULL = رفتار قدیمی (انتقال هر دو).
+            carry_volume, carry_time = _carry_flags(order)
+            if mode == "full" and add_volume and before.get("total_bytes") and carry_volume:
                 reset_usage = False
                 preserve_remaining = False
+            if mode == "full" and not carry_volume:
+                # بدون انتقال حجم: مصرف صفر و سقف دقیقاً بسته‌ی جدید (حجم باقیمانده حذف می‌شود).
+                reset_usage = True
+                preserve_remaining = False
+            panel_add_days = add_days
+            time_reset_applied = False
+            if mode == "full" and not carry_time and add_days:
+                seconds_left = before.get("seconds_left")
+                if seconds_left is not None and seconds_left > 0:
+                    # پروایدرها روی زمان باقیمانده «جمع» می‌کنند؛ برای ریست زمان، مقدار باقیمانده
+                    # از روزهای بسته‌ی جدید کم می‌شود تا انقضا ≈ اکنون + روزهای بسته‌ی جدید شود.
+                    panel_add_days = int(round(add_days - seconds_left / 86400.0))
+                    time_reset_applied = True
             # پلن با حجم ۰ یعنی «نامحدود»: در تمدید کامل/حجم باید سقف حجم سرویس هم نامحدود شود
             # (قبلاً add_volume=0 فقط «بدون تغییر حجم» تلقی می‌شد و فقط زمان اضافه می‌شد).
             unlimited_volume = mode in ("full", "volume") and not add_volume
@@ -198,7 +222,7 @@ async def execute_renewal(db, order) -> str:
                 set_volume_gb = new_pool_limit_gb
             else:
                 await provider.update_user(
-                    cc["username"], add_volume_gb=add_volume, add_days=add_days, reset_usage=reset_usage,
+                    cc["username"], add_volume_gb=add_volume, add_days=panel_add_days, reset_usage=reset_usage,
                     preserve_remaining=preserve_remaining, unlimited_volume=unlimited_volume,
                     **provider_kwargs(provider, renewal_users),
                 )
@@ -206,6 +230,9 @@ async def execute_renewal(db, order) -> str:
                 pass
             elif unlimited_volume:
                 set_volume_gb = 0
+            elif mode == "full" and add_volume and not carry_volume:
+                # بدون انتقال حجم: سقف جدید دقیقاً بسته‌ی محصول است.
+                set_volume_gb = add_volume
             elif mode == "full" and add_volume:
                 # سقف واقعیِ بعد از preserve_remaining را از خود پنل می‌خوانیم تا رکورد‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
                 # محلی دقیقاً هم‌سو با پنل بماند (نه با محاسبه‌ی جداگانه و احتمالاً ناهم‌خوان).‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
@@ -215,6 +242,7 @@ async def execute_renewal(db, order) -> str:
             raise RenewalError(str(e)) from e
         db.apply_custom_config_renewal(
             cc["id"], add_volume, add_days, full_reset=(mode == "full"), set_volume_gb=set_volume_gb,
+            reset_time=(time_reset_applied and not pool),
         )
         if renewal_users and getattr(provider, "supports_user_limit", False):
             db.set_custom_config_user_limit(cc["id"], renewal_users)

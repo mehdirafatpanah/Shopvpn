@@ -73,6 +73,8 @@ def register(router: Router, db, senior_admin_only, deny_mid, replace_admin_view
                       + (" (آپدیت مهم)" if info["critical"] else "")]
             if info["notes"]:
                 lines += ["", "تغییرات:", updater.format_notes(info["notes"])]
+            if info.get("url"):
+                lines += ["", f"🔗 جزئیات کامل: {html.escape(info['url'])}"]
             rows.append([_btn(f"⬇️ آپدیت به نسخه‌ی {info['latest']}", "adm_update_ask")])
         elif info["latest"]:
             lines += ["", "✅ ربات روی آخرین نسخه است."]
