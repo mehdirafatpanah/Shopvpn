@@ -6465,7 +6465,8 @@ async def api_add_panel_server(body: PanelServerBody, admin=Depends(require_perm
         proxy_settings=json.dumps(template["proxy_settings"]), template_username=body.template_username.strip(),
     )
     db.log_admin_action(admin["id"], "panel_add", f"سرور «{body.name}» (#{server_id}) از پنل وب")
-    return {"id": server_id}
+    import dedicated_sub as _ds
+    return {"id": server_id, "warning": _ds.wui_dsub_warning(db, body.panel_type)}
 
 
 @app.get("/api/panel-servers/{server_id}/inbounds")
