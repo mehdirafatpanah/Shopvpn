@@ -2404,9 +2404,9 @@ async function renderStore() {
               <div class="product-name">${p.name}</div>
               <div class="price">${priceHtml(p.price, p.original_price)}</div>
             </div>
-            <button class="btn small" ${p.stock <= 0 ? "disabled" : ""}
+            <button class="btn small" ${(!p.is_auto_provision && p.stock <= 0) ? "disabled" : ""}
               onclick="openProductPurchase(${p.id})">
-              ${p.stock <= 0 ? "ناموجود" : "خرید"}
+              ${(!p.is_auto_provision && p.stock <= 0) ? "ناموجود" : "خرید"}
             </button>
           </div>
         `).join("")}
@@ -2430,7 +2430,8 @@ function openProductPurchase(productId) {
 }
 
 async function renderPurchasePanel(productId, p, quantity, discountCode) {
-  quantity = Math.max(1, Math.min(quantity, p.stock));
+  const maxQuantity = p.is_auto_provision ? 999 : Math.max(1, Number(p.stock || 0));
+  quantity = Math.max(1, Math.min(quantity, maxQuantity));
   let tier = { percent: 0, amount: 0, total: p.price * quantity, total_after: p.price * quantity, title: "", icon: "" };
   try {
     tier = await api(`/api/tier-quote?product_id=${productId}&quantity=${quantity}`);
@@ -2448,12 +2449,12 @@ async function renderPurchasePanel(productId, p, quantity, discountCode) {
       <div class="qty-stepper">
         <button class="btn small outline" id="qty-dec-btn" ${quantity <= 1 ? "disabled" : ""}>➖</button>
         <span class="qty-value">${quantity}</span>
-        <button class="btn small outline" id="qty-inc-btn" ${quantity >= p.stock ? "disabled" : ""}>➕</button>
+        <button class="btn small outline" id="qty-inc-btn" ${quantity >= maxQuantity ? "disabled" : ""}>➕</button>
       </div>
       ${step ? `
       <div class="qty-stepper">
         <button class="btn small outline" id="qty-dec-bulk-btn" ${quantity <= 1 ? "disabled" : ""}>➖${step}</button>
-        <button class="btn small outline" id="qty-inc-bulk-btn" ${quantity >= p.stock ? "disabled" : ""}>➕${step}</button>
+        <button class="btn small outline" id="qty-inc-bulk-btn" ${quantity >= maxQuantity ? "disabled" : ""}>➕${step}</button>
       </div>` : ""}
       <input class="input" id="purchase-discount-code" type="text" placeholder="کد تخفیف (اختیاری)"
         value="${discountCode ? escHtml(discountCode) : ""}" style="direction:ltr;text-align:left;margin-top:10px" />
@@ -2468,7 +2469,7 @@ async function renderPurchasePanel(productId, p, quantity, discountCode) {
   const currentCode = () => document.getElementById("purchase-discount-code").value.trim();
   const bindQty = (id, delta) => {
     const el = document.getElementById(id);
-    if (el) el.onclick = () => renderPurchasePanel(productId, p, quantity + delta, currentCode());
+    if (el) el.onclick = () => renderPurchasePanel(productId, p, Math.max(1, Math.min(quantity + delta, maxQuantity)), currentCode());
   };
   document.getElementById("back-to-store-btn").onclick = renderStore;
   bindQty("qty-dec-btn", -1);
@@ -2905,16 +2906,18 @@ let adminPanelsView = { level: "servers" }; // servers | pricing
 const PANEL_INBOUND_TYPES = ["3xui", "alireza"];
 const PANEL_SUBURL_ONLY_TYPES = ["hiddify"];
 const PANEL_NO_TEMPLATE_TYPES = [...PANEL_INBOUND_TYPES, ...PANEL_SUBURL_ONLY_TYPES];
-const PANEL_TOKEN_ONLY_TYPES = { "3xui": "3xui", rebecca: "rebecca", sui: "sui", wgdashboard: "wgdashboard" };
+const PANEL_TOKEN_ONLY_TYPES = { "3xui": "3xui", rebecca: "rebecca", sui: "sui", wgdashboard: "wgdashboard", wui: "wui" };
 const PANEL_SECRET_LABELS = {
   rebecca: "توکن ادمین (Bearer token)",
   sui: "API Token (Admin ← API Token در پنل)",
   wgdashboard: "API Key (Settings ← API Keys در پنل)",
+  wui: "API Token (Settings ← Authentication ← API Token در پنل)",
 };
 const PANEL_TEMPLATE_LABELS = {
   sui: "نام یک کاربر (client) که از قبل روی پنل موجود است",
   rebecca: "نام یک کاربر که از قبل روی پنل موجود است",
   wgdashboard: "نام configuration (مثلاً wg0)",
+  wui: "نام یک مشتری (customer) که از قبل روی پنل موجود است",
   mikrotik: "نام profile در User Manager",
   ibsng: "نام گروه (Group) در IBSng",
 };
@@ -2922,6 +2925,7 @@ const PANEL_TEMPLATE_HINTS = {
   sui: "inbound های همین کاربر برای کاربرهای جدید استفاده می‌شود.",
   rebecca: "سرویس (service) همین کاربر برای کاربرهای جدید استفاده می‌شود.",
   wgdashboard: "کاربرها به‌صورت peer داخل این configuration ساخته می‌شوند و حجم/انقضا با Schedule Job اعمال می‌شود.",
+  wui: "interface های همین مشتری برای کاربرهای جدید استفاده می‌شود. آدرس API باید شامل Web Base Path پنل باشد.",
   mikrotik: "حجم و مدت را profile تعیین می‌کند و مقدار حجم/مدت محصول اعمال نمی‌شود.",
   ibsng: "حجم و مدت را گروه تعیین می‌کند و مقدار حجم/مدت محصول اعمال نمی‌شود.",
 };
@@ -4781,6 +4785,7 @@ async function renderAdminPanelsSection() {
             <option value="wgdashboard">WGDashboard</option>
             <option value="mikrotik">MikroTik</option>
             <option value="ibsng">IBSng</option>
+            <option value="wui">W-UI</option>
           </select>
           <label class="field-label">آدرس API (مثلاً https://panel.example.com)</label>
           <input class="input" id="ps-url" type="text" placeholder="https://..." style="direction:ltr;text-align:left;margin-bottom:10px" />
