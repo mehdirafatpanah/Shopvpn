@@ -4610,6 +4610,7 @@ def panel_server_view_kb(server) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=tr(f"📍 مقصد انتقال: {'🟢 فعال' if server['allow_transfer_target'] else '🔴 خاموش'}"), callback_data=f"adm_panel_server_transfer_target:{server['id']}")],
         [InlineKeyboardButton(text=tr(f"💰 هزینه تغییر لوکیشن: {int(server['transfer_price'] or 0):,} تومان"), callback_data=f"adm_panel_server_transfer:{server['id']}")],
         [InlineKeyboardButton(text=toggle_text, callback_data=f"adm_panel_server_toggle:{server['id']}")],
+        [InlineKeyboardButton(text=tr("🚚 مهاجرت کاربران به پنل دیگر"), callback_data=f"adm_pmig:{server['id']}")],
         [InlineKeyboardButton(text=tr("🗑 حذف سرور"), callback_data=f"adm_panel_server_delete:{server['id']}")],
         [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_panel_servers")],
     ]
