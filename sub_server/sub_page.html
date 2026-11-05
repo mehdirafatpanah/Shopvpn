@@ -77,6 +77,16 @@ h3{font-size:17px;font-weight:800;margin:0 0 12px;display:flex;justify-content:s
 .cfg .f{font-size:22px;line-height:1}
 .cfg .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
 .tag{font:700 10.5px ui-monospace,Menlo,monospace;background:var(--soft);border-radius:6px;padding:0 7px;direction:ltr}
+.vpn{display:grid;gap:10px}
+.vc{border:1px solid var(--line);border-radius:16px;padding:12px 14px}
+.vc h4{margin:0 0 6px;display:flex;align-items:center;gap:8px;font-size:15px}
+.vc h4 .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vr{display:flex;align-items:center;gap:10px;padding:6px 0;border-top:1px dashed var(--line)}
+.vr small{color:var(--mute);min-width:96px;flex:none}
+.vr code{flex:1;min-width:0;direction:ltr;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:13px ui-monospace,Menlo,monospace}
+.vh{margin:8px 0 0;color:var(--mute);font-size:13px;overflow-wrap:anywhere}
+.vh.warn{color:inherit}
+.vh .sm{margin-inline-start:6px}
 details{border-bottom:1px solid var(--line)}
 details:first-of-type{border-top:1px solid var(--line)}
 summary{list-style:none;padding:14px 2px;font-weight:600;display:flex;justify-content:space-between;cursor:pointer}
@@ -178,6 +188,12 @@ header,#notes{grid-column:1/-1}
 <section class="sec" id="wgsec" hidden>
   <h3>WireGuard</h3>
   <ul class="cfg" id="wgl"></ul>
+</section>
+
+<section class="sec" id="vpnsec" hidden>
+  <h3>OpenConnect · L2TP · PPTP · IKEv2</h3>
+  <div class="vpn" id="vpnl"></div>
+  <p class="vh">این اتصال‌ها فایل ندارند؛ مقادیر زیر را در تنظیمات VPN دستگاه یا برنامه وارد کنید. نام‌کاربری و رمز در صفحه نمایش داده نمی‌شوند و فقط با دکمه‌ی «کپی» برداشته می‌شوند.</p>
 </section>
 
 <section class="sec" id="faqsec" hidden>
@@ -344,6 +360,48 @@ if(D.show.ovpn&&D.ovpn&&D.ovpn.length){
 if(D.show.wg&&D.wg&&D.wg.length){
   $('#wgsec').hidden=false;
   $('#wgl').innerHTML=D.wg.map(o=>`<li><span class="f">🔒</span><span class="n">${esc(o.n)}</span><span class="tag">.conf</span><a class="sm k" href="${esc(D.sub)}/wg/${Number(o.i)}" download="${esc(o.f)}">دانلود فایل</a></li>`).join('');
+}
+
+/* OpenConnect / L2TP / PPTP / IKEv2: رمزها داخل صفحه نیستند؛ دکمه‌ی کپی مقدار را همان لحظه از سرور می‌گیرد */
+if(D.show.vpn&&D.vpn&&D.vpn.length){
+  $('#vpnsec').hidden=false;
+  const MASK='••••••••';
+  const rows=v=>{
+    const r=[['آدرس سرور',v.srv,null]];
+    if(v.port)r.push(['پورت (برنامه‌هایی که پورت می‌گیرند)',String(v.port),null]);
+    if(v.k==='ikev2'&&v.sid&&v.sid!==v.srv)r.push(['Remote ID',v.sid,null]);
+    if(v.has.user)r.push(['نام کاربری',MASK,'user']);
+    if(v.has.pass)r.push([v.k==='ikev2'?'رمز عبور / PSK':'رمز عبور',MASK,'pass']);
+    if(v.k==='l2tp'&&v.has.psk)r.push(['کلید اشتراکی (PSK)',MASK,'psk']);
+    return r;
+  };
+  const hint=v=>{
+    const h=[];
+    if(v.k==='ikev2'){
+      h.push(esc('نوع اتصال: '+(v.modes||[]).map(m=>m.t).join(' یا ')));
+      if(v.ca)h.push(esc('برای اعتماد به سرور، گواهی CA را نصب کنید: ')+`<a class="sm" href="${esc(D.sub)}/vpn/${Number(v.i)}/ca" download>دانلود گواهی CA</a>`);
+    }
+    if(v.k==='openconnect')h.push(esc('برنامه‌ی Cisco Secure Client یا openconnect را باز کنید و آدرس سرور را وارد کنید'+(v.dtls?'؛ DTLS فعال است.':'.')));
+    if(v.k==='l2tp')h.push(esc('نوع VPN: L2TP/IPsec با کلید اشتراکی'+(v.plain?'؛ بدون IPsec هم پذیرفته می‌شود ولی رمزگذاری ندارد.':'.')));
+    if(v.k==='pptp')h.push(esc('⚠️ PPTP امن نیست؛ فقط برای دستگاهی که چیز بهتری ندارد استفاده کنید (MS-CHAPv2 با رمزگذاری ۱۲۸ بیتی).'));
+    return h;
+  };
+  $('#vpnl').innerHTML=D.vpn.map(v=>`<div class="vc"><h4><span class="tag">${esc(v.l)}</span><span class="n">${esc(v.n)}</span></h4>`+
+    rows(v).map(r=>`<div class="vr"><small>${esc(r[0])}</small><code>${esc(r[1])}</code>${r[2]?`<button class="sm k" data-vi="${Number(v.i)}" data-vw="${r[2]}">کپی</button>`:`<button class="sm" data-vc="${esc(r[1])}">کپی</button>`}</div>`).join('')+
+    hint(v).map(t=>`<p class="vh${v.weak?' warn':''}">${t}</p>`).join('')+`</div>`).join('');
+  $('#vpnl').onclick=async e=>{
+    const b=e.target.closest('button');if(!b)return;
+    if(b.dataset.vc!==undefined){copy(b.dataset.vc,'کپی شد',b);return}
+    if(b.dataset.vi===undefined||previewMode)return;
+    b.disabled=true;
+    try{
+      const r=await fetch(location.pathname.replace(/\/+$/,'')+'/reveal',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json','X-Sub-Reveal':'1'},body:JSON.stringify({i:Number(b.dataset.vi),w:b.dataset.vw})});
+      if(!r.ok)throw new Error(r.status);
+      const j=await r.json();
+      await copy(j.v,'کپی شد',b);
+    }catch(err){toast(String(err&&err.message)==='429'?'تعداد درخواست زیاد است؛ کمی صبر کنید':'کپی نشد؛ صفحه را دوباره باز کنید')}
+    b.disabled=false;
+  };
 }
 
 /* برنامه‌ها */

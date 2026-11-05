@@ -38,6 +38,7 @@ from starlette.routing import Route
 
 import dedicated_sub as ds
 import panel_resync
+from panel_providers import get_provider
 from config import DB_PATH, OWNER_ID
 from database import Database
 
@@ -199,7 +200,7 @@ def render_page(data: dict, title: str, settings: Optional[Dict[str, str]] = Non
     if html is None:
         html = ds.render_page_html(_load_template(), data, title, nonce)
     csp = ("default-src 'none'; script-src 'nonce-%s'; style-src 'unsafe-inline' https://fonts.googleapis.com; "
-           "font-src https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'none'; "
+           "font-src https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self'; "
            "frame-ancestors 'none'; base-uri 'none'; form-action 'none'" % nonce)
     return HTMLResponse(html, headers={
         "content-security-policy": csp, "cache-control": "no-store", "referrer-policy": "no-referrer",
@@ -247,6 +248,105 @@ async def _linked_panel_uris(cc, query: Dict[str, str], ua: str, ttl: int) -> Li
                 seen.add(uri)
                 out.append(uri)
     return out
+
+
+_WUI_LABELS = {"wireguard": "WireGuard", "amneziawg": "AmneziaWG", "openvpn": "OpenVPN"}
+_WUI_TTL = 30
+_wui_cache: Dict[int, tuple] = {}
+
+
+async def _wui_server(cc):
+    """ردیف پنل این سرویس اگر W-UI باشد، وگرنه None."""
+    try:
+        server = await asyncio.to_thread(panel_resync._server_for, db, cc)
+    except Exception:
+        return None
+    if server and str(server["panel_type"] or "").lower() == "wui":
+        return server
+    return None
+
+
+def _merge_files(base: List[dict], extra: List[dict]) -> List[dict]:
+    offset = max([f["index"] for f in base], default=0)
+    return list(base) + [dict(f, index=offset + f["index"]) for f in extra]
+
+
+async def _wui_bundle(cc, ttl: float = _WUI_TTL) -> Optional[dict]:
+    """فایل‌های WireGuard/AmneziaWG/OpenVPN و مصرف یک سرویس W-UI؛ None یعنی سرویس W-UI نیست."""
+    server = await _wui_server(cc)
+    if server is None:
+        return None
+    cid = int(cc["id"])
+    hit = _wui_cache.get(cid)
+    now = time.monotonic()
+    if hit and now - hit[0] < ttl:
+        return hit[1]
+    async def _logins(provider):
+        # ورودی‌های OpenConnect/L2TP/PPTP/IKEv2؛ خطا نباید فایل‌های WireGuard/OpenVPN و صفحه را خراب کند
+        try:
+            return await provider.get_login_profiles(cc["username"])
+        except Exception as exc:
+            log.warning("wui login profiles failed cc=%s: %s", cid, type(exc).__name__)
+            return list(hit[1].get("vpn") or []) if hit else []
+
+    try:
+        provider = get_provider(server)
+        files, info, vpn = await asyncio.gather(
+            provider.get_config_files(cc["username"]), provider.get_sub_info(cc["username"]), _logins(provider))
+    except Exception as exc:
+        log.warning("wui bundle failed cc=%s: %s", cid, type(exc).__name__)
+        if hit and now - hit[0] < STALE_MAX_AGE:
+            return hit[1]
+        return {"wg": [], "ovpn": [], "vpn": [], "info": {}, "live": False}
+    wg, ovpn = [], []
+    for item in files:
+        label = _WUI_LABELS.get(item["kind"])
+        if not label:
+            continue
+        target = ovpn if item["kind"] == "openvpn" else wg
+        target.append({"index": len(target) + 1, "remark": f"{item['filename'].rsplit('.', 1)[0]} ({label})",
+                       "filename": item["filename"], "profile": item["text"]})
+    bundle = {"wg": wg, "ovpn": ovpn, "vpn": vpn, "info": info, "live": True}
+    if len(_wui_cache) > 2000:
+        _wui_cache.clear()
+    _wui_cache[cid] = (now, bundle)
+    return bundle
+
+
+async def _wg_files(cc) -> List[dict]:
+    base = await asyncio.to_thread(ds.wg_files_for_config, db, cc["id"], cc)
+    wui = await _wui_bundle(cc)
+    return _merge_files(base, wui["wg"]) if wui else base
+
+
+async def _ovpn_files(cc) -> List[dict]:
+    base = await asyncio.to_thread(ds.ovpn_files_for_config, db, cc["id"], cc)
+    wui = await _wui_bundle(cc)
+    return _merge_files(base, wui["ovpn"]) if wui else base
+
+
+async def _wui_page(request: Request, cc, wui: dict, settings, brand: str, page_url: str, ttl: float) -> Response:
+    pool_info = await asyncio.to_thread(ds.quota_info_for_config, db, cc["id"])
+    info = pool_info or wui["info"]
+    if wui.get("live") and info:
+        try:
+            await asyncio.to_thread(db.ds_record_usage, cc["id"], (info.get("upload") or 0) + (info.get("download") or 0))
+        except Exception:
+            log.exception("usage snapshot failed")
+    wg = _merge_files(await asyncio.to_thread(ds.wg_files_for_config, db, cc["id"], cc), wui["wg"])
+    ovpn = _merge_files(await asyncio.to_thread(ds.ovpn_files_for_config, db, cc["id"], cc), wui["ovpn"])
+    uris = list(await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc))
+    uris.extend(await _linked_panel_uris(cc, {}, PAGE_UA, ttl))
+    series = None
+    if settings["dsub_show_chart"] == "1":
+        now = int(time.time())
+        points = await asyncio.to_thread(db.ds_usage_points, cc["id"], now - 31 * 86400)
+        series = ds.build_series(points, now)
+    data = ds.build_page_data(cc, info, uris, settings, brand, page_url or str(request.url).split("?")[0],
+                              series, ovpn=ovpn, wg=wg, vpn=wui.get("vpn"))
+    data["live"] = bool(wui.get("live"))
+    await _log(cc["id"], request, "page", 200, settings)
+    return render_page(data, f"{brand} · اشتراک {ds.service_name(cc)}".strip(" ·"), settings)
 
 
 async def _log(config_id, request: Request, kind: str, status: int, settings: Dict[str, str]):
@@ -324,6 +424,9 @@ async def sub_endpoint(request: Request) -> Response:
 
     # --- صفحه‌ی وب برای مرورگر
     if settings["dsub_web_page"] == "1" and ds.wants_page(ua, request.headers.get("accept", ""), query):
+        wui = await _wui_bundle(cc, ttl)
+        if wui is not None:
+            return await _wui_page(request, cc, wui, settings, brand, page_url, ttl)
         try:
             up = await cache.get(_forward_query(cc["subscription_url"], {}), PAGE_UA, ttl)
         except Exception:
@@ -467,7 +570,7 @@ async def ovpn_endpoint(request: Request) -> Response:
         if not limiter.allow("miss:" + ip, RATE_MISS):
             return PlainTextResponse("Too many requests", status_code=429)
         return _not_found()
-    files = await asyncio.to_thread(ds.ovpn_files_for_config, db, cc["id"], cc)
+    files = await _ovpn_files(cc)
     item = next((f for f in files if f["index"] == request.path_params["n"]), None)
     if item is None:
         if not limiter.allow("miss:" + ip, RATE_MISS):
@@ -492,7 +595,7 @@ async def wg_endpoint(request: Request) -> Response:
         if not limiter.allow("miss:" + ip, RATE_MISS):
             return PlainTextResponse("Too many requests", status_code=429)
         return _not_found()
-    files = await asyncio.to_thread(ds.wg_files_for_config, db, cc["id"], cc)
+    files = await _wg_files(cc)
     item = next((f for f in files if f["index"] == request.path_params["n"]), None)
     if item is None:
         if not limiter.allow("miss:" + ip, RATE_MISS):
@@ -502,6 +605,84 @@ async def wg_endpoint(request: Request) -> Response:
     await _log(cc["id"], request, "wg", 200, settings)
     headers = {"cache-control": "no-store", "content-disposition": f'attachment; filename="{item["filename"]}"'}
     return _raw(200, headers, "application/x-wireguard-profile", item["profile"].encode("utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# /s/{token}/reveal  (POST)  — مقدار نام‌کاربری/رمز/PSK یک ورودی OpenConnect/L2TP/PPTP/IKEv2
+# ---------------------------------------------------------------------------
+REVEAL_PER_TOKEN = 30   # در دقیقه برای هر لینک
+REVEAL_PER_IP = 60      # در دقیقه برای هر IP
+
+
+def _same_origin(request: Request) -> bool:
+    """فقط درخواست خودِ صفحه: سایت دیگر نمی‌تواند این را بزند (Sec-Fetch-Site/Origin + هدر سفارشی که preflight می‌خواهد)."""
+    if request.headers.get("x-sub-reveal") != "1":
+        return False
+    site = request.headers.get("sec-fetch-site", "")
+    if site:
+        # مرورگرهای جدید: خودِ مرورگر می‌گوید درخواست از کجاست (پشت پروکسی هم جواب می‌دهد)
+        return site in ("same-origin", "none")
+    origin = request.headers.get("origin", "")
+    if origin:
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+        if origin.split("://", 1)[-1].rstrip("/") != host.split(",")[0].strip():
+            return False
+    return True
+
+
+async def vpn_reveal_endpoint(request: Request) -> Response:
+    ip = client_ip(request)
+    token = request.path_params["token"]
+    if not limiter.allow("ok:" + ip, RATE_OK) or not limiter.allow("rv-ip:" + ip, REVEAL_PER_IP) \
+            or not limiter.allow("rv-tok:" + token, REVEAL_PER_TOKEN):
+        return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
+    if not _same_origin(request):
+        return PlainTextResponse("Forbidden", status_code=403, headers={"cache-control": "no-store"})
+    cc = await asyncio.to_thread(db.ds_get_config_by_token, token)
+    if cc is None or str(cc["status"] or "").lower() == "deleted" or not ds.is_enabled(db):
+        if not limiter.allow("miss:" + ip, RATE_MISS):
+            return PlainTextResponse("Too many requests", status_code=429)
+        return _not_found()
+    try:
+        body = await request.json()
+        index, what = int(body.get("i")), str(body.get("w"))
+    except Exception:
+        return PlainTextResponse("Bad request", status_code=400, headers={"cache-control": "no-store"})
+    wui = await _wui_bundle(cc)
+    value = ds.vpn_secret((wui or {}).get("vpn"), index, what)
+    if value is None:
+        if not limiter.allow("miss:" + ip, RATE_MISS):
+            return PlainTextResponse("Too many requests", status_code=429)
+        return _not_found()
+    settings = await asyncio.to_thread(ds.all_settings, db)
+    await _log(cc["id"], request, "reveal", 200, settings)
+    return JSONResponse({"v": value}, headers={"cache-control": "no-store", "x-robots-tag": "noindex, nofollow"})
+
+
+# ---------------------------------------------------------------------------
+# /s/{token}/vpn/{n}/ca  (گواهی CA تونل IKEv2؛ عمومی است)
+# ---------------------------------------------------------------------------
+async def vpn_ca_endpoint(request: Request) -> Response:
+    ip = client_ip(request)
+    if not limiter.allow("ok:" + ip, RATE_OK):
+        return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
+    token = request.path_params["token"]
+    cc = await asyncio.to_thread(db.ds_get_config_by_token, token)
+    if cc is None or str(cc["status"] or "").lower() == "deleted" or not ds.is_enabled(db):
+        if not limiter.allow("miss:" + ip, RATE_MISS):
+            return PlainTextResponse("Too many requests", status_code=429)
+        return _not_found()
+    wui = await _wui_bundle(cc)
+    item = ds.vpn_ca_file((wui or {}).get("vpn"), request.path_params["n"])
+    if item is None:
+        if not limiter.allow("miss:" + ip, RATE_MISS):
+            return PlainTextResponse("Too many requests", status_code=429)
+        return _not_found()
+    settings = await asyncio.to_thread(ds.all_settings, db)
+    await _log(cc["id"], request, "vpnca", 200, settings)
+    headers = {"cache-control": "no-store", "content-disposition": f'attachment; filename="{item["filename"]}"'}
+    return _raw(200, headers, "application/x-x509-ca-cert", item["pem"].encode("utf-8"))
+
 
 
 # ---------------------------------------------------------------------------
@@ -573,6 +754,15 @@ async def _sampler_round():
                 if cc is None or str(cc["status"] or "") != "active" or \
                         not str(cc["subscription_url"] or "").startswith(("http://", "https://")):
                     return
+                wui_server = await _wui_server(cc)
+                if wui_server is not None:
+                    try:
+                        info = await get_provider(wui_server).get_sub_info(cc["username"])
+                        await asyncio.to_thread(db.ds_record_usage, cc["id"],
+                                                (info.get("upload") or 0) + (info.get("download") or 0))
+                    except Exception:
+                        log.warning("wui usage sample failed cc=%s", cid)
+                    return
                 try:
                     up = await cache.get(cc["subscription_url"], PAGE_UA, 0, force=True)
                 except Exception:
@@ -626,6 +816,8 @@ app = Starlette(
         Route("/s/{token}/qr.png", qr_endpoint, methods=["GET"]),
         Route("/s/{token}/ovpn/{n:int}", ovpn_endpoint, methods=["GET"]),
         Route("/s/{token}/wg/{n:int}", wg_endpoint, methods=["GET"]),
+        Route("/s/{token}/vpn/{n:int}/ca", vpn_ca_endpoint, methods=["GET"]),
+        Route("/s/{token}/reveal", vpn_reveal_endpoint, methods=["POST"]),
         Route("/sub/smart/{token}", smart_endpoint, methods=["GET", "HEAD"]),
         Route("/healthz", healthz, methods=["GET"]),
         Route("/robots.txt", robots, methods=["GET"]),
