@@ -92,6 +92,16 @@ class SystemMixin:
         return self._settings_cache.get(key, default)
 
 
+    def get_welcome_text(self) -> str:
+        """متن خوش‌آمدگویی /start؛ اگر مقدار ذخیره‌شده خالی/فقط‌فاصله باشد (مثلاً بعد از
+        ذخیره‌ی خالی از پنل)، به متن پیش‌فرض برمی‌گردد تا تلگرام خطای
+        «message text is empty» ندهد."""
+        value = (self.get_setting("welcome_text", "") or "").strip()
+        if value:
+            return value
+        return str(DEFAULT_SETTINGS.get("welcome_text", "") or "👋")
+
+
     def _maybe_reload_settings_cache(self):
         now = time.monotonic()
         if self._settings_cache is None or (now - self._settings_cache_loaded_at) > self._SETTINGS_CACHE_TTL:
@@ -1054,6 +1064,15 @@ class SystemMixin:
                 # فراخوانیِ هم‌زمانِ دیگری (در همین پروسه یا پروسه‌ی دیگر) همین لحظه برنده شد؛
                 # برای جلوگیری از واریز دوبرابرِ کارمزد، اینجا صرف‌نظر می‌کنیم.
                 return None
+
+        # پورسانت سطح ۲ و ۳ (اگر در تنظیمات فعال باشد). قبلاً این تابع هیچ‌جا صدا
+        # زده نمی‌شد و پورسانت چندسطحی عملاً کار نمی‌کرد. چون فقط برنده‌ی انتقال
+        # فلگ اولین خرید به اینجا می‌رسد، پرداخت فقط یک‌بار انجام می‌شود.
+        try:
+            self.reward_referral_uplines(referred_user_tg_id, paid_amount)
+        except Exception:
+            import logging
+            logging.getLogger("referral").exception("پرداخت پورسانت سطح ۲/۳ ناموفق بود.")
 
         percent = int(self.get_setting("referral_percent", "10") or 0)
         reward = (paid_amount * percent) // 100

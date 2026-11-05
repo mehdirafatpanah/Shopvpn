@@ -1019,6 +1019,22 @@ class DatabaseBase:
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 );
 
+                -- ===== چند شماره کارت (کارت‌به‌کارت دستی) با درصد نمایش =====
+                CREATE TABLE IF NOT EXISTS payment_cards (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    card_number TEXT NOT NULL,
+                    holder_name TEXT,
+                    bank_name TEXT,
+                    weight INTEGER DEFAULT 1,           -- سهم نمایش؛ نسبت به جمع وزن کارت‌های فعال نرمال می‌شود
+                    is_active INTEGER DEFAULT 1,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS payment_card_assignments (
+                    user_id INTEGER PRIMARY KEY,
+                    card_id INTEGER NOT NULL,
+                    assigned_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS card_to_card_invoices (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     card_id INTEGER NOT NULL,
@@ -1716,7 +1732,7 @@ class DatabaseBase:
         "crypto_invoices", "support_messages", "support_conversations",
         "admin_presence", "tickets", "ticket_messages", "ticket_departments", "ticket_department_admins", "admin_logs",
         "abangateway_invoices", "blupal_invoices", "noapay_invoices", "extra_gateway_invoices", "custom_gateways", "custom_gateway_invoices",
-        "card_to_card_cards", "card_to_card_invoices", "quota_enforcement_state", "quota_pool_members", "quota_pool_adjustments",
+        "card_to_card_cards", "card_to_card_invoices", "payment_cards", "payment_card_assignments", "quota_enforcement_state", "quota_pool_members", "quota_pool_adjustments",
         "usage_snapshots", "ssh_accounts", "ssh_nodes", "quota_pools",
         "panel_servers", "panel_health", "panel_health_events", "report_topics", "report_topic_stats",
         "custom_config_pricing_tiers", "custom_config_products",

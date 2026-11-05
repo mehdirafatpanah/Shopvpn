@@ -1943,7 +1943,8 @@ class OrdersMixin:
         try:
             with self._get_conn() as conn:
                 rows = conn.execute("SELECT card_number FROM card_to_card_cards").fetchall()
-            cards.extend(str(r["card_number"]) for r in rows if r["card_number"])
+                rows2 = conn.execute("SELECT card_number FROM payment_cards").fetchall()
+            cards.extend(str(r["card_number"]) for r in [*rows, *rows2] if r["card_number"])
         except sqlite3.Error:
             pass
         return list(dict.fromkeys(cards))

@@ -1090,6 +1090,107 @@ class PaymentsMixin:
     # -----------------------------------------------------------------------
 
 
+    # -----------------------------------------------------------------------
+    # چند شماره کارت برای کارت‌به‌کارت دستی، با درصد نمایش هر کارت
+    # -----------------------------------------------------------------------
+
+    def list_payment_cards(self, only_active: bool = False):
+        with self._get_conn() as conn:
+            q = "SELECT * FROM payment_cards"
+            if only_active:
+                q += " WHERE is_active=1 AND weight>0"
+            return conn.execute(q + " ORDER BY id").fetchall()
+
+
+    def get_payment_card(self, card_id: int):
+        with self._get_conn() as conn:
+            return conn.execute("SELECT * FROM payment_cards WHERE id=?", (card_id,)).fetchone()
+
+
+    def create_payment_card(self, card_number: str, holder_name: str = "", bank_name: str = "", weight: int = 1) -> int:
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO payment_cards (card_number, holder_name, bank_name, weight) VALUES (?, ?, ?, ?)",
+                (card_number, holder_name, bank_name, max(0, int(weight))),
+            )
+            return cur.lastrowid
+
+
+    def update_payment_card(self, card_id: int, **fields):
+        allowed = {"card_number", "holder_name", "bank_name", "weight", "is_active"}
+        cols = {k: v for k, v in fields.items() if k in allowed}
+        if not cols:
+            return
+        set_clause = ", ".join(f"{k}=?" for k in cols)
+        with self._get_conn() as conn:
+            conn.execute(f"UPDATE payment_cards SET {set_clause} WHERE id=?", (*cols.values(), card_id))
+
+
+    def toggle_payment_card(self, card_id: int):
+        with self._get_conn() as conn:
+            conn.execute("UPDATE payment_cards SET is_active = 1 - is_active WHERE id=?", (card_id,))
+
+
+    def delete_payment_card(self, card_id: int):
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM payment_cards WHERE id=?", (card_id,))
+            conn.execute("DELETE FROM payment_card_assignments WHERE card_id=?", (card_id,))
+
+
+    def payment_card_percentages(self) -> dict:
+        """{card_id: درصد نمایش} برای کارت‌های فعال (جمع = ۱۰۰)."""
+        rows = self.list_payment_cards(only_active=True)
+        total = sum(int(r["weight"] or 0) for r in rows)
+        if not total:
+            return {}
+        return {r["id"]: round(int(r["weight"]) * 100 / total, 1) for r in rows}
+
+
+    def _legacy_card_dict(self) -> dict:
+        return {
+            "id": None,
+            "card_number": self.get_setting("card_number"),
+            "card_holder": self.get_setting("card_holder"),
+            "bank_name": "",
+        }
+
+
+    def get_manual_card_for_user(self, user_id=None) -> dict:
+        """کارتی که باید به این کاربر نشان داده شود. اگر چند کارت تعریف شده باشد،
+        به‌صورت تصادفیِ وزن‌دار (طبق درصد هر کارت) انتخاب می‌شود و برای مدتی
+        (card_sticky_minutes، پیش‌فرض ۶۰ دقیقه) برای همان کاربر ثابت می‌ماند تا با
+        هر بار باز کردن صفحه کارت عوض نشود و رسیدش با کارت درست بررسی شود. اگر
+        هیچ کارت چندگانه‌ای تعریف نشده باشد، همان کارت تکی قدیمی (تنظیمات) برمی‌گردد."""
+        import random
+        rows = self.list_payment_cards(only_active=True)
+        if not rows:
+            return self._legacy_card_dict()
+        by_id = {r["id"]: r for r in rows}
+        if user_id is not None:
+            try:
+                ttl = max(1, int(self.get_setting("card_sticky_minutes", "60") or 60))
+            except ValueError:
+                ttl = 60
+            with self._get_conn() as conn:
+                a = conn.execute("SELECT card_id, assigned_at FROM payment_card_assignments WHERE user_id=?", (user_id,)).fetchone()
+            if a and a["card_id"] in by_id:
+                try:
+                    if datetime.utcnow() - datetime.fromisoformat(a["assigned_at"]) < timedelta(minutes=ttl):
+                        r = by_id[a["card_id"]]
+                        return {"id": r["id"], "card_number": r["card_number"], "card_holder": r["holder_name"], "bank_name": r["bank_name"]}
+                except ValueError:
+                    pass
+        r = random.choices(rows, weights=[max(1, int(x["weight"] or 0)) for x in rows], k=1)[0]
+        if user_id is not None:
+            with self._get_conn() as conn:
+                conn.execute(
+                    "INSERT INTO payment_card_assignments (user_id, card_id, assigned_at) VALUES (?, ?, ?) "
+                    "ON CONFLICT(user_id) DO UPDATE SET card_id=excluded.card_id, assigned_at=excluded.assigned_at",
+                    (user_id, r["id"], datetime.utcnow().isoformat()),
+                )
+        return {"id": r["id"], "card_number": r["card_number"], "card_holder": r["holder_name"], "bank_name": r["bank_name"]}
+
+
     def create_card_to_card_card(self, card_number: str, holder_name: str = "",
                                   bank_name: str = "", sort_order: int = 0) -> int:
         with self._get_conn() as conn:

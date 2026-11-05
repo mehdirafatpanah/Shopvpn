@@ -526,7 +526,11 @@ class UsersMixin:
         out = []
         with self._get_conn() as conn:
             row = conn.execute("SELECT referred_by FROM users WHERE telegram_id=?", (referred_user_tg_id,)).fetchone()
-            current = row["referred_by"] if row else None
+            direct = row["referred_by"] if row else None
+            # سطح ۱ = معرف مستقیم (پورسانت اصلی در reward_referrer_if_first_purchase)؛
+            # سطح ۲ = معرفِ معرف مستقیم، سطح ۳ = یک پله بالاتر.
+            up = conn.execute("SELECT referred_by FROM users WHERE telegram_id=?", (direct,)).fetchone() if direct else None
+            current = up["referred_by"] if up else None
             conn.execute("""CREATE TABLE IF NOT EXISTS referral_multilevel_rewards (referred_user_id INTEGER NOT NULL, referrer_id INTEGER NOT NULL, level INTEGER NOT NULL, amount INTEGER NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(referred_user_id, level))""")
             for level in (2, 3):
                 if not current: break
