@@ -2038,14 +2038,15 @@ class _UploadedReceiptMessage:
 
 
 async def _check_miniapp_receipt(db: Database, photo_bytes: bytes, filename: str, content_type: str,
-                                 ref_kind: str, ref_id: int, amount_toman: int) -> dict:
+                                 ref_kind: str, ref_id: int, amount_toman: int, user_id: int = None) -> dict:
     """همان بررسی ضدجعل رسید ربات (receipt_ai_check) را روی رسید آپلودشده در مینی‌اپ اجرا می‌کند."""
     try:
+        _card = db.get_manual_card_for_user(user_id)
         return await receipt_ai_check.check_receipt(
             None, db,
             file_id="", receipt_type="document", ref_kind=ref_kind, ref_id=ref_id,
             amount_toman=amount_toman,
-            card_number=db.get_setting("card_number"), card_holder=db.get_setting("card_holder"),
+            card_number=_card["card_number"], card_holder=_card["card_holder"],
             message=_UploadedReceiptMessage(filename, content_type), image_bytes=photo_bytes,
         )
     except Exception:
@@ -2149,7 +2150,8 @@ def _card_info(db: Database, user_id: int) -> dict:
     نشده، مقدار خالی برمی‌گرداند تا فرانت‌اند چیزی نشان ندهد."""
     if not db.card_gate_passed(user_id):
         return {"card_number": None, "card_holder": None}
-    return {"card_number": db.get_setting("card_number"), "card_holder": db.get_setting("card_holder")}
+    card = db.get_manual_card_for_user(user_id)
+    return {"card_number": card["card_number"], "card_holder": card["card_holder"]}
 
 
 def _payment_method_error(db: Database, amount: int, method_key: str, product_id: int = None,
@@ -4594,7 +4596,8 @@ async def api_topup_receipt(
         raise HTTPException(status_code=500, detail=tr("هیچ ادمینی برای بررسی رسید ثبت نشده است."))
 
     ai_result = await _check_miniapp_receipt(
-        db, photo_bytes, photo.filename or "receipt.jpg", photo.content_type, "topup", topup_id, topup["amount"]
+        db, photo_bytes, photo.filename or "receipt.jpg", photo.content_type, "topup", topup_id, topup["amount"],
+        user_id=topup["user_id"],
     )
     db.set_topup_receipt_ai_note(topup_id, ai_result["note"])
     if ai_result.get("reject") and db.reject_topup(topup_id, "ai_auto"):
@@ -4690,7 +4693,8 @@ async def api_order_receipt(
         raise HTTPException(status_code=500, detail=tr("هیچ ادمینی برای بررسی رسید ثبت نشده است."))
 
     ai_result = await _check_miniapp_receipt(
-        db, photo_bytes, photo.filename or "receipt.jpg", photo.content_type, "order", order_id, order["final_price"]
+        db, photo_bytes, photo.filename or "receipt.jpg", photo.content_type, "order", order_id, order["final_price"],
+        user_id=order["user_id"],
     )
     db.set_order_receipt_ai_note(order_id, ai_result["note"])
     if ai_result.get("reject") and db.reject_order(order_id, "ai_auto"):
@@ -6653,6 +6657,7 @@ def api_admin_get_abangateway_settings(auth=Depends(require_senior_admin)):
         "masked_key": (f"...{api_key[-4:]}" if api_key else ""),
         "gateway_configured": bool(api_key) and bool(API_BASE_URL),
         "key_source": abangateway_payment.resolve_api_key_source(db),
+        "problems": abangateway_payment.availability_problems(db),
     }
 
 
@@ -6664,8 +6669,10 @@ def api_admin_set_abangateway_settings(body: AbanGatewaySettingsUpdate, auth=Dep
         db.set_setting("abangateway_api_key", new_key)
         db.log_admin_action(admin_id, "abangateway_key_change", "API Key آبان گیت وی از مینی‌اپ تغییر کرد." if new_key else "API Key آبان گیت وی از مینی‌اپ حذف شد.")
     api_key = _resolve_abangateway_key(db)
-    if body.enabled and (not api_key or not API_BASE_URL):
-        raise HTTPException(status_code=400, detail=tr("ابتدا کلید API آبان گیت وی را تنظیم کن. (اگر بازم فعال نمی‌شه، یعنی MINIAPP_URL روی سرور تنظیم نشده.)"))
+    if body.enabled and not api_key:
+        raise HTTPException(status_code=400, detail=tr("ابتدا کلید API آبان گیت وی را تنظیم کن."))
+    if body.enabled and not API_BASE_URL:
+        raise HTTPException(status_code=400, detail=tr("آدرس مینی‌اپ روی سرور تنظیم نشده است؛ MINIAPP_URL (یا API_BASE_URL) را در فایل .env پر کن و سرویس را ری‌استارت کن."))
     db.set_setting("abangateway_payment_enabled", "1" if body.enabled else "0")
     return {"status": "ok"}
 
