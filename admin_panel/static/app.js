@@ -4185,8 +4185,14 @@ async function renderCatalog() {
     return;
   }
 
+  const activeCategories = categories.filter(c => c.is_active);
   body.innerHTML = `
-    <div class="toolbar"><button class="btn btn-primary btn-sm" id="add-prod">+ محصول جدید</button></div>
+    <div class="toolbar">
+      <button class="btn btn-primary btn-sm" id="add-prod" ${activeCategories.length ? '' : 'disabled'}>+ محصول جدید</button>
+      ${activeCategories.length ? '' : '<span class="card-sub">برای ساخت محصول، ابتدا حداقل یک دسته‌بندی فعال بسازید.</span>'}
+      <button class="btn btn-sm" id="add-cat-inline">+ دسته‌بندی جدید</button>
+    </div>
+    ${activeCategories.length ? '' : '<div class="card" style="margin-bottom:12px"><div class="empty-state">هنوز دسته‌بندی فعالی برای فروش وجود ندارد. ابتدا دسته‌بندی بسازید و آن را فعال نگه دارید.</div></div>'}
     <div class="card"><div class="table-wrap"><table><thead><tr><th>نام</th><th>دسته</th><th>قیمت</th><th>موجودی</th><th>وضعیت</th><th>عملیات</th></tr></thead>
     <tbody>${products.map((p, i) => {
       const sameCat = products.filter(x => x.category_id === p.category_id);
@@ -4211,9 +4217,17 @@ async function renderCatalog() {
     </tr>`;
     }).join('') || '<tr><td colspan="6" class="empty-state">محصولی نیست</td></tr>'}</tbody></table></div></div>`;
 
+  $('#add-cat-inline').addEventListener('click', () => openModal('دسته‌بندی جدید', `
+    <div class="form-grid"><input class="input" id="cat-name-inline" placeholder="نام دسته‌بندی"><button class="btn btn-primary" id="cat-save-inline">ثبت</button></div>`, (b, close) => {
+      $('#cat-save-inline', b).addEventListener('click', async () => {
+        const name = $('#cat-name-inline', b).value.trim(); if (!name) return toast('نام دسته‌بندی را وارد کنید.', true);
+        try { await apiPost('/categories', { name }); toast('دسته‌بندی اضافه شد.'); close(); renderCatalog(); } catch (e) { handleErr(e); }
+      });
+    }));
+  if (!activeCategories.length) return;
   $('#add-prod').addEventListener('click', () => { window.__productPrefillTargetConfig = null; openModal('محصول جدید', `
     <div class="form-grid">
-      <select class="input" id="prod-cat">${categories.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
+      <select class="input" id="prod-cat">${activeCategories.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
       <input class="input" id="prod-name" placeholder="نام محصول">
       <div class="form-row"><input class="input" id="prod-price" type="number" placeholder="قیمت اصلی (تومان)">
       <input class="input" id="prod-duration" type="number" placeholder="مدت (روز)" value="30"></div>
@@ -6972,21 +6986,23 @@ function renderResellerCohortBlock(data) {
 const PANEL_TYPE_OPTIONS_HTML = [
   ['pasarguard', 'PasarGuard'], ['3xui', '3X-UI'], ['marzban', 'Marzban'],
   ['marzneshin', 'Marzneshin'], ['hiddify', 'Hiddify'], ['alireza', 'Alireza X-UI'],
-  ['rebecca', 'Rebecca'], ['sui', 'S-UI'], ['wgdashboard', 'WGDashboard'], ['mikrotik', 'MikroTik'], ['ibsng', 'IBSng'],
+  ['rebecca', 'Rebecca'], ['sui', 'S-UI'], ['wgdashboard', 'WGDashboard'], ['mikrotik', 'MikroTik'], ['ibsng', 'IBSng'], ['wui', 'W-UI'],
 ].map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
 const PANEL_INBOUND_SELECT_TYPES = ['3xui', 'alireza'];
 const PANEL_SUB_BASE_URL_TYPES = ['3xui', 'hiddify', 'alireza'];
-const PANEL_TEMPLATE_BASED_TYPES = ['pasarguard', 'marzban', 'marzneshin', 'rebecca', 'sui', 'wgdashboard', 'mikrotik', 'ibsng'];
-const PANEL_TOKEN_ONLY_TYPES = ['3xui', 'rebecca', 'sui', 'wgdashboard'];
+const PANEL_TEMPLATE_BASED_TYPES = ['pasarguard', 'marzban', 'marzneshin', 'rebecca', 'sui', 'wgdashboard', 'mikrotik', 'ibsng', 'wui'];
+const PANEL_TOKEN_ONLY_TYPES = ['3xui', 'rebecca', 'sui', 'wgdashboard', 'wui'];
 const PANEL_SECRET_PLACEHOLDERS = {
   rebecca: 'توکن ادمین (Bearer token)',
   sui: 'API Token (Admin ← API Token در پنل)',
   wgdashboard: 'API Key (Settings ← API Keys در پنل)',
+  wui: 'API Token (Settings ← Authentication ← API Token در پنل)',
 };
 const PANEL_TEMPLATE_PLACEHOLDERS = {
   sui: 'نام یک کاربر (client) موجود روی پنل',
   rebecca: 'نام یک کاربر موجود روی پنل',
   wgdashboard: 'نام configuration (مثلا wg0)',
+  wui: 'نام یک مشتری (customer) موجود روی پنل',
   mikrotik: 'نام profile در User Manager',
   ibsng: 'نام گروه (Group) در IBSng',
 };
@@ -6994,6 +7010,7 @@ const PANEL_TEMPLATE_HINTS = {
   sui: 'inbound های کاربر نمونه برای کاربرهای جدید استفاده می‌شود. فقط API Token لازم است.',
   rebecca: 'سرویس (service) کاربر نمونه برای کاربرهای جدید استفاده می‌شود. فقط توکن لازم است.',
   wgdashboard: 'فقط API Key لازم است. کاربرها به‌صورت peer داخل configuration ساخته می‌شوند و حجم/انقضا با Schedule Job اعمال می‌شود.',
+  wui: 'interface های مشتری نمونه برای کاربرهای جدید استفاده می‌شود. فقط API Token لازم است. آدرس API باید شامل Web Base Path پنل باشد.',
   mikrotik: 'حجم و مدت را profile تعیین می‌کند و مقدار حجم/مدت محصول اعمال نمی‌شود. یوزر/پس ادمین روتر (REST API) لازم است.',
   ibsng: 'حجم و مدت را گروه تعیین می‌کند و مقدار حجم/مدت محصول اعمال نمی‌شود. یوزر/پس ادمین IBSng لازم است.',
 };
@@ -7053,19 +7070,19 @@ function wirePanelAddForm(body, close) {
     if (PANEL_TEMPLATE_BASED_TYPES.includes(panel_type) && !templateInp.value.trim()) {
       return toast(PANEL_TEMPLATE_PLACEHOLDERS[panel_type] ? 'مقدار قالب الزامی است.' : 'نام کاربری نمونه الزامی است.', true);
     }
-    let serverId;
+    let serverId, warning = '';
     try {
       const r = await apiPost('/panel-servers', {
         name, panel_type, api_url,
         api_username: userInp.value, api_password: passInp.value,
         template_username: PANEL_TEMPLATE_BASED_TYPES.includes(panel_type) ? templateInp.value.trim() : undefined,
       });
-      serverId = r.id;
+      serverId = r.id; warning = r.warning || '';
     } catch (e) { return handleErr(e); }
 
     if (PANEL_INBOUND_SELECT_TYPES.includes(panel_type)) return finishXuiInboundSetup(serverId, close);
     if (PANEL_SUB_BASE_URL_TYPES.includes(panel_type)) return askPanelSubBaseUrl(serverId, close);
-    toast('پنل اضافه شد.'); close(); renderPanels();
+    toast(warning ? ('پنل اضافه شد.\n' + warning) : 'پنل اضافه شد.'); close(); renderPanels();
   });
 }
 
