@@ -1386,7 +1386,7 @@ def api_catalog(auth=Depends(get_verified_user)):
                     "price": p["price"],
                     "original_price": compare_price_for(p) or None,
                     "description": p["description"],
-                    "stock": db.count_available_configs(p["id"]),
+                    "stock": None if p["is_auto_provision"] else db.count_available_configs(p["id"]),
                     "is_auto_provision": bool(p["is_auto_provision"]),
                 }
                 for p in products
@@ -5147,7 +5147,8 @@ async def api_admin_add_panel_server(body: PanelServerCreate, auth=Depends(requi
         template_username=body.template_username.strip(),
     )
     db.log_admin_action(admin_id, "panel_server_add", f"سرور «{body.name}» (#{server_id}) از مینی‌اپ")
-    return {"id": server_id}
+    import dedicated_sub as _ds
+    return {"id": server_id, "warning": _ds.wui_dsub_warning(db, body.panel_type)}
 
 
 @app.get("/api/admin/panel-servers/{server_id}/xui-inbounds")
