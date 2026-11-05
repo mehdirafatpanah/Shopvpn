@@ -957,6 +957,7 @@ def card_settings_kb(db) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=tr(f"وضعیت: {'🟢 فعال' if enabled else '🔴 غیرفعال'}"), callback_data="noop")],
         [InlineKeyboardButton(text=tr(f"💳 شماره کارت: {card_number}"), callback_data="noop")],
         [InlineKeyboardButton(text=tr(f"👤 به نام: {card_holder}"), callback_data="noop")],
+        [InlineKeyboardButton(text=tr(f"🗂 چند شماره کارت + درصد نمایش ({len(db.list_payment_cards(only_active=True))} فعال)"), callback_data="adm_pcards")],
         [InlineKeyboardButton(text=toggle_text, callback_data="adm_card_toggle")],
         [InlineKeyboardButton(text=tr("✏️ تغییر شماره کارت / صاحب حساب"), callback_data="adm_set_card_edit")],
         [InlineKeyboardButton(text=tr("🔒 شرط نمایش شماره کارت"), callback_data="adm_cardgate")],
@@ -1016,6 +1017,33 @@ def card_auto_settings_kb(db) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:finance")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def payment_cards_kb(cards, pct: dict) -> InlineKeyboardMarkup:
+    """لیست چند کارت کارت‌به‌کارت دستی با درصد نمایش هر کارت."""
+    rows = []
+    for c in cards:
+        icon = "🟢" if c["is_active"] else "🔴"
+        share = f"{pct[c['id']]:g}%" if c["id"] in pct else "—"
+        rows.append([InlineKeyboardButton(
+            text=f"{icon} ...{(c['card_number'] or '')[-4:]} — {c['holder_name'] or '-'} — {share}",
+            callback_data=f"adm_pcard:{c['id']}",
+        )])
+    if not cards:
+        rows.append([InlineKeyboardButton(text=tr("هنوز کارتی اضافه نشده"), callback_data="noop")])
+    rows.append([InlineKeyboardButton(text=tr("➕ افزودن کارت"), callback_data="adm_pcard_add")])
+    rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_set_card")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def payment_card_detail_kb(card) -> InlineKeyboardMarkup:
+    toggle_text = "🔴 غیرفعال کردن" if card["is_active"] else "🟢 فعال کردن"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=toggle_text, callback_data=f"adm_pcard_toggle:{card['id']}")],
+        [InlineKeyboardButton(text=tr("🎯 تغییر درصد نمایش"), callback_data=f"adm_pcard_w:{card['id']}")],
+        [InlineKeyboardButton(text=tr("🗑 حذف"), callback_data=f"adm_pcard_del:{card['id']}")],
+        [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_pcards")],
+    ])
 
 
 def card_auto_cards_kb(cards) -> InlineKeyboardMarkup:
@@ -3624,8 +3652,10 @@ def blupal_settings_kb(db) -> InlineKeyboardMarkup:
 
 def abangateway_settings_kb(db) -> InlineKeyboardMarkup:
     """منوی تنظیمات آبان گیت وی: وضعیت و کلید API (هم‌شکل با noapay_settings_kb)."""
-    api_key = db.get_setting("abangateway_api_key", "")
-    enabled = db.get_setting("abangateway_payment_enabled", "0") == "1" and bool(api_key)
+    import abangateway_payment
+    api_key = abangateway_payment.resolve_api_key(db)
+    problems = abangateway_payment.availability_problems(db)
+    enabled = not problems
     rows = [
         [InlineKeyboardButton(text=tr(f"وضعیت: {'🟢 فعال' if enabled else '🔴 غیرفعال'}"), callback_data="noop")],
         [InlineKeyboardButton(

@@ -97,6 +97,7 @@ from states import (
     AdminServiceAlertChannel,
     AdminEditButton,
     AdminSetCard,
+    AdminPayCard,
     AdminSetPlisio,
     AdminSetAbanGateway,
     AdminSetBlupal,
@@ -495,7 +496,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 await call.message.edit_reply_markup(reply_markup=None)
             except Exception:
                 pass
-        welcome = (await asyncio.to_thread(db.get_setting, "welcome_text"))
+        welcome = (await asyncio.to_thread(db.get_welcome_text))
         await call.message.answer(welcome, reply_markup=kb.menu_for_user(db, call.from_user.id, is_main_bot))
         await _notify_user_inline_menu(call.bot, call.from_user.id)
         await call.answer()
@@ -4023,10 +4024,15 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             "env": "⚠️ فقط از فایل .env این پروسه خوانده می‌شود. اگر بات و مینی‌اپ را جدا ری‌استارت نکرده باشی ممکن است این دو با هم ناهماهنگ باشند. پیشنهاد: همینجا دوباره ثبتش کن تا مطمئن بشی.",
             "none": "❌ هیچ کلیدی (نه در دیتابیس، نه در .env) تنظیم نشده.",
         }[source]
+        problems = abangateway_payment.availability_problems(db)
+        if problems:
+            warn = "\n\n⚠️ تا این موارد رفع نشود، دکمه‌ی پرداخت آبان گیت وی به کاربران نمایش داده نمی‌شود:\n" + "\n".join(f"• {p}" for p in problems)
+        else:
+            warn = "\n\n✅ درگاه آماده است و برای کاربران نمایش داده می‌شود."
         await replace_admin_view(
             call,
             tr("💳 تنظیم درگاه آبان گیت وی (پرداخت کارتی/آنلاین)\n\n"
-            f"منبع کلید: {source_note}"),
+            f"منبع کلید: {source_note}" + warn),
             reply_markup=kb.abangateway_settings_kb(db),
         )
         await call.answer()
@@ -4059,8 +4065,12 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         (await asyncio.to_thread(db.set_setting, "abangateway_api_key", text))
         (await asyncio.to_thread(db.set_setting, "abangateway_payment_enabled", "1"))
         (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "abangateway_key_change", "API Key آبان گیت وی تغییر کرد."))
+        problems = abangateway_payment.availability_problems(db)
+        note = ""
+        if problems:
+            note = "\n\n⚠️ ولی دکمه‌ی پرداخت هنوز به کاربران نمایش داده نمی‌شود:\n" + "\n".join(f"• {p}" for p in problems)
         await message.answer(
-            db.get_text('handlers_admin.auto_e89e288a', '✅ API Key آبان گیت وی ذخیره شد و درگاه فعال شد.'),
+            db.get_text('handlers_admin.auto_e89e288a', '✅ API Key آبان گیت وی ذخیره شد و درگاه فعال شد.') + note,
             reply_markup=kb.abangateway_settings_kb(db),
         )
 
@@ -10665,6 +10675,149 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await replace_admin_view(call, tr("💳 تنظیمات پرداخت کارت‌به‌کارت:"), reply_markup=kb.card_settings_kb(db))
         await call.answer()
 
+    # -------------------------------------------------------------------
+    # چند شماره کارت با درصد نمایش (کارت‌به‌کارت دستی)
+    # -------------------------------------------------------------------
+
+    def _pcards_text(cards, pct) -> str:
+        head = (
+            "🗂 کارت‌های کارت‌به‌کارت (دستی)\n\n"
+            "هر خریدار با احتمالی برابر «درصد نمایش» یکی از کارت‌های فعال را می‌بیند و "
+            "تا یک ساعت همان کارت برایش ثابت می‌ماند. درصدها لازم نیست جمعشان ۱۰۰ باشد؛ "
+            "خودکار نسبت‌گیری می‌شوند.\n"
+            "اگر هیچ کارتی اینجا فعال نباشد، همان کارت تکیِ تنظیمات قبلی نشان داده می‌شود.\n"
+        )
+        return head
+
+    def _pcard_detail_text(card, pct) -> str:
+        share = f"{pct[card['id']]:g}%" if card["id"] in pct else "— (غیرفعال)"
+        return (
+            f"💳 شماره: {card['card_number']}\n"
+            f"👤 به نام: {card['holder_name'] or '-'}\n"
+            f"🎯 وزن: {card['weight']} → درصد نمایش فعلی: {share}\n"
+            f"وضعیت: {'🟢 فعال' if card['is_active'] else '🔴 غیرفعال'}"
+        )
+
+    @router.callback_query(F.data == "adm_pcards")
+    async def cb_admin_pcards(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await state.clear()
+        cards = await asyncio.to_thread(db.list_payment_cards)
+        pct = await asyncio.to_thread(db.payment_card_percentages)
+        await safe_edit(call, tr(_pcards_text(cards, pct)), kb.payment_cards_kb(cards, pct))
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_pcard_add")
+    async def cb_admin_pcard_add(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await state.set_state(AdminPayCard.waiting_number)
+        await safe_edit(call, "شماره کارت جدید را ارسال کنید:", reply_markup=kb.admin_back_kb("adm_pcards"))
+        await call.answer()
+
+    @router.message(AdminPayCard.waiting_number)
+    async def process_pcard_number(message: Message, state: FSMContext):
+        num = (message.text or "").strip()
+        if not num:
+            return await message.answer("شماره کارت را به‌صورت متن ارسال کنید:")
+        await state.update_data(pcard_number=num)
+        await state.set_state(AdminPayCard.waiting_holder)
+        await message.answer("نام صاحب کارت را ارسال کنید:")
+
+    @router.message(AdminPayCard.waiting_holder)
+    async def process_pcard_holder(message: Message, state: FSMContext):
+        await state.update_data(pcard_holder=(message.text or "").strip())
+        await state.set_state(AdminPayCard.waiting_weight)
+        await message.answer("درصد نمایش این کارت را بفرستید (عدد، مثلاً 70). درصدها خودکار نسبت‌گیری می‌شوند:")
+
+    def _parse_weight(text: str):
+        import card_to_card_payment
+        v = card_to_card_payment.normalize_amount(text)
+        if v is None or v < 0 or v > 1000:
+            return None
+        return v
+
+    @router.message(AdminPayCard.waiting_weight)
+    async def process_pcard_weight(message: Message, state: FSMContext):
+        w = _parse_weight(message.text)
+        if w is None:
+            return await message.answer("⚠️ یک عدد بین 0 تا 1000 بفرستید:")
+        data = await state.get_data()
+        card_id = await asyncio.to_thread(db.create_payment_card, data["pcard_number"], data.get("pcard_holder", ""), "", w)
+        await asyncio.to_thread(db.log_admin_action, message.from_user.id, "payment_card_add", f"کارت #{card_id} با وزن {w} اضافه شد (بات).")
+        await state.clear()
+        cards = await asyncio.to_thread(db.list_payment_cards)
+        pct = await asyncio.to_thread(db.payment_card_percentages)
+        await message.answer("✅ کارت اضافه شد.\n\n" + _pcards_text(cards, pct), reply_markup=kb.payment_cards_kb(cards, pct))
+
+    @router.callback_query(F.data.startswith("adm_pcard:"))
+    async def cb_admin_pcard_detail(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await state.clear()
+        card_id = callback_id(call.data, "adm_pcard")
+        card = await asyncio.to_thread(db.get_payment_card, card_id) if card_id else None
+        if card is None:
+            return await call.answer("⚠️ این کارت دیگر وجود ندارد.", show_alert=True)
+        pct = await asyncio.to_thread(db.payment_card_percentages)
+        await safe_edit(call, _pcard_detail_text(card, pct), kb.payment_card_detail_kb(card))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_pcard_toggle:"))
+    async def cb_admin_pcard_toggle(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        card_id = callback_id(call.data, "adm_pcard_toggle")
+        card = await asyncio.to_thread(db.get_payment_card, card_id) if card_id else None
+        if card is None:
+            return await call.answer("⚠️ این کارت دیگر وجود ندارد.", show_alert=True)
+        await asyncio.to_thread(db.toggle_payment_card, card_id)
+        await asyncio.to_thread(db.log_admin_action, call.from_user.id, "payment_card_toggle", f"کارت #{card_id} (بات).")
+        card = await asyncio.to_thread(db.get_payment_card, card_id)
+        pct = await asyncio.to_thread(db.payment_card_percentages)
+        await safe_edit(call, _pcard_detail_text(card, pct), kb.payment_card_detail_kb(card))
+        await call.answer("وضعیت تغییر کرد.")
+
+    @router.callback_query(F.data.startswith("adm_pcard_w:"))
+    async def cb_admin_pcard_weight(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        card_id = callback_id(call.data, "adm_pcard_w")
+        if not card_id or not await asyncio.to_thread(db.get_payment_card, card_id):
+            return await call.answer("⚠️ این کارت دیگر وجود ندارد.", show_alert=True)
+        await state.update_data(pcard_edit_id=card_id)
+        await state.set_state(AdminPayCard.waiting_edit_weight)
+        await safe_edit(call, "درصد نمایش جدید را بفرستید (عدد، مثلاً 30):", reply_markup=kb.admin_back_kb(f"adm_pcard:{card_id}"))
+        await call.answer()
+
+    @router.message(AdminPayCard.waiting_edit_weight)
+    async def process_pcard_edit_weight(message: Message, state: FSMContext):
+        w = _parse_weight(message.text)
+        if w is None:
+            return await message.answer("⚠️ یک عدد بین 0 تا 1000 بفرستید:")
+        card_id = (await state.get_data()).get("pcard_edit_id")
+        await state.clear()
+        await asyncio.to_thread(db.update_payment_card, card_id, weight=w)
+        await asyncio.to_thread(db.log_admin_action, message.from_user.id, "payment_card_weight", f"وزن کارت #{card_id} = {w} (بات).")
+        cards = await asyncio.to_thread(db.list_payment_cards)
+        pct = await asyncio.to_thread(db.payment_card_percentages)
+        await message.answer("✅ درصد به‌روزرسانی شد.\n\n" + _pcards_text(cards, pct), reply_markup=kb.payment_cards_kb(cards, pct))
+
+    @router.callback_query(F.data.startswith("adm_pcard_del:"))
+    async def cb_admin_pcard_del(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        card_id = callback_id(call.data, "adm_pcard_del")
+        if not card_id or not await asyncio.to_thread(db.get_payment_card, card_id):
+            return await call.answer("⚠️ این کارت قبلاً حذف شده است.", show_alert=True)
+        await asyncio.to_thread(db.delete_payment_card, card_id)
+        await asyncio.to_thread(db.log_admin_action, call.from_user.id, "payment_card_delete", f"کارت #{card_id} حذف شد (بات).")
+        cards = await asyncio.to_thread(db.list_payment_cards)
+        pct = await asyncio.to_thread(db.payment_card_percentages)
+        await safe_edit(call, tr(_pcards_text(cards, pct)), kb.payment_cards_kb(cards, pct))
+        await call.answer("کارت حذف شد.")
+
     @router.callback_query(F.data == "adm_card_toggle")
     async def cb_admin_card_toggle(call: CallbackQuery):
         if not full_admin_only(call.from_user.id):
@@ -10927,7 +11080,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
         await state.set_state(AdminEditWelcome.waiting_text)
-        current = (await asyncio.to_thread(db.get_setting, "welcome_text"))
+        current = (await asyncio.to_thread(db.get_welcome_text))
         await safe_edit(call, f"متن فعلی:\n{current}\n\nمتن جدید را ارسال کنید:", reply_markup=kb.admin_back_kb("adm_cat:appearance"))
         await call.answer()
 
@@ -10936,7 +11089,11 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         # از html_text به‌جای text استفاده می‌شود تا فرمت‌بندی (بولد/ایتالیک) و
         # به‌خصوص ایموجی‌های پریمیوم/سفارشی‌ای که ادمین تایپ می‌کند حفظ شوند؛
         # چون parse_mode بات روی HTML است، همین رشته‌ی HTML مستقیماً ارسال می‌شود.
-        (await asyncio.to_thread(db.set_setting, "welcome_text", message.html_text))
+        new_text = (message.html_text or "").strip()
+        if not new_text:
+            await message.answer(db.get_text('handlers_admin.welcome_empty', '❌ متن خوش‌آمد نمی‌تواند خالی باشد. یک متن ارسال کنید:'))
+            return
+        (await asyncio.to_thread(db.set_setting, "welcome_text", new_text))
         await state.clear()
         await message.answer(db.get_text('handlers_admin.auto_f4186c64', '✅ پیام خوش\u200cآمد به\u200cروزرسانی شد.'), reply_markup=kb.admin_category_kb(db, is_main_bot, "appearance"))
 

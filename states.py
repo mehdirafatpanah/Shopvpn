@@ -237,6 +237,13 @@ class AdminSetExtraGateway(StatesGroup):
     waiting_value = State()
 
 
+class AdminPayCard(StatesGroup):
+    waiting_number = State()
+    waiting_holder = State()
+    waiting_weight = State()
+    waiting_edit_weight = State()
+
+
 class AdminC2CCard(StatesGroup):
     waiting_number = State()
     waiting_holder = State()

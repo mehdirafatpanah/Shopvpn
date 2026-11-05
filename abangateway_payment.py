@@ -69,6 +69,24 @@ def abangateway_payment_available(db) -> bool:
     )
 
 
+def availability_problems(db) -> list:
+    """دلایلی که باعث می‌شوند دکمه‌ی پرداخت آبان گیت وی به کاربر نمایش داده نشود.
+    لیست خالی یعنی درگاه کاملاً آماده است. برای نمایش هشدار به ادمین استفاده می‌شود
+    (قبلاً در این حالت دکمه بی‌صدا پنهان می‌شد و ادمین دلیلش را نمی‌فهمید)."""
+    problems = []
+    if db.get_setting("abangateway_payment_enabled", "0") != "1":
+        problems.append("درگاه در تنظیمات غیرفعال است.")
+    if not resolve_api_key(db):
+        problems.append("کلید API آبان گیت وی تنظیم نشده است.")
+    if not API_BASE_URL:
+        problems.append(
+            "آدرس مینی‌اپ تنظیم نشده است: در فایل .env مقدار MINIAPP_URL (یا API_BASE_URL) را "
+            "با آدرس HTTPS عمومی سرور مینی‌اپ پر کنید و بات و مینی‌اپ را ری‌استارت کنید. "
+            "این آدرس برای دریافت وب‌هوک تأیید پرداخت لازم است."
+        )
+    return problems
+
+
 from payment_base import toman_to_rial, rial_to_toman  # noqa: F401
 
 

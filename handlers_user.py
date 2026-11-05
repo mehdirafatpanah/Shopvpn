@@ -370,8 +370,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         شماره کارت را نشان می‌دهد و از او می‌خواهد رسید را ارسال کند. target هر شیء‌ای
         است که متد answer async دارد (معمولاً call.message). مبلغ هم به تومان هم به ریال،
         به‌صورت جدا از عدد ویرگول‌دار، در قالب کد (قابل کپی با یک لمس) نمایش داده می‌شود."""
-        card_number = (await asyncio.to_thread(db.get_setting, "card_number"))
-        card_holder = (await asyncio.to_thread(db.get_setting, "card_holder"))
+        _uid = getattr(getattr(target, "chat", None), "id", None)
+        _card = await asyncio.to_thread(db.get_manual_card_for_user, _uid)
+        card_number, card_holder = _card["card_number"], _card["card_holder"]
         text = "\n".join(intro_lines) + "\n" if intro_lines else ""
         text += f"💳 شماره کارت: `{card_number}`\n"
         text += f"👤 به نام: {escape_md(card_holder)}\n"
@@ -511,7 +512,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await call.answer(db.get_text('handlers_user.auto_c1e947e8', 'این نظرسنجی معتبر نیست.'), show_alert=True)
 
     async def _send_welcome_after_terms(message: Message, user_id: int, state: FSMContext, bot: Bot):
-        welcome = await asyncio.to_thread(db.get_setting, "welcome_text")
+        welcome = await asyncio.to_thread(db.get_welcome_text)
         reply_enabled = await asyncio.to_thread(db.get_setting, "main_menu_reply_enabled", "1") == "1"
         if reply_enabled:
             await message.answer(welcome, reply_markup=kb.menu_for_user(db, user_id, is_main_bot))
@@ -600,7 +601,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             if terms["enabled"] and not await asyncio.to_thread(db.is_terms_accepted, call.from_user.id):
                 await call.message.answer(terms["text"], reply_markup=terms_keyboard())
                 return
-            welcome = (await asyncio.to_thread(db.get_setting, "welcome_text"))
+            welcome = (await asyncio.to_thread(db.get_welcome_text))
             await call.message.answer(welcome, reply_markup=kb.menu_for_user(db, call.from_user.id, is_main_bot))
             await _send_inline_main_menu(call.message, call.from_user.id)
         else:
@@ -1065,7 +1066,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 )
                 return
 
-        welcome = (await asyncio.to_thread(db.get_setting, "welcome_text"))
+        welcome = (await asyncio.to_thread(db.get_welcome_text))
         reply_enabled = (await asyncio.to_thread(db.get_setting, "main_menu_reply_enabled", "1")) == "1"
         if reply_enabled:
             # منوی پایین فعال است: طبق روال قبلی، پیام خوش‌آمد با منوی پایین
@@ -1685,15 +1686,16 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             line += f"🤝 معرف: {ref_name}{ref_handle} — <code>{referred_by}</code>\n"
         return line
 
-    async def _admin_card_hint_line() -> str:
+    async def _admin_card_hint_line(user_id=None) -> str:
         """قابلیت ۸۵: وقتی سفارش با رسید کارت‌به‌کارت به مدیر گزارش می‌شود، شماره
         کارتی که به خریدار نشان داده شده هم اضافه می‌شود - چون شماره کارت ممکن
         است بین زمان خرید و زمان بررسی مدیر عوض شده باشد و مدیر برای تطبیق با
         صورتحساب بانکی باید دقیقاً بداند پول به کدام کارت واریز شده."""
-        card_number = (await asyncio.to_thread(db.get_setting, "card_number"))
+        _card = await asyncio.to_thread(db.get_manual_card_for_user, user_id)
+        card_number = _card["card_number"]
         if not card_number:
             return ""
-        card_holder = (await asyncio.to_thread(db.get_setting, "card_holder")) or ""
+        card_holder = _card["card_holder"] or ""
         holder_line = f"👤 به نام: {escape_html(card_holder)}\n" if card_holder else ""
         return f"💳 شماره کارت واریزی: <code>{escape_html(card_number)}</code>\n{holder_line}"
 
@@ -1714,8 +1716,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         فقط وقتی رسید بسیار مشکوک باشد (و تنظیم رد خودکار روشن باشد)
         result["reject"]=True برمی‌گردد و caller مسئول رد کردن سفارش است."""
         try:
-            card_number = (await asyncio.to_thread(db.get_setting, "card_number"))
-            card_holder = (await asyncio.to_thread(db.get_setting, "card_holder"))
+            _card = await asyncio.to_thread(db.get_manual_card_for_user, order["user_id"])
+            card_number, card_holder = _card["card_number"], _card["card_holder"]
             result = await receipt_ai_check.check_receipt(
                 bot, db,
                 file_id=file_id, receipt_type=receipt_type,
@@ -1780,7 +1782,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             if not receipt_file_id and not already_approved:
                 caption += "\n\n(بدون نیاز به رسید - مبلغ کاملاً از کیف پول پوشش داده شده)"
             elif receipt_file_id and not already_approved:
-                caption += "\n\n" + (await _admin_card_hint_line())
+                caption += "\n\n" + (await _admin_card_hint_line(order["user_id"]))
                 caption += _ai_note_line(ai_note, ai_available)
             if await _report_order_to_group(bot, order_id, caption, reply_markup, receipt_file_id, receipt_type):
                 return
@@ -1827,7 +1829,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             if not receipt_file_id and not already_approved:
                 caption += "\n\n(بدون نیاز به رسید - مبلغ کاملاً از کیف پول پوشش داده شده)"
             elif receipt_file_id and not already_approved:
-                caption += "\n\n" + (await _admin_card_hint_line())
+                caption += "\n\n" + (await _admin_card_hint_line(order["user_id"]))
                 caption += _ai_note_line(ai_note, ai_available)
             if await _report_order_to_group(bot, order_id, caption, reply_markup, receipt_file_id, receipt_type):
                 return
@@ -1882,7 +1884,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             if not receipt_file_id and not already_approved:
                 caption += "\n\n(بدون نیاز به رسید - مبلغ کاملاً از کیف پول پوشش داده شده)"
             elif receipt_file_id and not already_approved:
-                caption += "\n\n" + (await _admin_card_hint_line())
+                caption += "\n\n" + (await _admin_card_hint_line(order["user_id"]))
                 caption += _ai_note_line(ai_note, ai_available)
             if await _report_order_to_group(bot, order_id, caption, reply_markup, receipt_file_id, receipt_type):
                 return
@@ -1936,7 +1938,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if not receipt_file_id and not already_approved:
             caption += "\n\n(بدون نیاز به رسید - مبلغ کاملاً از کیف پول/تخفیف پوشش داده شده)"
         elif receipt_file_id and not already_approved:
-            caption += "\n\n" + (await _admin_card_hint_line())
+            caption += "\n\n" + (await _admin_card_hint_line(order["user_id"]))
             caption += _ai_note_line(ai_note, ai_available)
 
         if await _report_order_to_group(bot, order_id, caption, reply_markup, receipt_file_id, receipt_type):
@@ -6561,8 +6563,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         topup_id = (await asyncio.to_thread(db.create_topup, message.from_user.id, amount))
         (await asyncio.to_thread(db.set_topup_receipt, topup_id, file_id, receipt_type))
 
-        card_number = (await asyncio.to_thread(db.get_setting, "card_number"))
-        card_holder = (await asyncio.to_thread(db.get_setting, "card_holder"))
+        _card = await asyncio.to_thread(db.get_manual_card_for_user, message.from_user.id)
+        card_number, card_holder = _card["card_number"], _card["card_holder"]
         try:
             ai_result = await receipt_ai_check.check_receipt(
                 bot, db,
@@ -6615,7 +6617,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
         # قابلیت ۸۵: شماره کارتی که هنگام واریز به کاربر نشان داده شده بود، برای
         # تطبیق مدیر با صورتحساب بانکی، به گزارش اضافه می‌شود.
-        caption += "\n\n" + (await _admin_card_hint_line())
+        caption += "\n\n" + (await _admin_card_hint_line(message.from_user.id))
         caption += _ai_note_line(ai_result["note"], ai_result["available"])
         if not await _report_topup_to_group(bot, topup_id, file_id, receipt_type, caption, kb.topup_review_kb(topup_id)):
             for admin_id in (await asyncio.to_thread(db.list_admins)):
@@ -7232,8 +7234,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             tenant_id = await asyncio.to_thread(db.get_setting, "miniapp_tenant_id", "")
             label = f"هزینه نمایندگی #{req['id']}"
             if method == "card":
-                card_number = await asyncio.to_thread(db.get_setting, "card_number")
-                card_holder = await asyncio.to_thread(db.get_setting, "card_holder")
+                _card = await asyncio.to_thread(db.get_manual_card_for_user, call.from_user.id)
+                card_number, card_holder = _card["card_number"], _card["card_holder"]
                 text = f"💳 مبلغ {amount:,} تومان را واریز کنید و سپس عکس/فایل رسید را همین‌جا ارسال کنید:\n\n💳 شماره کارت: `{card_number}`\n👤 به نام: {escape_md(card_holder)}"
                 await call.message.answer(text, parse_mode="Markdown")
             elif method == "card_auto":
@@ -7341,7 +7343,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 f"👤 کاربر: {message.from_user.id}\n"
                 f"💰 مبلغ: {req['price_toman']:,} تومان"
             )
-            caption += "\n\n" + (await _admin_card_hint_line())
+            caption += "\n\n" + (await _admin_card_hint_line(message.from_user.id))
             for admin_id in _senior_admin_ids():
                 try:
                     await _send_receipt_to_admin(
@@ -7420,13 +7422,14 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             try:
                 (await asyncio.to_thread(db.set_topup_receipt, topup["id"], file_id, receipt_type))
                 try:
+                    _fb_card = await asyncio.to_thread(db.get_manual_card_for_user, message.from_user.id)
                     fb_ai = await receipt_ai_check.check_receipt(
                         bot, db,
                         file_id=file_id, receipt_type=receipt_type,
                         ref_kind="topup", ref_id=topup["id"],
                         amount_toman=topup["amount"],
-                        card_number=(await asyncio.to_thread(db.get_setting, "card_number")),
-                        card_holder=(await asyncio.to_thread(db.get_setting, "card_holder")),
+                        card_number=_fb_card["card_number"],
+                        card_holder=_fb_card["card_holder"],
                         message=message,
                     )
                 except Exception as exc:
@@ -7441,7 +7444,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                     f"{await _user_purchase_info_line(user_row)}"
                     f"💰 مبلغ: {topup['amount']:,} تومان"
                 )
-                caption += "\n\n" + (await _admin_card_hint_line())
+                caption += "\n\n" + (await _admin_card_hint_line(message.from_user.id))
                 caption += _ai_note_line(fb_ai["note"], fb_ai["available"])
                 if not await _report_topup_to_group(bot, topup["id"], file_id, receipt_type, caption, kb.topup_review_kb(topup["id"])):
                     for admin_id in (await asyncio.to_thread(db.list_admins)):
