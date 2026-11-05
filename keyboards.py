@@ -367,7 +367,7 @@ def products_kb(db, products, category_id) -> InlineKeyboardMarkup:
     rows = []
     for p in products:
         stock = db.count_available_configs(p["id"])
-        stock_tag = "✅" if stock > 0 and p["is_active"] else "⛔️"
+        stock_tag = "✅" if (p["is_auto_provision"] or stock > 0) and p["is_active"] else "⛔️"
         inactive_tag = tr(" (غیرفعال)") if not p["is_active"] else ""
         rows.append(
             [
@@ -4508,6 +4508,7 @@ def panel_type_select_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="WGDashboard", callback_data="adm_panel_type:wgdashboard")],
         [InlineKeyboardButton(text="MikroTik", callback_data="adm_panel_type:mikrotik")],
         [InlineKeyboardButton(text="IBSng", callback_data="adm_panel_type:ibsng")],
+        [InlineKeyboardButton(text="W-UI", callback_data="adm_panel_type:wui")],
         [InlineKeyboardButton(text=tr("❌ انصراف"), callback_data="cancel_flow")],
     ])
 

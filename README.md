@@ -513,6 +513,7 @@ The backend provides infrastructure for a native Android management application.
 | WGDashboard | ✅ Full | Configuration-based |
 | MikroTik / User Manager | ⚠️ Limited | Profile-based |
 | IBSng | ⚠️ Limited | Admin-panel integration |
+| W-UI | ✅ Full | Interface-based (WireGuard/AmneziaWG/OpenVPN), API token |
 | Other panels | ➕ Extensible | Add a provider |
 
 </details>

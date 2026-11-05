@@ -7594,6 +7594,10 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             f"{tr('✅ سرور')} «{data['name']}» ({label}) {tr('با قالب گرفته‌شده از')} «{message.text.strip()}» {tr('اضافه شد.')}",
             reply_markup=kb.panel_servers_list_kb(db),
         )
+        import dedicated_sub as _ds
+        _warn = await asyncio.to_thread(_ds.wui_dsub_warning, db, data["panel_type"])
+        if _warn:
+            await message.answer(_warn)
 
     @router.callback_query(F.data.startswith("adm_panel_server_view:"))
     async def cb_admin_panel_server_view(call: CallbackQuery):

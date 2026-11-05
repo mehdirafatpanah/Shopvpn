@@ -188,6 +188,16 @@ def is_enabled(db) -> bool:
     return flag(db, "dsub_enabled") and bool(base_url(db))
 
 
+WUI_DSUB_WARNING = ("⚠️ برای پنل W-UI ساب اختصاصی باید روشن باشد: دانلود فایل‌های WireGuard/OpenVPN و بخش "
+                    "OpenConnect/L2TP/PPTP/IKEv2 فقط با ساب اختصاصی روشن (و آدرس پایه‌ی تنظیم‌شده) کار می‌کند. "
+                    "ساب اختصاصی را از تنظیمات روشن کن.")
+
+
+def wui_dsub_warning(db, panel_type: str) -> str:
+    """متن هشدار اگر پنل W-UI است و ساب اختصاصی خاموش است؛ وگرنه رشته‌ی خالی."""
+    return WUI_DSUB_WARNING if panel_type == "wui" and not is_enabled(db) else ""
+
+
 def link_for_token(db, token: str) -> str:
     return f"{base_url(db)}/s/{token}"
 
@@ -869,9 +879,72 @@ def build_series(points: List[tuple], now: Optional[int] = None) -> Optional[dic
 # ---------------------------------------------------------------------------
 # داده‌ی صفحه‌ی وب
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# ورودی‌های نام‌کاربری/رمز: OpenConnect / L2TP / PPTP / IKEv2 (پنل W-UI)
+# ---------------------------------------------------------------------------
+VPN_KIND_LABELS = {"openconnect": "OpenConnect", "l2tp": "L2TP/IPsec", "pptp": "PPTP", "ikev2": "IKEv2"}
+# فقط حالت‌هایی که با نام‌کاربری/رمز کار می‌کنند؛ حالت‌های گواهی فایل .p12 می‌خواهند که این صفحه نمی‌دهد
+VPN_IKEV2_MODE_LABELS = {"mschapv2": "نام‌کاربری و رمز", "psk": "کلید (PSK)؛ همان رمز عبور"}
+VPN_SECRETS = {"user": "username", "pass": "password", "psk": "psk"}
+VPN_ITEMS_MAX = 20
+
+
+def vpn_items_for_page(entries: Optional[List[dict]]) -> List[dict]:
+    """نسخه‌ی بدون راز برای داخل صفحه: نام‌کاربری/رمز/PSK هرگز داخل HTML نمی‌آیند و با دکمه‌ی کپی جداگانه گرفته می‌شوند."""
+    out = []
+    for pos, e in enumerate((entries or [])[:VPN_ITEMS_MAX], start=1):
+        kind = str(e.get("kind") or "")
+        if kind not in VPN_KIND_LABELS:
+            continue
+        if kind == "ikev2" and not [m for m in e.get("modes") or [] if m in VPN_IKEV2_MODE_LABELS]:
+            continue
+        item = {
+            "i": pos, "k": kind, "l": VPN_KIND_LABELS[kind],
+            "n": " · ".join(x for x in (str(e.get("tunnel") or ""), str(e.get("device") or "")) if x) or VPN_KIND_LABELS[kind],
+            "srv": str(e.get("address") or e.get("server") or ""),
+            "port": int(e.get("own_port") or 0),
+            "has": {"user": bool(e.get("username")), "pass": bool(e.get("password")), "psk": bool(e.get("psk"))},
+            "weak": kind == "pptp" or bool(e.get("allow_plain")),
+        }
+        if kind == "l2tp":
+            item["plain"] = bool(e.get("allow_plain"))
+        elif kind == "ikev2":
+            item["sid"] = str(e.get("server_id") or "")
+            item["modes"] = [{"m": m, "t": VPN_IKEV2_MODE_LABELS[m]} for m in e.get("modes") or [] if m in VPN_IKEV2_MODE_LABELS]
+            item["ca"] = bool(e.get("ca_cert"))
+        elif kind == "openconnect":
+            item["dtls"] = bool(e.get("dtls"))
+        out.append(item)
+    return out
+
+
+def vpn_secret(entries: Optional[List[dict]], index: int, what: str) -> Optional[str]:
+    """مقدار یک راز (user/pass/psk) برای ردیف شماره‌ی index (۱-پایه)؛ None اگر نبود."""
+    key = VPN_SECRETS.get(what)
+    items = (entries or [])[:VPN_ITEMS_MAX]
+    if not key or not 1 <= int(index) <= len(items):
+        return None
+    value = items[int(index) - 1].get(key)
+    return str(value) if value else None
+
+
+def vpn_ca_file(entries: Optional[List[dict]], index: int) -> Optional[dict]:
+    """فایل گواهی CA یک تونل IKEv2 (عمومی است؛ دستگاه برای اعتماد به سرور نصبش می‌کند)."""
+    items = (entries or [])[:VPN_ITEMS_MAX]
+    if not 1 <= int(index) <= len(items):
+        return None
+    e = items[int(index) - 1]
+    pem = str(e.get("ca_cert") or "").strip()
+    if e.get("kind") != "ikev2" or "BEGIN CERTIFICATE" not in pem:
+        return None
+    name = re.sub(r"[^A-Za-z0-9_.-]", "", str(e.get("tunnel") or "")) or "ikev2"
+    return {"filename": f"{name}-ca.crt", "pem": pem + "\n"}
+
+
 def build_page_data(cc, info: dict, uris: List[str], settings: Dict[str, str], brand: str,
                     sub_link: str, series: Optional[dict], now: Optional[int] = None,
-                    ovpn: Optional[List[dict]] = None, wg: Optional[List[dict]] = None) -> dict:
+                    ovpn: Optional[List[dict]] = None, wg: Optional[List[dict]] = None,
+                    vpn: Optional[List[dict]] = None) -> dict:
     now = now or int(time.time())
     state = compute_state(cc, info, now)
     total = info.get("total") or 0
@@ -893,6 +966,7 @@ def build_page_data(cc, info: dict, uris: List[str], settings: Dict[str, str], b
     theme = settings.get("dsub_theme") or "auto"
     ovpn_items = [{"n": f["remark"], "f": f["filename"], "i": f["index"]} for f in (ovpn or [])[:20]]
     wg_items = [{"n": f["remark"], "f": f["filename"], "i": f["index"]} for f in (wg or [])[:20]]
+    vpn_items = vpn_items_for_page(vpn)
     return {
         "user": service_name(cc), "brand": brand, "logo": logo,
         "state": state, "online": False,
@@ -911,10 +985,12 @@ def build_page_data(cc, info: dict, uris: List[str], settings: Dict[str, str], b
             "faq": settings.get("dsub_show_faq") == "1",
             "ovpn": bool(ovpn_items),
             "wg": bool(wg_items),
+            "vpn": bool(vpn_items),
         },
         "configs": configs,
         "ovpn": ovpn_items,
         "wg": wg_items,
+        "vpn": vpn_items,
         "apps": resolve_apps(settings),
         "faq": [list(x) for x in resolve_faq(settings)],
         "series": series,

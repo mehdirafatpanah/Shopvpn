@@ -513,6 +513,7 @@ uvicorn admin_panel.server:app --host 127.0.0.1 --port 8002
 | WGDashboard | ✅ 完全支持 | 基于配置文件 |
 | MikroTik / User Manager | ⚠️ 有限支持 | 基于配置档案 |
 | IBSng | ⚠️ 有限支持 | 通过管理面板集成 |
+| W-UI | ✅ 完全支持 | 基于 interface（WireGuard/AmneziaWG/OpenVPN），API Token |
 | 其他面板 | ➕ 可扩展 | 可自行添加提供方 |
 
 </details>

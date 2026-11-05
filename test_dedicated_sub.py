@@ -616,5 +616,56 @@ class ServerTests(unittest.TestCase):
         self.assertGreaterEqual(len(self.db.ds_usage_points(self.cid, 0)), 1)
 
 
+class VpnLoginTests(unittest.TestCase):
+    IFACES = {
+        1: {"id": 1, "name": "l2", "protocol": "l2tp", "endpointHost": "h.example.com", "listenPort": 1701,
+            "l2tp": {"psk": "PSK1", "allowPlain": True}},
+        2: {"id": 2, "name": "ik", "protocol": "ikev2", "endpointHost": "h.example.com", "listenPort": 500,
+            "ikev2": {"mschapv2": True, "serverNames": ["ike.example.com"],
+                      "caCert": "-----BEGIN CERTIFICATE-----\nA\n-----END CERTIFICATE-----"}},
+        3: {"id": 3, "name": "oc", "protocol": "openconnect", "endpointHost": "h.example.com", "listenPort": 8443,
+            "openconnect": {"camouflage": True, "camouflageSecret": "sec"}},
+        4: {"id": 4, "name": "ov", "protocol": "openvpn", "endpointHost": "h.example.com", "listenPort": 1194},
+        5: {"id": 5, "name": "cert", "protocol": "ikev2", "endpointHost": "h.example.com", "listenPort": 500,
+            "ikev2": {"rsa": True}},
+    }
+
+    def entries(self):
+        from panel_providers.wui_provider import login_profile
+        accs = [{"interfaceId": i, "username": f"u{i}", "password": f"pw{i}", "enabled": True} for i in self.IFACES]
+        return [e for a in accs if (e := login_profile(a, self.IFACES[a["interfaceId"]]))]
+
+    def test_only_login_protocols(self):
+        self.assertEqual([e["kind"] for e in self.entries()], ["l2tp", "ikev2", "openconnect", "ikev2"])
+
+    def test_openconnect_address_has_port_and_secret(self):
+        oc = [e for e in self.entries() if e["kind"] == "openconnect"][0]
+        self.assertEqual(oc["address"], "h.example.com:8443/?sec")
+
+    def test_page_items_hide_secrets_and_skip_cert_only(self):
+        items = ds.vpn_items_for_page(self.entries())
+        self.assertEqual([v["k"] for v in items], ["l2tp", "ikev2", "openconnect"])
+        blob = json.dumps(items)
+        for secret in ("pw1", "PSK1", "u1"):
+            self.assertNotIn(secret, blob)
+
+    def test_secret_and_ca_lookup(self):
+        es = self.entries()
+        self.assertEqual(ds.vpn_secret(es, 1, "psk"), "PSK1")
+        self.assertEqual(ds.vpn_secret(es, 1, "pass"), "pw1")
+        self.assertIsNone(ds.vpn_secret(es, 9, "pass"))
+        self.assertIsNone(ds.vpn_secret(es, 1, "x"))
+        self.assertEqual(ds.vpn_ca_file(es, 2)["filename"], "ik-ca.crt")
+        self.assertIsNone(ds.vpn_ca_file(es, 1))
+
+    def test_wui_warning_only_when_dsub_off(self):
+        db = make_db()
+        self.assertTrue(ds.wui_dsub_warning(db, "wui"))
+        self.assertEqual(ds.wui_dsub_warning(db, "marzban"), "")
+        db.set_setting("dsub_enabled", "1")
+        db.set_setting("dsub_base_url", "https://sub.example.com")
+        self.assertEqual(ds.wui_dsub_warning(db, "wui"), "")
+
+
 if __name__ == "__main__":
     unittest.main()

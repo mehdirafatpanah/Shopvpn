@@ -1148,8 +1148,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             ))
             return
         stock = (await asyncio.to_thread(db.count_available_configs, product_id))
+        if product["is_auto_provision"]:
+            stock = max(stock, 999)  # تعداد خریدِ محصولات خودکار به موجودی بانک کانفیگ وابسته نیست
         wallet_credit = (await asyncio.to_thread(db.get_wallet_credit, message.from_user.id))
-        if stock <= 0:
+        if not product["is_auto_provision"] and stock <= 0:
             text = _product_confirm_text(product, 1, stock, wallet_credit)
             text += "\n" + db.get_text(
                 "handlers_user.product.out_of_stock_suffix", "⛔️ در حال حاضر موجودی این محصول تمام شده است."
@@ -1462,8 +1464,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await _register_product_waitlist(call.from_user.id, product_id, call=call)
             return
         stock = (await asyncio.to_thread(db.count_available_configs, product_id))
+        if product["is_auto_provision"]:
+            stock = max(stock, 999)
         wallet_credit = (await asyncio.to_thread(db.get_wallet_credit, call.from_user.id))
-        if stock <= 0:
+        if not product["is_auto_provision"] and stock <= 0:
             text = _product_confirm_text(product, 1, stock, wallet_credit)
             text += "\n⛔️ در حال حاضر موجودی این محصول تمام شده است."
             await _safe_edit(call.message, text)
@@ -1530,7 +1534,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await call.answer(db.get_text('handlers_user.auto_f4122f85', 'این گزینه در دسترس نیست.'), show_alert=True)
             return
         stock = (await asyncio.to_thread(db.count_available_configs, product_id))
-        if stock <= 0:
+        if product["is_auto_provision"]:
+            stock = max(stock, 999)
+        elif stock <= 0:
             await call.answer(db.get_text("handlers_user.product.currently_unavailable", "این محصول در حال حاضر موجود نیست."), show_alert=True)
             return
         await state.update_data(buy_users_pid=product_id, buy_users=users)
@@ -1546,7 +1552,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await call.answer(db.get_text("handlers_user.product.not_found_short", "محصول یافت نشد."), show_alert=True)
             return
         stock = (await asyncio.to_thread(db.count_available_configs, product_id))
-        if stock <= 0:
+        if product["is_auto_provision"]:
+            stock = max(stock, 999)
+        elif stock <= 0:
             await call.answer(db.get_text("handlers_user.product.currently_unavailable", "این محصول در حال حاضر موجود نیست."), show_alert=True)
             return
         quantity = max(1, min(quantity + delta * step, stock))
@@ -2101,13 +2109,18 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
     async def _buy_start(call, state: FSMContext, bot: Bot, product_id: int, quantity: int, config_name: str = None):
         product = (await asyncio.to_thread(db.get_product, product_id))
+        if not product:
+            await call.answer(db.get_text("handlers_user.product.currently_unavailable", "این محصول در حال حاضر موجود نیست."), show_alert=True)
+            return
         stock = (await asyncio.to_thread(db.count_available_configs, product_id))
-        if not product or stock <= 0:
+        if product["is_auto_provision"]:
+            stock = max(stock, quantity, 999)
+        elif stock <= 0:
             await call.answer(db.get_text("handlers_user.product.currently_unavailable", "این محصول در حال حاضر موجود نیست."), show_alert=True)
             return
         if quantity < 1:
             quantity = 1
-        if quantity > stock:
+        if not product["is_auto_provision"] and quantity > stock:
             await call.answer(tr(f"موجودی کافی نیست. فقط {stock} عدد موجود است."), show_alert=True)
             return
 

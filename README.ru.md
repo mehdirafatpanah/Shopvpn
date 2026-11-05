@@ -513,6 +513,7 @@ uvicorn admin_panel.server:app --host 127.0.0.1 --port 8002
 | WGDashboard | ✅ Полная | На основе конфигурации |
 | MikroTik / User Manager | ⚠️ Ограниченная | На основе профилей |
 | IBSng | ⚠️ Ограниченная | Интеграция через админ-панель |
+| W-UI | ✅ Полная | На основе interface (WireGuard/AmneziaWG/OpenVPN), API-токен |
 | Другие панели | ➕ Расширяемо | Добавьте своего провайдера |
 
 </details>
