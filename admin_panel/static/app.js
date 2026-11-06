@@ -6260,6 +6260,75 @@ async function renderResellersBotsTab() {
   bindResellersSubtabs(content());
   $$('[data-manage]', content()).forEach(btn =>
     btn.addEventListener('click', () => openResellerBotManageModal(bots.find(b => b.id === Number(btn.dataset.manage)))));
+  mountResellerRevenueReport(bots);
+}
+
+const RESELLER_REVENUE_BUCKETS = [[1, 'روزانه'], [7, 'هفتگی'], [15, 'هر ۱۵ روز'], [30, 'ماهانه']];
+const resellerRevenueState = { bucket: 1, count: 14, botId: '' };
+
+function mountResellerRevenueReport(bots) {
+  const host = document.createElement('div');
+  host.className = 'card';
+  host.id = 'rrev-card';
+  content().appendChild(host);
+  const load = async () => {
+    host.innerHTML = '<div class="empty-state">در حال بارگذاری...</div>';
+    try {
+      const q = `bucket=${resellerRevenueState.bucket}&count=${resellerRevenueState.count}` +
+        (resellerRevenueState.botId ? `&bot_id=${resellerRevenueState.botId}` : '');
+      drawResellerRevenue(host, await apiGet(`/reseller-bots/revenue?${q}`), bots, load);
+    } catch (e) { host.innerHTML = ''; handleErr(e); }
+  };
+  load();
+}
+
+function drawResellerRevenue(host, data, bots, reload) {
+  const st = resellerRevenueState;
+  const single = data.bots.length === 1 ? data.bots[0] : null;
+  const rows = data.periods.map((p, i) => ({
+    p, revenue: single ? single.series[i].revenue : data.totals[i].revenue,
+    orders: single ? single.series[i].orders : data.totals[i].orders, i,
+  }));
+  const maxRev = Math.max(1, ...rows.map(r => r.revenue));
+  const sumRev = rows.reduce((a, r) => a + r.revenue, 0);
+  const sumOrders = rows.reduce((a, r) => a + r.orders, 0);
+  const label = p => st.bucket === 1 ? fmtDateOnly(p.start) : `${fmtDateOnly(p.start)} تا ${fmtDateOnly(p.end)}`;
+  const showBots = !st.botId && data.bots.length > 1;
+  host.innerHTML = `
+    <div class="card-head"><h3>درآمد نماینده‌های کامل به تفکیک بازه</h3>
+      <span class="card-sub">فروش سفارش‌های تاییدشده + شارژ کیف پول تاییدشده، به تومان</span></div>
+    <div class="form-row" style="gap:8px;flex-wrap:wrap;margin-bottom:12px">
+      <div class="tabs">${RESELLER_REVENUE_BUCKETS.map(([v, l]) =>
+        `<button class="tab-btn ${v === st.bucket ? 'active' : ''}" data-rrev-bucket="${v}">${l}</button>`).join('')}</div>
+      <select class="input" id="rrev-bot" style="max-width:220px">
+        <option value="">همه‌ی نماینده‌ها</option>
+        ${bots.map(b => `<option value="${b.id}" ${String(b.id) === String(st.botId) ? 'selected' : ''}>${esc(b.owner_name || ('#' + b.id))}${b.bot_username ? ' (@' + esc(b.bot_username) + ')' : ''}</option>`).join('')}
+      </select>
+      <select class="input" id="rrev-count" style="max-width:140px">
+        ${[7, 14, 30, 60].map(n => `<option value="${n}" ${n === st.count ? 'selected' : ''}>${fmt(n)} بازه اخیر</option>`).join('')}
+      </select>
+    </div>
+    <div class="grid grid-2" style="margin-bottom:12px">
+      <div class="card stat-card"><span class="value mono">${fmt(sumRev)} <span style="font-size:12px;font-weight:600">تومان</span></span><span class="label">جمع درآمد در بازه‌های نمایش‌داده‌شده</span></div>
+      <div class="card stat-card"><span class="value mono">${fmt(sumOrders)}</span><span class="label">تعداد تراکنش تاییدشده</span></div>
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>بازه</th>${showBots ? data.bots.map(b => `<th>${esc(b.owner_name || ('#' + b.id))}</th>`).join('') : ''}<th>درآمد${showBots ? ' کل' : ''}</th><th>تراکنش</th><th style="min-width:120px"></th></tr></thead>
+      <tbody>${rows.map(r => `<tr>
+        <td>${label(r.p)}</td>
+        ${showBots ? data.bots.map(b => `<td class="mono">${fmt(b.series[r.i].revenue)}</td>`).join('') : ''}
+        <td class="mono"><b>${fmt(r.revenue)}</b></td>
+        <td class="mono">${fmt(r.orders)}</td>
+        <td><div style="height:8px;border-radius:8px;background:rgba(127,127,127,.18);overflow:hidden"><div style="height:100%;border-radius:8px;background:var(--brand,#8B5CF6);width:${r.revenue ? Math.max(3, Math.round(r.revenue / maxRev * 100)) : 0}%"></div></div></td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+  $$('[data-rrev-bucket]', host).forEach(b => b.addEventListener('click', () => {
+    st.bucket = Number(b.dataset.rrevBucket);
+    st.count = st.bucket === 1 ? 14 : st.bucket === 7 ? 12 : st.bucket === 15 ? 12 : 6;
+    reload();
+  }));
+  $('#rrev-bot', host).addEventListener('change', e => { st.botId = e.target.value; reload(); });
+  $('#rrev-count', host).addEventListener('change', e => { st.count = Number(e.target.value); reload(); });
 }
 
 function openResellerBotManageModal(bot) {
