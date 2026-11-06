@@ -4894,6 +4894,63 @@ def api_reseller_bots(admin=Depends(require_permission("resellers"))):
     return bots
 
 
+@app.get("/api/reseller-bots/revenue")
+def api_reseller_bots_revenue(bucket: int = 1, count: int = 14, bot_id: Optional[int] = None,
+                              admin=Depends(require_permission("resellers"))):
+    """درآمد نماینده‌های کامل به تفکیک بازه‌های ۱/۷/۱۵/۳۰ روزه (جدیدترین بازه اول)."""
+    from datetime import date, timedelta
+    if bucket not in (1, 7, 15, 30):
+        raise HTTPException(status_code=400, detail=tr("بازه نامعتبر است."))
+    count = max(1, min(count, 60))
+    today = date.today()
+    periods = []
+    for i in range(count):
+        end = today - timedelta(days=i * bucket)
+        start = end - timedelta(days=bucket - 1)
+        periods.append((start, end))
+    range_start = periods[-1][0].isoformat()
+    range_end = periods[0][1].isoformat()
+
+    def aggregate(daily):
+        out = []
+        for start, end in periods:
+            revenue = orders = 0
+            for k in range(bucket):
+                d = daily.get((start + timedelta(days=k)).isoformat())
+                if d:
+                    revenue += d["revenue"]
+                    orders += d["orders"]
+            out.append({"revenue": revenue, "orders": orders})
+        return out
+
+    bots_out = []
+    for b in db.list_reseller_bots():
+        if bot_id is not None and b["id"] != bot_id:
+            continue
+        try:
+            daily = Database(resolve_db_path(b["db_path"])).get_bot_daily_revenue(range_start, range_end)
+        except Exception:
+            logger.exception("reseller revenue series failed for bot %s", b["id"])
+            daily = {}
+        series = aggregate(daily)
+        bots_out.append({
+            "id": b["id"], "owner_name": b["owner_name"], "bot_username": b["bot_username"],
+            "owner_telegram_id": b["owner_telegram_id"], "series": series,
+            "total_revenue": sum(x["revenue"] for x in series), "total_orders": sum(x["orders"] for x in series),
+        })
+    totals = [
+        {"revenue": sum(b["series"][i]["revenue"] for b in bots_out),
+         "orders": sum(b["series"][i]["orders"] for b in bots_out)}
+        for i in range(len(periods))
+    ]
+    return {
+        "bucket": bucket,
+        "periods": [{"start": s.isoformat(), "end": e.isoformat()} for s, e in periods],
+        "totals": totals,
+        "bots": bots_out,
+    }
+
+
 @app.post("/api/reseller-bots/{bot_id}/toggle")
 def api_toggle_reseller_bot(bot_id: int, admin=Depends(require_permission("resellers"))):
     reseller_bot = db.get_reseller_bot(bot_id)
