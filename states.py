@@ -802,6 +802,11 @@ class AdminDSubInput(StatesGroup):
     waiting_app = State()
 
 
+class AdminLinksInput(StatesGroup):
+    waiting_value = State()
+    waiting_service = State()
+
+
 class AdminAIChat(StatesGroup):
     chatting = State()
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍

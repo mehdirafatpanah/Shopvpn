@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 
 from panel_providers import get_provider, PanelError
+from panel_providers.base import PanelPermissionError
 
 
 def _json(value, fallback=None):
@@ -27,13 +28,30 @@ def _server_dict(server):
 async def list_product_targets(server):
     """Return normalized selectable destinations through the common provider API."""
     provider = get_provider(server)
-    info = await provider.list_product_targets()
+    permission_warning = ""
+    try:
+        info = await provider.list_product_targets()
+    except PanelPermissionError as exc:
+        # ادمین پنل اجازه‌ی خواندن فهرست زنده را ندارد (مثلاً ۴۰۳ groups.read در PasarGuard).
+        # اگر قالب ذخیره‌شده‌ی پنل گروه دارد، با همان ادامه می‌دهیم و هشدار برمی‌گردانیم؛
+        # وگرنه خطای واضح به ادمین نشان داده می‌شود.
+        info = None
+        permission_warning = str(exc)
     if info:
         info.setdefault("selected", [])
         return info
 
     # Legacy fallback: panels without a documented/live destination-list API keep
     # their existing template-based behavior. This is intentionally read-only.
+    result = _legacy_targets(server)
+    if permission_warning:
+        if not result.get("choices"):
+            raise PanelError(permission_warning)
+        result["warning"] = permission_warning + " (فهرست از قالب ذخیره‌شده‌ی پنل نمایش داده شد.)"
+    return result
+
+
+def _legacy_targets(server):
     panel_type = str(server["panel_type"] or "").lower()
     raw = _json(server["group_ids"] if "group_ids" in server.keys() else None, [])
     if isinstance(raw, dict):

@@ -711,6 +711,17 @@ class ClientReply:
         self.status, self.headers, self.body, self.state = status, headers, body, state
 
 
+_HTML_HEAD_RE = re.compile(rb"^\s*(<!doctype\s+html|<html|<head|<body|<\?xml)", re.I)
+
+
+def looks_like_html(headers: Dict[str, str], body: bytes) -> bool:
+    """پاسخ HTML/صفحه‌ی خطا (کلودفلر، صفحه‌ی وب پنل، ...) به‌جای کانفیگ؛ اپ‌ها این را «Unknown content type» می‌گیرند."""
+    ctype = ((headers or {}).get("content-type") or "").lower()
+    if "text/html" in ctype or "application/xhtml" in ctype:
+        return True
+    return bool(_HTML_HEAD_RE.match((body or b"")[:512]))
+
+
 _PASS_HEADERS = ("subscription-userinfo", "content-disposition", "routing", "profile-web-page-url",
                  "support-url", "announce", "profile-title", "profile-update-interval")
 
@@ -722,6 +733,8 @@ def compose_client_reply(up_status: Optional[int], up_headers: Dict[str, str], u
     now = now or int(time.time())
     up_headers = {k.lower(): v for k, v in (up_headers or {}).items()}
     ok = up_status == 200 and bool(up_body)
+    if ok and looks_like_html(up_headers, up_body):
+        ok = False  # پنل مبدأ HTML داده، نه کانفیگ → مثل «پنل جواب نداد» رفتار می‌کنیم
     info = parse_userinfo(up_headers.get("subscription-userinfo")) if ok else {}
     state = compute_state(cc, info, now)
     body = parse_body(up_body) if ok else None
@@ -780,6 +793,8 @@ def compose_client_reply(up_status: Optional[int], up_headers: Dict[str, str], u
         return finish(encode_uris(out_text, body.was_b64), "text/plain; charset=utf-8")
 
     ctype = up_headers.get("content-type") or "text/plain; charset=utf-8"
+    if "html" in ctype.lower():
+        ctype = "text/plain; charset=utf-8"
     return finish(up_body, ctype)
 
 
@@ -824,9 +839,13 @@ def merge_smart(parts: List[tuple]) -> tuple:
 _CLIENT_UA = re.compile(
     r"v2ray|xray|clash|mihomo|stash|sing-?box|hiddify|streisand|happ|v2box|shadowrocket|karing|neko|flclash|foxray|"
     r"npv|quantumult|surge|loon|hysteria|tuic|cfnetwork|okhttp|dart|curl|wget|python|go-http|axios|libcurl|"
-    r"exclave|husi|matsuri|kitsunebi|sagernet|v2rayu|v2rayx|verge|pharos|potatso|rocket|fair|anx|oneclick",
+    r"exclave|husi|matsuri|kitsunebi|sagernet|v2rayu|v2rayx|verge|pharos|potatso|rocket|fair|anx|oneclick|"
+    r"v2raytun|incy|nekobox|nekoray|v2rayn|v2raya|koala|liberty|napsternet|mahsa|prizrak|sfa/|sfi/|sfm/|"
+    r"clientapp|vpn|proxy|subscription|sub-?client",
     re.I,
 )
+# مرورگر واقعی: Mozilla + موتور رندر (WebView/اپ‌های مبتنی بر HTTP کتابخانه‌ای معمولاً اینها را ندارند)
+_BROWSER_UA = re.compile(r"Mozilla/\d.*(AppleWebKit|Gecko/|Trident/)", re.I)
 
 
 def wants_page(user_agent: str, accept: str, query: dict) -> bool:
@@ -837,7 +856,10 @@ def wants_page(user_agent: str, accept: str, query: dict) -> bool:
     ua = user_agent or ""
     if _CLIENT_UA.search(ua):
         return False
-    return "text/html" in (accept or "") and bool(re.search(r"Mozilla/\d", ua))
+    # مرورگر همیشه Accept را با text/html شروع می‌کند؛ اپ‌ها */* یا application/* می‌فرستند
+    if not (accept or "").strip().lower().startswith("text/html"):
+        return False
+    return bool(_BROWSER_UA.search(ua))
 
 
 # ---------------------------------------------------------------------------

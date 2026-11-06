@@ -229,6 +229,23 @@ class CoreTests(unittest.TestCase):
                        "clash-verge/v1.7", "sing-box 1.8", "Happ/1.2", "okhttp/4.12"):
             self.assertFalse(ds.wants_page(client, "text/html", {}), client)
         self.assertFalse(ds.wants_page(chrome, "*/*", {}))
+        # Accept شبیه مرورگر ولی UA بدون موتور رندر → اپ است، نه مرورگر
+        self.assertFalse(ds.wants_page("Mozilla/5.0 (Linux; Android 13)", "text/html", {}))
+        self.assertFalse(ds.wants_page("v2rayTun/3.0", "text/html,*/*", {}))
+        self.assertTrue(ds.wants_page(chrome, "text/html,application/xhtml+xml,*/*;q=0.8", {}))
+
+    def test_reply_html_upstream_is_not_passed_to_app(self):
+        cc = {"username": "a", "enabled": 1, "status": "active"}
+        for hdr, body in (({"content-type": "text/html; charset=utf-8"}, b"<html>x</html>"),
+                          ({}, b"<!DOCTYPE html><html><body>Just a moment...</body></html>"),
+                          ({"content-type": "application/octet-stream"}, b"  <html><head></head>")):
+            # بدون جایگزین → None (فراخوان 502 می‌دهد)، نه HTML به اپ
+            self.assertIsNone(ds.compose_client_reply(200, hdr, body, cc, self._settings(), "Shop", ""))
+            # با کانفیگ SSH اضافه → فقط لینک‌ها، text/plain
+            r = ds.compose_client_reply(200, hdr, body, cc, self._settings(), "Shop", "", extra_uris=[VLESS])
+            self.assertIsNotNone(r)
+            self.assertTrue(r.headers["content-type"].startswith("text/plain"))
+            self.assertNotIn(b"html", r.body.lower())
 
     def test_series(self):
         now = 1_700_000_000

@@ -358,6 +358,23 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if inline_kb is not None:
             await target.answer(db.get_text('handlers_user.auto_f368dac9', '📋 منو:'), reply_markup=inline_kb)
 
+    async def _show_main_menu_after_exit(target, user_tg_id: int, text: str = ""):
+        """بعد از لغو/بازگشت، منوی اصلی را دوباره نشان می‌دهد تا کاربر مجبور به /start نشود.
+        اگر منوی پایین فعال باشد همان برگردانده می‌شود (حتی اگر قبلاً ReplyKeyboardRemove شده بود) و
+        منوی شیشه‌ای (در صورت فعال بودن) در پیام جدا می‌آید؛ اگر منوی پایین خاموش باشد، منوی شیشه‌ای
+        مستقیماً زیر همین پیام می‌آید. target هر شیء‌ای است که answer دارد (Message یا call.message)."""
+        reply_enabled = (await asyncio.to_thread(db.get_setting, "main_menu_reply_enabled", "1")) == "1"
+        text = text or db.get_text('handlers_user.auto_f368dac9', '📋 منو:')
+        if reply_enabled:
+            await target.answer(text, reply_markup=kb.menu_for_user(db, user_tg_id, is_main_bot))
+            await _send_inline_main_menu(target, user_tg_id)
+            return
+        inline_kb = await asyncio.to_thread(kb.inline_menu_for_user, db, user_tg_id, is_main_bot)
+        await target.answer(
+            text,
+            reply_markup=inline_kb if inline_kb is not None else kb.menu_for_user(db, user_tg_id, is_main_bot),
+        )
+
     async def _schedule_card_msg_autodelete(chat_id: int, message_id: int):
         """اگر ادمین از تنظیمات، حذف خودکار پیام‌های شماره کارت را فعال کرده باشد،
         حذف همین پیام (که الان شماره کارت را داخلش داره) را زمان‌بندی می‌کند."""
@@ -1302,6 +1319,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             except Exception:
                 pass
         await call.answer()
+        # اگر منوی پایین خاموش باشد، پاک‌شدن این پیام کاربر را بدون هیچ دکمه‌ای رها می‌کرد؛
+        # در این حالت منوی شیشه‌ای را دوباره نشان بده. (با منوی پایین فعال، همان منوی همیشه‌حاضر کافی است.)
+        if (await asyncio.to_thread(db.get_setting, "main_menu_reply_enabled", "1")) != "1":
+            await _show_main_menu_after_exit(call.message, call.from_user.id)
 
     @router.callback_query(F.data == "back_categories")
     async def cb_back_categories(call: CallbackQuery):
@@ -2449,6 +2470,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await state.clear()
         await _safe_edit(call.message, db.get_text('handlers_user.auto_570dedda', 'عملیات لغو شد.'))
         await call.answer()
+        await _show_main_menu_after_exit(call.message, call.from_user.id)
 
     @router.callback_query(F.data == "pay_crypto", BuyFlow.waiting_receipt)
     async def cb_pay_crypto_order(call: CallbackQuery, state: FSMContext):
@@ -2638,7 +2660,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             if order and order["status"] == "pending":
                 (await asyncio.to_thread(db.reject_order, order_id))
         await state.clear()
-        await message.answer(db.get_text('handlers_user.auto_570dedda', 'عملیات لغو شد.'), reply_markup=ReplyKeyboardRemove())
+        await _show_main_menu_after_exit(message, message.from_user.id, db.get_text('handlers_user.auto_570dedda', 'عملیات لغو شد.'))
 
     @router.message(BuyFlow.waiting_customgw_phone)
     async def receive_customgw_phone_invalid_order(message: Message):
@@ -5805,7 +5827,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             if order and order["status"] == "pending":
                 (await asyncio.to_thread(db.reject_order, order_id))
         await state.clear()
-        await message.answer(db.get_text('handlers_user.auto_570dedda', 'عملیات لغو شد.'), reply_markup=ReplyKeyboardRemove())
+        await _show_main_menu_after_exit(message, message.from_user.id, db.get_text('handlers_user.auto_570dedda', 'عملیات لغو شد.'))
 
     @router.message(RenewalFlow.waiting_customgw_phone)
     async def receive_customgw_phone_invalid_renewal(message: Message):
@@ -6538,7 +6560,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     @router.message(WalletTopup.waiting_customgw_phone, F.text == "❌ انصراف")
     async def cancel_customgw_phone_topup(message: Message, state: FSMContext):
         await state.clear()
-        await message.answer(db.get_text('handlers_user.auto_570dedda', 'عملیات لغو شد.'), reply_markup=ReplyKeyboardRemove())
+        await _show_main_menu_after_exit(message, message.from_user.id, db.get_text('handlers_user.auto_570dedda', 'عملیات لغو شد.'))
 
     @router.message(WalletTopup.waiting_customgw_phone)
     async def receive_customgw_phone_invalid_topup(message: Message):
@@ -7316,6 +7338,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         (await asyncio.to_thread(db.set_reseller_request_status, request_id, "cancelled"))
         await _safe_edit(call.message, (call.message.text or "") + "\n\n❌ انصراف داده شد.")
         await call.answer()
+        await _show_main_menu_after_exit(call.message, call.from_user.id)
 
     @router.message(AIChatFlow.chatting, F.photo | F.document)
     async def ai_chat_media_early(message: Message, state: FSMContext, bot: Bot):
@@ -8752,6 +8775,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     @router.callback_query(F.data.startswith("mm:"))
     async def cb_main_menu_inline(call: CallbackQuery, state: FSMContext, bot: Bot):
         await call.answer()
+        # مثل دکمه‌های منوی پایین: زدن منوی اصلی کاربر را از هر مرحله‌ی نیمه‌کاره بیرون می‌آورد
+        await state.clear()
         key = call.data.split(":", 1)[1]
         # پیام جعلی: همان پیام بات ولی از_user واقعیِ کلیک‌کننده، تا هندلرهای
         # زیر که message.from_user.id می‌خوانند درست کار کنند

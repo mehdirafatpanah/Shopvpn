@@ -22,6 +22,9 @@ _sub_cache: dict = {}
 _SUB_TTL = 600
 _SUB_URLS_PER_PRODUCT = 2
 _tcp_cache: dict = {}
+_SUB_TTL_FAIL = 60
+_last_good: dict = {}          # {product_id: (time, locations)} آخرین موقعیتِ موفق هر محصول
+_LAST_GOOD_MAX_AGE = 7 * 86400
 
 
 def _fresh(entry: Optional[dict], now: float) -> bool:
@@ -41,7 +44,14 @@ async def _resolve_hosts(hosts: set) -> None:
     unique_ips = sorted({ip for ip in ips if ip})
     geo = await geo_scan._geolocate(unique_ips) if unique_ips else {}
     for host, ip in host_ip.items():
-        _host_cache[host] = {"ip": ip or "", "geo": geo.get(ip) if ip else None, "at": now}
+        new_geo = geo.get(ip) if ip else None
+        prev = _host_cache.get(host) or {}
+        if new_geo is None and prev.get("geo"):
+            # DNS/GeoIP موقتاً شکست خورده (مثلاً محدودیت نرخ ip-api): موقعیتِ قبلی حفظ می‌شود
+            # تا نود از نقشه حذف نشود؛ فقط زمان بررسی تازه می‌شود تا کمی بعد دوباره تلاش شود.
+            _host_cache[host] = {"ip": prev.get("ip") or ip or "", "geo": prev["geo"], "at": now - _TTL_OK + _TTL_FAIL}
+        else:
+            _host_cache[host] = {"ip": ip or "", "geo": new_geo, "at": now}
 
 
 def _locate(entry: dict) -> Optional[dict]:
@@ -72,7 +82,7 @@ def _name_fallback(name: str) -> Optional[dict]:
 async def _fetch_sub_entries(url: str) -> list:
     now = time.time()
     cached = _sub_cache.get(url)
-    if cached and now - cached[0] < _SUB_TTL:
+    if cached and now - cached[0] < (_SUB_TTL if cached[1] else _SUB_TTL_FAIL):
         return cached[1]
     entries = []
     try:
@@ -82,6 +92,10 @@ async def _fetch_sub_entries(url: str) -> list:
         entries = geo_scan.parse_subscription_text(text)[:SAMPLE_PER_PRODUCT]
     except Exception:
         logger.warning("config_geo: subscription fetch failed", exc_info=True)
+    if not entries and cached and cached[1]:
+        # دریافت ساب شکست خورد: نتیجه‌ی قبلی را نگه دار (خالی کش نکن) و زود دوباره تلاش کن.
+        _sub_cache[url] = (now - _SUB_TTL + _SUB_TTL_FAIL, cached[1])
+        return cached[1]
     _sub_cache[url] = (now, entries)
     return entries
 
@@ -119,10 +133,18 @@ async def locate_products(db, products: list) -> dict:
             target = (loc["ip"], loc["port"])
             if loc["ip"] and loc["port"] and target not in node["targets"] and len(node["targets"]) < TARGETS_PER_LOCATION:
                 node["targets"].append(target)
-        if not locations and not entries_by_product[p["id"]]:
-            loc = _name_fallback(p["name"])
-            if loc:
-                locations[(round(loc["lat"], 1), round(loc["lon"], 1))] = {**{k: loc[k] for k in ("cc", "city", "lat", "lon")}, "targets": []}
+        if not locations:
+            # ۱) آخرین موقعیتِ موفقِ همین محصول (اگر بررسی فعلی موقتاً شکست خورده)
+            good = _last_good.get(p["id"])
+            if good and time.time() - good[0] < _LAST_GOOD_MAX_AGE:
+                locations = {k: {**v, "targets": list(v.get("targets") or [])} for k, v in good[1].items()}
+            else:
+                # ۲) تشخیص از نام محصول (قبلاً فقط وقتی اصلاً کانفیگی نبود؛ حالا وقتی مکان‌یابی ناموفق بود هم)
+                loc = _name_fallback(p["name"])
+                if loc:
+                    locations[(round(loc["lat"], 1), round(loc["lon"], 1))] = {**{k: loc[k] for k in ("cc", "city", "lat", "lon")}, "targets": []}
+        else:
+            _last_good[p["id"]] = (time.time(), {k: {**v, "targets": list(v.get("targets") or [])} for k, v in locations.items()})
         result[p["id"]] = locations
     return result
 

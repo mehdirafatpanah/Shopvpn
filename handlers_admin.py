@@ -58,6 +58,7 @@ import ai_media
 import admin_tools
 import admin_extra_settings
 import admin_dedicated_sub
+import admin_links
 import admin_panel_migration
 import admin_update
 import admin_campaign
@@ -15755,6 +15756,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     admin_extra_settings.register(router, db, senior_admin_only, deny_mid, replace_admin_view)
     admin_campaign.register(router, db, senior_admin_only, deny_mid)
     admin_dedicated_sub.register(router, db, senior_admin_only, deny_mid, replace_admin_view)
+    admin_links.register(router, db, senior_admin_only, deny_mid, replace_admin_view)
     if full_access_bot:
         admin_panel_migration.register(router, db, senior_admin_only, deny_mid, replace_admin_view)
     if is_main_bot:
