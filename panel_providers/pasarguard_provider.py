@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 
 from . import auth_cache
-from .base import BasePanelProvider, PanelUserResult, PanelError, PanelUsernameTakenError, subscription_token
+from .base import BasePanelProvider, PanelUserResult, PanelError, PanelPermissionError, PanelUsernameTakenError, subscription_token
 
 API_KEY_PREFIX = "pg_key_"
 
@@ -145,6 +145,12 @@ class PasarguardProvider(BasePanelProvider):
                     headers={**self._auth(token), "accept": "application/json"},
                     timeout=aiohttp.ClientTimeout(total=20),
                 ) as resp:
+                    if resp.status == 403:
+                        raise PanelPermissionError(
+                            "ادمینِ (یا API Key) متصل به پنل دسترسی «groups.read» ندارد (۴۰۳). "
+                            "در PasarGuard به بخش Admins بروید و برای این ادمین دسترسی مشاهده‌ی گروه‌ها را فعال کنید، "
+                            "یا با یک ادمین Sudo/کامل به پنل وصل شوید."
+                        )
                     if resp.status >= 400:
                         body = await resp.text()
                         raise PanelError(f"خطا در دریافت گروه‌های PasarGuard (کد {resp.status}): {body[:300]}")

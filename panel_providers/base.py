@@ -31,6 +31,11 @@ class PanelError(Exception):
     pass
 
 
+class PanelPermissionError(PanelError):
+    """ادمین/API Key پنل برای این عملیات دسترسی ندارد (۴۰۳)؛ مثلاً نبودنِ دسترسی groups.read در PasarGuard."""
+    pass
+
+
 class PanelUsernameTakenError(PanelError):
     """نام کاربری روی خود پنل هم از قبل وجود دارد."""
     pass
