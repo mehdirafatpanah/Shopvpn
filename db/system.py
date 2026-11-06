@@ -1189,6 +1189,29 @@ class SystemMixin:
         return {"revenue_toman": (row["revenue"] or 0) + topup, "paid_orders": row["cnt"] or 0}
 
 
+    def get_bot_daily_revenue(self, start_date: str, end_date: str):
+        """درآمد روزانه (سفارش‌های تاییدشده + شارژ کیف پول تاییدشده) در بازه‌ی میلادی YYYY-MM-DD."""
+        daily = {}
+        with self._get_conn() as conn:
+            for r in conn.execute(
+                "SELECT date(o.created_at) d, COUNT(*) cnt, "
+                "COALESCE(SUM(COALESCE(o.final_price, p.price)),0) rev "
+                "FROM orders o LEFT JOIN products p ON p.id=o.product_id "
+                "WHERE o.status='approved' AND date(o.created_at) BETWEEN ? AND ? GROUP BY d",
+                (start_date, end_date),
+            ).fetchall():
+                daily[r["d"]] = {"revenue": r["rev"] or 0, "orders": r["cnt"] or 0}
+            for r in conn.execute(
+                "SELECT date(created_at) d, COUNT(*) cnt, COALESCE(SUM(amount),0) rev "
+                "FROM wallet_topups WHERE status='approved' AND date(created_at) BETWEEN ? AND ? GROUP BY d",
+                (start_date, end_date),
+            ).fetchall():
+                cur = daily.setdefault(r["d"], {"revenue": 0, "orders": 0})
+                cur["revenue"] += r["rev"] or 0
+                cur["orders"] += r["cnt"] or 0
+        return daily
+
+
     def queue_db_purge(self, bot_token: str, db_path: str):
         with self._get_conn() as conn:
             conn.execute(
