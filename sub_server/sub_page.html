@@ -139,6 +139,22 @@ header,#notes{grid-column:1/-1}
 .badge{font-size:11px;border:1px solid var(--ink);border-radius:999px;padding:0 9px}
 .empty{color:var(--mute);font-size:14px;margin:0}
 @media(min-width:960px){.al{grid-template-columns:1fr 1fr}}
+
+/* شخصی‌سازی ظاهری صفحه اشتراک */
+:root{--accent:#6366F1;--accent2:#06B6D4}
+.cta{background:var(--accent)!important;border-color:var(--accent)!important}
+.panel{background:linear-gradient(135deg,var(--accent),var(--accent2))!important;color:#fff!important}
+.sm.k{background:var(--accent)!important;border-color:var(--accent)!important}
+:root[data-style="modern"] .panel{border-radius:20px}
+:root[data-style="glass"] .panel,:root[data-style="glass"] .go,:root[data-style="glass"] .grid div,:root[data-style="glass"] .vc{backdrop-filter:blur(16px);background:color-mix(in srgb,var(--accent) 12%,var(--bg))!important;border:1px solid color-mix(in srgb,var(--accent) 35%,var(--line));color:var(--ink)!important}
+:root[data-style="glass"] .panel{background:linear-gradient(135deg,color-mix(in srgb,var(--accent) 25%,transparent),color-mix(in srgb,var(--accent2) 18%,transparent))!important}
+:root[data-style="cyberpunk"] body{background:color-mix(in srgb,var(--accent) 5%,var(--bg))}
+:root[data-style="cyberpunk"] .panel{box-shadow:0 0 28px color-mix(in srgb,var(--accent) 35%,transparent);border:1px solid var(--accent2)}
+:root[data-style="classic"] .panel{border-radius:10px}
+:root[data-cards="sharp"] .go,:root[data-cards="sharp"] .grid div,:root[data-cards="sharp"] .vc,:root[data-cards="sharp"] .cfg li{border-radius:5px}
+:root[data-cards="soft"] .go,:root[data-cards="soft"] .grid div,:root[data-cards="soft"] .vc,:root[data-cards="soft"] .cfg li{border-radius:14px}
+:root[data-density="compact"] main{padding-top:8px}
+:root[data-density="compact"] .sec{margin-bottom:18px}
 </style>
 </head>
 <body>
@@ -231,6 +247,16 @@ const copy=async(txt,msg,btn)=>{
 
 /* تم: انتخاب کاربر > پیش‌فرض ادمین > سیستم */
 const root=document.documentElement;
+function applyVisualStyle(cfg){
+  cfg=cfg||{};
+  const safeColor=v=>/^#[0-9a-fA-F]{6}$/.test(String(v||''))?v:'#6366F1';
+  root.style.setProperty('--accent',safeColor(cfg.accent||D.accent));
+  root.style.setProperty('--accent2',safeColor(cfg.secondary||D.secondary));
+  root.dataset.style=cfg.style||D.style||'minimal';
+  root.dataset.cards=cfg.cardStyle||D.cardStyle||'rounded';
+  root.dataset.density=cfg.density||D.density||'comfortable';
+}
+applyVisualStyle(D);
 try{const s=localStorage.getItem('theme');if(s==='light'||s==='dark')root.dataset.theme=s;else if(D.theme==='light'||D.theme==='dark')root.dataset.theme=D.theme}catch(e){if(D.theme==='light'||D.theme==='dark')root.dataset.theme=D.theme}
 $('#theme').onclick=()=>{
   const dark=root.dataset.theme?root.dataset.theme==='dark':matchMedia('(prefers-color-scheme:dark)').matches;
@@ -443,6 +469,7 @@ if(previewMode){
     const logo=b.logo||'';
     if(logo){$('#logo').src=logo;$('#logo').hidden=false;$('#logo').onerror=()=>$('#logo').hidden=true}else $('#logo').hidden=true;
     if(b.theme==='light'||b.theme==='dark') root.dataset.theme=b.theme; else delete root.dataset.theme;
+    applyVisualStyle(b);
     const notes=$('#notes'); notes.innerHTML=b.notice?`<div class="note"><span>🔔</span><span>${esc(b.notice)}</span></div>`:'';
     const show=Object.assign({configs:true,chart:true,qr:true,apps:true,faq:true},b.show||{});
     $('#cfgsec').hidden=!show.configs;
@@ -459,7 +486,7 @@ if(previewMode){
     $('#foot').hidden=!(support||footer);
   };
   window.addEventListener('message',ev=>{if(!ev.data||ev.data.type!=='shopvpn-sub-page-preview')return;applyPreview(ev.data.payload||{})});
-  applyPreview({brand:D.brand,logo:D.logo,notice:D.notice,support:D.support,footer:D.footer,theme:D.theme,show:D.show});
+  applyPreview({brand:D.brand,logo:D.logo,notice:D.notice,support:D.support,footer:D.footer,theme:D.theme,show:D.show,style:D.style,accent:D.accent,secondary:D.secondary,cardStyle:D.cardStyle,density:D.density});
 }
 </script>
 </body>
