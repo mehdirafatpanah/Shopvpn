@@ -410,6 +410,7 @@ const NAV_GROUPS = [
     { key: 'reseller_tiers', label: 'سطوح نمایندگی', icon: 'layers', role: 'resellers' },
   ] },
   { id: 'botconfig', label: 'ربات و تنظیمات', items: [
+    { key: 'subscription-page', label: 'تنظیمات صفحه اشتراک', icon: 'link', role: 'settings' },
     { key: 'settings', label: 'تنظیمات و برندینگ', icon: 'settings', role: 'settings',
       subs: [['content', 'محتوا و متن‌ها'], ['payment', 'پرداخت و مالی'], ['services', 'سرویس‌های ویژه'], ['mobile_app', 'اپ موبایل'], ['extra', 'تنظیمات تکمیلی']] },
     { key: 'buttons', label: 'دکمه‌های ربات', icon: 'buttons', role: 'settings' },
@@ -1160,6 +1161,7 @@ async function renderPage(tab) {
       case 'ssh': return await renderSSHManagement();
       case 'system': return await renderSystem();
       case 'settings': return await renderSettings();
+      case 'subscription-page': return await renderSubscriptionPageSettings();
       case 'languages': return await renderLanguages();
       case 'buttons': return await renderButtons();
       case 'bottexts': return await renderBotTexts();
@@ -8014,22 +8016,7 @@ const SETTINGS_GROUPS = [
   { tab: 'content', title: '🗺 نقشه زنده شبکه — مکان سرورها (دستی)', fields: [
     { key: 'netmap_locations', label: 'مکان سرورها', type: 'netmap_simple' },
   ]},
-  { tab: 'content', title: '🔗 برندینگ و پیش‌نمایش صفحه لینک ساب', fields: [
-    { key: 'dsub_brand', label: 'نام برند صفحه لینک ساب', type: 'text' },
-    { key: 'dsub_logo_url', label: 'لوگوی صفحه لینک ساب', type: 'text' },
-    { key: 'dsub_notice', label: 'اعلان بالای صفحه', type: 'textarea' },
-    { key: 'dsub_support_url', label: 'لینک پشتیبانی صفحه ساب', type: 'text' },
-    { key: 'dsub_footer_text', label: 'متن پایین صفحه', type: 'text' },
-    { key: 'dsub_theme', label: 'تم صفحه ساب', type: 'select', options: [['auto','خودکار'],['light','روشن'],['dark','تیره']] },
-    { key: 'dsub_show_configs', label: 'نمایش کانفیگ‌ها', type: 'bool' },
-    { key: 'dsub_show_chart', label: 'نمایش نمودار مصرف', type: 'bool' },
-    { key: 'dsub_show_qr', label: 'نمایش QR', type: 'bool' },
-    { key: 'dsub_show_apps', label: 'نمایش برنامه‌ها', type: 'bool' },
-    { key: 'dsub_show_faq', label: 'نمایش بخش عیب‌یابی', type: 'bool' },
-    { key: 'dsub_custom_template_enabled', label: 'استفاده از قالب اختصاصی (HTML) برای صفحه ساب', type: 'bool' },
-    { key: '_dsub_template_tools', label: 'ابزار قالب اختصاصی', type: 'sub_template_tools' },
-    { key: 'dsub_custom_template', label: 'کد HTML قالب اختصاصی (باید شامل __DATA__ باشد؛ خالی = قالب پیش‌فرض)', type: 'code' },
-  ]},
+
 
   // ------------------------------------------------------------ پرداخت و مالی
   { tab: 'payment', title: 'کارت بانکی', fields: [
@@ -10450,6 +10437,90 @@ document.addEventListener('click', async e => {
 });
 
 
+
+async function renderSubscriptionPageSettings() {
+  const s = await apiGet('/settings');
+  const val = k => s[k] ?? '';
+  const field = (key, label, type='text', hint='') => `
+    <label class="field"><span>${label}</span>
+      <input class="input" data-key="${key}" data-type="${type}" type="${type === 'number' ? 'number' : 'text'}" value="${esc(val(key))}">
+      ${hint ? `<small class="card-sub">${hint}</small>` : ''}
+    </label>`;
+  const area = (key, label, rows=3) => `<label class="field"><span>${label}</span><textarea class="input" data-key="${key}" data-type="textarea" rows="${rows}">${esc(val(key))}</textarea></label>`;
+  const select = (key,label,options) => `<label class="field"><span>${label}</span><select class="input" data-key="${key}" data-type="select">${options.map(([v,l])=>`<option value="${v}" ${String(val(key))===v?'selected':''}>${l}</option>`).join('')}</select></label>`;
+  const toggle = (key,label) => `<label class="field field-row"><span>${label}</span><button type="button" class="switch" data-key="${key}" data-on="${val(key)==='1'?'1':'0'}"><i></i></button></label>`;
+  setContent(`
+    <div class="hero"><div><h2>تنظیمات صفحه اشتراک</h2><p class="card-sub">مدیریت کامل ظاهر، محتوا و رفتار لینک ساب اختصاصی</p></div></div>
+    <div class="card" style="margin-bottom:16px"><div class="card-head"><h3>🔌 وضعیت و آدرس سرویس</h3></div><div class="form-grid">
+      ${select('dsub_enabled','فعال بودن لینک ساب اختصاصی',[['0','غیرفعال'],['1','فعال']])}
+      ${select('dsub_web_page','نمایش صفحه وب در مرورگر',[['0','غیرفعال'],['1','فعال']])}
+      ${field('dsub_base_url','آدرس پایه سرور ساب','text','خالی = استفاده از مقدار تنظیم‌شده در فایل .env')}
+    </div></div>
+    <div class="card" style="margin-bottom:16px"><div class="card-head"><h3>🎨 ظاهر و قالب صفحه</h3></div>
+      <div class="form-grid">
+        ${select('dsub_style','سبک نمایش',[['minimal','مینیمال'],['modern','مدرن'],['glass','شیشه‌ای'],['cyberpunk','سایبرپانک'],['classic','کلاسیک']])}
+        ${select('dsub_theme','حالت رنگ',[['auto','خودکار'],['light','روشن'],['dark','تیره']])}
+        ${field('dsub_accent_color','رنگ اصلی (HEX)','text','مثلاً #6366F1')}
+        ${field('dsub_secondary_color','رنگ مکمل (HEX)','text','مثلاً #06B6D4')}
+        ${select('dsub_card_style','استایل کارت‌ها',[['rounded','گرد'],['soft','ملایم'],['sharp','گوشه‌دار']])}
+        ${select('dsub_density','تراکم محتوا',[['comfortable','راحت'],['compact','فشرده']])}
+      </div>
+      <div class="card-sub">پیش‌نمایش نمونه</div>
+      <iframe id="sub-page-preview-frame" src="/api/settings/sub-page-preview?preview=1" title="پیش‌نمایش صفحه اشتراک" style="width:100%;height:560px;border:1px solid var(--border);border-radius:14px;background:#fff"></iframe>
+      <button class="btn btn-ghost btn-sm" id="sub-page-preview-open" type="button">باز کردن پیش‌نمایش در تب جدید</button>
+    </div>
+    <div class="card" style="margin-bottom:16px"><div class="card-head"><h3>🏷️ برندینگ و اطلاعات</h3></div><div class="form-grid">
+      ${field('dsub_brand','نام برند صفحه')}${field('dsub_logo_url','آدرس لوگو (HTTPS)')}
+      ${area('dsub_notice','اعلان بالای صفحه')}${field('dsub_support_url','لینک پشتیبانی')}
+      ${field('dsub_footer_text','متن پایین صفحه')}
+    </div></div>
+    <div class="card" style="margin-bottom:16px"><div class="card-head"><h3>🧩 بخش‌های قابل نمایش</h3></div><div class="form-grid">
+      ${toggle('dsub_show_configs','نمایش کانفیگ‌ها')}${toggle('dsub_show_chart','نمایش نمودار مصرف')}
+      ${toggle('dsub_show_qr','نمایش QR')}${toggle('dsub_show_apps','نمایش برنامه‌ها')}
+      ${toggle('dsub_show_faq','نمایش راهنمای عیب‌یابی')}
+    </div></div>
+    <div class="card" style="margin-bottom:16px"><div class="card-head"><h3>⚙️ تنظیمات پیشرفته</h3></div><div class="form-grid">
+      ${field('dsub_profile_title','عنوان پروفایل داخل اپ')}
+      ${field('dsub_update_interval','فاصله بروزرسانی (ساعت)','number')}
+      ${select('dsub_info_line','خط اول ساب',[['0','خاموش'],['1','روشن']])}
+      ${field('dsub_info_line_text','متن خط اول ساب')}
+      ${toggle('dsub_expired_placeholder','نمایش کانفیگ نمایشی برای سرویس پایان‌یافته')}
+      ${area('dsub_expired_text','متن سرویس منقضی')}${area('dsub_limited_text','متن اتمام حجم')}
+      ${field('dsub_cache_ttl','مدت کش (ثانیه)','number')}
+      ${toggle('dsub_usage_sampling','ثبت نمونه مصرف')}${toggle('dsub_log_enabled','ثبت لاگ دسترسی')}
+    </div></div>
+    <div class="card" style="margin-bottom:16px"><div class="card-head"><h3>📱 برنامه‌ها، سوالات و قالب HTML</h3></div>
+      <div class="form-grid">
+        ${area('dsub_faq','سوالات متداول (هر خط: سوال | جواب)',5)}
+        ${area('dsub_custom_apps','برنامه‌های سفارشی (هر خط: platform|name|description|add_prefix|download_url)',5)}
+        ${field('dsub_apps_hidden','برنامه‌های مخفی (مثلاً ios:Streisand,android:Hiddify)')}
+        ${field('dsub_apps_rec','برنامه پیشنهادی هر سیستم‌عامل (مثلاً ios:Hiddify,android:v2rayNG)')}
+        ${toggle('dsub_custom_template_enabled','استفاده از قالب HTML اختصاصی')}
+        ${area('dsub_custom_template','کد HTML قالب اختصاصی',12)}
+      </div>
+      <div class="form-grid" style="margin-top:10px">
+        <button class="btn btn-ghost sub-tpl-guide-btn" type="button">راهنمای قالب</button>
+        <button class="btn btn-ghost sub-tpl-default-btn" type="button">پر کردن قالب پیش‌فرض</button>
+        <label class="btn btn-ghost" style="cursor:pointer">آپلود فایل HTML<input class="sub-tpl-upload-input" type="file" accept=".html,text/html" hidden></label>
+      </div>
+    </div>
+    <div class="settings-save-bar"><button class="btn btn-primary btn-block" id="subscription-page-save">ذخیره تنظیمات صفحه اشتراک</button></div>
+  `);
+  const root = content();
+  bindSettingsGroupEvents(root);
+  bindSubscriptionLivePreview(root);
+  $('#subscription-page-save',root).addEventListener('click',()=>collectAndSaveSettings(root,$('#subscription-page-save',root)));
+  $$('.sub-tpl-guide-btn',root).forEach(btn=>btn.addEventListener('click',()=>openModal('راهنمای قالب اختصاصی',_subTemplateGuideHtml(),null,{wide:true})));
+  $$('.sub-tpl-default-btn',root).forEach(btn=>btn.addEventListener('click',async()=>{
+    try { const r=await fetch('/api/settings/sub-page-template/default',{credentials:'same-origin'}); if(!r.ok) throw new Error('HTTP '+r.status); $('textarea[data-key="dsub_custom_template"]',root).value=await r.text(); toast('قالب پیش‌فرض بارگذاری شد؛ ذخیره را بزن.'); } catch(e){handleErr(e);}
+  }));
+  $$('.sub-tpl-upload-input',root).forEach(input=>input.addEventListener('change',async()=>{
+    const file=input.files&&input.files[0]; input.value=''; if(!file)return;
+    if(file.size>400000){toast('حجم فایل بیش از ۴۰۰ کیلوبایت است.');return;}
+    try{const t=await file.text();if(!t.includes('__DATA__')){toast('قالب باید شامل __DATA__ باشد.');return;} $('textarea[data-key="dsub_custom_template"]',root).value=t;toast('قالب بارگذاری شد؛ ذخیره را بزن.');}catch(e){handleErr(e);}
+  }));
+}
+
 async function renderSettings() {
   const [settings, rate, mainMenuDisplay, gateways, methods, c2cCards, c2cWebhook, c2cInvoices, mobileTokens] = await Promise.all([
     apiGet('/settings'),
@@ -10530,7 +10601,7 @@ function bindSubscriptionLivePreview(root) {
     notice: get('dsub_notice'),
     support: get('dsub_support_url') || '',
     footer: get('dsub_footer_text'),
-    theme: get('dsub_theme') || 'auto',
+    theme: get('dsub_theme') || 'auto', style: get('dsub_style') || 'minimal', accent: get('dsub_accent_color') || '#6366F1', secondary: get('dsub_secondary_color') || '#06B6D4', cardStyle: get('dsub_card_style') || 'rounded', density: get('dsub_density') || 'comfortable',
     show: {
       configs: get('dsub_show_configs') !== '0', chart: get('dsub_show_chart') !== '0',
       qr: get('dsub_show_qr') !== '0', apps: get('dsub_show_apps') !== '0', faq: get('dsub_show_faq') !== '0'
