@@ -41,6 +41,11 @@ DSUB_DEFAULTS: Dict[str, str] = {
     "dsub_support_url": "",             # لینک پشتیبانی (t.me/... یا https://...)
     "dsub_footer_text": "",             # متن پایین صفحه
     "dsub_theme": "auto",               # auto / light / dark
+    "dsub_style": "minimal",             # minimal / modern / glass / cyberpunk / classic
+    "dsub_accent_color": "#6366F1",
+    "dsub_secondary_color": "#06B6D4",
+    "dsub_card_style": "rounded",
+    "dsub_density": "comfortable",
     "dsub_show_configs": "1",           # بخش «کانفیگ‌ها» در صفحه
     "dsub_show_chart": "1",             # نمودار مصرف
     "dsub_show_qr": "1",                # دکمه‌های QR
@@ -998,6 +1003,11 @@ def build_page_data(cc, info: dict, uris: List[str], settings: Dict[str, str], b
         "notice": (settings.get("dsub_notice") or "").strip(),
         "support": support, "footer": (settings.get("dsub_footer_text") or "").strip(),
         "theme": theme if theme in THEMES else "auto",
+        "style": settings.get("dsub_style", "minimal") if settings.get("dsub_style") in ("minimal", "modern", "glass", "cyberpunk", "classic") else "minimal",
+        "accent": settings.get("dsub_accent_color", "#6366F1") if re.fullmatch(r"#[0-9a-fA-F]{6}", settings.get("dsub_accent_color", "")) else "#6366F1",
+        "secondary": settings.get("dsub_secondary_color", "#06B6D4") if re.fullmatch(r"#[0-9a-fA-F]{6}", settings.get("dsub_secondary_color", "")) else "#06B6D4",
+        "cardStyle": settings.get("dsub_card_style", "rounded") if settings.get("dsub_card_style") in ("rounded", "soft", "sharp") else "rounded",
+        "density": settings.get("dsub_density", "comfortable") if settings.get("dsub_density") in ("comfortable", "compact") else "comfortable",
         "sub": sub_link,
         "show": {
             "configs": settings.get("dsub_show_configs") == "1" and bool(configs),
