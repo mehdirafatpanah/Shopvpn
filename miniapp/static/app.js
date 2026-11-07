@@ -198,8 +198,10 @@ function showForceJoinGate(info, onSuccess = null) {
   overlay.innerHTML = `
     <div class="card" style="max-width:320px;text-align:center">
       <h3><span class="ic">📢</span>عضویت در کانال الزامی است</h3>
-      <p style="margin:10px 0">برای استفاده از این بخش، ابتدا باید در کانال زیر عضو شوید:</p>
-      <a class="btn" href="${info.join_link}" target="_blank" style="text-decoration:none;display:block;margin-bottom:8px">📢 عضویت در کانال</a>
+      <p style="margin:10px 0">برای استفاده از این بخش، ابتدا باید در ${(info.channels || []).length > 1 ? "کانال‌های" : "کانال"} زیر عضو شوید:</p>
+      ${(info.channels && info.channels.length ? info.channels : [{ channel: info.channel, join_link: info.join_link }])
+        .filter((c) => c.join_link)
+        .map((c, i, all) => `<a class="btn" href="${escHtml(c.join_link)}" target="_blank" style="text-decoration:none;display:block;margin-bottom:8px">📢 عضویت در کانال${all.length > 1 ? " " + escHtml(String(c.channel || i + 1)) : ""}</a>`).join("")}
       <button class="btn outline" id="force-join-recheck-btn">✅ بررسی مجدد عضویت</button>
       ${onSuccess ? "" : '<button class="btn outline small" id="force-join-close-btn" style="margin-top:8px">بستن</button>'}
     </div>
@@ -2362,8 +2364,27 @@ async function renderStore() {
             </div>`;
         }
       } catch (e) { /* اگه این بخش غیرفعال/خطا بود، بی‌صدا رد شو */ }
+      let buyGuideRow = "";
+      try {
+        const bgInfo = await api("/api/buy-guide/config");
+        if (bgInfo.enabled) {
+          window._buyGuideQuestions = bgInfo.questions;
+          buyGuideRow = `
+            <div class="list-row" id="buy-guide-entry-row">
+              <div class="list-row-main">
+                <div class="list-row-ic">🤖</div>
+                <div class="list-row-text">
+                  <span class="list-row-title">راهنمای خرید هوشمند</span>
+                  <span class="list-row-sub">با چند سوال کوتاه، محصول مناسبت را پیدا کن</span>
+                </div>
+              </div>
+              <span class="list-row-chev">‹</span>
+            </div>`;
+        }
+      } catch (e) { /* بی‌صدا رد شو */ }
       content.innerHTML = `
         <div class="eyebrow">یک دسته را انتخاب کنید</div>
+        ${buyGuideRow}
         ${customConfigRow}
         ${categories.map((c) => `
           <div class="list-row" data-cat="${c.id}">
@@ -2380,6 +2401,8 @@ async function renderStore() {
       `;
       const ccRow = document.getElementById("custom-config-entry-row");
       if (ccRow) ccRow.onclick = renderCustomConfigBuilder;
+      const bgRow = document.getElementById("buy-guide-entry-row");
+      if (bgRow) bgRow.onclick = () => renderBuyGuide(0, {});
       content.querySelectorAll(".list-row[data-cat]").forEach((el) => {
         el.onclick = () => { storeCategoryView = parseInt(el.dataset.cat, 10); renderStore(); };
       });
@@ -2416,6 +2439,104 @@ async function renderStore() {
   } catch (e) {
     content.innerHTML = errorState(e.message);
   }
+}
+
+// ---------------------------------------------------------------------------
+// راهنمای خرید هوشمند: سوال‌های ثابت + گفتگوی آزاد با AI
+// ---------------------------------------------------------------------------
+function renderBuyGuide(step, answers) {
+  const questions = window._buyGuideQuestions || [];
+  if (step >= questions.length) return renderBuyGuideChat(answers);
+  const q = questions[step];
+  content.innerHTML = `
+    <div class="list-row" id="bg-exit-row">
+      <div class="list-row-main">
+        <span class="list-row-ic">‹</span>
+        <div class="list-row-text"><span class="list-row-title">بازگشت به فروشگاه</span></div>
+      </div>
+    </div>
+    <div class="eyebrow">🤖 راهنمای خرید (${step + 1} از ${questions.length})</div>
+    <div class="card">
+      <h3>${escHtml(q.q)}</h3>
+      ${q.options.map((o, i) => `<button class="btn outline" style="display:block;width:100%;margin-bottom:8px" data-bg-opt="${i}">${escHtml(o.label)}</button>`).join("")}
+      <div style="display:flex;gap:8px;margin-top:6px">
+        ${step > 0 ? `<button class="btn outline small" id="bg-prev">⬅️ قبلی</button>` : ""}
+        <button class="btn outline small" id="bg-skip">⏭ رد کردن</button>
+      </div>
+    </div>`;
+  document.getElementById("bg-exit-row").onclick = () => { storeCategoryView = null; renderStore(); };
+  content.querySelectorAll("[data-bg-opt]").forEach((el) => {
+    el.onclick = () => {
+      const next = Object.assign({}, answers);
+      next[q.key] = q.options[parseInt(el.dataset.bgOpt, 10)].value;
+      renderBuyGuide(step + 1, next);
+    };
+  });
+  document.getElementById("bg-skip").onclick = () => renderBuyGuide(step + 1, answers);
+  const prev = document.getElementById("bg-prev");
+  if (prev) prev.onclick = () => renderBuyGuide(step - 1, answers);
+}
+
+function renderBuyGuideChat(answers) {
+  content.innerHTML = `
+    <div class="list-row" id="bg-exit-row">
+      <div class="list-row-main">
+        <span class="list-row-ic">‹</span>
+        <div class="list-row-text"><span class="list-row-title">بازگشت به فروشگاه</span></div>
+      </div>
+    </div>
+    <div class="chat-wrap">
+      <div class="chat-messages" id="bg-chat-messages">${skeleton(2)}</div>
+      <form class="chat-input-row" id="bg-chat-form">
+        <input type="text" id="bg-chat-input" placeholder="سوال بیشتری داری؟ همینجا بپرس..." autocomplete="off" />
+        <button type="submit" class="chat-send-btn" aria-label="ارسال">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M4 12 20 4l-6 16-3-7-7-1Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        </button>
+      </form>
+    </div>`;
+  document.getElementById("bg-exit-row").onclick = () => { storeCategoryView = null; renderStore(); };
+  const box = document.getElementById("bg-chat-messages");
+  const input = document.getElementById("bg-chat-input");
+  const addBubble = (sender, text, productId) => {
+    if (box.querySelector(".skeleton-block, .state-msg")) box.innerHTML = "";
+    const bubble = document.createElement("div");
+    bubble.className = `chat-bubble ${sender === "user" ? "mine" : "admin"}`;
+    bubble.innerHTML = `<div class="chat-text"></div>`;
+    bubble.querySelector(".chat-text").textContent = text;
+    const p = productId ? (window._storeProducts || {})[productId] : null;
+    if (p) {
+      const btn = document.createElement("button");
+      btn.className = "btn small";
+      btn.style.marginTop = "8px";
+      btn.textContent = `🛒 خرید ${p.name}`;
+      btn.onclick = () => openProductPurchase(productId);
+      bubble.appendChild(btn);
+    }
+    box.appendChild(bubble);
+    box.scrollTop = box.scrollHeight;
+  };
+  const send = async (payload, userText) => {
+    if (userText) addBubble("user", userText);
+    input.disabled = true;
+    try {
+      const res = await api("/api/buy-guide/chat", { method: "POST", body: JSON.stringify(Object.assign({ answers }, payload)) });
+      addBubble("ai", res.message, res.product_id);
+      if (res.escalated) notify("گفتگو برای پشتیبانی انسانی هم ارسال شد. 🙏");
+    } catch (e) {
+      addBubble("ai", "خطا: " + e.message);
+    } finally {
+      input.disabled = false;
+      input.focus();
+    }
+  };
+  document.getElementById("bg-chat-form").onsubmit = (e) => {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = "";
+    send({ message: text }, text);
+  };
+  send({ start: true }, "");
 }
 
 function enterStoreTab() {
@@ -5582,6 +5703,7 @@ async function renderAdminProducts(body) {
       ${productDiscountHtml("new-prod", null)}
       <input class="input" id="new-prod-duration" type="number" placeholder="مدت اعتبار (روز)" value="30" style="margin-bottom:8px" />
       <input class="input" id="new-prod-desc" type="text" placeholder="توضیحات (اختیاری)" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:8px" />
+      <textarea class="input" id="new-prod-ai-desc" rows="2" placeholder="🤖 توضیح برای هوش مصنوعی (راهنمای خرید؛ به کاربر نمایش داده نمی‌شود)" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:8px"></textarea>
       ${productProvisionFieldsHtml(panelServers, bankAllowed)}
       <div id="new-prod-user-limit" style="display:none;margin-bottom:10px">
         <label class="field-label">👥 محدودیت کاربر همزمان</label>
@@ -5679,6 +5801,7 @@ async function renderAdminProducts(body) {
     const name = document.getElementById("new-prod-name").value.trim();
     const price = Number(document.getElementById("new-prod-price").value);
     const desc = document.getElementById("new-prod-desc").value.trim();
+    const aiDesc = (document.getElementById("new-prod-ai-desc")?.value || "").trim();
     if (!name || !price) { errBox.textContent = "نام و قیمت الزامی است."; return; }
     const sourceEl = body.querySelector('input[name="new-prod-source"]:checked');
     const isDirect = sourceEl && sourceEl.value === "direct";
@@ -5686,7 +5809,7 @@ async function renderAdminProducts(body) {
     const duration = durationUnlimited ? 0 : (Number(document.getElementById("new-prod-duration").value) || 30);
     const disc = readProductDiscount("new-prod", price, errBox);
     if (!disc) return;
-    const payload = { category_id: categoryId, name, price: disc.price, duration_days: duration, description: desc, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
+    const payload = { category_id: categoryId, name, price: disc.price, duration_days: duration, description: desc, ai_description: aiDesc, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
       base_users: Number(document.getElementById("new-prod-base-users")?.value || 0),
       extra_user_price: Number(document.getElementById("new-prod-extra-user-price")?.value || 0),
       max_users: Number(document.getElementById("new-prod-max-users")?.value || 0) };
@@ -5765,6 +5888,7 @@ async function renderAdminEditProduct(body) {
       </label>` : ""}
       <label class="field-label">توضیحات (اختیاری)</label>
       <input class="input" id="edit-prod-desc" type="text" value="${(p.description || "").replace(/"/g, "&quot;")}" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:10px" />
+      <textarea class="input" id="edit-prod-ai-desc" rows="2" placeholder="🤖 توضیح برای هوش مصنوعی (راهنمای خرید؛ به کاربر نمایش داده نمی‌شود)" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:10px">${escHtml(p.ai_description || "")}</textarea>
       ${isDirectEditable ? `
       <label class="field-label">منبع تأمین محصول</label>
       <div style="display:flex;gap:14px;margin-bottom:8px;flex-wrap:wrap">
@@ -5848,6 +5972,7 @@ async function renderAdminEditProduct(body) {
     const name = document.getElementById("edit-prod-name").value.trim();
     const price = Number(document.getElementById("edit-prod-price").value);
     const description = document.getElementById("edit-prod-desc").value.trim();
+    const aiDescription = (document.getElementById("edit-prod-ai-desc")?.value || "").trim();
     const editSourceEl = body.querySelector('input[name="edit-prod-source"]:checked');
     const editIsDirect = editSourceEl ? editSourceEl.value === "direct" : !!p.provision_server_id;
     const durationUnlimited = editIsDirect && editDurUnlimitedCb && editDurUnlimitedCb.checked;
@@ -5855,7 +5980,7 @@ async function renderAdminEditProduct(body) {
     if (!name || !price || (!durationUnlimited && !duration)) { errBox.textContent = "نام، قیمت و مدت اعتبار الزامی هستند."; return; }
     const disc = readProductDiscount("edit-prod", price, errBox);
     if (!disc) return;
-    const payload = { name, price: disc.price, duration_days: duration, description, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
+    const payload = { name, price: disc.price, duration_days: duration, description, ai_description: aiDescription, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
       base_users: Number(document.getElementById("edit-prod-base-users")?.value || 0),
       extra_user_price: Number(document.getElementById("edit-prod-extra-user-price")?.value || 0),
       max_users: Number(document.getElementById("edit-prod-max-users")?.value || 0) };
