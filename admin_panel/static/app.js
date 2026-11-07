@@ -3682,6 +3682,107 @@ async function openCustomConfigPaymentMethodsModal() {
 
 let catalogDsubEnabled = false;
 
+// دسته‌بندی تو در تو: ویرایش نام/والد، افزودن زیردسته و جابه‌جایی (بالا/پایین) بین هم‌ردیف‌ها
+function catIndentHtml(c) {
+  const d = Number(c.depth || 0);
+  return d ? `<span style="display:inline-block;width:${d * 18}px"></span>↳ ` : '';
+}
+function catDescendantIds(categories, id) {
+  const out = new Set();
+  const walk = pid => categories.forEach(x => { if (Number(x.parent_id) === pid && !out.has(x.id)) { out.add(x.id); walk(x.id); } });
+  walk(Number(id));
+  return out;
+}
+function catParentOptionsHtml(categories, selectedId, excludeId) {
+  const banned = excludeId ? catDescendantIds(categories, excludeId) : new Set();
+  if (excludeId) banned.add(Number(excludeId));
+  return `<option value="">📂 دسته‌ی اصلی (بدون والد)</option>` + categories.filter(x => !banned.has(x.id))
+    .map(x => `<option value="${x.id}" ${Number(selectedId) === x.id ? 'selected' : ''}>${esc(x.path || x.name)}</option>`).join('');
+}
+function openCategoryCreateModal(categories, presetParent = null) {
+  openModal(presetParent ? 'زیردسته‌ی جدید' : 'دسته‌بندی جدید', `
+    <div class="form-grid"><input class="input" id="cat-new-name" placeholder="نام دسته‌بندی">
+    <select class="input" id="cat-new-parent">${catParentOptionsHtml(categories, presetParent, null)}</select>
+    <button class="btn btn-primary" id="cat-new-save">ثبت</button></div>`, (b, close) => {
+    $('#cat-new-save', b).addEventListener('click', async () => {
+      const name = $('#cat-new-name', b).value.trim();
+      if (!name) return toast('نام دسته‌بندی را وارد کنید.', true);
+      const parent = Number($('#cat-new-parent', b).value) || null;
+      try { await apiPost('/categories', { name, parent_id: parent }); toast('اضافه شد.'); close(); renderCatalog(); } catch (e) { handleErr(e); }
+    });
+  });
+}
+function catOrderButtonsHtml(c, categories, cls = 'btn btn-sm') {
+  const sibs = categories.filter(x => (x.parent_id || null) === (c.parent_id || null));
+  const i = sibs.findIndex(x => x.id === c.id);
+  return `<button class="${cls}" data-cat-up="${c.id}" ${i <= 0 ? 'disabled' : ''} title="بالا">▲</button>
+    <button class="${cls}" data-cat-down="${c.id}" ${i === sibs.length - 1 ? 'disabled' : ''} title="پایین">▼</button>
+    <button class="${cls}" data-add-subcat="${c.id}" title="افزودن زیردسته">＋ زیردسته</button>
+    <button class="${cls}" data-edit-cat="${c.id}">✏️ ویرایش</button>`;
+}
+function wireCategoryActions(body, categories, basePath = '/categories') {
+  const reload = () => renderCatalog();
+  $$('[data-cat-up],[data-cat-down]', body).forEach(btn => btn.addEventListener('click', async () => {
+    const id = btn.dataset.catUp || btn.dataset.catDown;
+    const direction = btn.dataset.catUp ? 'up' : 'down';
+    try { await apiPost(`${basePath}/${id}/move`, { direction }); reload(); } catch (e) { handleErr(e); }
+  }));
+  $$('[data-add-subcat]', body).forEach(btn => btn.addEventListener('click', () => openCategoryCreateModal(categories, Number(btn.dataset.addSubcat))));
+  $$('[data-edit-cat]', body).forEach(btn => btn.addEventListener('click', () => {
+    const cat = categories.find(x => x.id === Number(btn.dataset.editCat));
+    if (!cat) return;
+    openModal('ویرایش دسته‌بندی', `
+      <div class="form-grid"><input class="input" id="cat-edit-name" placeholder="نام دسته‌بندی" value="${esc(cat.name)}">
+      <label class="field"><span>📂 دسته‌ی والد</span><select class="input" id="cat-edit-parent">${catParentOptionsHtml(categories, cat.parent_id, cat.id)}</select></label>
+      <button class="btn btn-primary" id="cat-edit-save">ذخیره</button></div>`, (b, close) => {
+      $('#cat-edit-save', b).addEventListener('click', async () => {
+        const name = $('#cat-edit-name', b).value.trim();
+        if (!name) return toast('نام دسته‌بندی را وارد کنید.', true);
+        const parent = Number($('#cat-edit-parent', b).value) || null;
+        try { await apiPut(`${basePath}/${cat.id}`, { name, parent_id: parent }); toast('ویرایش شد.'); close(); reload(); } catch (e) { handleErr(e); }
+      });
+    });
+  }));
+}
+
+// رنگ دکمه‌ی محصول در بات تلگرام (اختیاری؛ خالی = رنگ پیش‌فرض/سراسری)
+function productBtnStyleHtml(idPrefix, current) {
+  const opts = [['', '⚪️ پیش‌فرض'], ['primary', '🔵 آبی'], ['success', '🟢 سبز'], ['danger', '🔴 قرمز']];
+  return `<label class="field"><span>🎨 رنگ دکمه‌ی محصول در بات</span>
+    <select class="input" id="${idPrefix}-btn-style">${opts.map(([v, l]) => `<option value="${v}" ${String(current || '') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`;
+}
+function readProductBtnStyle(b, idPrefix) {
+  const el = $(`#${idPrefix}-btn-style`, b);
+  return el ? el.value : '';
+}
+
+// جستجوی زنده داخل لیست گروه/Inbound (تعداد زیاد مقصد در پنل‌های بزرگ)
+function targetSearchBoxHtml() {
+  return '<input type="search" class="input" data-target-search placeholder="🔍 جستجوی گروه / Inbound..." autocomplete="off" style="margin-bottom:7px">';
+}
+function bindTargetSearch(root) {
+  if (!root) return;
+  $$('[data-target-search]', root).forEach(inp => {
+    if (inp.dataset.bound === '1') return;
+    inp.dataset.bound = '1';
+    inp.addEventListener('input', () => {
+      const q = inp.value.trim().toLowerCase();
+      const box = inp.parentElement.querySelector('[data-target-list]');
+      if (!box) return;
+      let shown = 0;
+      box.querySelectorAll('label.field-row').forEach(l => {
+        const ok = !q || l.textContent.toLowerCase().includes(q);
+        l.style.display = ok ? '' : 'none';
+        if (ok) shown++;
+      });
+      let empty = box.querySelector('[data-target-empty]');
+      if (!shown) {
+        if (!empty) { empty = document.createElement('div'); empty.dataset.targetEmpty = '1'; empty.className = 'card-sub'; empty.textContent = 'موردی پیدا نشد.'; box.appendChild(empty); }
+      } else if (empty) empty.remove();
+    });
+  });
+}
+
 async function loadProductPanelTargetPicker(b, serverId, selectedValues = []) {
   const host = $('#prod-target-picker', b);
   if (!host) return { choices: [] };
@@ -3695,8 +3796,8 @@ async function loadProductPanelTargetPicker(b, serverId, selectedValues = []) {
       host.dataset.hasChoices = '0'; return info;
     }
     const selected = new Set((selectedValues || []).map(String));
-    host.innerHTML = `<div class="field" style="margin-top:8px"><span>🎯 گروه / Inbound مخصوص این محصول</span><div style="display:grid;gap:7px;max-height:220px;overflow:auto;padding:9px;border:1px solid var(--border);border-radius:10px">${choices.map(c => `<label class="field-row"><span>${esc(String(c.label || c.value))}</span><input type="checkbox" data-product-target-value="${esc(String(c.value))}" ${selected.has(String(c.value)) ? 'checked' : ''}></label>`).join('')}</div><span class="card-sub">این مقصد فقط برای همین محصول ذخیره می‌شود و تنظیمات مشترک پنل تغییر نمی‌کند.</span></div>`;
-    host.dataset.hasChoices = '1'; return info;
+    host.innerHTML = `<div class="field" style="margin-top:8px"><span>🎯 گروه / Inbound مخصوص این محصول</span>${targetSearchBoxHtml()}<div data-target-list style="display:grid;gap:7px;max-height:220px;overflow:auto;padding:9px;border:1px solid var(--border);border-radius:10px">${choices.map(c => `<label class="field-row"><span>${esc(String(c.label || c.value))}</span><input type="checkbox" data-product-target-value="${esc(String(c.value))}" ${selected.has(String(c.value)) ? 'checked' : ''}></label>`).join('')}</div><span class="card-sub">این مقصد فقط برای همین محصول ذخیره می‌شود و تنظیمات مشترک پنل تغییر نمی‌کند.</span></div>`;
+    host.dataset.hasChoices = '1'; bindTargetSearch(host); return info;
   } catch (e) {
     host.dataset.hasChoices = 'error';
     host.innerHTML = `<div class="form-error">دریافت مقصدهای پنل ناموفق بود: ${esc(e.message || 'خطا')}</div>`;
@@ -3726,7 +3827,8 @@ async function loadMultiPanelTargetPickers(b, prefillConfigs = {}) {
         section.innerHTML = `<div class="card-sub">${esc(panel?.name || `پنل #${sid}`)}: مقصد زنده ندارد؛ قالب پنل استفاده می‌شود.</div>`;
       } else {
         section.dataset.hasChoices = '1';
-        section.innerHTML = `<div class="field"><span>🎯 مقصد اختصاصی ${esc(panel?.name || `پنل #${sid}`)}</span><div style="display:grid;gap:7px;max-height:190px;overflow:auto;padding:9px;border:1px solid var(--border);border-radius:10px">${choices.map(c => `<label class="field-row"><span>${esc(String(c.label || c.value))}</span><input type="checkbox" data-multi-target-value="${esc(String(c.value))}" ${selected.has(String(c.value)) ? 'checked' : ''}></label>`).join('')}</div></div>`;
+        section.innerHTML = `<div class="field"><span>🎯 مقصد اختصاصی ${esc(panel?.name || `پنل #${sid}`)}</span>${targetSearchBoxHtml()}<div data-target-list style="display:grid;gap:7px;max-height:190px;overflow:auto;padding:9px;border:1px solid var(--border);border-radius:10px">${choices.map(c => `<label class="field-row"><span>${esc(String(c.label || c.value))}</span><input type="checkbox" data-multi-target-value="${esc(String(c.value))}" ${selected.has(String(c.value)) ? 'checked' : ''}></label>`).join('')}</div></div>`;
+        bindTargetSearch(section);
       }
     } catch (e) {
       section.dataset.hasChoices = 'error';
@@ -4090,7 +4192,7 @@ function readProductDiscount(b, prefix, base) {
 function productEditFormHtml(product, categories, panelServers, sshNodes) {
   return `
     <div class="form-grid">
-      <select class="input" id="pe-cat">${categories.map(c => `<option value="${c.id}" ${c.id === product.category_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
+      <select class="input" id="pe-cat">${categories.map(c => `<option value="${c.id}" ${c.id === product.category_id ? 'selected' : ''}>${esc(c.path || c.name)}</option>`).join('')}</select>
       <input class="input" id="pe-name" placeholder="نام محصول" value="${esc(product.name)}">
       <div class="form-row">
         <input class="input" id="pe-price" type="number" placeholder="قیمت اصلی (تومان)" value="${Number(product.compare_price || 0) > Number(product.price) ? product.compare_price : product.price}">
@@ -4098,6 +4200,8 @@ function productEditFormHtml(product, categories, panelServers, sshNodes) {
       </div>
       ${productDiscountFieldsHtml('pe', product)}
       <textarea class="input" id="pe-desc" placeholder="توضیحات (اختیاری)" rows="2">${esc(product.description || '')}</textarea>
+      ${productBtnStyleHtml('pe', product.btn_style)}
+      <textarea class="input" id="pe-ai-desc" placeholder="🤖 توضیح برای هوش مصنوعی (راهنمای خرید؛ به کاربر نمایش داده نمی‌شود)" rows="2">${esc(product.ai_description || '')}</textarea>
       ${productProvisionFieldsHtml(panelServers, sshNodes, product)}
       <button class="btn btn-primary" id="pe-save">ذخیره</button>
     </div>`;
@@ -4117,7 +4221,7 @@ function openProductEditModal(product, categories, panelServers, sshNodes) {
       if (!prov.ok) return;
       const payload = {
         category_id: Number($('#pe-cat', b).value), name, price: disc.price, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
-        description: $('#pe-desc', b).value, duration_days: prov.duration_days,
+        description: $('#pe-desc', b).value, btn_style: readProductBtnStyle(b, 'pe'), ai_description: $('#pe-ai-desc', b)?.value ?? '', duration_days: prov.duration_days,
         source: prov.source,
       };
       if (prov.source === 'direct') {
@@ -4162,19 +4266,13 @@ async function renderCatalog() {
       <div class="toolbar"><button class="btn btn-primary btn-sm" id="add-cat">+ دسته‌بندی جدید</button></div>
       <div class="card"><div class="table-wrap"><table><thead><tr><th>نام</th><th>وضعیت</th><th>عملیات</th></tr></thead>
       <tbody>${categories.map(c => `<tr>
-        <td>${esc(c.name)}</td>
+        <td>${catIndentHtml(c)}${esc(c.name)}</td>
         <td>${c.is_active ? '<span class="badge badge-approved">فعال</span>' : '<span class="badge badge-rejected">غیرفعال</span>'}</td>
-        <td><button class="btn btn-sm" data-toggle-cat="${c.id}">${c.is_active ? 'غیرفعال کن' : 'فعال کن'}</button>
+        <td>${catOrderButtonsHtml(c, categories)}
+        <button class="btn btn-sm" data-toggle-cat="${c.id}">${c.is_active ? 'غیرفعال کن' : 'فعال کن'}</button>
         <button class="btn btn-danger btn-sm" data-del-cat="${c.id}">حذف</button></td>
       </tr>`).join('') || '<tr><td colspan="3" class="empty-state">دسته‌بندی‌ای نیست</td></tr>'}</tbody></table></div></div>`;
-    $('#add-cat').addEventListener('click', () => openModal('دسته‌بندی جدید', `
-      <div class="form-grid"><input class="input" id="cat-name" placeholder="نام دسته‌بندی">
-      <button class="btn btn-primary" id="cat-save">ثبت</button></div>`, (b, close) => {
-      $('#cat-save', b).addEventListener('click', async () => {
-        const name = $('#cat-name', b).value.trim(); if (!name) return;
-        try { await apiPost('/categories', { name }); toast('اضافه شد.'); close(); renderCatalog(); } catch (e) { handleErr(e); }
-      });
-    }));
+    $('#add-cat').addEventListener('click', () => openCategoryCreateModal(categories));
     $$('[data-toggle-cat]', body).forEach(b => b.addEventListener('click', async () => {
       try { await apiPost(`/categories/${b.dataset.toggleCat}/toggle`); renderCatalog(); } catch (e) { handleErr(e); }
     }));
@@ -4182,6 +4280,7 @@ async function renderCatalog() {
       if (!confirm('حذف شود؟ (محصولات این دسته هم حذف می‌شوند)')) return;
       try { await apiDelete(`/categories/${b.dataset.delCat}`); toast('حذف شد.'); renderCatalog(); } catch (e) { handleErr(e); }
     }));
+    wireCategoryActions(body, categories);
     return;
   }
 
@@ -4217,22 +4316,18 @@ async function renderCatalog() {
     </tr>`;
     }).join('') || '<tr><td colspan="6" class="empty-state">محصولی نیست</td></tr>'}</tbody></table></div></div>`;
 
-  $('#add-cat-inline').addEventListener('click', () => openModal('دسته‌بندی جدید', `
-    <div class="form-grid"><input class="input" id="cat-name-inline" placeholder="نام دسته‌بندی"><button class="btn btn-primary" id="cat-save-inline">ثبت</button></div>`, (b, close) => {
-      $('#cat-save-inline', b).addEventListener('click', async () => {
-        const name = $('#cat-name-inline', b).value.trim(); if (!name) return toast('نام دسته‌بندی را وارد کنید.', true);
-        try { await apiPost('/categories', { name }); toast('دسته‌بندی اضافه شد.'); close(); renderCatalog(); } catch (e) { handleErr(e); }
-      });
-    }));
+  $('#add-cat-inline').addEventListener('click', () => openCategoryCreateModal(categories));
   if (!activeCategories.length) return;
   $('#add-prod').addEventListener('click', () => { window.__productPrefillTargetConfig = null; openModal('محصول جدید', `
     <div class="form-grid">
-      <select class="input" id="prod-cat">${activeCategories.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
+      <select class="input" id="prod-cat">${activeCategories.map(c => `<option value="${c.id}">${esc(c.path || c.name)}</option>`).join('')}</select>
       <input class="input" id="prod-name" placeholder="نام محصول">
       <div class="form-row"><input class="input" id="prod-price" type="number" placeholder="قیمت اصلی (تومان)">
       <input class="input" id="prod-duration" type="number" placeholder="مدت (روز)" value="30"></div>
       ${productDiscountFieldsHtml('prod', null)}
       <textarea class="input" id="prod-desc" placeholder="توضیحات (اختیاری)" rows="2"></textarea>
+      ${productBtnStyleHtml('prod', '')}
+      <textarea class="input" id="prod-ai-desc" placeholder="🤖 توضیح برای هوش مصنوعی (راهنمای خرید؛ به کاربر نمایش داده نمی‌شود)" rows="2"></textarea>
       ${productProvisionFieldsHtml(panelServers, sshNodes)}
       ${productPaymentMethodsFieldsHtml(paymentMethods)}
       <button class="btn btn-primary" id="prod-save">ثبت</button>
@@ -4250,7 +4345,7 @@ async function renderCatalog() {
       try {
         await apiPost('/products', {
           category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
-          description: $('#prod-desc', b).value, duration_days: prov.duration_days,
+          description: $('#prod-desc', b).value, btn_style: readProductBtnStyle(b, 'prod'), ai_description: $('#prod-ai-desc', b)?.value || '', duration_days: prov.duration_days,
           provision_server_id: prov.provision_server_id, provision_target_values: prov.provision_target_values, extra_panel_target_values: prov.extra_panel_target_values, provision_ssh_node_id: prov.provision_ssh_node_id, provision_ssh_protocol: prov.provision_ssh_protocol, extra_panel_ids: prov.extra_panel_ids, extra_ssh_node_ids: prov.extra_ssh_node_ids,
           auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods, base_users: prov.base_users, extra_user_price: prov.extra_user_price, max_users: prov.max_users, renew_rules: prov.renew_rules,
         });
@@ -4311,23 +4406,17 @@ function renderCatalogBento(categories, products, panelServers, sshNodes, paymen
         ${categories.map((c, i) => `
           <div class="bn-row bn-card-anim" style="animation-delay:${Math.min(i * 25, 220)}ms">
             ${bnAvatar(c.name.trim().charAt(0), i)}
-            <div class="bn-row-main"><span class="bn-row-title">${esc(c.name)}</span></div>
+            <div class="bn-row-main"><span class="bn-row-title">${catIndentHtml(c)}${esc(c.name)}</span></div>
             <div class="bn-row-trail">
               ${bnPill(c.is_active ? 'فعال' : 'غیرفعال', c.is_active ? 'ok' : 'no')}
+              ${catOrderButtonsHtml(c, categories, 'bn-btn bn-btn-ghost')}
               <button class="bn-btn bn-btn-ghost" data-toggle-cat="${c.id}">${c.is_active ? 'غیرفعال کن' : 'فعال کن'}</button>
               <button class="bn-btn bn-btn-no" data-del-cat="${c.id}">حذف</button>
             </div>
           </div>
         `).join('') || `<div class="empty-state"><div class="icon">${svg('empty')}</div>دسته‌بندی‌ای نیست</div>`}
       </div>`;
-    $('#add-cat').addEventListener('click', () => openModal('دسته‌بندی جدید', `
-      <div class="form-grid"><input class="input" id="cat-name" placeholder="نام دسته‌بندی">
-      <button class="btn btn-primary" id="cat-save">ثبت</button></div>`, (b, close) => {
-      $('#cat-save', b).addEventListener('click', async () => {
-        const name = $('#cat-name', b).value.trim(); if (!name) return;
-        try { await apiPost('/categories', { name }); toast('اضافه شد.'); close(); renderCatalog(); } catch (e) { handleErr(e); }
-      });
-    }));
+    $('#add-cat').addEventListener('click', () => openCategoryCreateModal(categories));
     $$('[data-toggle-cat]', body).forEach(b => b.addEventListener('click', async () => {
       try { await apiPost(`/categories/${b.dataset.toggleCat}/toggle`); renderCatalog(); } catch (e) { handleErr(e); }
     }));
@@ -4335,6 +4424,7 @@ function renderCatalogBento(categories, products, panelServers, sshNodes, paymen
       if (!confirm('حذف شود؟ (محصولات این دسته هم حذف می‌شوند)')) return;
       try { await apiDelete(`/categories/${b.dataset.delCat}`); toast('حذف شد.'); renderCatalog(); } catch (e) { handleErr(e); }
     }));
+    wireCategoryActions(body, categories);
     return;
   }
 
@@ -4362,12 +4452,14 @@ function renderCatalogBento(categories, products, panelServers, sshNodes, paymen
 
   $('#add-prod').addEventListener('click', () => openModal('محصول جدید', `
     <div class="form-grid">
-      <select class="input" id="prod-cat">${categories.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
+      <select class="input" id="prod-cat">${categories.map(c => `<option value="${c.id}">${esc(c.path || c.name)}</option>`).join('')}</select>
       <input class="input" id="prod-name" placeholder="نام محصول">
       <div class="form-row"><input class="input" id="prod-price" type="number" placeholder="قیمت اصلی (تومان)">
       <input class="input" id="prod-duration" type="number" placeholder="مدت (روز)" value="30"></div>
       ${productDiscountFieldsHtml('prod', null)}
       <textarea class="input" id="prod-desc" placeholder="توضیحات (اختیاری)" rows="2"></textarea>
+      ${productBtnStyleHtml('prod', '')}
+      <textarea class="input" id="prod-ai-desc" placeholder="🤖 توضیح برای هوش مصنوعی (راهنمای خرید؛ به کاربر نمایش داده نمی‌شود)" rows="2"></textarea>
       ${productProvisionFieldsHtml(panelServers, sshNodes)}
       ${productPaymentMethodsFieldsHtml(paymentMethods)}
       <button class="btn btn-primary" id="prod-save">ثبت</button>
@@ -4385,7 +4477,7 @@ function renderCatalogBento(categories, products, panelServers, sshNodes, paymen
       try {
         await apiPost('/products', {
           category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
-          description: $('#prod-desc', b).value, duration_days: prov.duration_days,
+          description: $('#prod-desc', b).value, btn_style: readProductBtnStyle(b, 'prod'), ai_description: $('#prod-ai-desc', b)?.value || '', duration_days: prov.duration_days,
           provision_server_id: prov.provision_server_id, provision_target_values: prov.provision_target_values, extra_panel_target_values: prov.extra_panel_target_values, provision_ssh_node_id: prov.provision_ssh_node_id, provision_ssh_protocol: prov.provision_ssh_protocol, extra_panel_ids: prov.extra_panel_ids, extra_ssh_node_ids: prov.extra_ssh_node_ids,
           auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods, base_users: prov.base_users, extra_user_price: prov.extra_user_price, max_users: prov.max_users, renew_rules: prov.renew_rules,
         });
@@ -4439,23 +4531,17 @@ function renderCatalogBrutalist(categories, products, panelServers, sshNodes, pa
       <div class="bru-cat-list">
         ${categories.map((c, i) => `
           <div class="bru-cat-row bru-card-anim" style="animation-delay:${Math.min(i * 30, 250)}ms">
-            <span class="bru-cat-name">${esc(c.name)}</span>
+            <span class="bru-cat-name">${catIndentHtml(c)}${esc(c.name)}</span>
             <span class="bru-flag ${c.is_active ? 'bru-flag-ok' : 'bru-flag-no'}">${c.is_active ? 'فعال' : 'غیرفعال'}</span>
             <div class="bru-cat-actions">
-              <button class="btn btn-sm" data-toggle-cat="${c.id}">${c.is_active ? 'غیرفعال کن' : 'فعال کن'}</button>
+              ${catOrderButtonsHtml(c, categories)}
+        <button class="btn btn-sm" data-toggle-cat="${c.id}">${c.is_active ? 'غیرفعال کن' : 'فعال کن'}</button>
               <button class="btn btn-danger btn-sm" data-del-cat="${c.id}">حذف</button>
             </div>
           </div>
         `).join('') || `<div class="empty-state"><div class="icon">${svg('empty')}</div>دسته‌بندی‌ای نیست</div>`}
       </div>`;
-    $('#add-cat').addEventListener('click', () => openModal('دسته‌بندی جدید', `
-      <div class="form-grid"><input class="input" id="cat-name" placeholder="نام دسته‌بندی">
-      <button class="btn btn-primary" id="cat-save">ثبت</button></div>`, (b, close) => {
-      $('#cat-save', b).addEventListener('click', async () => {
-        const name = $('#cat-name', b).value.trim(); if (!name) return;
-        try { await apiPost('/categories', { name }); toast('اضافه شد.'); close(); renderCatalog(); } catch (e) { handleErr(e); }
-      });
-    }));
+    $('#add-cat').addEventListener('click', () => openCategoryCreateModal(categories));
     $$('[data-toggle-cat]', body).forEach(b => b.addEventListener('click', async () => {
       try { await apiPost(`/categories/${b.dataset.toggleCat}/toggle`); renderCatalog(); } catch (e) { handleErr(e); }
     }));
@@ -4463,6 +4549,7 @@ function renderCatalogBrutalist(categories, products, panelServers, sshNodes, pa
       if (!confirm('حذف شود؟ (محصولات این دسته هم حذف می‌شوند)')) return;
       try { await apiDelete(`/categories/${b.dataset.delCat}`); toast('حذف شد.'); renderCatalog(); } catch (e) { handleErr(e); }
     }));
+    wireCategoryActions(body, categories);
     return;
   }
 
@@ -4496,12 +4583,14 @@ function renderCatalogBrutalist(categories, products, panelServers, sshNodes, pa
 
   $('#add-prod').addEventListener('click', () => openModal('محصول جدید', `
     <div class="form-grid">
-      <select class="input" id="prod-cat">${categories.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
+      <select class="input" id="prod-cat">${categories.map(c => `<option value="${c.id}">${esc(c.path || c.name)}</option>`).join('')}</select>
       <input class="input" id="prod-name" placeholder="نام محصول">
       <div class="form-row"><input class="input" id="prod-price" type="number" placeholder="قیمت اصلی (تومان)">
       <input class="input" id="prod-duration" type="number" placeholder="مدت (روز)" value="30"></div>
       ${productDiscountFieldsHtml('prod', null)}
       <textarea class="input" id="prod-desc" placeholder="توضیحات (اختیاری)" rows="2"></textarea>
+      ${productBtnStyleHtml('prod', '')}
+      <textarea class="input" id="prod-ai-desc" placeholder="🤖 توضیح برای هوش مصنوعی (راهنمای خرید؛ به کاربر نمایش داده نمی‌شود)" rows="2"></textarea>
       ${productProvisionFieldsHtml(panelServers, sshNodes)}
       ${productPaymentMethodsFieldsHtml(paymentMethods)}
       <button class="btn btn-primary" id="prod-save">ثبت</button>
@@ -4519,7 +4608,7 @@ function renderCatalogBrutalist(categories, products, panelServers, sshNodes, pa
       try {
         await apiPost('/products', {
           category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
-          description: $('#prod-desc', b).value, duration_days: prov.duration_days,
+          description: $('#prod-desc', b).value, btn_style: readProductBtnStyle(b, 'prod'), ai_description: $('#prod-ai-desc', b)?.value || '', duration_days: prov.duration_days,
           provision_server_id: prov.provision_server_id, provision_target_values: prov.provision_target_values, extra_panel_target_values: prov.extra_panel_target_values, provision_ssh_node_id: prov.provision_ssh_node_id, provision_ssh_protocol: prov.provision_ssh_protocol, extra_panel_ids: prov.extra_panel_ids, extra_ssh_node_ids: prov.extra_ssh_node_ids,
           auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods, base_users: prov.base_users, extra_user_price: prov.extra_user_price, max_users: prov.max_users, renew_rules: prov.renew_rules,
         });
@@ -4794,7 +4883,7 @@ function discountExtraFieldsHtml(categories, products) {
         <input class="input" id="code-maxdiscount" type="number" placeholder="خالی = بدون سقف"></label>
       <select class="input" id="code-scope">
         <option value="">🌐 بدون محدودیت (همه‌ی محصولات)</option>
-        ${categories.length ? `<optgroup label="فقط یک دسته‌بندی خاص">${categories.map(c => `<option value="cat:${c.id}">📁 ${esc(c.name)}</option>`).join('')}</optgroup>` : ''}
+        ${categories.length ? `<optgroup label="فقط یک دسته‌بندی خاص">${categories.map(c => `<option value="cat:${c.id}">📁 ${esc(c.path || c.name)}</option>`).join('')}</optgroup>` : ''}
         ${products.length ? `<optgroup label="فقط یک محصول خاص">${products.map(p => `<option value="prod:${p.id}">📦 ${esc(p.name)}</option>`).join('')}</optgroup>` : ''}
         ${products.length ? `<option value="mprod">🧩 چند محصول خاص (انتخاب زیر)</option>` : ''}
       </select>
@@ -5878,7 +5967,7 @@ async function renderSalesSettings() {
     <div class="card">
       <h3>📢 عضویت اجباری در کانال</h3>
       <label class="field field-row"><span>فعال</span>${_swSpan('fj_enabled', forceJoin.enabled)}</label>
-      <label class="field"><span>آیدی کانال (مثل ‎@my_channel)</span><input class="input" data-fkey="fj_channel" type="text" value="${esc(forceJoin.channel || '')}" style="direction:ltr;text-align:left"></label>
+      <label class="field"><span>آیدی کانال‌ها (مثل ‎@my_channel) — هر کانال در یک خط، بدون محدودیت تعداد</span><textarea class="input" data-fkey="fj_channel" rows="4" style="direction:ltr;text-align:left">${esc((forceJoin.channels || (forceJoin.channel ? [forceJoin.channel] : [])).join('\n'))}</textarea></label>
       <div class="card-sub">این تنظیم روی ربات اصلی، مینی‌اپ، و تمام بات‌های نمایندگی به‌طور یکسان اعمال می‌شود.</div>
       <button class="btn btn-primary btn-sm" id="save-forcejoin">ذخیره</button>
     </div>
@@ -7093,6 +7182,7 @@ function panelAddFormHtml() {
       <div class="form-row"><input class="input" id="p-user" placeholder="یوزرنیم"><input class="input" id="p-pass" type="password" placeholder="پسورد"></div>
       <input class="input" id="p-template" placeholder="نام کاربری نمونه (برای دریافت قالب)" style="display:none">
       <p id="p-hint" style="display:none;font-size:12px;color:var(--muted,#8892a6);margin:0"></p>
+      <select class="input" id="p-cat"><option value="">🗂 بدون دسته‌بندی</option>${(window.__panelCats || []).map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
       <button class="btn btn-primary" id="p-save">ثبت</button>
     </div>`;
 }
@@ -7144,6 +7234,7 @@ function wirePanelAddForm(body, close) {
       const r = await apiPost('/panel-servers', {
         name, panel_type, api_url,
         api_username: userInp.value, api_password: passInp.value,
+        panel_category_id: Number($('#p-cat', body)?.value) || undefined,
         template_username: PANEL_TEMPLATE_BASED_TYPES.includes(panel_type) ? templateInp.value.trim() : undefined,
       });
       serverId = r.id; warning = r.warning || '';
@@ -7542,10 +7633,14 @@ async function renderSSHManagement() {
   $('#ssh-reconcile')?.addEventListener('click',async e=>{const btn=e.currentTarget;btn.disabled=true;try{const r=await apiPost('/ssh/reconcile-once',{});const results=r.results||[];const failed=results.filter(x=>!x.enforcement_complete).length;const stale=results.filter(x=>x.state==='stale').length;toast(failed?`پایش انجام شد؛ ${failed} استخر نیازمند بررسی است.`:(stale?`${stale} استخر به‌علت گزارش مصرف قدیمی در حالت امن باقی ماند.`:'پایش سهمیه انجام شد.'));await renderSSHManagement();}catch(err){handleErr(err);btn.disabled=false;}});
 }
 
+let panelCatFilter = 'all';
+
 async function renderPanels() {
   const servers = await apiGet('/panel-servers');
-  if (loadTheme().theme === 'brutalist') return renderPanelsBrutalist(servers);
-  if (loadTheme().theme === 'bento') return renderPanelsBento(servers);
+  const pcats = await apiGet('/panel-categories').catch(() => []);
+  window.__panelCats = pcats;
+  if (loadTheme().theme === 'brutalist') { renderPanelsBrutalist(servers); enhancePanelCategories(servers, pcats); return; }
+  if (loadTheme().theme === 'bento') { renderPanelsBento(servers); enhancePanelCategories(servers, pcats); return; }
   setContent(`
     <div class="toolbar"><button class="btn btn-primary btn-sm" id="add-panel">+ پنل جدید</button></div>
     <div class="card"><div class="table-wrap"><table>
@@ -7604,6 +7699,90 @@ async function renderPanels() {
   $$('[data-retemplate]', content()).forEach(b => b.addEventListener('click', () => openPanelRetemplateModal(Number(b.dataset.retemplate))));
   wirePanelReorder(servers);
   wirePanelDeleteButtons();
+  enhancePanelCategories(servers, pcats);
+}
+
+
+// ---------------------------------------------------------------- دسته‌بندی پنل‌ها --
+// مستقل از تم: فیلتر دسته، انتخاب دسته‌ی هر پنل و مدیریت دسته‌ها روی DOM همان صفحه اضافه می‌شود.
+function enhancePanelCategories(servers, pcats) {
+  const root = content();
+  const rowOf = id => { const b = root.querySelector(`[data-edit="${id}"]`); return b ? b.closest('tr, .bn-card, .bru-server-card') : null; };
+  const countOf = cid => servers.filter(s => (cid === 'none' ? !s.panel_category_id : Number(s.panel_category_id) === Number(cid))).length;
+  if (panelCatFilter !== 'all' && panelCatFilter !== 'none' && !pcats.some(c => String(c.id) === String(panelCatFilter))) panelCatFilter = 'all';
+
+  const chips = [['all', `همه (${servers.length})`], ...pcats.map(c => [String(c.id), `${c.name} (${countOf(c.id)})`])];
+  if (pcats.length) chips.push(['none', `بدون دسته (${countOf('none')})`]);
+  const bar = document.createElement('div');
+  bar.className = 'toolbar';
+  bar.style.cssText = 'flex-wrap:wrap;gap:6px;margin:0 0 12px';
+  bar.innerHTML = `${chips.map(([v, l]) => `<button class="btn btn-sm ${String(panelCatFilter) === v ? 'btn-primary' : ''}" data-pcat-filter="${esc(v)}">${esc(l)}</button>`).join('')}
+    <button class="btn btn-sm" id="pcat-manage">🗂 مدیریت دسته‌بندی‌ها</button>`;
+  root.insertBefore(bar, root.firstChild);
+
+  servers.forEach(s => {
+    const row = rowOf(s.id);
+    if (!row) return;
+    row.dataset.pcat = s.panel_category_id ? String(s.panel_category_id) : 'none';
+    const host = root.querySelector(`[data-edit="${s.id}"]`).parentElement;
+    const sel = document.createElement('select');
+    sel.className = 'input';
+    sel.dataset.panelCat = s.id;
+    sel.title = 'دسته‌بندی پنل';
+    sel.style.cssText = 'width:auto;min-width:110px;padding:4px 8px;font-size:12px;margin-inline-start:4px';
+    sel.innerHTML = `<option value="">🗂 بدون دسته</option>${pcats.map(c => `<option value="${c.id}" ${Number(s.panel_category_id) === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}`;
+    sel.addEventListener('change', async () => {
+      try { await apiPost(`/panel-servers/${s.id}/category`, { category_id: sel.value ? Number(sel.value) : null }); toast('دسته‌بندی پنل ذخیره شد.'); renderPanels(); }
+      catch (e) { handleErr(e); }
+    });
+    host.appendChild(sel);
+  });
+
+  const applyFilter = () => {
+    servers.forEach(s => {
+      const row = rowOf(s.id);
+      if (row) row.style.display = (panelCatFilter === 'all' || row.dataset.pcat === String(panelCatFilter)) ? '' : 'none';
+    });
+  };
+  applyFilter();
+  $$('[data-pcat-filter]', bar).forEach(b => b.addEventListener('click', () => { panelCatFilter = b.dataset.pcatFilter; renderPanels(); }));
+  $('#pcat-manage', bar).addEventListener('click', () => openPanelCategoriesModal(pcats));
+}
+
+function openPanelCategoriesModal(pcats) {
+  const rowsHtml = pcats.map((c, i) => `
+    <div class="field-row" style="gap:6px;align-items:center">
+      <span style="flex:1">${esc(c.name)}</span>
+      <button class="btn btn-xs" data-pc-up="${c.id}" ${i === 0 ? 'disabled' : ''}>▲</button>
+      <button class="btn btn-xs" data-pc-down="${c.id}" ${i === pcats.length - 1 ? 'disabled' : ''}>▼</button>
+      <button class="btn btn-xs" data-pc-edit="${c.id}">✏️</button>
+      <button class="btn btn-xs btn-danger" data-pc-del="${c.id}">🗑</button>
+    </div>`).join('') || '<div class="card-sub">هنوز دسته‌بندی‌ای ساخته نشده.</div>';
+  openModal('دسته‌بندی پنل‌ها', `
+    <div class="form-grid">
+      <div style="display:grid;gap:8px">${rowsHtml}</div>
+      <div class="form-row"><input class="input" id="pc-new" placeholder="نام دسته‌بندی جدید (مثلاً آلمان)"><button class="btn btn-primary" id="pc-add">+ افزودن</button></div>
+    </div>`, (b, close) => {
+    const done = () => { close(); renderPanels(); };
+    $('#pc-add', b).addEventListener('click', async () => {
+      const name = $('#pc-new', b).value.trim(); if (!name) return;
+      try { await apiPost('/panel-categories', { name }); toast('اضافه شد.'); done(); } catch (e) { handleErr(e); }
+    });
+    $$('[data-pc-up],[data-pc-down]', b).forEach(btn => btn.addEventListener('click', async () => {
+      const id = btn.dataset.pcUp || btn.dataset.pcDown;
+      try { await apiPost(`/panel-categories/${id}/move`, { direction: btn.dataset.pcUp ? 'up' : 'down' }); done(); } catch (e) { handleErr(e); }
+    }));
+    $$('[data-pc-edit]', b).forEach(btn => btn.addEventListener('click', async () => {
+      const cat = pcats.find(c => c.id === Number(btn.dataset.pcEdit));
+      const name = (prompt('نام جدید دسته‌بندی:', cat ? cat.name : '') || '').trim();
+      if (!name) return;
+      try { await apiPut(`/panel-categories/${cat.id}`, { name }); toast('ویرایش شد.'); done(); } catch (e) { handleErr(e); }
+    }));
+    $$('[data-pc-del]', b).forEach(btn => btn.addEventListener('click', async () => {
+      if (!confirm('حذف شود؟ (پنل‌های این دسته حذف نمی‌شوند؛ فقط «بدون دسته» می‌شوند)')) return;
+      try { await apiDelete(`/panel-categories/${btn.dataset.pcDel}`); toast('حذف شد.'); done(); } catch (e) { handleErr(e); }
+    }));
+  });
 }
 
 function openPanelEditModal(server) {
