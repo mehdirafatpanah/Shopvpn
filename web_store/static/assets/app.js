@@ -412,7 +412,12 @@
         h("h3", { text: t("fj_title") }),
         h("p", { class: "mute", text: d.message || "" }),
         h("div", { class: "row" },
-          h("a", { class: "btn", href: d.join_link, target: "_blank", rel: "noopener", text: t("fj_join") }),
+          (d.channels && d.channels.length ? d.channels : [{ channel: d.channel, join_link: d.join_link }])
+            .filter(function (c) { return c.join_link; })
+            .map(function (c, i, all) {
+              return h("a", { class: "btn", href: c.join_link, target: "_blank", rel: "noopener",
+                text: t("fj_join") + (all.length > 1 ? " " + (c.channel || (i + 1)) : "") });
+            }),
           h("button", { class: "btn ghost", type: "button", text: t("fj_retry"), onclick: function () { notice.textContent = ""; if (retry) retry(); } }))));
       return;
     }
