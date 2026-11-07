@@ -41,6 +41,7 @@ def _web_main_only(tenant: Tenant):
 
 def _web_catalog_payload(db: Database) -> list:
     categories = []
+    paths = db.get_category_path_names()
     for c in db.get_categories(active_only=True):
         products = []
         for p in db.get_products(c["id"], active_only=True):
@@ -56,7 +57,7 @@ def _web_catalog_payload(db: Database) -> list:
                 "in_stock": in_stock,
             })
         if products:
-            categories.append({"id": c["id"], "name": c["name"], "products": products})
+            categories.append({"id": c["id"], "name": paths.get(c["id"], c["name"]), "products": products})
     return categories
 
 
