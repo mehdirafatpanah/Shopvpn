@@ -2743,3 +2743,16 @@ html:not([data-theme="bento"]):not([data-theme="cyberpunk"]):not([data-theme="st
 html[data-theme="android"] .nav-item{ padding-block:9px; }
 html:not([data-theme="bento"]):not([data-theme="cyberpunk"]):not([data-theme="streetops"]) .nav-section{ margin-top:14px; padding-top:12px; margin-bottom:6px; }
 html:not([data-theme="bento"]):not([data-theme="cyberpunk"]):not([data-theme="streetops"]) .nav-section:first-child{ margin-top:2px; padding-top:0; }
+
+
+/* صفحه اشتراک: انتخابگر رنگ و پالت‌های آماده */
+.color-row{ display:flex; align-items:center; gap:10px; }
+.color-row .input{ flex:1; font-family:ui-monospace,Menlo,Consolas,monospace; text-transform:uppercase; text-align:left; }
+.color-row .input.invalid{ border-color:var(--danger,#ef4444); }
+.color-native{ width:46px; height:42px; padding:2px; border-radius:10px; border:1px solid var(--border); background:var(--surface-2); cursor:pointer; flex-shrink:0; }
+.palette-wrap{ margin:14px 0 6px; display:flex; flex-direction:column; gap:8px; }
+.palette-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:8px; }
+.palette-chip{ display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:12px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); cursor:pointer; font:inherit; font-size:12.5px; transition:.15s ease; }
+.palette-chip:hover{ transform:translateY(-1px); border-color:var(--text); }
+.palette-chip.active{ border-color:var(--text); box-shadow:0 0 0 2px var(--surface), 0 0 0 4px var(--text); }
+.palette-chip i{ width:26px; height:26px; border-radius:50%; flex-shrink:0; }

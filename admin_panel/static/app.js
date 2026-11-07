@@ -8922,6 +8922,14 @@ async function collectAndSaveSettings(root, btn) {
     return;
   }
 
+  for (const it of items) {
+    if (it.key === 'dsub_accent_color' || it.key === 'dsub_secondary_color') {
+      const h = normalizeHex(it.value);
+      if (!h) { toast('رنگ نامعتبر است؛ کد HEX باید شش رقمی مثل #6366F1 باشد.'); return; }
+      it.value = h;
+    }
+  }
+
   btn.disabled = true;
   const prevTxt = btn.textContent; btn.textContent = 'در حال ذخیره...';
   try {
@@ -10449,6 +10457,16 @@ async function renderSubscriptionPageSettings() {
   const area = (key, label, rows=3) => `<label class="field"><span>${label}</span><textarea class="input" data-key="${key}" data-type="textarea" rows="${rows}">${esc(val(key))}</textarea></label>`;
   const select = (key,label,options) => `<label class="field"><span>${label}</span><select class="input" data-key="${key}" data-type="select">${options.map(([v,l])=>`<option value="${v}" ${String(val(key))===v?'selected':''}>${l}</option>`).join('')}</select></label>`;
   const toggle = (key,label) => `<label class="field field-row"><span>${label}</span><button type="button" class="switch" data-key="${key}" data-on="${val(key)==='1'?'1':'0'}"><i></i></button></label>`;
+  const colorField = (key,label,def) => {
+    const v = normalizeHex(val(key)) || def;
+    return `<div class="field color-field"><span>${label} (HEX)</span>
+      <div class="color-row">
+        <input type="color" class="color-native" data-color-for="${key}" value="${v.toLowerCase()}" aria-label="${label}">
+        <input class="input" data-key="${key}" data-type="text" data-default="${def}" dir="ltr" maxlength="7" inputmode="text" autocomplete="off" spellcheck="false" value="${esc(val(key) || def)}">
+      </div></div>`;
+  };
+  const paletteHtml = `<div class="palette-wrap"><span class="card-sub">پالت‌های آماده (با یک کلیک رنگ اصلی و مکمل ست می‌شوند)</span>
+    <div class="palette-grid">${SUB_PAGE_PALETTES.map(([n,a,b]) => `<button type="button" class="palette-chip" data-a="${a}" data-b="${b}" title="${esc(n)}"><i style="background:linear-gradient(135deg,${a},${b})"></i><span>${esc(n)}</span></button>`).join('')}</div></div>`;
   setContent(`
     <div class="hero"><div><h2>تنظیمات صفحه اشتراک</h2><p class="card-sub">مدیریت کامل ظاهر، محتوا و رفتار لینک ساب اختصاصی</p></div></div>
     <div class="card" style="margin-bottom:16px"><div class="card-head"><h3>🔌 وضعیت و آدرس سرویس</h3></div><div class="form-grid">
@@ -10460,12 +10478,13 @@ async function renderSubscriptionPageSettings() {
       <div class="form-grid">
         ${select('dsub_style','سبک نمایش',[['minimal','مینیمال'],['modern','مدرن'],['glass','شیشه‌ای'],['cyberpunk','سایبرپانک'],['classic','کلاسیک']])}
         ${select('dsub_theme','حالت رنگ',[['auto','خودکار'],['light','روشن'],['dark','تیره']])}
-        ${field('dsub_accent_color','رنگ اصلی (HEX)','text','مثلاً #6366F1')}
-        ${field('dsub_secondary_color','رنگ مکمل (HEX)','text','مثلاً #06B6D4')}
+        ${colorField('dsub_accent_color','رنگ اصلی','#6366F1')}
+        ${colorField('dsub_secondary_color','رنگ مکمل','#06B6D4')}
         ${select('dsub_card_style','استایل کارت‌ها',[['rounded','گرد'],['soft','ملایم'],['sharp','گوشه‌دار']])}
         ${select('dsub_density','تراکم محتوا',[['comfortable','راحت'],['compact','فشرده']])}
       </div>
-      <div class="card-sub">پیش‌نمایش نمونه</div>
+      ${paletteHtml}
+      <div class="card-sub">پیش‌نمایش زنده (با هر تغییر، بدون ذخیره به‌روز می‌شود)</div>
       <iframe id="sub-page-preview-frame" src="/api/settings/sub-page-preview?preview=1" title="پیش‌نمایش صفحه اشتراک" style="width:100%;height:560px;border:1px solid var(--border);border-radius:14px;background:#fff"></iframe>
       <button class="btn btn-ghost btn-sm" id="sub-page-preview-open" type="button">باز کردن پیش‌نمایش در تب جدید</button>
     </div>
@@ -10508,6 +10527,7 @@ async function renderSubscriptionPageSettings() {
   `);
   const root = content();
   bindSettingsGroupEvents(root);
+  bindSubPageColorPickers(root);
   bindSubscriptionLivePreview(root);
   $('#subscription-page-save',root).addEventListener('click',()=>collectAndSaveSettings(root,$('#subscription-page-save',root)));
   $$('.sub-tpl-guide-btn',root).forEach(btn=>btn.addEventListener('click',()=>openModal('راهنمای قالب اختصاصی',_subTemplateGuideHtml(),null,{wide:true})));
@@ -10586,13 +10606,53 @@ async function renderSettings() {
 // تب افقی به سگمنت کپسولی اپلی تبدیل می‌شه؛ بدنه‌ی فرم همون منطق قبلیه،
 // فقط با آکاردئون/سوییچ/سواچ گردتر (از طریق CSS اسکوپ‌شده به تم bento).
 
+const SUB_PAGE_PALETTES = [
+  ['ایندیگو و فیروزه‌ای', '#6366F1', '#06B6D4'], ['اقیانوس', '#0EA5E9', '#2563EB'], ['زمرد', '#10B981', '#059669'],
+  ['غروب', '#F97316', '#EC4899'], ['گل‌رز', '#F43F5E', '#FB7185'], ['بنفش سلطنتی', '#8B5CF6', '#D946EF'],
+  ['نئون سایبر', '#22D3EE', '#A3E635'], ['طلایی', '#F59E0B', '#EF4444'], ['جنگل', '#16A34A', '#65A30D'],
+  ['آسمان شب', '#3B82F6', '#8B5CF6'], ['خاکستری مدرن', '#475569', '#94A3B8'], ['تلگرام', '#229ED9', '#2AABEE'],
+];
+
+function normalizeHex(v) {
+  let h = String(v || '').trim().replace(/^#/, '');
+  if (/^[0-9a-fA-F]{3}$/.test(h)) h = h.split('').map(c => c + c).join('');
+  return /^[0-9a-fA-F]{6}$/.test(h) ? '#' + h.toUpperCase() : '';
+}
+
+function bindSubPageColorPickers(root) {
+  const fire = el => { el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
+  const setPair = (key, hex) => {
+    const txt = $(`input[data-key="${key}"]`, root), nat = $(`input[data-color-for="${key}"]`, root);
+    if (!txt) return;
+    txt.value = hex; txt.classList.remove('invalid');
+    if (nat) nat.value = hex.toLowerCase();
+    fire(txt);
+  };
+  $$('input[data-color-for]', root).forEach(nat => {
+    const key = nat.dataset.colorFor, txt = $(`input[data-key="${key}"]`, root);
+    nat.addEventListener('input', () => setPair(key, nat.value.toUpperCase()));
+    txt.addEventListener('input', () => {
+      const h = normalizeHex(txt.value);
+      txt.classList.toggle('invalid', !!txt.value.trim() && !h);
+      if (h) nat.value = h.toLowerCase();
+    });
+    txt.addEventListener('blur', () => { const h = normalizeHex(txt.value); if (h) { txt.value = h; } else if (!txt.value.trim()) { txt.value = txt.dataset.default || ''; } });
+  });
+  $$('.palette-chip', root).forEach(chip => chip.addEventListener('click', () => {
+    setPair('dsub_accent_color', chip.dataset.a); setPair('dsub_secondary_color', chip.dataset.b);
+    $$('.palette-chip', root).forEach(c => c.classList.toggle('active', c === chip));
+  }));
+}
+
 function bindSubscriptionLivePreview(root) {
   const frame = $('#sub-page-preview-frame', root);
   if (!frame) return;
   const get = key => {
     const el = $(`[data-key="${key}"]`, root);
     if (!el) return '';
+    if (el.classList.contains('switch')) return el.dataset.on === '1' ? '1' : '0';
     if (el.type === 'checkbox') return el.checked ? '1' : '0';
+    if (key === 'dsub_accent_color' || key === 'dsub_secondary_color') return normalizeHex(el.value);
     return el.value ?? '';
   };
   const payload = () => ({
@@ -10607,17 +10667,21 @@ function bindSubscriptionLivePreview(root) {
       qr: get('dsub_show_qr') !== '0', apps: get('dsub_show_apps') !== '0', faq: get('dsub_show_faq') !== '0'
     }
   });
-  const send = () => { try { frame.contentWindow.postMessage({ type: 'shopvpn-sub-page-preview', payload: payload() }, '*'); } catch (e) {} };
-  frame.addEventListener('load', send);
+  let timer = null;
+  const sendNow = () => { try { frame.contentWindow.postMessage({ type: 'shopvpn-sub-page-preview', payload: payload() }, '*'); } catch (e) {} };
+  const send = () => { clearTimeout(timer); timer = setTimeout(sendNow, 40); };
+  frame.addEventListener('load', sendNow);
   const openBtn = $('#sub-page-preview-open', root);
   if (openBtn) openBtn.onclick = () => window.open('/api/settings/sub-page-preview?preview=1', '_blank', 'noopener');
   $$('[data-key]', root).forEach(el => {
     const key = el.dataset.key || '';
     if (key.startsWith('dsub_') || key === 'store_name') {
       el.addEventListener('input', send); el.addEventListener('change', send);
+      // سوییچ‌ها رویداد input/change نمی‌دهند؛ تغییرشان را با کلیک می‌گیریم (بعد از جابه‌جایی data-on)
+      if (el.classList.contains('switch')) el.addEventListener('click', () => setTimeout(send, 0));
     }
   });
-  send();
+  sendNow();
 }
 
 function renderSettingsBento(settings, rate, mainMenuDisplay, pay, mobileTokens) {
