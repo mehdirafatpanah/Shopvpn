@@ -8436,6 +8436,26 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 app.mount("/assets", NoCacheStaticFiles(directory=STATIC_DIR), name="assets")
 
 
+_CHUNK_FILES = {"app.js", "i18n.js"}
+_CHUNK_SIZE = 40000
+
+
+@app.get("/_chunk/{name}/{index}")
+def serve_asset_chunk(name: str, index: int, request: Request):
+    """Serves a big static script in small slices for clients whose connection drops large transfers."""
+    if name not in _CHUNK_FILES or index < 0:
+        raise HTTPException(404)
+    path = os.path.join(STATIC_DIR, name)
+    total = max(1, -(-os.path.getsize(path) // _CHUNK_SIZE))
+    if index >= total:
+        raise HTTPException(404)
+    with open(path, "rb") as f:
+        f.seek(index * _CHUNK_SIZE)
+        data = f.read(_CHUNK_SIZE)
+    cache = "public, max-age=31536000, immutable" if "v" in request.query_params else "no-cache"
+    return Response(data, media_type="application/octet-stream", headers={"X-Chunks": str(total), "Cache-Control": cache})
+
+
 @app.get("/sw.js")
 def serve_service_worker():
     # عمداً روی ریشه‌ی دامنه سرو می‌شود (نه زیر /assets) تا scope پیش‌فرض
@@ -8489,6 +8509,8 @@ def _asset_version(filename: str) -> str:
 
 def _bust_asset_cache(html: str) -> str:
     html = html.replace('src="/assets/app.js"', f'src="/assets/app.js?v={_asset_version("app.js")}"')
+    html = html.replace('data-app="/assets/app.js"', f'data-app="/assets/app.js?v={_asset_version("app.js")}"')
+    html = html.replace('data-i18n="/assets/i18n.js"', f'data-i18n="/assets/i18n.js?v={_asset_version("i18n.js")}"')
     html = html.replace('href="/assets/style.css"', f'href="/assets/style.css?v={_asset_version("style.css")}"')
     html = html.replace("{{ASSET_VERSION}}", static_version(STATIC_DIR))
     return html
