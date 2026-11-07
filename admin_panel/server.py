@@ -4947,34 +4947,71 @@ def api_reseller_bots(admin=Depends(require_permission("resellers"))):
     return bots
 
 
+def _jalali_revenue_periods(bucket: int, count: int):
+    """بازه‌های گزارش (جدیدترین اول) بر پایه‌ی تقویم شمسی و وقت تهران: روز، هفته‌ی شنبه تا جمعه، نیم‌ماه، ماه."""
+    from datetime import date, datetime, timedelta, timezone
+    from jalali import gregorian_to_jalali, jalali_to_gregorian
+
+    today = (datetime.now(timezone.utc) + timedelta(hours=3, minutes=30)).date()
+
+    def month_start(idx):
+        jy, jm0 = divmod(idx, 12)
+        return date(*jalali_to_gregorian(jy, jm0 + 1, 1))
+
+    jy, jm, jd = gregorian_to_jalali(today.year, today.month, today.day)
+    cur_month = jy * 12 + (jm - 1)
+    periods = []
+    for i in range(count):
+        if bucket == 1:
+            start = end = today - timedelta(days=i)
+        elif bucket == 7:
+            week_start = today - timedelta(days=(today.weekday() - 5) % 7)
+            start = week_start - timedelta(days=7 * i)
+            end = start + timedelta(days=6)
+        elif bucket == 15:
+            h = cur_month * 2 + (0 if jd <= 15 else 1) - i
+            m, half = divmod(h, 2)
+            first = month_start(m)
+            nxt = month_start(m + 1)
+            start, end = (first, first + timedelta(days=14)) if half == 0 else (first + timedelta(days=15), nxt - timedelta(days=1))
+        else:
+            m = cur_month - i
+            start, end = month_start(m), month_start(m + 1) - timedelta(days=1)
+        periods.append({"start": start, "end": end, "current": start <= today <= end})
+    return periods
+
+
 @app.get("/api/reseller-bots/revenue")
 def api_reseller_bots_revenue(bucket: int = 1, count: int = 14, bot_id: Optional[int] = None,
                               admin=Depends(require_permission("resellers"))):
-    """درآمد نماینده‌های کامل به تفکیک بازه‌های ۱/۷/۱۵/۳۰ روزه (جدیدترین بازه اول)."""
-    from datetime import date, timedelta
+    """درآمد نماینده‌های کامل به تفکیک روز/هفته/نیم‌ماه/ماه شمسی (جدیدترین بازه اول)، وقت تهران."""
+    from datetime import timedelta
     if bucket not in (1, 7, 15, 30):
         raise HTTPException(status_code=400, detail=tr("بازه نامعتبر است."))
     count = max(1, min(count, 60))
-    today = date.today()
-    periods = []
-    for i in range(count):
-        end = today - timedelta(days=i * bucket)
-        start = end - timedelta(days=bucket - 1)
-        periods.append((start, end))
-    range_start = periods[-1][0].isoformat()
-    range_end = periods[0][1].isoformat()
+    periods = _jalali_revenue_periods(bucket, count)
+    range_start = min(p["start"] for p in periods).isoformat()
+    range_end = max(p["end"] for p in periods).isoformat()
+    empty = {"orders": 0, "order_revenue": 0, "topups": 0, "topup_revenue": 0}
 
     def aggregate(daily):
         out = []
-        for start, end in periods:
-            revenue = orders = 0
-            for k in range(bucket):
-                d = daily.get((start + timedelta(days=k)).isoformat())
-                if d:
-                    revenue += d["revenue"]
-                    orders += d["orders"]
-            out.append({"revenue": revenue, "orders": orders})
+        for p in periods:
+            acc = dict(empty)
+            d = p["start"]
+            while d <= p["end"]:
+                row = daily.get(d.isoformat())
+                if row:
+                    for k in acc:
+                        acc[k] += row[k]
+                d += timedelta(days=1)
+            acc["revenue"] = acc["order_revenue"] + acc["topup_revenue"]
+            out.append(acc)
         return out
+
+    def total_of(series):
+        acc = {k: sum(x[k] for x in series) for k in (*empty, "revenue")}
+        return acc
 
     bots_out = []
     for b in db.list_reseller_bots():
@@ -4988,18 +5025,17 @@ def api_reseller_bots_revenue(bucket: int = 1, count: int = 14, bot_id: Optional
         series = aggregate(daily)
         bots_out.append({
             "id": b["id"], "owner_name": b["owner_name"], "bot_username": b["bot_username"],
-            "owner_telegram_id": b["owner_telegram_id"], "series": series,
-            "total_revenue": sum(x["revenue"] for x in series), "total_orders": sum(x["orders"] for x in series),
+            "owner_telegram_id": b["owner_telegram_id"], "series": series, "total": total_of(series),
         })
     totals = [
-        {"revenue": sum(b["series"][i]["revenue"] for b in bots_out),
-         "orders": sum(b["series"][i]["orders"] for b in bots_out)}
+        {k: sum(b["series"][i][k] for b in bots_out) for k in (*empty, "revenue")}
         for i in range(len(periods))
     ]
     return {
         "bucket": bucket,
-        "periods": [{"start": s.isoformat(), "end": e.isoformat()} for s, e in periods],
+        "periods": [{"start": p["start"].isoformat(), "end": p["end"].isoformat(), "current": p["current"]} for p in periods],
         "totals": totals,
+        "total": total_of(totals),
         "bots": bots_out,
     }
 
