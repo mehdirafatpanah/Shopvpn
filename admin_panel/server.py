@@ -6846,7 +6846,12 @@ def api_sub_page_preview(admin=Depends(require_permission("settings"))):
     brand = (settings.get("dsub_brand") or db.get_setting("brand_name", "") or db.get_setting("shop_name", "")
              or "ShopVPN").strip()
     info = {"total": 50 * ds.GB, "upload": 2 * ds.GB, "download": 5 * ds.GB, "expire": now + 25 * 86400}
-    series = {"labels": ["شنبه", "یکشنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه"], "values": [1.2, 1.8, 2.1, 2.7, 3.4, 4.1, 5.0]}
+    # شکل واقعی خروجی ds.build_series: {'d': 12 بازه‌ی دوساعته, 'w': 7 روز, 'm': 30 روز} به GB
+    series = {
+        "d": [0.2, 0.4, 0.1, 0.0, 0.3, 0.6, 0.9, 0.5, 0.7, 1.1, 0.8, 0.4],
+        "w": [1.2, 1.8, 2.1, 2.7, 3.4, 4.1, 5.0],
+        "m": [round(0.3 + (i % 7) * 0.35 + i * 0.04, 2) for i in range(30)],
+    }
     data = ds.build_page_data(mock_cc, info, [
         "vless://00000000-0000-0000-0000-000000000000@example.com:443?security=tls&type=tcp#🇩🇪%20Demo",
         "vmess://demo#🇳🇱%20Backup",
