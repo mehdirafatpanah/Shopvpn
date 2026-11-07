@@ -32,6 +32,7 @@ from notification_i18n import localized_payload
 from fastapi import FastAPI, Request, Response, Depends, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -42,6 +43,12 @@ class NoCacheStaticFiles(StaticFiles):
     def file_response(self, *args, **kwargs):
         response = super().file_response(*args, **kwargs)
         response.headers["Cache-Control"] = "no-cache"
+        return response
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        if response.status_code in (200, 304) and b"v=" in scope.get("query_string", b""):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
 from pydantic import BaseModel
 
@@ -110,6 +117,7 @@ async def _i18n_request_language(request: Request, call_next):
         reset_language(token)
 
 app.add_middleware(ApiNoStoreMiddleware)
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
 main_db = Database(DB_PATH)
 main_db.init_db(owner_id=OWNER_ID)
 
