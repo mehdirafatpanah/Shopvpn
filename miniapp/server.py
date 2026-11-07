@@ -26,6 +26,7 @@ import secrets
 import base64
 import html as html_lib
 import asyncio
+import time
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -34,6 +35,7 @@ from typing import Optional, List, Dict, Any
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import aiohttp
+import account_naming
 from i18n import tr, api_message, set_language, reset_language, normalize_language, is_language_enabled
 from db_text_policy import render_stored_setting
 from price_display import compare_price_for
@@ -79,6 +81,7 @@ import extra_gateway_registry
 import payment_engine
 import web_auth
 import ai_support
+import buy_guide
 import receipt_ai_check
 import report_router
 import dedicated_sub
@@ -377,24 +380,36 @@ async def _is_channel_member_http(bot_token: str, channel: str, tg_id: int) -> b
     return status not in ("left", "kicked")
 
 
+def _force_join_payload(missing: list) -> dict:
+    """جزئیات کانال‌هایی که کاربر هنوز عضو نیست (کلیدهای channel/join_link برای کلاینت‌های قدیمی)."""
+    from force_join_channels import join_link
+    items = [{"channel": c, "join_link": join_link(c)} for c in missing]
+    first = items[0] if items else {"channel": "", "join_link": None}
+    return {"channels": items, "channel": first["channel"], "join_link": first["join_link"]}
+
+
+async def _missing_force_join_channels(tenant: "Tenant", tg_id: int, channels: list) -> list:
+    results = await asyncio.gather(*(_is_channel_member_http(tenant.bot_token, c, tg_id) for c in channels))
+    return [c for c, ok in zip(channels, results) if not ok]
+
+
 async def _force_join_check(tg_id: int, db: Database, tenant: "Tenant"):
-    """اگر عضویت لازم باشد و کاربر عضو نباشد، خطای ۴۰۳ با جزئیات کانال می‌دهد."""
+    """اگر عضویت لازم باشد و کاربر عضو نباشد، خطای ۴۰۳ با جزئیات کانال‌ها می‌دهد."""
     settings = db.get_force_join_settings()
-    if not settings.get("enabled") or not settings.get("channel"):
+    if not settings.get("enabled") or not settings.get("channels"):
         return
     if db.is_admin(tg_id):
         return
-    member = await _is_channel_member_http(tenant.bot_token, settings["channel"], tg_id)
-    if member:
+    missing = await _missing_force_join_channels(tenant, tg_id, settings["channels"])
+    if not missing:
         return
-    channel_display = str(settings["channel"]).lstrip("@")
     raise HTTPException(
         status_code=403,
         detail={
             "code": "force_join",
-            "message": tr("برای ادامه، ابتدا باید در کانال زیر عضو شوید."),
-            "channel": settings["channel"],
-            "join_link": f"https://t.me/{channel_display}",
+            "message": tr("برای ادامه، ابتدا باید در کانال‌های زیر عضو شوید.") if len(missing) > 1
+                       else tr("برای ادامه، ابتدا باید در کانال زیر عضو شوید."),
+            **_force_join_payload(missing),
         },
     )
 
@@ -459,14 +474,10 @@ async def api_force_join_status(auth=Depends(get_verified_user)):
     بنر عضویت در کانال را نشان دهد (هم‌تراز با رفتار ربات اصلی)."""
     tg_id, db, tenant = auth
     settings = db.get_force_join_settings()
-    if not settings.get("enabled") or not settings.get("channel") or db.is_admin(tg_id):
+    if not settings.get("enabled") or not settings.get("channels") or db.is_admin(tg_id):
         return {"required": False, "member": True}
-    member = await _is_channel_member_http(tenant.bot_token, settings["channel"], tg_id)
-    channel_display = str(settings["channel"]).lstrip("@")
-    return {
-        "required": True, "member": member,
-        "channel": settings["channel"], "join_link": f"https://t.me/{channel_display}",
-    }
+    missing = await _missing_force_join_channels(tenant, tg_id, settings["channels"])
+    return {"required": True, "member": not missing, **_force_join_payload(missing or settings["channels"])}
 
 
 async def get_bot_username(tenant: Tenant) -> str:
@@ -1297,6 +1308,12 @@ async def api_create_custom_config(body: CustomConfigPurchase, auth=Depends(requ
     if not db.panel_has_capacity(server["id"], 1):
         cap = db.get_panel_capacity_info(server["id"])
         raise HTTPException(status_code=409, detail=tr(f"ظرفیت پنل تکمیل است ({cap['active_services']}/{cap['max_services']} سرویس فعال)."))
+    if account_naming.is_active(server):
+        username = account_naming.build_username(db, server, tg_id, username)
+        for _ in range(5):
+            if not db.is_custom_username_taken(username):
+                break
+            username = account_naming.build_username(db, server, tg_id, "") if account_naming.needs_counter(server) else account_naming.collision_variant(username)
 
     user_row = db.get_user(tg_id)
     if user_row and user_row["is_blocked"]:
@@ -1373,12 +1390,17 @@ async def api_create_custom_config(body: CustomConfigPurchase, auth=Depends(requ
 def api_catalog(auth=Depends(get_verified_user)):
     tg_id, db, _ = auth
     categories = db.get_categories(active_only=True)
+    paths = db.get_category_path_names()
+    parents = {int(c["parent_id"]) for c in categories if c["parent_id"]}
     result = []
     for c in categories:
         products = db.get_products(c["id"], active_only=True)
+        if not products and int(c["id"]) in parents:
+            continue  # دسته‌ی والدِ خالی؛ زیردسته‌هایش جدا نمایش داده می‌شوند
         result.append({
             "id": c["id"],
-            "name": c["name"],
+            "parent_id": c["parent_id"],
+            "name": paths.get(c["id"], c["name"]),
             "products": [
                 {
                     "id": p["id"],
@@ -1809,6 +1831,67 @@ async def api_ai_support_send(body: AISupportMessageCreate, auth=Depends(require
         "escalated": bool(result.get("escalate")),
         "ui_action": result.get("ui_action"),
     }
+
+
+# ---------------------------------------------------------------------------
+# راهنمای خرید هوشمند (هم‌تراز با دکمه‌ی «راهنمای خرید» در ربات)
+# ---------------------------------------------------------------------------
+
+_buy_guide_last_call: Dict[int, float] = {}
+
+
+@app.get("/api/buy-guide/config")
+async def api_buy_guide_config(auth=Depends(get_verified_user)):
+    _tg_id, db, _ = auth
+    enabled = await asyncio.to_thread(buy_guide.is_enabled, db)
+    return {
+        "enabled": bool(enabled),
+        "questions": [
+            {"key": q["key"], "q": q["q"], "options": [{"value": v, "label": label} for v, label in q["options"]]}
+            for q in buy_guide.QUESTIONS
+        ] if enabled else [],
+    }
+
+
+class BuyGuideChatBody(BaseModel):
+    answers: Dict[str, str] = {}
+    message: str = ""
+    start: bool = False
+
+
+@app.post("/api/buy-guide/chat")
+async def api_buy_guide_chat(body: BuyGuideChatBody, auth=Depends(require_joined)):
+    tg_id, db, tenant = auth
+    if not await asyncio.to_thread(buy_guide.is_enabled, db):
+        raise HTTPException(status_code=503, detail=tr("راهنمای خرید هوشمند در حال حاضر فعال نیست."))
+    answers = buy_guide.normalize_answers(body.answers)
+    text = (body.message or "").strip()
+    if body.start:
+        await asyncio.to_thread(db.clear_ai_conversation, tg_id)
+        text = buy_guide.first_message(answers)
+    if not text:
+        raise HTTPException(status_code=400, detail=tr("پیام نمی‌تواند خالی باشد."))
+    if len(text) > 2000:
+        raise HTTPException(status_code=400, detail=tr("پیام بیش از حد طولانی است."))
+    now = time.monotonic()
+    if now - _buy_guide_last_call.get(tg_id, 0.0) < 3.0:
+        raise HTTPException(status_code=429, detail=tr("لطفاً چند لحظه صبر کن و دوباره بفرست."))
+    _buy_guide_last_call[tg_id] = now
+    if len(_buy_guide_last_call) > 5000:
+        _buy_guide_last_call.clear()
+    try:
+        result = await buy_guide.get_reply(db, tg_id, answers, text)
+    except Exception:
+        logging.getLogger("miniapp.buy_guide").exception("خطای راهنمای خرید برای کاربر %s.", tg_id)
+        raise HTTPException(status_code=502, detail=tr("الان نتونستم پیشنهاد بدم؛ دوباره امتحان کن یا از لیست محصولات انتخاب کن."))
+    if result.get("escalate"):
+        await _forward_miniapp_ai_transcript_to_admin(
+            db, tenant, tg_id, "راهنمای خرید هوشمند مکالمه را به پشتیبانی انسانی ارجاع داد."
+        )
+        await asyncio.to_thread(db.clear_ai_conversation, tg_id)
+    ui_action = result.get("ui_action")
+    product_id = ui_action.get("product_id") if isinstance(ui_action, dict) and ui_action.get("type") == "show_product" else None
+    return {"message": result["reply"], "escalated": bool(result.get("escalate")), "product_id": product_id}
 
 
 # ---------------------------------------------------------------------------
@@ -4915,10 +4998,12 @@ def api_admin_save_banners(body: BannersUpdate, auth=Depends(require_senior_admi
 
 class CategoryCreate(BaseModel):
     name: str
+    parent_id: Optional[int] = None
 
 
 class CategoryUpdate(BaseModel):
     name: str
+    parent_id: Optional[int] = None
 
 
 class ProductCreate(BaseModel):
@@ -4941,6 +5026,7 @@ class ProductCreate(BaseModel):
     extra_user_price: int = 0
     max_users: int = 0
     renew_rules: Optional[dict] = None  # قوانین تمدید کامل (renewal_rules.py)
+    ai_description: str = ""  # توضیح برای راهنمای خرید هوشمند
 
 
 class ProductUpdate(BaseModel):
@@ -4959,6 +5045,7 @@ class ProductUpdate(BaseModel):
     extra_user_price: Optional[int] = None
     max_users: Optional[int] = None
     renew_rules: Optional[dict] = None
+    ai_description: Optional[str] = None
 
 
 class ConfigsAdd(BaseModel):
@@ -4969,12 +5056,13 @@ class ConfigsAdd(BaseModel):
 def api_admin_list_categories(auth=Depends(require_senior_admin)):
     _, db, _ = auth
     cats = db.get_categories(active_only=False)
+    paths = db.get_category_path_names()
     result = []
     for c in cats:
         products = db.get_products(c["id"], active_only=False)
         result.append({
-            "id": c["id"], "name": c["name"], "is_active": bool(c["is_active"]),
-            "product_count": len(products),
+            "id": c["id"], "name": paths.get(c["id"], c["name"]), "is_active": bool(c["is_active"]),
+            "parent_id": c["parent_id"], "product_count": len(products),
         })
     return result
 
@@ -4984,7 +5072,10 @@ def api_admin_create_category(body: CategoryCreate, auth=Depends(require_senior_
     _, db, _ = auth
     if not body.name.strip():
         raise HTTPException(status_code=400, detail=tr("نام دسته‌بندی نمی‌تواند خالی باشد."))
-    cat_id = db.add_category(body.name.strip())
+    try:
+        cat_id = db.add_category(body.name.strip(), parent_id=getattr(body, "parent_id", None))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=tr(str(e)))
     return {"id": cat_id}
 
 
@@ -4995,7 +5086,13 @@ def api_admin_edit_category(cat_id: int, body: CategoryUpdate, auth=Depends(requ
         raise HTTPException(status_code=404, detail=tr("دسته‌بندی یافت نشد."))
     if not body.name.strip():
         raise HTTPException(status_code=400, detail=tr("نام دسته‌بندی نمی‌تواند خالی باشد."))
-    db.edit_category(cat_id, body.name.strip())
+    try:
+        if "parent_id" in (getattr(body, "model_fields_set", None) or getattr(body, "__fields_set__", set())):
+            db.edit_category(cat_id, body.name.strip(), parent_id=body.parent_id)
+        else:
+            db.edit_category(cat_id, body.name.strip())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=tr(str(e)))
     return {"status": "ok"}
 
 
@@ -5436,6 +5533,7 @@ def api_admin_list_products(cat_id: int, auth=Depends(require_senior_admin)):
             "discount_max_uses": p["discount_max_uses"] or 0,
             "discount_used_count": p["discount_used_count"] or 0,
             "description": p["description"], "duration_days": p["duration_days"],
+            "ai_description": (p["ai_description"] if "ai_description" in p.keys() else "") or "",
             "is_active": bool(p["is_active"]),
             "is_auto_provision": bool(p["is_auto_provision"]),
             "provision_server_id": p["provision_server_id"],
@@ -5570,7 +5668,7 @@ async def api_admin_create_product(body: ProductCreate, auth=Depends(require_sen
         base_users=base_users, extra_user_price=extra_user_price, max_users=max_users,
         provision_target_config=target_config, extra_panel_ids=extra_panel_ids,
         extra_panel_target_configs=extra_panel_target_configs,
-        renew_rules=body.renew_rules,
+        renew_rules=body.renew_rules, ai_description=body.ai_description,
     )
     if int(body.compare_price or 0) > 0 and (body.discount_days is not None or body.discount_max_uses is not None):
         db.edit_product(product_id, compare_price=int(body.compare_price),
@@ -5724,6 +5822,7 @@ async def api_admin_edit_product(product_id: int, body: ProductUpdate, auth=Depe
         price=body.price,
         description=body.description,
         duration_days=body.duration_days,
+        ai_description=body.ai_description,
         **edit_kwargs,
     )
     saved_product = db.get_product(product_id)
