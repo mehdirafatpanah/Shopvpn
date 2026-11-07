@@ -1848,7 +1848,7 @@ async def api_buy_guide_config(auth=Depends(get_verified_user)):
         "enabled": bool(enabled),
         "questions": [
             {"key": q["key"], "q": q["q"], "options": [{"value": v, "label": label} for v, label in q["options"]]}
-            for q in buy_guide.QUESTIONS
+            for q in buy_guide.get_questions(db)
         ] if enabled else [],
     }
 
@@ -1864,11 +1864,11 @@ async def api_buy_guide_chat(body: BuyGuideChatBody, auth=Depends(require_joined
     tg_id, db, tenant = auth
     if not await asyncio.to_thread(buy_guide.is_enabled, db):
         raise HTTPException(status_code=503, detail=tr("راهنمای خرید هوشمند در حال حاضر فعال نیست."))
-    answers = buy_guide.normalize_answers(body.answers)
+    answers = buy_guide.normalize_answers(body.answers, db)
     text = (body.message or "").strip()
     if body.start:
         await asyncio.to_thread(db.clear_ai_conversation, tg_id)
-        text = buy_guide.first_message(answers)
+        text = buy_guide.first_message(answers, db)
     if not text:
         raise HTTPException(status_code=400, detail=tr("پیام نمی‌تواند خالی باشد."))
     if len(text) > 2000:
