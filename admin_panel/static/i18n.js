@@ -1155,7 +1155,8 @@
     (root||document.body).querySelectorAll?.('[placeholder],[title],[aria-label]').forEach(e=>['placeholder','title','aria-label'].forEach(a=>{if(e.hasAttribute(a))e.setAttribute(a,tr(e.getAttribute(a)))}));
   }
   window.ShopVPNTranslate=tr; window.ShopVPNLoadLanguage=loadCatalog; window.ShopVPNApplyI18n=()=>apply(document.body);
-  document.addEventListener('DOMContentLoaded',async()=>{await apply(document.body); new MutationObserver(m=>m.forEach(x=>x.addedNodes.forEach(n=>{if(n.nodeType===1)apply(n)}))).observe(document.body,{childList:true,subtree:true});});
+  const __svInit=async()=>{await apply(document.body); new MutationObserver(m=>m.forEach(x=>x.addedNodes.forEach(n=>{if(n.nodeType===1)apply(n)}))).observe(document.body,{childList:true,subtree:true});};
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',__svInit); else __svInit();
 })();
 /*‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍*/
 // 		   		 		  	 	 		 		   		  	 	 		 			  		 				 			  	 

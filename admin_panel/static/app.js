@@ -977,9 +977,8 @@ function openPushSettingsModal() {
 // create shortcut» رو تو منو نشون می‌ده، نه دیالوگ واقعی نصب اپ)، اینجا
 // همون اول لود صفحه (بدون نیاز به فعال کردن Push) ثبتش می‌کنیم.
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
-  });
+  const registerSW = () => navigator.serviceWorker.register('/sw.js').catch(() => {});
+  if (document.readyState === 'complete') registerSW(); else window.addEventListener('load', registerSW);
 }
 
 (function watchAppVersion() {

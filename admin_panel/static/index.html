@@ -109,7 +109,6 @@
   });
 })();
 </script>
-<script src="/assets/i18n.js"></script>
 </head>
 <body>
 
@@ -222,7 +221,97 @@
 
 <div id="toast-root" class="toast-root"></div>
 
-<script src="/assets/app.js"></script>
+<script id="sv-loader" data-i18n="/assets/i18n.js" data-app="/assets/app.js">
+(function () {
+  var me = document.getElementById('sv-loader');
+  var CH = 40000, PAR = 4, TO = 10000, TRIES = 8, ready = false;
+  var btn = document.getElementById('login-submit'), label = btn && btn.textContent;
+  if (btn) { btn.disabled = true; btn.textContent = 'در حال بارگذاری...'; }
+  document.addEventListener('submit', function (e) { if (!ready) e.preventDefault(); }, true);
+  function done() {
+    ready = true;
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  async function getBuf(url) {
+    for (var a = 0; a < TRIES; a++) {
+      var c = new AbortController(), t = setTimeout(function () { c.abort(); }, TO);
+      try {
+        var r = await fetch(url, { signal: c.signal, credentials: 'same-origin' });
+        if (!r.ok) throw new Error('http');
+        var b = await r.arrayBuffer();
+        clearTimeout(t);
+        return { b: b, n: r.headers.get('X-Chunks') };
+      } catch (e) {
+        clearTimeout(t);
+        await sleep(400 * (a + 1));
+      }
+    }
+    throw new Error('chunk');
+  }
+  async function load(src) {
+    var u = new URL(src, location.href), name = u.pathname.split('/').pop(), key = u.pathname + u.search;
+    var cache = null;
+    try {
+      cache = await caches.open('sv-assets');
+      var hit = await cache.match(key);
+      if (hit) return await hit.text();
+    } catch (e) {}
+    var base = '/_chunk/' + name + '/';
+    var first = await getBuf(base + '0' + u.search);
+    var n = parseInt(first.n, 10);
+    if (!(n >= 1)) throw new Error('count');
+    var parts = new Array(n), next = 1;
+    parts[0] = first.b;
+    async function worker() {
+      while (next < n) {
+        var i = next++;
+        parts[i] = (await getBuf(base + i + u.search)).b;
+      }
+    }
+    var ws = [];
+    for (var k = 0; k < Math.min(PAR, n - 1); k++) ws.push(worker());
+    await Promise.all(ws);
+    var total = parts.reduce(function (s, p) { return s + p.byteLength; }, 0);
+    var all = new Uint8Array(total), off = 0;
+    parts.forEach(function (p) { all.set(new Uint8Array(p), off); off += p.byteLength; });
+    var text = new TextDecoder('utf-8').decode(all);
+    try {
+      if (cache) {
+        (await cache.keys()).forEach(function (r) {
+          var x = new URL(r.url);
+          if (x.pathname === u.pathname && x.search !== u.search) cache.delete(r);
+        });
+        await cache.put(key, new Response(text, { headers: { 'Content-Type': 'application/javascript' } }));
+      }
+    } catch (e) {}
+    return text;
+  }
+  function run(text, src) {
+    var s = document.createElement('script');
+    s.text = text + '\n//# sourceURL=' + src;
+    document.head.appendChild(s);
+    s.remove();
+  }
+  function plain(src) {
+    return new Promise(function (res) {
+      var s = document.createElement('script');
+      s.async = false; s.src = src; s.onload = s.onerror = res;
+      document.head.appendChild(s);
+    });
+  }
+  (async function () {
+    var list = [me.getAttribute('data-i18n'), me.getAttribute('data-app')];
+    try {
+      var texts = await Promise.all(list.map(load));
+      texts.forEach(function (t, i) { run(t, list[i]); });
+    } catch (e) {
+      for (var i = 0; i < list.length; i++) await plain(list[i]);
+    }
+    done();
+  })();
+})();
+</script>
 </body>
 </html>
 <!--‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍-->
