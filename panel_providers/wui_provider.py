@@ -181,7 +181,10 @@ class WUIProvider(BasePanelProvider):
             raise PanelError("کاربر نمونه هیچ interface ای ندارد؛ از یک کاربر دیگر امتحان کن.")
         return {"group_ids": ids, "proxy_settings": {}}
 
-    async def create_user(self, username: str, volume_gb: int, duration_days: int, start_on_first_use: bool = False) -> PanelUserResult:
+    supports_user_limit = True
+
+    async def create_user(self, username: str, volume_gb: int, duration_days: int, start_on_first_use: bool = False,
+                           user_limit: int = 0) -> PanelUserResult:
         interface_ids = self._interface_ids()
         first_use = bool(self.server["start_on_first_use"]) if "start_on_first_use" in self.server.keys() else bool(start_on_first_use)
         body = {
@@ -189,7 +192,7 @@ class WUIProvider(BasePanelProvider):
             "note": "ساخته‌شده توسط ShopVPN (کانفیگ شخصی)",
             "interfaceIds": interface_ids,
             "quotaBytes": gb_to_bytes(volume_gb) if volume_gb else 0,
-            "deviceLimit": 1,
+            "deviceLimit": int(user_limit) if user_limit and int(user_limit) > 0 else 1,
         }
         if duration_days and first_use:
             body["startOnFirstUse"] = True
@@ -248,7 +251,7 @@ class WUIProvider(BasePanelProvider):
 
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
                            reset_usage: bool = False, preserve_remaining: bool = False,
-                           unlimited_volume: bool = False) -> PanelUserResult:
+                           unlimited_volume: bool = False, user_limit: int = None) -> PanelUserResult:
         async with self._session() as session:
             client = await self._find(session, username)
             client_id = client["id"]
@@ -259,6 +262,8 @@ class WUIProvider(BasePanelProvider):
             patch = {"status": "active"}
             if new_limit != current:
                 patch["quotaBytes"] = new_limit
+            if user_limit is not None and int(user_limit) > 0:
+                patch["deviceLimit"] = int(user_limit)
             if add_days:
                 expires = _epoch(client.get("expiresAt"))
                 if client.get("startOnFirstUse") and not expires:
