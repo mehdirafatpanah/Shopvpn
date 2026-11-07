@@ -3823,25 +3823,69 @@ async def api_reseller_self_delete(config_id: int, admin=Depends(get_current_adm
 
 class CategoryBody(BaseModel):
     name: str
+    parent_id: Optional[int] = None  # دسته‌ی والد (تو در تو)؛ خالی = دسته‌ی اصلی
+
+
+def _body_fields_set(body) -> set:
+    return set(getattr(body, "model_fields_set", None) or getattr(body, "__fields_set__", set()) or ())
 
 
 @app.get("/api/categories")
 def api_categories(admin=Depends(require_permission("catalog"))):
-    return rows_to_list(db.get_categories(active_only=False))
+    paths = db.get_category_path_names()
+    out = []
+    for c in rows_to_list(db.get_categories(active_only=False)):
+        path = paths.get(c["id"], c["name"])
+        c["path"] = path
+        c["depth"] = path.count(" › ")
+        out.append(c)
+    return out
 
 
 @app.post("/api/categories")
 def api_add_category(body: CategoryBody, admin=Depends(require_permission("catalog"))):
-    cat_id = db.add_category(body.name)
+    if not (body.name or "").strip():
+        raise HTTPException(400, tr("نام دسته‌بندی نمی‌تواند خالی باشد."))
+    try:
+        cat_id = db.add_category(body.name.strip(), parent_id=body.parent_id)
+    except ValueError as e:
+        raise HTTPException(400, tr(str(e)))
     db.log_admin_action(admin["id"], "category_add", body.name, "category", cat_id)
     return {"id": cat_id}
 
 
 @app.put("/api/categories/{cat_id}")
 def api_edit_category(cat_id: int, body: CategoryBody, admin=Depends(require_permission("catalog"))):
-    db.edit_category(cat_id, body.name)
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(400, tr("نام دسته‌بندی نمی‌تواند خالی باشد."))
+    if not db.get_category(cat_id):
+        raise HTTPException(404, tr("دسته‌بندی یافت نشد."))
+    try:
+        if "parent_id" in _body_fields_set(body):
+            db.edit_category(cat_id, name, parent_id=body.parent_id)
+        else:
+            db.edit_category(cat_id, name)
+    except ValueError as e:
+        raise HTTPException(400, tr(str(e)))
     db.log_admin_action(admin["id"], "category_edit", body.name, "category", cat_id)
     return {"ok": True}
+
+
+class CategoryMoveBody(BaseModel):
+    direction: str  # "up" | "down"
+
+
+@app.post("/api/categories/{cat_id}/move")
+def api_move_category(cat_id: int, body: CategoryMoveBody, admin=Depends(require_permission("catalog"))):
+    if body.direction not in ("up", "down"):
+        raise HTTPException(400, tr("جهت نامعتبر است."))
+    if not db.get_category(cat_id):
+        raise HTTPException(404, tr("دسته‌بندی یافت نشد."))
+    moved = db.move_category(cat_id, body.direction)
+    if moved:
+        db.log_admin_action(admin["id"], "category_move", f"{cat_id} {body.direction}", "category", cat_id)
+    return {"ok": True, "moved": bool(moved)}
 
 
 @app.post("/api/categories/{cat_id}/toggle")
@@ -3862,6 +3906,7 @@ class ProductBody(BaseModel):
     category_id: int
     name: str
     price: int
+    btn_style: Optional[str] = None  # رنگ دکمه در بات: primary/success/danger یا خالی=پیش‌فرض
     description: str = ""
     duration_days: int = 30
     is_auto_provision: bool = False
@@ -3881,11 +3926,15 @@ class ProductBody(BaseModel):
     extra_user_price: int = 0
     max_users: int = 0
     renew_rules: Optional[dict] = None  # قوانین تمدید کامل (renewal_rules.py)
+    ai_description: str = ""  # توضیح برای راهنمای خرید هوشمند (به کاربر نمایش داده نمی‌شود)
 
 
 @app.get("/api/products")
 def api_products(admin=Depends(require_permission("catalog"))):
     products = rows_to_list(db.get_all_products())
+    _paths = db.get_category_path_names()
+    for _p in products:
+        _p["category_name"] = _paths.get(_p.get("category_id"), _p.get("category_name"))
     for p in products:
         p["stock"] = db.count_available_configs(p["id"])
         extra = db.get_product_extra_targets(p["id"])
@@ -4050,7 +4099,8 @@ async def api_add_product(body: ProductBody, admin=Depends(require_permission("c
         base_users=base_users, extra_user_price=extra_user_price, max_users=max_users,
         extra_panel_ids=extra_panels, extra_ssh_node_ids=extra_nodes,
         provision_target_config=target_config, extra_panel_target_configs=extra_panel_target_configs,
-        renew_rules=body.renew_rules,
+        renew_rules=body.renew_rules, ai_description=body.ai_description,
+        btn_style=(body.btn_style or ""),
     )
     if int(body.compare_price or 0) > 0 and (body.discount_days is not None or body.discount_max_uses is not None):
         db.edit_product(pid, compare_price=int(body.compare_price),
@@ -4152,6 +4202,7 @@ class ProductEditBody(BaseModel):
     price: Optional[int] = None
     description: Optional[str] = None
     duration_days: Optional[int] = None
+    btn_style: Optional[str] = None  # None=بدون تغییر؛ ""=پیش‌فرض
     # اگر ارسال شود ("bank" یا "direct")، منبع تأمین محصول تغییر می‌کند (امکانی که
     # قبلاً فقط موقع «ساخت» محصول بود و بعد از آن دیگر قابل تغییر نبود).
     source: Optional[str] = None
@@ -4170,6 +4221,7 @@ class ProductEditBody(BaseModel):
     extra_user_price: Optional[int] = None
     max_users: Optional[int] = None
     renew_rules: Optional[dict] = None
+    ai_description: Optional[str] = None
 
 
 @app.put("/api/products/{product_id}")
@@ -4408,7 +4460,8 @@ async def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends
         compare_price=(max(int(body.compare_price), 0) if body.compare_price is not None else ...),
         discount_days=(max(int(body.discount_days), 0) if body.discount_days is not None else ...),
         discount_max_uses=(max(int(body.discount_max_uses), 0) if body.discount_max_uses is not None else ...),
-        provision_target_config=target_config_update,
+        provision_target_config=target_config_update, ai_description=body.ai_description,
+        btn_style=(body.btn_style if body.btn_style is not None else ...),
     )
     if extras_changed or body.extra_panel_target_values is not None or body.source is not None or provision_server_id is not ... or provision_ssh_node_id is not ...:
         db.set_product_extra_targets(product_id, final_extra_panels, final_extra_nodes, final_extra_target_configs)
@@ -6203,6 +6256,7 @@ class PanelServerBody(BaseModel):
     api_password: str
     default_group: Optional[str] = None
     template_username: Optional[str] = None  # لازم برای PasarGuard/Marzban/Marzneshin
+    panel_category_id: Optional[int] = None
 
 
 class PanelServerReorderBody(BaseModel):
@@ -6238,6 +6292,7 @@ def _panel_server_public(s, health=None) -> dict:
         configured = bool(s["group_ids"] and s["proxy_settings"])
     return {
         "id": s["id"], "name": s["name"], "panel_type": s["panel_type"],
+        "panel_category_id": s["panel_category_id"] if "panel_category_id" in s.keys() else None,
         "type_label": PANEL_TYPE_LABELS.get(s["panel_type"], s["panel_type"]),
         "api_url": s["api_url"], "template_username": s["template_username"],
         "has_template": bool(s["group_ids"] and s["proxy_settings"]),
@@ -6445,6 +6500,76 @@ def api_panel_servers(admin=Depends(require_permission("panels")), _fa=Depends(r
     return [_panel_server_public(s, health) for s in db.get_panel_servers()]
 
 
+# ------------------------------------------------------ panel categories --
+
+class PanelCategoryBody(BaseModel):
+    name: str
+
+
+class PanelCategoryAssignBody(BaseModel):
+    category_id: Optional[int] = None  # None/0 = بدون دسته
+
+
+@app.get("/api/panel-categories")
+def api_panel_categories(admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    return rows_to_list(db.get_panel_categories())
+
+
+@app.post("/api/panel-categories")
+def api_add_panel_category(body: PanelCategoryBody, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(400, tr("نام دسته‌بندی نمی‌تواند خالی باشد."))
+    cid = db.add_panel_category(name)
+    db.log_admin_action(admin["id"], "panel_category_add", name, "panel_category", cid)
+    return {"id": cid}
+
+
+@app.put("/api/panel-categories/{cat_id}")
+def api_edit_panel_category(cat_id: int, body: PanelCategoryBody, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(400, tr("نام دسته‌بندی نمی‌تواند خالی باشد."))
+    if not db.get_panel_category(cat_id):
+        raise HTTPException(404, tr("دسته‌بندی یافت نشد."))
+    db.edit_panel_category(cat_id, name)
+    db.log_admin_action(admin["id"], "panel_category_edit", name, "panel_category", cat_id)
+    return {"ok": True}
+
+
+@app.post("/api/panel-categories/{cat_id}/move")
+def api_move_panel_category(cat_id: int, body: CategoryMoveBody, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    if body.direction not in ("up", "down"):
+        raise HTTPException(400, tr("جهت نامعتبر است."))
+    if not db.get_panel_category(cat_id):
+        raise HTTPException(404, tr("دسته‌بندی یافت نشد."))
+    moved = db.move_panel_category(cat_id, body.direction)
+    if moved:
+        db.log_admin_action(admin["id"], "panel_category_move", f"{cat_id} {body.direction}", "panel_category", cat_id)
+    return {"ok": True, "moved": bool(moved)}
+
+
+@app.delete("/api/panel-categories/{cat_id}")
+def api_delete_panel_category(cat_id: int, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    if not db.get_panel_category(cat_id):
+        raise HTTPException(404, tr("دسته‌بندی یافت نشد."))
+    db.delete_panel_category(cat_id)  # پنل‌های آن دسته به «بدون دسته» برمی‌گردند
+    db.log_admin_action(admin["id"], "panel_category_delete", str(cat_id), "panel_category", cat_id)
+    return {"ok": True}
+
+
+@app.post("/api/panel-servers/{server_id}/category")
+def api_set_panel_server_category(server_id: int, body: PanelCategoryAssignBody, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    if not db.get_panel_server(server_id):
+        raise HTTPException(404, tr("یافت نشد."))
+    cid = int(body.category_id) if body.category_id else None
+    if cid and not db.get_panel_category(cid):
+        raise HTTPException(404, tr("دسته‌بندی یافت نشد."))
+    db.update_panel_server(server_id, panel_category_id=cid if cid else 0)
+    db.log_admin_action(admin["id"], "panel_category_assign", f"{server_id} -> {cid}", "panel", server_id)
+    return {"ok": True}
+
+
 @app.post("/api/panel-servers/reorder")
 def api_reorder_panel_servers(body: PanelServerReorderBody, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
     try:
@@ -6486,7 +6611,7 @@ async def api_add_panel_server(body: PanelServerBody, admin=Depends(require_perm
         username = "apikey"
 
     if body.panel_type in INBOUND_SELECT_PANEL_TYPES:
-        server_id = db.add_panel_server(body.name.strip(), body.panel_type, body.api_url.strip(), username, body.api_password, body.default_group)
+        server_id = db.add_panel_server(body.name.strip(), body.panel_type, body.api_url.strip(), username, body.api_password, body.default_group, panel_category_id=body.panel_category_id)
         server = db.get_panel_server(server_id)
         try:
             provider = get_provider(server)
@@ -6502,14 +6627,14 @@ async def api_add_panel_server(body: PanelServerBody, admin=Depends(require_perm
 
     if body.panel_type in SUB_BASE_URL_PANEL_TYPES:
         # مثل Hiddify: inbound لازم نیست؛ باید بعداً با /xui-config تکمیل شود.
-        server_id = db.add_panel_server(body.name.strip(), body.panel_type, body.api_url.strip(), username, body.api_password, body.default_group)
+        server_id = db.add_panel_server(body.name.strip(), body.panel_type, body.api_url.strip(), username, body.api_password, body.default_group, panel_category_id=body.panel_category_id)
         db.log_admin_action(admin["id"], "panel_add", f"سرور «{body.name}» (#{server_id}) از پنل وب")
         return {"id": server_id, "needs_sub_base_url": True}
 
     # خانواده‌ی PasarGuard/Marzban/Marzneshin: با «کاربر نمونه» قالب گرفته می‌شود
     if not body.template_username or not body.template_username.strip():
         raise HTTPException(400, tr("نام کاربری نمونه (برای دریافت قالب) الزامی است."))
-    server_id = db.add_panel_server(body.name.strip(), body.panel_type, body.api_url.strip(), username, body.api_password, body.default_group)
+    server_id = db.add_panel_server(body.name.strip(), body.panel_type, body.api_url.strip(), username, body.api_password, body.default_group, panel_category_id=body.panel_category_id)
     server = db.get_panel_server(server_id)
     try:
         provider = get_provider(server)
@@ -7691,12 +7816,15 @@ def api_get_force_join_settings(admin=Depends(require_permission("settings"))):
 
 @app.post("/api/settings/force-join")
 def api_set_force_join_settings(body: ForceJoinSettingsBody, admin=Depends(require_permission("settings"))):
-    channel = (body.channel or "").strip()
+    from force_join_channels import serialize_channels, invalid_entries
+    if invalid_entries(body.channel or ""):
+        raise HTTPException(400, tr("آیدی کانال باید با @ شروع شود (یا آیدی عددی باشد)؛ لینک دعوت خصوصی پشتیبانی نمی‌شود."))
+    channel = serialize_channels(body.channel or "")  # هر تعداد کانال؛ جداشده با خط جدید/ویرگول
     if body.enabled and not channel:
-        raise HTTPException(400, tr("برای فعال‌سازی، آیدی کانال الزامی است."))
+        raise HTTPException(400, tr("برای فعال‌سازی، آیدی حداقل یک کانال الزامی است."))
     db.set_setting("force_join_enabled", "1" if body.enabled else "0")
     db.set_setting("force_join_channel", channel)
-    db.log_admin_action(admin["id"], "setting_change", f"force_join_channel={channel} (پنل وب - {admin['username']})", "setting", "force_join")
+    db.log_admin_action(admin["id"], "setting_change", f"force_join_channel={channel.replace(chr(10), ',')} (پنل وب - {admin['username']})", "setting", "force_join")
     return {"ok": True}
 
 
