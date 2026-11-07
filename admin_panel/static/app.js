@@ -6329,7 +6329,7 @@ async function renderResellersBotsTab() {
     </div>
     <div class="card">
       <div class="card-head"><h3>نماینده‌های صاحب بات مستقل</h3>
-        <span class="card-sub">مبلغ فروش از سفارش‌های تاییدشده‌ی همان دیتابیس مستقل نماینده محاسبه شده است.</span>
+        <span class="card-sub">فروش = سفارش‌های تاییدشده + شارژ کیف پول تاییدشده‌ی همان دیتابیس مستقل نماینده.</span>
       </div>
       <div class="table-wrap"><table>
         <thead><tr><th>#</th><th>مالک</th><th>بات</th><th>فروش</th><th>وضعیت</th><th>پنل وب</th><th>تاریخ ثبت</th><th>عملیات</th></tr></thead>
@@ -6337,7 +6337,7 @@ async function renderResellersBotsTab() {
           <td class="mono">#${b.id}</td>
           <td>${esc(b.owner_name || '—')}<div class="mono" style="opacity:.65;font-size:12px">${b.owner_telegram_id}</div></td>
           <td>${b.bot_username ? '@' + esc(b.bot_username) : '<span style="opacity:.5">—</span>'}</td>
-          <td><span class="mono">${fmt(b.revenue_toman)} تومان</span><div style="opacity:.6;font-size:11.5px">${fmt(b.paid_orders)} سفارش</div></td>
+          <td><span class="mono">${fmt(b.revenue_toman)} تومان</span><div style="opacity:.6;font-size:11.5px">${fmt(b.paid_orders)} سفارش، ${fmt(b.topup_count || 0)} شارژ کیف پول</div></td>
           <td>${b.is_active ? '<span class="badge badge-approved">فعال</span>' : '<span class="badge badge-rejected">غیرفعال</span>'}</td>
           <td>${b.web_panel_enabled ? '<span class="badge badge-approved">فعال</span>' : '<span class="badge badge-rejected">غیرفعال</span>'}</td>
           <td class="mono">${fmtDate(b.created_at)}</td>
@@ -6374,18 +6374,19 @@ function mountResellerRevenueReport(bots) {
 function drawResellerRevenue(host, data, bots, reload) {
   const st = resellerRevenueState;
   const single = data.bots.length === 1 ? data.bots[0] : null;
-  const rows = data.periods.map((p, i) => ({
-    p, revenue: single ? single.series[i].revenue : data.totals[i].revenue,
-    orders: single ? single.series[i].orders : data.totals[i].orders, i,
-  }));
+  const src = single ? single.series : data.totals;
+  const sum = single ? single.total : data.total;
+  const rows = data.periods.map((p, i) => ({ p, ...src[i] }));
   const maxRev = Math.max(1, ...rows.map(r => r.revenue));
-  const sumRev = rows.reduce((a, r) => a + r.revenue, 0);
-  const sumOrders = rows.reduce((a, r) => a + r.orders, 0);
-  const label = p => st.bucket === 1 ? fmtDateOnly(p.start) : `${fmtDateOnly(p.start)} تا ${fmtDateOnly(p.end)}`;
-  const showBots = !st.botId && data.bots.length > 1;
+  const monthLabel = s => new Date(s + 'T00:00:00Z').toLocaleDateString('fa-IR', { timeZone: 'UTC', year: 'numeric', month: 'long' });
+  const label = p => st.bucket === 1 ? fmtDateOnly(p.start) : st.bucket === 30 ? monthLabel(p.start) : `${fmtDateOnly(p.start)} تا ${fmtDateOnly(p.end)}`;
+  const botName = b => esc(b.owner_name || ('#' + b.id)) + (b.bot_username ? ` <span style="opacity:.6">@${esc(b.bot_username)}</span>` : '');
+  const showRank = !st.botId && data.bots.length > 1;
+  const ranked = showRank ? [...data.bots].sort((a, b) => b.total.revenue - a.total.revenue) : [];
+  const unit = '<span style="font-size:12px;font-weight:600">تومان</span>';
   host.innerHTML = `
-    <div class="card-head"><h3>درآمد نماینده‌های کامل به تفکیک بازه</h3>
-      <span class="card-sub">فروش سفارش‌های تاییدشده + شارژ کیف پول تاییدشده، به تومان</span></div>
+    <div class="card-head"><h3>درآمد نماینده‌های کامل</h3>
+      <span class="card-sub">فروش سفارش‌های تاییدشده + شارژ کیف پول تاییدشده، به تومان. بازه‌ها بر پایه‌ی تقویم شمسی و وقت تهران است.</span></div>
     <div class="form-row" style="gap:8px;flex-wrap:wrap;margin-bottom:12px">
       <div class="tabs">${RESELLER_REVENUE_BUCKETS.map(([v, l]) =>
         `<button class="tab-btn ${v === st.bucket ? 'active' : ''}" data-rrev-bucket="${v}">${l}</button>`).join('')}</div>
@@ -6397,25 +6398,41 @@ function drawResellerRevenue(host, data, bots, reload) {
         ${[7, 14, 30, 60].map(n => `<option value="${n}" ${n === st.count ? 'selected' : ''}>${fmt(n)} بازه اخیر</option>`).join('')}
       </select>
     </div>
-    <div class="grid grid-2" style="margin-bottom:12px">
-      <div class="card stat-card"><span class="value mono">${fmt(sumRev)} <span style="font-size:12px;font-weight:600">تومان</span></span><span class="label">جمع درآمد در بازه‌های نمایش‌داده‌شده</span></div>
-      <div class="card stat-card"><span class="value mono">${fmt(sumOrders)}</span><span class="label">تعداد تراکنش تاییدشده</span></div>
+    <div class="grid grid-3" style="margin-bottom:12px">
+      <div class="card stat-card"><span class="value mono">${fmt(sum.revenue)} ${unit}</span><span class="label">جمع درآمد در بازه‌های نمایش‌داده‌شده</span></div>
+      <div class="card stat-card"><span class="value mono">${fmt(sum.order_revenue)} ${unit}</span><span class="label">فروش سفارش‌ها (${fmt(sum.orders)} سفارش)</span></div>
+      <div class="card stat-card"><span class="value mono">${fmt(sum.topup_revenue)} ${unit}</span><span class="label">شارژ کیف پول (${fmt(sum.topups)} شارژ)</span></div>
     </div>
+    ${showRank ? `
+    <h4 style="margin:4px 0 8px">سهم هر نماینده در این بازه‌ها</h4>
+    <div class="table-wrap" style="margin-bottom:14px"><table>
+      <thead><tr><th>نماینده</th><th>درآمد</th><th>سهم</th><th>سفارش</th><th>شارژ</th></tr></thead>
+      <tbody>${ranked.map(b => `<tr data-rrev-pick="${b.id}" style="cursor:pointer">
+        <td>${botName(b)}</td>
+        <td class="mono"><b>${fmt(b.total.revenue)}</b></td>
+        <td class="mono">${sum.revenue ? fmt(Math.round(b.total.revenue / sum.revenue * 100)) : fmt(0)}٪</td>
+        <td class="mono">${fmt(b.total.orders)}</td>
+        <td class="mono">${fmt(b.total.topups)}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>
+    <h4 style="margin:4px 0 8px">مجموع همه‌ی نماینده‌ها به تفکیک بازه</h4>` : ''}
     <div class="table-wrap"><table>
-      <thead><tr><th>بازه</th>${showBots ? data.bots.map(b => `<th>${esc(b.owner_name || ('#' + b.id))}</th>`).join('') : ''}<th>درآمد${showBots ? ' کل' : ''}</th><th>تراکنش</th><th style="min-width:120px"></th></tr></thead>
+      <thead><tr><th>بازه</th><th>جمع</th><th>سفارش‌ها</th><th>شارژ کیف پول</th><th style="min-width:90px"></th></tr></thead>
       <tbody>${rows.map(r => `<tr>
-        <td>${label(r.p)}</td>
-        ${showBots ? data.bots.map(b => `<td class="mono">${fmt(b.series[r.i].revenue)}</td>`).join('') : ''}
+        <td>${label(r.p)}${r.p.current ? ' <span class="badge badge-pending">جاری</span>' : ''}</td>
         <td class="mono"><b>${fmt(r.revenue)}</b></td>
-        <td class="mono">${fmt(r.orders)}</td>
+        <td class="mono">${fmt(r.order_revenue)}<div style="opacity:.6;font-size:11.5px">${fmt(r.orders)} سفارش</div></td>
+        <td class="mono">${fmt(r.topup_revenue)}<div style="opacity:.6;font-size:11.5px">${fmt(r.topups)} شارژ</div></td>
         <td><div style="height:8px;border-radius:8px;background:rgba(127,127,127,.18);overflow:hidden"><div style="height:100%;border-radius:8px;background:var(--brand,#8B5CF6);width:${r.revenue ? Math.max(3, Math.round(r.revenue / maxRev * 100)) : 0}%"></div></div></td>
       </tr>`).join('')}</tbody>
-    </table></div>`;
+    </table></div>
+    <div style="opacity:.6;font-size:12px;margin-top:8px">هفته از شنبه شروع می‌شود. بازه‌ی «جاری» هنوز کامل نشده است. سفارشی که با موجودی کیف پول پرداخت شده دوباره شمرده نمی‌شود، چون پولش هنگام شارژ ثبت شده است.</div>`;
   $$('[data-rrev-bucket]', host).forEach(b => b.addEventListener('click', () => {
     st.bucket = Number(b.dataset.rrevBucket);
     st.count = st.bucket === 1 ? 14 : st.bucket === 7 ? 12 : st.bucket === 15 ? 12 : 6;
     reload();
   }));
+  $$('[data-rrev-pick]', host).forEach(el => el.addEventListener("click", () => { st.botId = el.dataset.rrevPick; reload(); }));
   $('#rrev-bot', host).addEventListener('change', e => { st.botId = e.target.value; reload(); });
   $('#rrev-count', host).addEventListener('change', e => { st.count = Number(e.target.value); reload(); });
 }
