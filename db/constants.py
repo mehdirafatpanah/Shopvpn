@@ -120,6 +120,17 @@ DEFAULT_SETTINGS = {
     # حذف خودکار پیام‌های حاوی شماره کارت بعد از این تعداد ثانیه از ارسال؛
     # صفر یعنی غیرفعال (پیام برای همیشه در چت باقی می‌ماند).
     "card_msg_autodelete_seconds": "0",
+    # ظاهر و دکمه‌های پیام کارت‌به‌کارت (card_payment_ui.py)
+    "c2c_message_style": "pretty",
+    "c2c_copy_buttons": "1",
+    "c2c_copy_card": "1",
+    "c2c_copy_amount_toman": "1",
+    "c2c_copy_amount_rial": "1",
+    "c2c_copy_holder": "0",
+    "c2c_copy_btn_style": "default",
+    "c2c_protect_card": "0",
+    "c2c_show_bank": "1",
+    "c2c_back_to_wallet": "1",
     # پرداخت دستی کارت‌به‌کارت (ارسال رسید) به‌عنوان یکی از روش‌های پرداخت؛
     # اگر ادمین این روش را غیرفعال کند، در لیست روش‌های پرداخت نمایش داده نمی‌شود.
     "card_to_card_enabled": "1",
@@ -135,6 +146,7 @@ DEFAULT_SETTINGS = {
     # دستیار پشتیبانی هوش مصنوعی (Gemini) - در صورت خالی بودن GEMINI_API_KEY
     # در .env، این بخش حتی اگر "1" باشد غیرفعال می‌ماند.
     "ai_support_enabled": "1",
+    "buy_guide_enabled": "1",
     "business_enabled": "0",
     "business_mark_read": "0",
     "business_notify_changes": "1",

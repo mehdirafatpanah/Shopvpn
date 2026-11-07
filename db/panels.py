@@ -87,14 +87,16 @@ class PanelsMixin:
 
 
     def add_panel_server(self, name: str, panel_type: str, api_url: str,
-                          api_username: str, api_password: str, default_group: str = None) -> int:
+                          api_username: str, api_password: str, default_group: str = None,
+                          panel_category_id: int = None) -> int:
         with self._get_conn() as conn:
             row = conn.execute("SELECT COALESCE(MAX(sort_order), -1) AS m FROM panel_servers WHERE is_mirror=0 OR is_mirror IS NULL").fetchone()
             sort_order = int(row["m"] or -1) + 1
             cur = conn.execute(
-                "INSERT INTO panel_servers (name, panel_type, api_url, api_username, api_password, default_group, sort_order) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (name, panel_type, api_url.rstrip("/"), api_username, api_password, default_group, sort_order),
+                "INSERT INTO panel_servers (name, panel_type, api_url, api_username, api_password, default_group, sort_order, panel_category_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (name, panel_type, api_url.rstrip("/"), api_username, api_password, default_group, sort_order,
+                 int(panel_category_id) if panel_category_id else None),
             )
             return cur.lastrowid
 
@@ -106,9 +108,14 @@ class PanelsMixin:
                    "used_for_custom_config", "used_for_test_config", "used_for_reseller", "start_on_first_use",
                    "max_services", "capacity_alert_sent", "transfer_price", "allow_transfer_target",
                    "xui_inbound_id", "xui_inbound_ids", "xui_sub_base_url", "xui_sub_base_urls", "sort_order",
-                   "geo_cc", "geo_city", "geo_city_fa", "geo_lat", "geo_lon", "geo_manual"}
+                   "geo_cc", "geo_city", "geo_city_fa", "geo_lat", "geo_lon", "geo_manual", "panel_category_id",
+                   "naming_mode", "naming_prefix", "naming_suffix"}
         sets, values = [], []
         for k, v in fields.items():
+            if k == "panel_category_id" and v in ("", 0, "0"):
+                v = None
+                sets.append("panel_category_id=NULL")
+                continue
             if k in allowed and (v is not None or k == "max_services"):
                 sets.append(f"{k}=?")
                 values.append(v.rstrip("/") if k == "api_url" else v)
@@ -118,6 +125,55 @@ class PanelsMixin:
         with self._get_conn() as conn:
             conn.execute(f"UPDATE panel_servers SET {', '.join(sets)} WHERE id=?", values)
 
+
+    def next_panel_naming_counter(self, server_id: int) -> int:
+        with self._get_conn() as conn:
+            conn.execute("UPDATE panel_servers SET naming_counter=COALESCE(naming_counter, 0)+1 WHERE id=?", (server_id,))
+            row = conn.execute("SELECT naming_counter FROM panel_servers WHERE id=?", (server_id,)).fetchone()
+            return int(row["naming_counter"] or 1) if row else 1
+
+    def reset_panel_naming_counter(self, server_id: int):
+        with self._get_conn() as conn:
+            conn.execute("UPDATE panel_servers SET naming_counter=0 WHERE id=?", (server_id,))
+
+    # --------------------------- دسته‌بندی پنل‌ها ---------------------------
+
+    def get_panel_categories(self):
+        with self._get_conn() as conn:
+            return conn.execute("SELECT * FROM panel_categories ORDER BY sort_order, id").fetchall()
+
+    def get_panel_category(self, cat_id: int):
+        with self._get_conn() as conn:
+            return conn.execute("SELECT * FROM panel_categories WHERE id=?", (cat_id,)).fetchone()
+
+    def add_panel_category(self, name: str) -> int:
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT COALESCE(MAX(sort_order), -1) AS m FROM panel_categories").fetchone()
+            order = int(row["m"] if row["m"] is not None else -1) + 1
+            return conn.execute("INSERT INTO panel_categories (name, sort_order) VALUES (?, ?)", (name, order)).lastrowid
+
+    def edit_panel_category(self, cat_id: int, name: str):
+        with self._get_conn() as conn:
+            conn.execute("UPDATE panel_categories SET name=? WHERE id=?", (name, cat_id))
+
+    def delete_panel_category(self, cat_id: int) -> bool:
+        with self._get_conn() as conn:
+            conn.execute("UPDATE panel_servers SET panel_category_id=NULL WHERE panel_category_id=?", (cat_id,))
+            return conn.execute("DELETE FROM panel_categories WHERE id=?", (cat_id,)).rowcount > 0
+
+    def move_panel_category(self, cat_id: int, direction: str) -> bool:
+        with self._get_conn() as conn:
+            ids = [int(r["id"]) for r in conn.execute("SELECT id FROM panel_categories ORDER BY sort_order, id").fetchall()]
+            if int(cat_id) not in ids:
+                return False
+            i = ids.index(int(cat_id))
+            j = i - 1 if direction == "up" else i + 1
+            if j < 0 or j >= len(ids):
+                return False
+            ids[i], ids[j] = ids[j], ids[i]
+            for order, cid in enumerate(ids):
+                conn.execute("UPDATE panel_categories SET sort_order=? WHERE id=?", (order, cid))
+            return True
 
     def reorder_panel_servers(self, server_ids):
         """ترتیب نمایش سرورهای واقعی را دقیقاً مطابق لیست شناسه‌ها ذخیره می‌کند."""

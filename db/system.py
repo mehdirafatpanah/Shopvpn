@@ -800,14 +800,21 @@ class SystemMixin:
 
 
     def get_categories(self, active_only=True):
+        """همه‌ی دسته‌ها به‌صورت لیست تخت، به ترتیب درخت (والد، سپس فرزندانش).
+
+        active_only=True: دسته‌ی غیرفعال و کل زیرشاخه‌اش حذف می‌شود (فرزندِ دسته‌ی غیرفعال دیده نمی‌شود).
+        """
         with self._get_conn() as conn:
-            if active_only:
-                rows = conn.execute(
-                    "SELECT * FROM categories WHERE is_active=1 ORDER BY sort_order, id"
-                ).fetchall()
-            else:
-                rows = conn.execute("SELECT * FROM categories ORDER BY sort_order, id").fetchall()
-            return rows
+            _rows, children = self._category_children_map(conn)
+        out = []
+        def walk(pid):
+            for r in children.get(pid, []):
+                if active_only and not r["is_active"]:
+                    continue
+                out.append(r)
+                walk(int(r["id"]))
+        walk(0)
+        return out
 
 
     def _refund_candidate(self, conn, custom_config_id: int, user_tg_id: int, source: str):
@@ -1341,9 +1348,12 @@ class SystemMixin:
 
 
     def get_force_join_settings(self) -> dict:
+        from force_join_channels import parse_channels
+        channels = parse_channels(self.get_setting("force_join_channel", ""))
         return {
             "enabled": self.get_setting("force_join_enabled", "0") == "1",
-            "channel": self.get_setting("force_join_channel", "").strip(),
+            "channel": channels[0] if channels else "",  # سازگاری با کدهای قدیمی
+            "channels": channels,
         }
 
 

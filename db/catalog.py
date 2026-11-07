@@ -169,13 +169,86 @@ class CatalogMixin:
             return [r["uid"] for r in rows]
 
 
-    def add_category(self, name: str) -> int:
+    def add_category(self, name: str, parent_id: int = None) -> int:
+        """parent_id=None/0 یعنی دسته‌ی ریشه؛ در غیر این صورت زیردسته‌ی همان والد."""
+        parent_id = int(parent_id) if parent_id else None
         def op():
             with self._get_conn() as conn:
-                cur = conn.execute("INSERT INTO categories (name) VALUES (?)", (name,))
+                if parent_id is not None and not conn.execute("SELECT 1 FROM categories WHERE id=?", (parent_id,)).fetchone():
+                    raise ValueError("دسته‌ی والد یافت نشد.")
+                row = conn.execute(
+                    "SELECT COALESCE(MAX(sort_order), -1) AS m FROM categories WHERE COALESCE(parent_id, 0)=?",
+                    (parent_id or 0,),
+                ).fetchone()
+                sort_order = int(row["m"] if row["m"] is not None else -1) + 1
+                cur = conn.execute(
+                    "INSERT INTO categories (name, sort_order, parent_id) VALUES (?, ?, ?)",
+                    (name, sort_order, parent_id),
+                )
                 return cur.lastrowid
         return self._sqlite_retry(op)
 
+    # ----------------------------- درخت دسته‌بندی‌ها (تو در تو) -----------------------------
+
+    def _category_children_map(self, conn):
+        rows = conn.execute("SELECT * FROM categories ORDER BY sort_order, id").fetchall()
+        ids = {int(r["id"]) for r in rows}
+        children = {}
+        for r in rows:
+            pid = r["parent_id"]
+            pid = int(pid) if pid and int(pid) in ids else 0  # والد نامعتبر = ریشه
+            children.setdefault(pid, []).append(r)
+        return rows, children
+
+    def get_child_categories(self, parent_id=None, active_only: bool = True):
+        """زیردسته‌های مستقیم یک دسته (parent_id=None → دسته‌های ریشه)، مرتب‌شده."""
+        pid = int(parent_id) if parent_id else 0
+        with self._get_conn() as conn:
+            _rows, children = self._category_children_map(conn)
+        kids = children.get(pid, [])
+        return [k for k in kids if k["is_active"]] if active_only else list(kids)
+
+    def get_category_path(self, cat_id: int):
+        """لیست ردیف‌ها از ریشه تا خود دسته."""
+        with self._get_conn() as conn:
+            rows = {int(r["id"]): r for r in conn.execute("SELECT * FROM categories").fetchall()}
+        path, seen, cur = [], set(), int(cat_id)
+        while cur and cur in rows and cur not in seen:
+            seen.add(cur)
+            path.append(rows[cur])
+            cur = int(rows[cur]["parent_id"] or 0)
+        return list(reversed(path))
+
+    def get_category_path_names(self, sep: str = " › ") -> dict:
+        """{category_id: 'والد › فرزند'} برای همه‌ی دسته‌ها."""
+        with self._get_conn() as conn:
+            rows = {int(r["id"]): r for r in conn.execute("SELECT * FROM categories").fetchall()}
+        out = {}
+        for cid in rows:
+            names, seen, cur = [], set(), cid
+            while cur and cur in rows and cur not in seen:
+                seen.add(cur)
+                names.append(rows[cur]["name"])
+                cur = int(rows[cur]["parent_id"] or 0)
+            out[cid] = sep.join(reversed(names))
+        return out
+
+    def get_category_descendant_ids(self, cat_id: int) -> list:
+        with self._get_conn() as conn:
+            _rows, children = self._category_children_map(conn)
+        out, stack = [], [int(cat_id)]
+        while stack:
+            cur = stack.pop()
+            for k in children.get(cur, []):
+                kid = int(k["id"])
+                if kid not in out:
+                    out.append(kid)
+                    stack.append(kid)
+        return out
+
+    def category_has_children(self, cat_id: int) -> bool:
+        with self._get_conn() as conn:
+            return bool(conn.execute("SELECT 1 FROM categories WHERE parent_id=? LIMIT 1", (int(cat_id),)).fetchone())
 
     def get_category(self, cat_id: int):
         with self._get_conn() as conn:
@@ -194,16 +267,76 @@ class CatalogMixin:
         return self._sqlite_retry(op)
 
 
-    def edit_category(self, cat_id: int, name: str):
+    def edit_category(self, cat_id: int, name: str, parent_id=...):
+        """parent_id=... یعنی بدون تغییر؛ None/0 = انتقال به ریشه؛ عدد = انتقال زیر آن والد."""
+        cat_id = int(cat_id)
+        # نکته: قبل از باز کردن کانکشن نوشتن محاسبه می‌شود تا کانکشن تو در تو (و قفل) پیش نیاید.
+        descendants = self.get_category_descendant_ids(cat_id) if parent_id is not ... else []
         with self._get_conn() as conn:
             conn.execute("UPDATE categories SET name=? WHERE id=?", (name, cat_id))
+            if parent_id is ...:
+                return
+            new_parent = int(parent_id) if parent_id else None
+            row = conn.execute("SELECT parent_id FROM categories WHERE id=?", (cat_id,)).fetchone()
+            if not row or (int(row["parent_id"]) if row["parent_id"] else None) == new_parent:
+                return
+            if new_parent is not None:
+                if new_parent == cat_id or new_parent in descendants:
+                    raise ValueError("یک دسته را نمی‌شود داخل خودش یا زیردسته‌هایش برد.")
+                if not conn.execute("SELECT 1 FROM categories WHERE id=?", (new_parent,)).fetchone():
+                    raise ValueError("دسته‌ی والد یافت نشد.")
+            m = conn.execute(
+                "SELECT COALESCE(MAX(sort_order), -1) AS m FROM categories WHERE COALESCE(parent_id, 0)=?",
+                (new_parent or 0,),
+            ).fetchone()
+            conn.execute(
+                "UPDATE categories SET parent_id=?, sort_order=? WHERE id=?",
+                (new_parent, int(m["m"] if m["m"] is not None else -1) + 1, cat_id),
+            )
 
+
+    def reorder_categories(self, category_ids):
+        """ترتیب نمایش دسته‌بندی‌ها را دقیقاً مطابق لیست شناسه‌ها ذخیره می‌کند."""
+        ids = [int(x) for x in (category_ids or [])]
+        if len(ids) != len(set(ids)):
+            raise ValueError("شناسه‌های دسته‌بندی تکراری هستند.")
+        with self._get_conn() as conn:
+            existing = {int(r["id"]) for r in conn.execute("SELECT id FROM categories").fetchall()}
+            if set(ids) != existing:
+                raise ValueError("فهرست دسته‌بندی‌ها کامل نیست یا شامل مورد نامعتبر است.")
+            for order, cid in enumerate(ids):
+                conn.execute("UPDATE categories SET sort_order=? WHERE id=?", (order, cid))
+
+    def move_category(self, cat_id: int, direction: str) -> bool:
+        """direction: 'up' یا 'down' — فقط بین هم‌ردیف‌ها (دسته‌های هم‌والد) جابه‌جا می‌شود."""
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT parent_id FROM categories WHERE id=?", (int(cat_id),)).fetchone()
+            if not row:
+                return False
+            pid = int(row["parent_id"]) if row["parent_id"] else 0
+            ids = [int(r["id"]) for r in conn.execute(
+                "SELECT id FROM categories WHERE COALESCE(parent_id, 0)=? ORDER BY sort_order, id", (pid,)
+            ).fetchall()]
+            if int(cat_id) not in ids:
+                return False
+            i = ids.index(int(cat_id))
+            j = i - 1 if direction == "up" else i + 1
+            if j < 0 or j >= len(ids):
+                return False
+            ids[i], ids[j] = ids[j], ids[i]
+            for order, cid in enumerate(ids):
+                conn.execute("UPDATE categories SET sort_order=? WHERE id=?", (order, cid))
+            return True
 
     def delete_category(self, cat_id: int):
+        """دسته و همه‌ی زیردسته‌هایش (با محصولات آن‌ها) حذف می‌شود."""
         def op():
+            doomed = list(reversed(self.get_category_descendant_ids(cat_id))) + [int(cat_id)]
             with self._get_conn() as conn:
-                cur = conn.execute("DELETE FROM categories WHERE id=?", (cat_id,))
-                return cur.rowcount > 0
+                removed = 0
+                for cid in doomed:
+                    removed += conn.execute("DELETE FROM categories WHERE id=?", (cid,)).rowcount
+                return removed > 0
         return self._sqlite_retry(op)
 
     # -----------------------------------------------------------------------
@@ -272,7 +405,8 @@ class CatalogMixin:
                      base_users: int = 0, extra_user_price: int = 0, max_users: int = 0,
                      compare_price: int = 0, provision_ssh_node_id: int = None,
                      provision_ssh_protocol: str = "ssh",
-                     extra_panel_ids=(), extra_ssh_node_ids=(), provision_target_config=None, extra_panel_target_configs=None, renew_rules=None) -> int:
+                     extra_panel_ids=(), extra_ssh_node_ids=(), provision_target_config=None, extra_panel_target_configs=None, renew_rules=None, ai_description: str = "",
+                     btn_style: str = "") -> int:
         """payment_methods: None/[] یعنی «همه‌ی روش‌های پرداخت مجازند» (پیش‌فرض)،
         در غیر این صورت لیستی از کلیدهای مجاز - همان قراردادِ set_product_payment_methods.
 
@@ -290,15 +424,18 @@ class CatalogMixin:
             cur = conn.execute(
                 "INSERT INTO products (category_id, name, price, description, duration_days, "
                 "is_auto_provision, auto_provision_volume_gb, provision_server_id, provision_ssh_node_id, payment_methods, "
-                "base_users, extra_user_price, max_users, compare_price, provision_ssh_protocol, provision_target_config) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "base_users, extra_user_price, max_users, compare_price, provision_ssh_protocol, provision_target_config, btn_style) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (category_id, name, price, description, duration_days,
                  1 if is_auto_provision else 0, auto_provision_volume_gb, provision_server_id, provision_ssh_node_id, pm_value,
                  base_users, extra_user_price, max_users, compare_price,
                  _normalize_ssh_protocols(provision_ssh_protocol) if provision_ssh_node_id else "ssh",
-                 json.dumps(provision_target_config, ensure_ascii=False) if provision_target_config else None),
+                 json.dumps(provision_target_config, ensure_ascii=False) if provision_target_config else None,
+                 btn_style if btn_style in ("primary", "success", "danger") else ""),
             )
             product_id = cur.lastrowid
+            if ai_description:
+                conn.execute("UPDATE products SET ai_description=? WHERE id=?", (str(ai_description).strip()[:2000], product_id))
             if renew_rules:
                 from renewal_rules import normalize, RULE_KEYS
                 rules = normalize(renew_rules)
@@ -436,7 +573,8 @@ class CatalogMixin:
                       is_auto_provision=..., auto_provision_volume_gb=...,
                       provision_server_id=..., payment_methods=..., category_id: int = None,
                       provision_ssh_node_id=..., provision_ssh_protocol=...,
-                      compare_price=..., discount_days=..., discount_max_uses=..., provision_target_config=...):
+                      compare_price=..., discount_days=..., discount_max_uses=..., provision_target_config=...,
+                      ai_description: str = None, btn_style=...):
         # نکته: is_auto_provision/auto_provision_volume_gb/provision_server_id از سنتینل
         # Ellipsis استفاده می‌کنند (مثل payment_methods) چون باید بتوان آن‌ها را عمداً
         # NULL/False کرد (مثلاً وقتی محصول از «اتصال مستقیم به پنل» به «بانک کانفیگ»
@@ -452,12 +590,17 @@ class CatalogMixin:
             fields.append("description=?"); values.append(description)
         if duration_days is not None:
             fields.append("duration_days=?"); values.append(duration_days)
+        if ai_description is not None:
+            fields.append("ai_description=?"); values.append(str(ai_description).strip()[:2000])
         if is_auto_provision is not ...:
             fields.append("is_auto_provision=?"); values.append(1 if is_auto_provision else 0)
         if auto_provision_volume_gb is not ...:
             fields.append("auto_provision_volume_gb=?"); values.append(auto_provision_volume_gb)
         if provision_server_id is not ...:
             fields.append("provision_server_id=?"); values.append(provision_server_id)
+        if btn_style is not ...:
+            fields.append("btn_style=?")
+            values.append(btn_style if btn_style in ("primary", "success", "danger") else "")
         if provision_target_config is not ...:
             fields.append("provision_target_config=?")
             values.append(json.dumps(provision_target_config, ensure_ascii=False) if provision_target_config else None)

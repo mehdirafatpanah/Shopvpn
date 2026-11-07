@@ -1059,6 +1059,12 @@ class DatabaseBase:
                     ON card_to_card_invoices(amount_toman) WHERE status = 'pending';
                 CREATE INDEX IF NOT EXISTS idx_card_to_card_ref ON card_to_card_invoices(kind, ref_id);
 
+                CREATE TABLE IF NOT EXISTS panel_categories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    sort_order INTEGER DEFAULT 0
+                );
+
                 CREATE TABLE IF NOT EXISTS panel_servers (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
@@ -1918,6 +1924,9 @@ class DatabaseBase:
             ("discount_codes", "max_discount_amount", "INTEGER"),
             ("discount_codes", "product_ids", "TEXT"),
             ("products", "duration_days", "INTEGER DEFAULT 30"),
+            ("products", "btn_style", "TEXT DEFAULT ''"),
+            ("categories", "parent_id", "INTEGER"),
+            ("panel_servers", "panel_category_id", "INTEGER"),
             ("configs", "expires_at", "TEXT"),
             ("configs", "renewal_reminder_sent", "INTEGER DEFAULT 0"),
             ("configs", "volume_reminder_sent", "INTEGER DEFAULT 0"),
@@ -1947,6 +1956,10 @@ class DatabaseBase:
             ("orders", "custom_volume_gb", "INTEGER"),
             ("orders", "custom_username", "TEXT"),
             ("orders", "custom_panel_server_id", "INTEGER"),
+            ("panel_servers", "naming_mode", "TEXT DEFAULT ''"),
+            ("panel_servers", "naming_prefix", "TEXT DEFAULT ''"),
+            ("panel_servers", "naming_suffix", "TEXT DEFAULT ''"),
+            ("panel_servers", "naming_counter", "INTEGER DEFAULT 0"),
             ("panel_servers", "api_key", "TEXT"),
             ("panel_servers", "api_username", "TEXT"),
             ("panel_servers", "api_password", "TEXT"),
@@ -1990,6 +2003,7 @@ class DatabaseBase:
             ("products", "extra_user_price", "INTEGER DEFAULT 0"),
             ("products", "max_users", "INTEGER DEFAULT 0"),
             ("products", "base_users", "INTEGER DEFAULT 0"),
+            ("products", "ai_description", "TEXT DEFAULT ''"),
             # قیمت قبل از تخفیف (فقط نمایشی: خط‌خورده کنار قیمت فعلی). 0 یعنی بدون تخفیف.
             ("products", "compare_price", "INTEGER DEFAULT 0"),
             # محدودیت تخفیف محصول: انقضا (UTC ISO)، سقف تعداد خرید و شمارنده‌ی خریدهای انجام‌شده.
