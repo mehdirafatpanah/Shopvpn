@@ -51,6 +51,10 @@ class AIChatFlow(StatesGroup):
     chatting = State()
 
 
+class BuyGuideFlow(StatesGroup):
+    chatting = State()
+
+
 class TicketReplyFlow(StatesGroup):
     waiting_message = State()
 
@@ -147,6 +151,7 @@ class AdminAddProduct(StatesGroup):
     waiting_name = State()
     waiting_price = State()
     waiting_desc = State()
+    waiting_ai_desc = State()
     waiting_duration = State()
     waiting_provision_choice = State()
     waiting_provision_server = State()
@@ -588,6 +593,7 @@ class AdminAddPanelServer(StatesGroup):
 
 
 class AdminEditProduct(StatesGroup):
+    waiting_ai_desc = State()
     waiting_volume = State()
     waiting_src_volume = State()
     waiting_src_bank_days = State()
@@ -627,6 +633,11 @@ class AdminBulkWalletCredit(StatesGroup):
 
 class AdminPanelServerTransfer(StatesGroup):
     waiting_price = State()
+
+
+class AdminPanelNaming(StatesGroup):
+    waiting_prefix = State()
+    waiting_suffix = State()
 
 
 class AdminLocationTransferSettings(StatesGroup):

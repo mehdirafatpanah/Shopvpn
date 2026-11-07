@@ -2231,3 +2231,32 @@ EXTRA_PHRASES.update({
     'فایل تصویر سالم نیست؛ یک JPG یا PNG بفرستید.': 'The image file is not valid; send a JPG or PNG.',
     'هنوز تصویر پس\u200cزمینه\u200cای آپلود نشده است.': 'No background image has been uploaded yet.',
 })
+
+
+EXTRA_PHRASES.update({
+    'نام دلخواه کاربر': 'Custom user name',
+    '✅ نام دلخواه کاربر': '✅ Custom user name',
+    'هش آیدی عددی + نام دلخواه کاربر': 'Numeric ID hash + custom user name',
+    '✅ هش آیدی عددی + نام دلخواه کاربر': '✅ Numeric ID hash + custom user name',
+    'پیشوند + نام دلخواه کاربر': 'Prefix + custom user name',
+    '✅ پیشوند + نام دلخواه کاربر': '✅ Prefix + custom user name',
+    'نام دلخواه کاربر + پسوند': 'Custom user name + suffix',
+    '✅ نام دلخواه کاربر + پسوند': '✅ Custom user name + suffix',
+    'شمارنده + نام دلخواه کاربر': 'Counter + custom user name',
+    '✅ شمارنده + نام دلخواه کاربر': '✅ Counter + custom user name',
+    'پیشوند + شمارنده': 'Prefix + counter',
+    '✅ پیشوند + شمارنده': '✅ Prefix + counter',
+    'شمارنده + پسوند': 'Counter + suffix',
+    '✅ شمارنده + پسوند': '✅ Counter + suffix',
+    'آیدی عددی تلگرام + شمارنده': 'Telegram numeric ID + counter',
+    '✅ آیدی عددی تلگرام + شمارنده': '✅ Telegram numeric ID + counter',
+    'پیش\u200cفرض (روش قبلی)': 'Default (previous method)',
+    '✅ پیش\u200cفرض (روش قبلی)': '✅ Default (previous method)',
+    '🏷 نام\u200cگذاری اکانت\u200cها: ': '🏷 Account naming: ',
+    '✏️ تغییر پیشوند': '✏️ Change prefix',
+    '✏️ تغییر پسوند': '✏️ Change suffix',
+    '🔄 صفر کردن شمارنده': '🔄 Reset counter',
+    'شمارنده صفر شد.': 'Counter reset.',
+    'ذخیره شد.': 'Saved.',
+    '❌ این نام کاربری قبلاً استفاده شده. لطفاً نام دیگری انتخاب کنید.': '❌ This username is already taken. Please choose another one.',
+})

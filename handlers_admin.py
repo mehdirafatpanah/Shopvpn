@@ -29,8 +29,16 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.filters import Command, StateFilter
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
-from force_join import is_channel_member
+from force_join import is_channel_member, missing_channels
+from force_join_channels import parse_channels, serialize_channels
 
+AI_DESC_PROMPT = (
+    "🤖 توضیح محصول برای هوش مصنوعی (راهنمای خرید) را بنویسید؛ این متن به کاربر نمایش داده نمی‌شود و فقط به AI می‌گوید "
+    "این محصول برای چه کسی/چه کاربردی مناسب است (مثلاً: «مناسب گیم و تماس تصویری، پینگ پایین، تا ۲ دستگاه، حجم بالا»). "
+    "برای رد شدن بنویسید: -"
+)
+
+import account_naming
 import keyboards as kb
 from database import Database, MENU_BUTTON_META
 from config import RESELLER_DBS_DIR, resolve_db_path, ADMIN_PANEL_URL, BOT_TOKEN, DB_PATH as MAIN_DB_PATH
@@ -179,6 +187,7 @@ from states import (
     AdminAddPanelServer,
     AdminSetPanelTemplate,
     AdminPanelServerTransfer,
+    AdminPanelNaming,
     AdminLocationTransferSettings,
     AdminSetPanelSubUrl,
     AdminSetPanelSocksProxy,
@@ -1292,6 +1301,38 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await safe_edit(call, db.get_text('handlers_admin.auto_c8caee2c', 'لیست محصولات این دسته\u200cبندی:'), reply_markup=kb.admin_products_list_kb(db, products))
         await call.answer(db.get_text('handlers_admin.auto_7736dbee', '✅ پنل/اینباند به\u200cروزرسانی شد.'))
 
+    @router.callback_query(F.data.startswith("adm_prod_aidesc:"))
+    async def cb_admin_prod_aidesc(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_prod_aidesc")
+        product = (await asyncio.to_thread(db.get_product, product_id)) if product_id is not None else None
+        if not product:
+            return await call.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
+        current = (product["ai_description"] if "ai_description" in product.keys() else "") or "—"
+        await state.update_data(editing_product_id=product_id)
+        await state.set_state(AdminEditProduct.waiting_ai_desc)
+        back_cb = f"adm_prod_cat:{product['category_id']}" if product["category_id"] is not None else "adm_products"
+        await safe_edit(call, tr(f"توضیح فعلی برای AI:\n{current}\n\n") + tr(AI_DESC_PROMPT).replace("برای رد شدن بنویسید: -", "برای پاک کردن بنویسید: -"),
+                         reply_markup=kb.admin_back_kb(back_cb))
+        await call.answer()
+
+    @router.message(AdminEditProduct.waiting_ai_desc)
+    async def process_prod_edit_ai_desc(message: Message, state: FSMContext):
+        data = await state.get_data()
+        product_id = data.get("editing_product_id")
+        product = (await asyncio.to_thread(db.get_product, product_id))
+        text = (message.text or "").strip()
+        await asyncio.to_thread(db.edit_product, product_id, ai_description=("" if text == "-" else text[:2000]))
+        await asyncio.to_thread(db.log_admin_action, message.from_user.id, "product_ai_desc_edit",
+                                f"محصول «{product['name'] if product else product_id}»")
+        await state.clear()
+        if product:
+            products = (await asyncio.to_thread(db.get_products, product["category_id"], active_only=False))
+            await message.answer(tr("✅ توضیح AI ذخیره شد."), reply_markup=kb.admin_products_list_kb(db, products))
+        else:
+            await message.answer(tr("✅ توضیح AI ذخیره شد."))
+
     @router.callback_query(F.data.startswith("adm_prod_vol:"))
     async def cb_admin_prod_vol(call: CallbackQuery, state: FSMContext):
         if not senior_admin_only(call.from_user.id):
@@ -2221,6 +2262,13 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def process_product_desc(message: Message, state: FSMContext):
         desc = "" if message.text.strip() == "-" else message.text.strip()
         await state.update_data(description=desc)
+        await state.set_state(AdminAddProduct.waiting_ai_desc)
+        await message.answer(tr(AI_DESC_PROMPT))
+
+    @router.message(AdminAddProduct.waiting_ai_desc)
+    async def process_product_ai_desc(message: Message, state: FSMContext):
+        ai_desc = "" if (message.text or "").strip() == "-" else (message.text or "").strip()[:2000]
+        await state.update_data(ai_description=ai_desc)
         await state.set_state(AdminAddProduct.waiting_duration)
         await message.answer(
             db.get_text('handlers_admin.auto_0d1c2cc3', 'مدت اعتبار این سرویس چند روز است؟ فقط عدد وارد کنید (مثال: 30).\nاین عدد برای محاسبه\u200cی تاریخ یادآوری اتمام سرویس به کاربر استفاده می\u200cشود.')
@@ -2578,6 +2626,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             max_users=int(data.get("user_max") or 0),
             provision_target_config=data.get("provision_target_config"),
             renew_rules=data.get("renew_rules"),
+            ai_description=data.get("ai_description") or "",
         ))
         pm_log = "همه" if payment_methods is None else "، ".join(payment_methods)
         if auto_provision_volume_gb is not None:
@@ -3235,7 +3284,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
         settings = (await asyncio.to_thread(db.get_force_join_settings))
-        if not settings["enabled"] and not settings["channel"]:
+        if not settings["enabled"] and not settings["channels"]:
             await call.answer(db.get_text('handlers_admin.auto_8c434446', 'اول باید آیدی کانال را تنظیم کنی.'), show_alert=True)
             return
         current = (await asyncio.to_thread(db.get_setting, "force_join_enabled", "0"))
@@ -3249,38 +3298,70 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_support(call)
         await state.set_state(AdminForceJoin.waiting_channel)
         await safe_edit(call, 
-            db.get_text('handlers_admin.auto_34cf694f', 'آیدی عددی یا یوزرنیم کانال را ارسال کن.\n\nمثال: `@mychannel`\n\n⚠️ حتماً ربات باید از قبل به\u200cعنوان ادمین به کانال اضافه شده باشد؛ در غیر این صورت نمی\u200cتواند عضویت را بررسی کند.'),
+            tr("آیدی عددی یا یوزرنیم کانال (یا چند کانال، هر کدام در یک خط) را ارسال کن؛ به فهرست کانال‌های اجباری اضافه می‌شود. تعداد کانال‌ها محدودیتی ندارد.\n\nمثال: `@mychannel`\n\n⚠️ حتماً ربات باید از قبل به\u200cعنوان ادمین به همه‌ی این کانال‌ها اضافه شده باشد؛ در غیر این صورت نمی\u200cتواند عضویت را بررسی کند."),
             reply_markup=kb.admin_back_kb("adm_forcejoin_menu"),
         )
         await call.answer()
 
     @router.message(AdminForceJoin.waiting_channel)
     async def process_forcejoin_channel(message: Message, state: FSMContext, bot: Bot):
-        channel = (message.text or "").strip()
-        if not channel:
+        new_channels = parse_channels(message.text or "")
+        if not new_channels:
             await message.answer(db.get_text('handlers_admin.auto_67823205', 'ورودی نامعتبر است. دوباره تلاش کن.'))
             return
-        if not channel.startswith("@") and not channel.startswith("-"):
-            channel = "@" + channel
-
-        try:
-            chat = await bot.get_chat(channel)
-            member = await bot.get_chat_member(channel, bot.id)
-            if member.status not in ("administrator", "creator"):
-                raise ValueError("bot is not admin")
-        except Exception:
+        current = (await asyncio.to_thread(db.get_force_join_settings))["channels"]
+        added, failed = [], []
+        for channel in new_channels:
+            if channel.lower() in {c.lower() for c in current}:
+                continue
+            try:
+                chat = await bot.get_chat(channel)
+                member = await bot.get_chat_member(channel, bot.id)
+                if member.status not in ("administrator", "creator"):
+                    raise ValueError("bot is not admin")
+            except Exception:
+                failed.append(channel)
+                continue
+            current.append(channel)
+            added.append(f"{chat.title} ({channel})")
+        if added:
+            (await asyncio.to_thread(db.set_setting, "force_join_channel", serialize_channels(current)))
+        if not added and failed:
             await message.answer(
                 db.get_text('handlers_admin.auto_9d459b35', '⛔️ نتوانستم به این کانال دسترسی پیدا کنم.\nمطمئن شو آیدی درست است و ربات از قبل به\u200cعنوان *ادمین* به کانال اضافه شده باشد.'),
                 reply_markup=kb.admin_back_kb("adm_forcejoin_menu"),
             )
             return
-
-        (await asyncio.to_thread(db.set_setting, "force_join_channel", channel))
         await state.clear()
+        lines = []
+        if added:
+            lines.append(tr("✅ کانال‌های ثبت‌شده:") + "\n" + "\n".join(f"• {x}" for x in added))
+        else:
+            lines.append(tr("این کانال‌ها از قبل در فهرست بودند."))
+        if failed:
+            lines.append(tr("⛔️ دسترسی به این کانال‌ها ممکن نبود (ربات باید ادمین باشد):") + "\n" + "\n".join(failed))
         await message.answer(
-            tr(f"✅ کانال «{chat.title}» ثبت شد. حالا می‌تونی از منوی قبلی عضویت اجباری رو فعال کنی."),
+            "\n\n".join(lines) + "\n\n" + tr("می‌تونی از منوی عضویت اجباری، آن را فعال کنی."),
             reply_markup=kb.admin_forcejoin_menu_kb(db),
         )
+
+    @router.callback_query(F.data.startswith("adm_forcejoin_del:"))
+    async def cb_admin_forcejoin_del(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        try:
+            index = int(call.data.split(":", 1)[1])
+        except ValueError:
+            return await call.answer()
+        channels = (await asyncio.to_thread(db.get_force_join_settings))["channels"]
+        if not 0 <= index < len(channels):
+            return await call.answer(tr("این کانال دیگر در فهرست نیست."), show_alert=True)
+        removed = channels.pop(index)
+        await asyncio.to_thread(db.set_setting, "force_join_channel", serialize_channels(channels))
+        if not channels:  # بدون کانال، عضویت اجباری معنی ندارد
+            await asyncio.to_thread(db.set_setting, "force_join_enabled", "0")
+        await safe_edit(call, db.get_text('handlers_admin.auto_00bfae4b', '📢 عضویت اجباری در کانال:'), reply_markup=kb.admin_forcejoin_menu_kb(db))
+        await call.answer(tr(f"{removed} حذف شد."))
 
     # -------------------------------------------------------------------
     # -----------------------------------------------------------------------
@@ -7975,6 +8056,146 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         server = await asyncio.to_thread(db.get_panel_server, server_id)
         await message.answer(db.get_text('handlers_admin.auto_0ac5d13f', '✅ هزینه انتقال ذخیره شد.'), reply_markup=kb.panel_server_view_kb(server))
 
+    def _panel_naming_text(server) -> str:
+        mode = account_naming.server_mode(server)
+        lines = [f"🏷 نام‌گذاری اکانت‌های «{server['name']}»", "",
+                 "حالت ساخت نام اکانت (username) برای کانفیگ‌هایی که خودکار روی این پنل ساخته می‌شود را انتخاب کن.", "",
+                 f"حالت فعلی: {account_naming.mode_label(mode)}"]
+        if mode != account_naming.MODE_LEGACY:
+            lines.append(f"نمونه: {account_naming.preview(server, mode)}")
+            if account_naming.needs_prefix(mode):
+                lines.append(f"پیشوند: {account_naming.server_affix(server, 'prefix') or '—'}")
+            if account_naming.needs_suffix(mode):
+                lines.append(f"پسوند: {account_naming.server_affix(server, 'suffix') or '—'}")
+            if account_naming.needs_counter(server):
+                lines.append(f"آخرین شمارنده: {int(server['naming_counter'] or 0)}")
+            if not account_naming.needs_user_name(server):
+                lines.append("در این حالت از خریدار نام پرسیده نمی‌شود.")
+        return "\n".join(lines)
+
+    async def _show_panel_naming(call_or_message, server_id: int, edit: bool = True):
+        server = await asyncio.to_thread(db.get_panel_server, server_id)
+        if not server:
+            return
+        text = _panel_naming_text(server)
+        markup = kb.panel_naming_kb(server)
+        if edit:
+            await safe_edit(call_or_message, text, reply_markup=markup)
+        else:
+            await call_or_message.answer(text, reply_markup=markup)
+
+    async def _panel_naming_guard(call: CallbackQuery):
+        if not full_access_bot:
+            await deny_reseller_panel_access(call)
+            return None
+        if not senior_admin_only(call.from_user.id):
+            await deny_mid(call)
+            return None
+        return True
+
+    @router.callback_query(F.data.startswith("adm_pnaming:"))
+    async def cb_admin_panel_naming(call: CallbackQuery, state: FSMContext):
+        if not await _panel_naming_guard(call):
+            return
+        server_id = callback_id(call.data, "adm_pnaming")
+        server = await asyncio.to_thread(db.get_panel_server, server_id) if server_id else None
+        if not server:
+            await call.answer(db.get_text('handlers_admin.auto_8ee026d7', 'سرور یافت نشد.'), show_alert=True)
+            return
+        await state.clear()
+        await _show_panel_naming(call, server_id)
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_pnaming_set:"))
+    async def cb_admin_panel_naming_set(call: CallbackQuery, state: FSMContext):
+        if not await _panel_naming_guard(call):
+            return
+        parts = call.data.split(":")
+        if len(parts) != 3 or not parts[1].isdigit():
+            await call.answer()
+            return
+        server_id, key = int(parts[1]), parts[2]
+        server = await asyncio.to_thread(db.get_panel_server, server_id)
+        if not server or (key != "default" and key not in account_naming.MODES):
+            await call.answer(db.get_text('handlers_admin.auto_8ee026d7', 'سرور یافت نشد.'), show_alert=True)
+            return
+        mode = account_naming.MODE_LEGACY if key == "default" else key
+        await asyncio.to_thread(db.update_panel_server, server_id, naming_mode=mode)
+        await asyncio.to_thread(db.log_admin_action, call.from_user.id, "panel_naming_mode", f"سرور #{server_id} ← {mode or 'default'}")
+        server = await asyncio.to_thread(db.get_panel_server, server_id)
+        missing = account_naming.missing_affix(mode, server)
+        if missing:
+            await state.update_data(panel_server_id=server_id)
+            await state.set_state(AdminPanelNaming.waiting_prefix if missing == "prefix" else AdminPanelNaming.waiting_suffix)
+            label = "پیشوند" if missing == "prefix" else "پسوند"
+            await safe_edit(call,
+                f"✏️ {label} نام اکانت‌ها را بفرست.\n"
+                f"فقط حروف انگلیسی، عدد و آندرلاین، حداکثر {account_naming.AFFIX_MAX_LEN} کاراکتر.",
+                reply_markup=kb.admin_back_kb(f"adm_pnaming:{server_id}"))
+            await call.answer()
+            return
+        await state.clear()
+        await _show_panel_naming(call, server_id)
+        await call.answer(tr("ذخیره شد."))
+
+    @router.callback_query(F.data.startswith("adm_pnaming_affix:"))
+    async def cb_admin_panel_naming_affix(call: CallbackQuery, state: FSMContext):
+        if not await _panel_naming_guard(call):
+            return
+        parts = call.data.split(":")
+        if len(parts) != 3 or not parts[1].isdigit() or parts[2] not in ("prefix", "suffix"):
+            await call.answer()
+            return
+        server_id, kind = int(parts[1]), parts[2]
+        server = await asyncio.to_thread(db.get_panel_server, server_id)
+        if not server:
+            await call.answer(db.get_text('handlers_admin.auto_8ee026d7', 'سرور یافت نشد.'), show_alert=True)
+            return
+        await state.update_data(panel_server_id=server_id)
+        await state.set_state(AdminPanelNaming.waiting_prefix if kind == "prefix" else AdminPanelNaming.waiting_suffix)
+        label = "پیشوند" if kind == "prefix" else "پسوند"
+        current = account_naming.server_affix(server, kind) or "—"
+        await safe_edit(call,
+            f"✏️ {label} نام اکانت‌ها\n\nمقدار فعلی: {current}\n"
+            f"مقدار جدید را بفرست. فقط حروف انگلیسی، عدد و آندرلاین، حداکثر {account_naming.AFFIX_MAX_LEN} کاراکتر.",
+            reply_markup=kb.admin_back_kb(f"adm_pnaming:{server_id}"))
+        await call.answer()
+
+    async def _save_panel_naming_affix(message: Message, state: FSMContext, kind: str):
+        text = (message.text or "").strip()
+        if not account_naming.valid_affix(text):
+            await message.answer(tr(f"⚠️ مقدار نامعتبر است. فقط حروف انگلیسی، عدد و آندرلاین، بین ۱ تا {account_naming.AFFIX_MAX_LEN} کاراکتر."))
+            return
+        data = await state.get_data()
+        server_id = data.get("panel_server_id")
+        await state.clear()
+        if not server_id:
+            return
+        await asyncio.to_thread(db.update_panel_server, server_id, **{f"naming_{kind}": text})
+        await asyncio.to_thread(db.log_admin_action, message.from_user.id, f"panel_naming_{kind}", f"سرور #{server_id} ← {text}")
+        await _show_panel_naming(message, server_id, edit=False)
+
+    @router.message(AdminPanelNaming.waiting_prefix)
+    async def process_admin_panel_naming_prefix(message: Message, state: FSMContext):
+        await _save_panel_naming_affix(message, state, "prefix")
+
+    @router.message(AdminPanelNaming.waiting_suffix)
+    async def process_admin_panel_naming_suffix(message: Message, state: FSMContext):
+        await _save_panel_naming_affix(message, state, "suffix")
+
+    @router.callback_query(F.data.startswith("adm_pnaming_reset:"))
+    async def cb_admin_panel_naming_reset(call: CallbackQuery):
+        if not await _panel_naming_guard(call):
+            return
+        server_id = callback_id(call.data, "adm_pnaming_reset")
+        if not server_id or not await asyncio.to_thread(db.get_panel_server, server_id):
+            await call.answer(db.get_text('handlers_admin.auto_8ee026d7', 'سرور یافت نشد.'), show_alert=True)
+            return
+        await asyncio.to_thread(db.reset_panel_naming_counter, server_id)
+        await asyncio.to_thread(db.log_admin_action, call.from_user.id, "panel_naming_counter_reset", f"سرور #{server_id}")
+        await _show_panel_naming(call, server_id)
+        await call.answer(tr("شمارنده صفر شد."))
+
     @router.callback_query(F.data.startswith("adm_panel_server_transfer_target:"))
     async def cb_admin_panel_server_transfer_target(call: CallbackQuery):
         if not full_access_bot:
@@ -11643,7 +11864,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         if choice == "left_channel":
             fj_settings = (await asyncio.to_thread(db.get_force_join_settings))
-            if not fj_settings["enabled"] or not fj_settings["channel"]:
+            if not fj_settings["enabled"] or not fj_settings["channels"]:
                 await call.answer(tr("⚠️ عضویت اجباری در کانال فعال نیست یا کانالی تنظیم نشده."), show_alert=True)
                 return
             await state.update_data(broadcast_target="left_channel", broadcast_target_server_id=None)
@@ -11766,17 +11987,16 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             target_label = f"کاربران بدون خرید در {days} روز اخیر"
         elif target == "left_channel":
             fj_settings = (await asyncio.to_thread(db.get_force_join_settings))
-            channel = fj_settings["channel"]
+            fj_channels = fj_settings["channels"]
             all_ids = (await asyncio.to_thread(db.get_all_user_ids))
             user_ids = []
-            if channel:
+            if fj_channels:
                 for uid in all_ids:
                     if await asyncio.to_thread(db.is_admin, uid):
                         continue
                     if await asyncio.to_thread(db.is_force_join_exempt, uid):
                         continue
-                    is_member = await is_channel_member(bot, channel, uid)
-                    if not is_member:
+                    if await missing_channels(bot, fj_channels, uid):
                         user_ids.append(uid)
                     await asyncio.sleep(0.05)
             target_label = "کاربران خارج‌شده از کانال اجباری"

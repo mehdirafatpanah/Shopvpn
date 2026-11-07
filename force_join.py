@@ -17,6 +17,7 @@ import asyncio
 import logging
 
 from aiogram import BaseMiddleware
+from force_join_channels import parse_channels, join_link
 from aiogram.types import TelegramObject, Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 logger = logging.getLogger(__name__)
@@ -34,15 +35,25 @@ def terms_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def _join_keyboard(channel: str) -> InlineKeyboardMarkup:
-    channel_display = channel.lstrip("@")
-    link = f"https://t.me/{channel_display}"
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=tr("📢 عضویت در کانال"), url=link)],
-            [InlineKeyboardButton(text=tr("✅ بررسی مجدد عضویت"), callback_data=CHECK_CALLBACK)],
-        ]
-    )
+def _join_keyboard(channels) -> InlineKeyboardMarkup:
+    channels = parse_channels(channels)
+    rows = []
+    for index, channel in enumerate(channels, 1):
+        link = join_link(channel)
+        if not link:
+            continue
+        label = tr("📢 عضویت در کانال")
+        if len(channels) > 1:
+            label = f"{label} {index}"
+        rows.append([InlineKeyboardButton(text=label, url=link)])
+    rows.append([InlineKeyboardButton(text=tr("✅ بررسی مجدد عضویت"), callback_data=CHECK_CALLBACK)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def join_text(count: int) -> str:
+    if count > 1:
+        return "برای استفاده از بات، ابتدا باید در کانال‌های زیر عضو شوید؛ سپس دکمه‌ی «بررسی مجدد عضویت» را بزنید:"
+    return "برای استفاده از بات، ابتدا باید در کانال زیر عضو شوید؛ سپس دکمه‌ی «بررسی مجدد عضویت» را بزنید:"
 
 
 async def is_channel_member(bot, channel: str, user_id: int) -> bool:
@@ -53,6 +64,15 @@ async def is_channel_member(bot, channel: str, user_id: int) -> bool:
     except Exception as e:
         logger.warning("بررسی عضویت کانال %s برای کاربر %s ناموفق بود: %s", channel, user_id, e)
         return True
+
+
+async def missing_channels(bot, channels, user_id: int) -> list:
+    """کانال‌هایی از فهرست که کاربر عضو آن‌ها نیست (چک موازی؛ خطا = fail-open)."""
+    channels = parse_channels(channels)
+    if not channels:
+        return []
+    results = await asyncio.gather(*(is_channel_member(bot, c, user_id) for c in channels))
+    return [c for c, ok in zip(channels, results) if not ok]
 
 
 class ForceJoinMiddleware(BaseMiddleware):
@@ -86,14 +106,14 @@ class ForceJoinMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         exempt = await asyncio.to_thread(self.db.is_force_join_exempt, user.id)
-        member = True
-        if settings["enabled"] and settings["channel"] and not exempt:
+        missing = []
+        if settings["enabled"] and settings["channels"] and not exempt:
             bot = data.get("bot")
-            member = await is_channel_member(bot, settings["channel"], user.id)
+            missing = await missing_channels(bot, settings["channels"], user.id)
 
-        if not member:
-            text = "برای استفاده از بات، ابتدا باید در کانال زیر عضو شوید؛ سپس دکمه‌ی «بررسی مجدد عضویت» را بزنید:"
-            markup = _join_keyboard(settings["channel"])
+        if missing:
+            text = join_text(len(missing))
+            markup = _join_keyboard(missing)
             if isinstance(event, CallbackQuery):
                 await event.answer(tr("هنوز عضو کانال نشده‌اید."), show_alert=True)
                 try:

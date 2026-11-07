@@ -1190,6 +1190,7 @@ async def _tool_check_account_status(db, user_tg_id: int) -> dict:
 async def _tool_list_products(db) -> dict:
     def _read():
         categories = db.get_categories(active_only=True)
+        paths = db.get_category_path_names()
         out = []
         for cat in categories:
             products = db.get_products(cat["id"], active_only=True)
@@ -1202,11 +1203,12 @@ async def _tool_list_products(db) -> dict:
                     "price_toman": p["price"],
                     "duration_days": p["duration_days"],
                     "description": p["description"] or "",
+                    "ai_notes": (p["ai_description"] if "ai_description" in p.keys() else "") or "",
                     "in_stock": True if p["is_auto_provision"] else stock > 0,
                     "stock_count": "نامحدود (آنی)" if p["is_auto_provision"] else stock,
                 })
             if items:
-                out.append({"category": cat["name"], "products": items})
+                out.append({"category": paths.get(cat["id"], cat["name"]), "products": items})
         return out
 
     categories = await asyncio.to_thread(_read)

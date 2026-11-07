@@ -343,6 +343,25 @@ EXTRA_SETTINGS_GROUPS: List[Dict[str, Any]] = [
         ],
     },
     {
+        "id": "card_to_card_ui", "title": "💳 ظاهر و دکمه‌های کارت‌به‌کارت", "web": True, "mini": True, "bot": True,
+        "fields": [
+            _sel("c2c_message_style", "ظاهر پیام اطلاعات واریز",
+                 [["pretty", "✨ زیبا (کارت اطلاعات واریز)"], ["classic", "کلاسیک (متن ساده‌ی قبلی)"]], "pretty"),
+            _b("c2c_copy_buttons", "نمایش دکمه‌های کپی زیر پیام کارت", "1",
+               "با لمس هر دکمه، مقدار در کلیپ‌بورد کاربر کپی می‌شود (حتی وقتی محافظت از پیام روشن است). حذف خودکار پیام کارت از بخش «متفرقه» تنظیم می‌شود."),
+            _b("c2c_copy_card", "دکمه‌ی «کپی شماره کارت»", "1"),
+            _b("c2c_copy_amount_toman", "دکمه‌ی «کپی مبلغ (تومان)»", "1"),
+            _b("c2c_copy_amount_rial", "دکمه‌ی «کپی مبلغ (ریال)»", "1"),
+            _b("c2c_copy_holder", "دکمه‌ی «کپی نام صاحب کارت»", "0"),
+            _sel("c2c_copy_btn_style", "رنگ دکمه‌های کپی",
+                 [["default", "پیش‌فرض"], ["primary", "🔵 آبی"], ["success", "🟢 سبز"], ["danger", "🔴 قرمز"]], "default"),
+            _b("c2c_protect_card", "محافظت از شماره کارت", "0",
+               "پیام کارت قابل انتخاب/کپی متن، فوروارد و (روی موبایل) اسکرین‌شات نمی‌شود؛ کاربر فقط با دکمه‌های کپی می‌تواند کپی کند."),
+            _b("c2c_show_bank", "نمایش نام بانک در پیام", "1"),
+            _b("c2c_back_to_wallet", "دکمه‌ی «بازگشت به کیف پول» در پرداخت شارژ کیف پول", "1"),
+        ],
+    },
+    {
         "id": "misc_admin", "title": "🧩 متفرقه", "web": True, "mini": True,
         "fields": [
             _n("card_msg_autodelete_seconds", "حذف خودکار پیام شماره کارت پس از (ثانیه، ۰ = غیرفعال)", "0", min=0, max=86400),
@@ -434,6 +453,7 @@ EXTRA_SETTINGS_GROUPS: List[Dict[str, Any]] = [
         "id": "ai_general", "title": "🤖 دستیار هوش مصنوعی: عمومی", "web": True, "mini": True, "bot": True,
         "fields": [
             _b("ai_support_enabled", "فعال بودن دستیار هوشمند پشتیبانی", "1"),
+            _b("buy_guide_enabled", "راهنمای خرید هوشمند (دکمه‌ی «راهنمای خرید» در مسیر خرید)", "1"),
             _b("ai_stream_enabled", "پاسخ تدریجی (stream) دستیار هوش مصنوعی", "1"),
             _sel("ai_provider", "مسیر انتخاب مدل", _AI_PROVIDER_OPTIONS, "auto"),
         ],
@@ -512,7 +532,7 @@ EXTRA_SETTINGS_GROUPS: List[Dict[str, Any]] = [
         "id": "force_join", "title": "📢 عضویت اجباری در کانال", "web": False, "mini": True,
         "fields": [
             _b("force_join_enabled", "عضویت اجباری", "0"),
-            _t("force_join_channel", "آیدی کانال (مثلاً @mychannel)", ""),
+            _ta("force_join_channel", "آیدی کانال‌ها (هر کانال در یک خط، مثلاً @mychannel؛ تعداد نامحدود)", ""),
         ],
     },
     # تنظیمات پرداخت کریپتو در پنل وب فرم اختصاصی دارد؛ این فیلد فقط
@@ -736,7 +756,13 @@ def _cross_check(values: Dict[str, str], db) -> None:
     if "reseller_fixed_product_ids" in values and values["reseller_fixed_product_ids"]:
         if not all(p.strip().isdigit() for p in values["reseller_fixed_product_ids"].split(",") if p.strip()):
             raise SettingsValidationError("شناسه‌ی محصولات باید عدد و با ویرگول جدا شده باشند.")
-    for k in ("force_join_channel", "service_alert_channel", "promo_channel_id"):
+    if values.get("force_join_channel"):
+        from force_join_channels import parse_channels, serialize_channels, invalid_entries
+        if invalid_entries(values["force_join_channel"]):
+            raise SettingsValidationError("آیدی کانال باید با @ شروع شود (یا آیدی عددی باشد).")
+        _fj = parse_channels(values["force_join_channel"])
+        values["force_join_channel"] = serialize_channels(_fj)
+    for k in ("service_alert_channel", "promo_channel_id"):
         if k in values and values[k] and not (values[k].startswith("@") or values[k].lstrip("-").isdigit()
                                                 or values[k].startswith("https://t.me/")):
             raise SettingsValidationError("آیدی کانال باید با @ شروع شود (یا آیدی عددی باشد).")

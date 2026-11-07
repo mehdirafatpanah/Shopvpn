@@ -20,6 +20,7 @@ from panel_providers import get_provider, PanelError, PanelUsernameTakenError
 from user_limit import order_user_limit, provider_kwargs
 from panel_capabilities import product_capabilities, USER_LIMIT
 from ssh_uri import build_ssh_uri
+import account_naming
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 
 logger = logging.getLogger(__name__)
@@ -127,7 +128,9 @@ async def _provision_vpn(db, product, quantity: int = 1, user_id: int = None, or
     prefix = db.get_custom_config_prefix()
     planned = []
     order = db.get_order(order_id) if order_id is not None else None
-    if order and order["config_name"]:
+    naming_active = account_naming.is_active(server)
+    order_name = _order_config_name(order).strip()
+    if order and order["config_name"] and not naming_active:
         planned = planned_usernames(order["config_name"], quantity)
     extra_kwargs = provider_kwargs(provider, order_user_limit(order, product))
     built = []
@@ -156,7 +159,11 @@ async def _provision_vpn(db, product, quantity: int = 1, user_id: int = None, or
             result = None
             wanted = planned[index] if planned else None
             for attempt in range(5):
-                if wanted and attempt == 0:
+                if naming_active:
+                    candidate = account_naming.build_username(db, server, user_id, order_name, index, quantity)
+                    if attempt and not account_naming.needs_counter(server):
+                        candidate = account_naming.collision_variant(candidate)
+                elif wanted and attempt == 0:
                     candidate = wanted
                 elif wanted:
                     candidate = wanted + "_" + "".join(random.choices(string.ascii_lowercase + string.digits, k=3))

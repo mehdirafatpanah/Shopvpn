@@ -11,6 +11,7 @@ Router تازه می‌سازد که به همان یک db گره خورده؛ �
 
 import os
 import random
+import account_naming
 import re
 import asyncio
 import logging
@@ -20,7 +21,7 @@ from datetime import datetime, timezone, timedelta
 
 from aiogram import Router, F, Bot, Dispatcher
 from aiogram.filters import CommandStart, Command, CommandObject
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile, ReplyKeyboardRemove
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile, ReplyKeyboardRemove, CopyTextButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError, TelegramBadRequest, TelegramNetworkError
@@ -28,13 +29,15 @@ from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError, Teleg
 from md_utils import escape_md, escape_html
 from price_display import price_label_plain
 import keyboards as kb
+import card_payment_ui
 from gift_card_handlers import redeem_gift_for_message
 from daily_quiz import answer_quiz_for_message
 from season_quiz_handlers import show_season_for_message
 from engagement_handlers import show_lootbox_for_message, show_progress_for_message
 import seasons as season_logic
-from states import BuyFlow, ContactFlow, TicketFlow, TicketReplyFlow, AIChatFlow, DiscountEntry, RenewalDiscountEntry, WalletTopup, WalletGiftCode, WalletTransfer, CoinConvert, CustomConfigFlow, AddServiceFlow, MergeFlow, RenewalFlow, ResellerFlow, ResellerRequestFlow, ServiceRenameFlow, ServiceTransferFlow, CommissionResellerRequestFlow
+from states import BuyFlow, ContactFlow, TicketFlow, TicketReplyFlow, AIChatFlow, BuyGuideFlow, DiscountEntry, RenewalDiscountEntry, WalletTopup, WalletGiftCode, WalletTransfer, CoinConvert, CustomConfigFlow, AddServiceFlow, MergeFlow, RenewalFlow, ResellerFlow, ResellerRequestFlow, ServiceRenameFlow, ServiceTransferFlow, CommissionResellerRequestFlow
 import ai_support
+import buy_guide
 import ai_media
 from draft_stream import DraftStreamer
 import account_link
@@ -52,7 +55,7 @@ import renewal_log
 import renewal_rules
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 from temp_messages import schedule_message_autodelete
-from force_join import is_channel_member, CHECK_CALLBACK, TERMS_ACCEPT_CALLBACK, terms_keyboard, _join_keyboard
+from force_join import is_channel_member, missing_channels, join_text, CHECK_CALLBACK, TERMS_ACCEPT_CALLBACK, terms_keyboard, _join_keyboard
 from sub_info import fetch_sub_info, format_sub_info_fa, fetch_individual_links
 from jalali import to_jalali_str
 from stock_alerts import check_and_notify_low_stock
@@ -270,15 +273,17 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 # منو (+ اکشن‌های دیپ‌لینک که قبل از انتخاب زبان در state ذخیره شده‌اند).
                 await state.update_data(pending_welcome=False)
                 fj = await asyncio.to_thread(db.get_force_join_settings)
+                fj_missing = []
                 if (
-                    fj["enabled"] and fj["channel"]
+                    fj["enabled"] and fj["channels"]
                     and not db.is_admin(user_id)
                     and not await asyncio.to_thread(db.is_force_join_exempt, user_id)
-                    and not await is_channel_member(bot, fj["channel"], user_id)
                 ):
+                    fj_missing = await missing_channels(bot, fj["channels"], user_id)
+                if fj_missing:
                     await call.message.answer(
-                        tr("برای استفاده از بات، ابتدا باید در کانال زیر عضو شوید؛ سپس دکمه‌ی «بررسی مجدد عضویت» را بزنید:"),
-                        reply_markup=_join_keyboard(fj["channel"]),
+                        tr(join_text(len(fj_missing))),
+                        reply_markup=_join_keyboard(fj_missing),
                     )
                     return
                 terms = await asyncio.to_thread(db.get_terms_settings)
@@ -382,30 +387,45 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if seconds > 0:
             await schedule_message_autodelete(db, chat_id, message_id, seconds)
 
-    async def _send_card2card_details(target, intro_lines: list, final_price: int):
+    def _card_pay_markup(cfg: dict, card_number, holder, amount_toman: int, extra_rows=None, back_cb: str = None):
+        """دکمه‌های کپی (CopyTextButton) + دکمه‌های اضافه + بازگشت به کیف پول."""
+        style_kw = {"style": cfg["btn_style"]} if cfg.get("btn_style") else {}
+        rows = []
+        for row in card_payment_ui.copy_rows(cfg, card_number, holder, amount_toman):
+            rows.append([
+                InlineKeyboardButton(text=tr(label), copy_text=CopyTextButton(text=value), **style_kw)
+                for label, value in row
+            ])
+        rows.extend(extra_rows or [])
+        if back_cb and cfg.get("back_to_wallet"):
+            rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت به کیف پول"), callback_data=back_cb)])
+        return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+    async def _send_card2card_details(target, intro_lines: list, final_price: int, back_cb: str = None):
         """بعد از اینکه کاربر از لیست روش‌های پرداخت گزینه‌ی «کارت‌به‌کارت» را انتخاب کرد،
-        شماره کارت را نشان می‌دهد و از او می‌خواهد رسید را ارسال کند. target هر شیء‌ای
-        است که متد answer async دارد (معمولاً call.message). مبلغ هم به تومان هم به ریال،
-        به‌صورت جدا از عدد ویرگول‌دار، در قالب کد (قابل کپی با یک لمس) نمایش داده می‌شود."""
+        اطلاعات واریز را نشان می‌دهد و از او می‌خواهد رسید را ارسال کند. target هر شیء‌ای
+        است که متد answer async دارد (معمولاً call.message). ظاهر پیام، دکمه‌های کپی
+        (شماره کارت/مبلغ تومان و ریال) و محافظت از پیام از تنظیمات c2c_* خوانده می‌شود."""
         _uid = getattr(getattr(target, "chat", None), "id", None)
         _card = await asyncio.to_thread(db.get_manual_card_for_user, _uid)
+        cfg = await asyncio.to_thread(card_payment_ui.get_cfg, db)
         card_number, card_holder = _card["card_number"], _card["card_holder"]
-        text = "\n".join(intro_lines) + "\n" if intro_lines else ""
-        text += f"💳 شماره کارت: `{card_number}`\n"
-        text += f"👤 به نام: {escape_md(card_holder)}\n"
-        text += f"💰 مبلغ (تومان): `{final_price}` ({final_price:,} تومان)\n"
-        text += f"💰 مبلغ (ریال): `{final_price * 10}` ({final_price * 10:,} ریال)\n\n"
-        text += "لطفاً عدد بالا رو لمس کن تا کپی بشه، مبلغ رو واریز کن و عکس رسید رو همینجا ارسال کن."
-        sent = await target.answer(text, parse_mode="Markdown")
+        bank_name = _card["bank_name"] if "bank_name" in _card.keys() else ""
+        text = card_payment_ui.build_text(
+            cfg, intro_lines, card_number, card_holder, bank_name, int(final_price), auto=False,
+        )
+        markup = _card_pay_markup(cfg, card_number, card_holder, int(final_price), back_cb=back_cb)
+        sent = await target.answer(
+            text, parse_mode="Markdown", reply_markup=markup, protect_content=bool(cfg["protect"]) or None,
+        )
         await _schedule_card_msg_autodelete(sent.chat.id, sent.message_id)
 
     async def _send_card_auto_details(target, intro_lines: list, kind: str, ref_id: int,
-                                       user_id: int, base_amount: int):
+                                       user_id: int, base_amount: int, back_cb: str = None):
         """نسخه‌ی خودکار کارت‌به‌کارت: یک مبلغ یکتا (با چند رقم آخر تصادفی) رزرو
         می‌کند و از کاربر می‌خواهد دقیقاً همان مبلغ را واریز کند؛ به‌محض رسیدن
         پیامک بانک (از اپ BankSmsForwarder) به وب‌هوک سرور، بدون دخالت ادمین
-        تایید و تحویل داده می‌شود. مبلغ هم به تومان هم به ریال به‌صورت کد
-        (قابل کپی با یک لمس، بدون ویرگول) نمایش داده می‌شود."""
+        تایید و تحویل داده می‌شود. دکمه‌های کپی و محافظت مثل حالت دستی از تنظیمات c2c_* می‌آید."""
         try:
             invoice = await asyncio.to_thread(
                 card_to_card_payment.create_invoice, db, kind, ref_id, user_id, base_amount,
@@ -415,25 +435,18 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
         timeout_minutes = int((await asyncio.to_thread(
             db.get_setting, "card_to_card_auto_timeout_minutes", "15")) or 15)
-        amount_rial = invoice.get("amount_rial") or invoice["amount_toman"] * 10
-        text = "\n".join(intro_lines) + "\n" if intro_lines else ""
-        text += f"💳 شماره کارت: `{invoice['card_number']}`\n"
-        text += f"👤 به نام: {escape_md(invoice['card_holder'] or '')}\n"
-        if invoice.get("bank_name"):
-            text += f"🏦 بانک: {escape_md(invoice['bank_name'])}\n"
-        text += f"\n⚠️ لطفاً دقیقاً یکی از این دو مبلغ رو (بسته به واحد اپ بانکت) واریز کن:\n"
-        text += f"💰 تومان: `{invoice['amount_toman']}` ({invoice['amount_toman']:,} تومان)\n"
-        text += f"💰 ریال: `{amount_rial}` ({amount_rial:,} ریال)\n\n"
-        text += (
-            f"✅ به‌محض دریافت پیامک بانک، پرداخت به‌صورت خودکار تایید و تحویل داده "
-            f"می‌شود (بدون نیاز به ارسال رسید).\n"
-            f"⏳ اعتبار این مبلغ فقط {timeout_minutes} دقیقه است؛ بعد از آن باید دوباره اقدام کنید."
+        cfg = await asyncio.to_thread(card_payment_ui.get_cfg, db)
+        text = card_payment_ui.build_text(
+            cfg, intro_lines, invoice["card_number"], invoice["card_holder"], invoice.get("bank_name"),
+            int(invoice["amount_toman"]), auto=True, timeout_minutes=timeout_minutes,
+        )
+        status_row = [InlineKeyboardButton(text=tr("🔄 بررسی وضعیت پرداخت"), callback_data=f"check_c2c:{invoice['invoice_id']}")]
+        markup = _card_pay_markup(
+            cfg, invoice["card_number"], invoice["card_holder"], int(invoice["amount_toman"]),
+            extra_rows=[status_row], back_cb=back_cb,
         )
         sent = await target.answer(
-            text, parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text=tr("🔄 بررسی وضعیت پرداخت"), callback_data=f"check_c2c:{invoice['invoice_id']}"),
-            ]]),
+            text, parse_mode="Markdown", reply_markup=markup, protect_content=bool(cfg["protect"]) or None,
         )
         await _schedule_card_msg_autodelete(sent.chat.id, sent.message_id)
 
@@ -600,15 +613,15 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     @router.callback_query(F.data == CHECK_CALLBACK)
     async def cb_check_force_join(call: CallbackQuery, bot: Bot):
         settings = (await asyncio.to_thread(db.get_force_join_settings))
-        if not settings["enabled"] or not settings["channel"]:
+        if not settings["enabled"] or not settings["channels"]:
             await call.answer("✅")
             try:
                 await call.message.delete()
             except Exception:
                 pass
             return
-        member = await is_channel_member(bot, settings["channel"], call.from_user.id)
-        if member:
+        fj_missing = await missing_channels(bot, settings["channels"], call.from_user.id)
+        if not fj_missing:
             await call.answer(db.get_text('handlers_user.auto_e5b5b280', '✅ عضویت شما تایید شد.'), show_alert=True)
             try:
                 await call.message.delete()
@@ -623,6 +636,11 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await _send_inline_main_menu(call.message, call.from_user.id)
         else:
             await call.answer(db.get_text('handlers_user.auto_34eb72c8', '❌ هنوز عضو کانال نشده\u200cاید.'), show_alert=True)
+            if len(settings["channels"]) > 1:
+                try:  # فقط کانال‌های باقی‌مانده را نشان بده
+                    await call.message.edit_text(tr(join_text(len(fj_missing))), reply_markup=_join_keyboard(fj_missing))
+                except Exception:
+                    pass
 
     @router.message(Command("transfer_wallet"))
     async def transfer_wallet_cmd(message: Message):
@@ -1277,7 +1295,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     @router.message(F.text.func(lambda t: t in (db.get_setting("btn_buy"), tr(db.get_setting("btn_buy")))))
     async def show_categories(message: Message, state: FSMContext):
         await state.clear()
-        categories = (await asyncio.to_thread(db.get_categories, active_only=True))
+        categories = (await asyncio.to_thread(db.get_child_categories, None, True))
         custom_enabled = full_access_bot and (
             (await asyncio.to_thread(db.get_setting, "custom_config_enabled", "0")) == "1"
             or (await asyncio.to_thread(db.count_active_custom_config_products)) > 0
@@ -1326,7 +1344,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
     @router.callback_query(F.data == "back_categories")
     async def cb_back_categories(call: CallbackQuery):
-        categories = (await asyncio.to_thread(db.get_categories, active_only=True))
+        categories = (await asyncio.to_thread(db.get_child_categories, None, True))
         await _safe_edit(
             call.message,
             db.get_text("handlers_user.category.choose_category", "یک دسته‌بندی را انتخاب کنید:"),
@@ -1338,15 +1356,20 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     async def cb_category(call: CallbackQuery):
         cat_id = int(call.data.split(":")[1])
         products = (await asyncio.to_thread(db.get_products, cat_id, active_only=False))
-        if not products:
+        children = (await asyncio.to_thread(db.get_child_categories, cat_id, True))
+        if not products and not children:
             await call.answer(
                 db.get_text("handlers_user.category.empty", "محصولی در این دسته‌بندی موجود نیست."), show_alert=True
             )
             return
+        if children:
+            title = db.get_text("handlers_user.category.choose_sub", "یک زیردسته یا محصول را انتخاب کنید:")
+        else:
+            title = db.get_text("handlers_user.category.choose_product", "یک محصول را انتخاب کنید:")
         await _safe_edit(
             call.message,
-            db.get_text("handlers_user.category.choose_product", "یک محصول را انتخاب کنید:"),
-            reply_markup=kb.products_kb(db, products, cat_id),
+            title,
+            reply_markup=kb.products_kb(db, products, cat_id, children),
         )
         await call.answer()
 
@@ -2147,12 +2170,22 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await call.answer(tr(f"موجودی کافی نیست. فقط {stock} عدد موجود است."), show_alert=True)
             return
 
+        naming_server = None
+        if config_name is None and product["is_auto_provision"] and product["provision_server_id"]:
+            naming_server = await asyncio.to_thread(db.get_panel_server, product["provision_server_id"])
+            if account_naming.is_active(naming_server) and not account_naming.needs_user_name(naming_server):
+                config_name = ""
         if config_name is None and product["is_auto_provision"] and product["provision_server_id"]:
             await state.update_data(buy_name_product_id=product_id, buy_name_quantity=quantity)
             await state.set_state(BuyFlow.waiting_config_name)
             prefix = (await asyncio.to_thread(db.get_custom_config_prefix))
+            if account_naming.is_active(naming_server):
+                prefix = ""
             max_len = 20 if quantity == 1 else 16
             text = "🛠 نام کانفیگ\n\n"
+            if account_naming.is_active(naming_server):
+                mode = account_naming.server_mode(naming_server)
+                text += f"نام نهایی اکانت به شکل «{account_naming.mode_label(mode)}» ساخته می‌شود (مثال: {account_naming.preview(naming_server, mode)}).\n"
             if prefix:
                 text += f"نام با پیش‌وند ثابت «{prefix}-» شروع می‌شود. فقط ادامه‌ی نام (بعد از خط تیره) را ارسال کنید"
             else:
@@ -2399,12 +2432,23 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if not re.fullmatch(r"[A-Za-z0-9_]{3,%d}" % max_len, suffix):
             await message.answer(tr(f"❌ نام نامعتبر است. فقط حروف انگلیسی، عدد و آندرلاین، بین ۳ تا {max_len} کاراکتر."))
             return
-        prefix = (await asyncio.to_thread(db.get_custom_config_prefix))
-        base = f"{prefix}-{suffix}" if prefix else suffix
-        for candidate in planned_usernames(base, quantity):
-            if (await asyncio.to_thread(db.is_custom_username_taken, candidate)):
-                await message.answer(db.get_text('handlers_user.auto_aab267fe', '❌ این نام قبلاً استفاده شده. لطفاً نام دیگری ارسال کنید.'))
-                return
+        buy_product = await asyncio.to_thread(db.get_product, int(product_id))
+        naming_server = (await asyncio.to_thread(db.get_panel_server, buy_product["provision_server_id"])) if buy_product and buy_product["provision_server_id"] else None
+        if account_naming.is_active(naming_server):
+            base = suffix
+            if not account_naming.needs_counter(naming_server):
+                for unit in range(quantity):
+                    candidate = account_naming.build_username(db, naming_server, message.from_user.id, suffix, unit, quantity)
+                    if (await asyncio.to_thread(db.is_custom_username_taken, candidate)):
+                        await message.answer(db.get_text('handlers_user.auto_aab267fe', '❌ این نام قبلاً استفاده شده. لطفاً نام دیگری ارسال کنید.'))
+                        return
+        else:
+            prefix = (await asyncio.to_thread(db.get_custom_config_prefix))
+            base = f"{prefix}-{suffix}" if prefix else suffix
+            for candidate in planned_usernames(base, quantity):
+                if (await asyncio.to_thread(db.is_custom_username_taken, candidate)):
+                    await message.answer(db.get_text('handlers_user.auto_aab267fe', '❌ این نام قبلاً استفاده شده. لطفاً نام دیگری ارسال کنید.'))
+                    return
         progress = await message.answer(db.get_text('handlers_user.auto_86206ade', '⏳ در حال ثبت سفارش...'))
         await _buy_start(_MessageCall(message.from_user, progress), state, bot, int(product_id), quantity, config_name=base)
 
@@ -2790,8 +2834,42 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await state.update_data(product_id=product["id"], panel_server_id=server["id"])
         await _custom_config_ask_username(message, state)
 
+    async def _custom_config_naming_server(state: FSMContext):
+        data = await state.get_data()
+        server_id = data.get("panel_server_id")
+        server = (await asyncio.to_thread(db.get_panel_server, server_id)) if server_id else None
+        return server if account_naming.is_active(server) else None
+
+    async def _custom_config_compose(server, tg_id, name: str, allow_variant: bool):
+        candidate = ""
+        for _ in range(10):
+            candidate = account_naming.build_username(db, server, tg_id, name)
+            if not (await asyncio.to_thread(db.is_custom_username_taken, candidate)):
+                return candidate
+            if not allow_variant:
+                return None
+            if not account_naming.needs_counter(server):
+                name = ""
+        return candidate
+
     async def _custom_config_ask_username(message: Message, state: FSMContext):
         await state.set_state(CustomConfigFlow.waiting_username)
+        naming_server = await _custom_config_naming_server(state)
+        if naming_server is not None:
+            if not account_naming.needs_user_name(naming_server):
+                username = await _custom_config_compose(naming_server, message.chat.id, "", True)
+                await _custom_config_apply_username(message, state, username)
+                return
+            mode = account_naming.server_mode(naming_server)
+            await message.answer(
+                tr("🛠 ساخت کانفیگ شخصی\n\n"
+                f"نام نهایی اکانت به شکل «{account_naming.mode_label(mode)}» ساخته می‌شود "
+                f"(مثال: {account_naming.preview(naming_server, mode)}).\n"
+                "یک نام دلخواه بفرستید، یا از دکمه‌ی زیر نام خودکار بگیرید.\n"
+                "فقط حروف انگلیسی، عدد و آندرلاین مجاز است (بین ۳ تا ۲۰ کاراکتر)."),
+                reply_markup=kb.custom_config_username_kb(),
+            )
+            return
         prefix = (await asyncio.to_thread(db.get_custom_config_prefix))
         if prefix:
             await message.answer(
@@ -2809,6 +2887,12 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
     @router.callback_query(F.data == "custom_config_random_username", CustomConfigFlow.waiting_username)
     async def cb_custom_config_random_username(call: CallbackQuery, state: FSMContext):
+        naming_server = await _custom_config_naming_server(state)
+        if naming_server is not None:
+            username = await _custom_config_compose(naming_server, call.from_user.id, "", True)
+            await call.answer()
+            await _custom_config_apply_username(call.message, state, username)
+            return
         prefix = (await asyncio.to_thread(db.get_custom_config_prefix))
         for _ in range(10):
             suffix = "u" + "".join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8))
@@ -2823,6 +2907,14 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         suffix = (message.text or "").strip()
         if not re.fullmatch(r"[A-Za-z0-9_]{3,20}", suffix):
             await message.answer(db.get_text('handlers_user.auto_b8c82218', '❌ نام کاربری نامعتبر است. فقط حروف انگلیسی، عدد و آندرلاین، بین ۳ تا ۲۰ کاراکتر.'))
+            return
+        naming_server = await _custom_config_naming_server(state)
+        if naming_server is not None:
+            username = await _custom_config_compose(naming_server, message.from_user.id, suffix, False)
+            if username is None:
+                await message.answer(tr("❌ این نام کاربری قبلاً استفاده شده. لطفاً نام دیگری انتخاب کنید."))
+                return
+            await _custom_config_apply_username(message, state, username)
             return
         prefix = (await asyncio.to_thread(db.get_custom_config_prefix))
         username = f"{prefix}-{suffix}" if prefix else suffix
@@ -6364,7 +6456,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await call.answer(err, show_alert=True)
             return
         await call.answer()
-        await _send_card2card_details(call.message, [], amount)
+        await _send_card2card_details(call.message, [], amount, back_cb="coins_back")
 
     @router.callback_query(F.data == "pay_card_auto", WalletTopup.waiting_receipt)
     async def cb_pay_card_auto_topup(call: CallbackQuery, state: FSMContext):
@@ -6382,7 +6474,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
         await call.answer()
         topup_id = (await asyncio.to_thread(db.create_topup, call.from_user.id, amount))
-        await _send_card_auto_details(call.message, [], "wallet_topup", topup_id, call.from_user.id, amount)
+        await _send_card_auto_details(call.message, [], "wallet_topup", topup_id, call.from_user.id, amount, back_cb="coins_back")
 
     @router.callback_query(F.data == "pay_crypto", WalletTopup.waiting_receipt)
     async def cb_pay_crypto_topup(call: CallbackQuery, state: FSMContext):
@@ -7947,6 +8039,154 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                     "ارسال ارجاع دستیار هوشمند کاربر %s به ادمین %s ناموفق بود.", user.id, admin_id
                 )
         await asyncio.to_thread(db.clear_ai_conversation, user.id)
+
+    # ---------------------------------------------------------------
+    # راهنمای خرید هوشمند: سوال‌های ثابت با دکمه + گفتگوی آزاد با AI
+    # ---------------------------------------------------------------
+    def _bg_question_text(step: int) -> str:
+        item = buy_guide.question(step)
+        return tr(f"🤖 راهنمای خرید ({step + 1} از {len(buy_guide.QUESTIONS)})\n\n{item['q']}")
+
+    async def _bg_show_product(message: Message, user_id: int, product_id):
+        product = await asyncio.to_thread(db.get_product, product_id)
+        if not product or not product["is_active"]:
+            return
+        stock = await asyncio.to_thread(db.count_available_configs, product_id)
+        wallet_credit = await asyncio.to_thread(db.get_wallet_credit, user_id)
+        if product["is_auto_provision"] or stock > 0:
+            await message.answer(
+                _product_confirm_text(product, 1, stock, wallet_credit),
+                reply_markup=kb.product_confirm_kb(db, product_id, 1, max(stock, 1)),
+            )
+        else:
+            await message.answer(db.get_text('handlers_user.auto_46d880df', '⛔️ موجودی این محصول در حال حاضر تمام شده.'))
+
+    async def _bg_send_result(message: Message, bot: Bot, user, state: FSMContext, result: dict):
+        if result.get("escalate"):
+            await message.answer(result["reply"])
+            await _forward_ai_transcript_to_admin(bot, user, "راهنمای خرید هوشمند مکالمه را ارجاع داد.")
+            await state.set_state(ContactFlow.waiting_message)
+            await message.answer(
+                db.get_text('handlers_user.auto_3fb129f1', 'مکالمه برای پشتیبانی انسانی ارسال شد. اگر پیام دیگری داری همین\u200cجا بنویس:'),
+                reply_markup=kb.cancel_kb(),
+            )
+            return
+        await message.answer(result["reply"], reply_markup=kb.buy_guide_chat_kb())
+        ui_action = result.get("ui_action")
+        if ui_action and ui_action.get("type") == "show_product":
+            await _bg_show_product(message, user.id, ui_action.get("product_id"))
+
+    async def _bg_run(message: Message, bot: Bot, user, state: FSMContext):
+        data = await state.get_data()
+        answers = buy_guide.normalize_answers(data.get("bg_answers"))
+        await state.set_state(BuyGuideFlow.chatting)
+        thinking = await message.answer(db.get_text('handlers_user.auto_ba4923c8', 'در حال بررسی... ⏳'))
+        try:
+            result = await buy_guide.get_reply(db, user.id, answers, buy_guide.first_message(answers))
+        except Exception:
+            logging.getLogger("handlers_user").exception("خطا در راهنمای خرید هوشمند برای کاربر %s.", user.id)
+            result = {"reply": "الان نتونستم پیشنهاد بدم؛ لطفاً از لیست محصولات انتخاب کن.", "escalate": False}
+        try:
+            await thinking.delete()
+        except Exception:
+            pass
+        await _bg_send_result(message, bot, user, state, result)
+
+    @router.callback_query(F.data == "buy_guide_start")
+    async def cb_buy_guide_start(call: CallbackQuery, state: FSMContext):
+        if not await asyncio.to_thread(buy_guide.is_enabled, db):
+            await call.answer(tr("راهنمای خرید هوشمند در حال حاضر فعال نیست."), show_alert=True)
+            return
+        await asyncio.to_thread(db.clear_ai_conversation, call.from_user.id)
+        await state.clear()
+        await state.update_data(bg_answers={})
+        await _safe_edit(call.message, _bg_question_text(0), reply_markup=kb.buy_guide_question_kb(0))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("bg_q:"))
+    async def cb_buy_guide_question(call: CallbackQuery):
+        try:
+            step = int(call.data.split(":")[1])
+        except ValueError:
+            return await call.answer()
+        if buy_guide.question(step) is None:
+            return await call.answer()
+        await _safe_edit(call.message, _bg_question_text(step), reply_markup=kb.buy_guide_question_kb(step))
+        await call.answer()
+
+    async def _bg_advance(call: CallbackQuery, state: FSMContext, bot: Bot, step: int):
+        if step + 1 < len(buy_guide.QUESTIONS):
+            await _safe_edit(call.message, _bg_question_text(step + 1), reply_markup=kb.buy_guide_question_kb(step + 1))
+            await call.answer()
+            return
+        await call.answer()
+        try:
+            await call.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await _bg_run(call.message, bot, call.from_user, state)
+
+    @router.callback_query(F.data.startswith("bg_a:"))
+    async def cb_buy_guide_answer(call: CallbackQuery, state: FSMContext, bot: Bot):
+        try:
+            _, step_s, idx_s = call.data.split(":")
+            step, idx = int(step_s), int(idx_s)
+            item = buy_guide.question(step)
+            value = item["options"][idx][0]
+        except (ValueError, TypeError, IndexError):
+            return await call.answer()
+        data = await state.get_data()
+        answers = dict(data.get("bg_answers") or {})
+        answers[item["key"]] = value
+        await state.update_data(bg_answers=answers)
+        await _bg_advance(call, state, bot, step)
+
+    @router.callback_query(F.data.startswith("bg_skip:"))
+    async def cb_buy_guide_skip(call: CallbackQuery, state: FSMContext, bot: Bot):
+        try:
+            step = int(call.data.split(":")[1])
+        except ValueError:
+            return await call.answer()
+        if buy_guide.question(step) is None:
+            return await call.answer()
+        await _bg_advance(call, state, bot, step)
+
+    @router.callback_query(F.data == "bg_end")
+    async def cb_buy_guide_end(call: CallbackQuery, state: FSMContext):
+        await asyncio.to_thread(db.clear_ai_conversation, call.from_user.id)
+        await state.clear()
+        try:
+            await call.message.delete()
+        except Exception:
+            pass
+        await call.answer()
+        await show_categories(call.message, state)
+
+    @router.message(BuyGuideFlow.chatting)
+    async def buy_guide_receive(message: Message, state: FSMContext, bot: Bot):
+        user = message.from_user
+        text = (message.text or "").strip()
+        if not text:
+            await message.answer(db.get_text('handlers_user.auto_56d5e115', 'فعلاً فقط پیام متنی رو می\u200cفهمم؛ لطفاً سوالت رو بنویس.'))
+            return
+        now = asyncio.get_event_loop().time()
+        if now - _ai_last_call_at.get(user.id, 0.0) < _AI_COOLDOWN_SECONDS:
+            await message.answer(db.get_text('handlers_user.auto_927bceb6', 'لطفاً چند لحظه صبر کن و دوباره بفرست. ⏳'))
+            return
+        _ai_last_call_at[user.id] = now
+        data = await state.get_data()
+        answers = buy_guide.normalize_answers(data.get("bg_answers"))
+        thinking = await message.answer(db.get_text('handlers_user.auto_ba4923c8', 'در حال بررسی... ⏳'))
+        try:
+            result = await buy_guide.get_reply(db, user.id, answers, text[:2000])
+        except Exception:
+            logging.getLogger("handlers_user").exception("خطا در راهنمای خرید هوشمند برای کاربر %s.", user.id)
+            result = {"reply": "یه مشکلی پیش اومد؛ لطفاً دوباره امتحان کن.", "escalate": False}
+        try:
+            await thinking.delete()
+        except Exception:
+            pass
+        await _bg_send_result(message, bot, user, state, result)
 
     @router.callback_query(F.data == "contact_ai")
     async def cb_contact_ai(call: CallbackQuery, state: FSMContext):
