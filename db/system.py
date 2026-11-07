@@ -1182,41 +1182,51 @@ class SystemMixin:
 
 
     def get_bot_revenue_summary(self):
-        """جمع فروش (سفارش‌های تاییدشده) روی همین دیتابیس - برای نمایش میزان فروش هر
-        نماینده‌ی کامل (سطح ۱) که دیتابیس/باتِ مستقل خودش را دارد، از پنل وب اصلی."""
+        """جمع فروش سفارش‌ها + شارژ کیف پول تاییدشده، با همان تعریفی که گزارش بازه‌ای استفاده می‌کند."""
+        totals = self._bot_revenue_rows()
+        return {
+            "revenue_toman": totals["order_revenue"] + totals["topup_revenue"],
+            "paid_orders": totals["orders"],
+            "order_revenue": totals["order_revenue"],
+            "topup_revenue": totals["topup_revenue"],
+            "topup_count": totals["topups"],
+        }
+
+
+    def _bot_revenue_rows(self, start_date=None, end_date=None, per_day=False):
+        """تنها منبع محاسبه‌ی درآمد نماینده. روز بر اساس وقت تهران (UTC+3:30) است.
+        final_price سفارش سهم کیف پول را ندارد، پس با شارژ دوباره شمرده نمی‌شود."""
+        day_expr = "date({col}, '+210 minutes')"
+        results = {}
         with self._get_conn() as conn:
-            row = conn.execute(
-                "SELECT COALESCE(SUM(CASE WHEN o.status='approved' THEN COALESCE(o.final_price, p.price) ELSE 0 END),0) revenue, "
-                "COUNT(CASE WHEN o.status='approved' THEN 1 END) cnt "
-                "FROM orders o LEFT JOIN products p ON p.id=o.product_id"
-            ).fetchone()
-            topup = conn.execute(
-                "SELECT COALESCE(SUM(amount),0) s FROM wallet_topups WHERE status='approved'"
-            ).fetchone()["s"] or 0
-        return {"revenue_toman": (row["revenue"] or 0) + topup, "paid_orders": row["cnt"] or 0}
+            for kind, sql_tpl in (
+                ("order", "SELECT {day} d, COUNT(*) cnt, COALESCE(SUM(COALESCE(o.final_price, p.price, 0)),0) rev "
+                          "FROM orders o LEFT JOIN products p ON p.id=o.product_id WHERE o.status='approved'{rng} GROUP BY d"),
+                ("topup", "SELECT {day} d, COUNT(*) cnt, COALESCE(SUM(amount),0) rev "
+                          "FROM wallet_topups WHERE status='approved'{rng} GROUP BY d"),
+            ):
+                col = "o.created_at" if kind == "order" else "created_at"
+                day = day_expr.format(col=col)
+                rng, params = "", ()
+                if start_date and end_date:
+                    rng, params = f" AND {day} BETWEEN ? AND ?", (start_date, end_date)
+                for r in conn.execute(sql_tpl.format(day=day, rng=rng), params).fetchall():
+                    key = r["d"] if per_day else "all"
+                    cur = results.setdefault(key, {"orders": 0, "order_revenue": 0, "topups": 0, "topup_revenue": 0})
+                    if kind == "order":
+                        cur["orders"] += r["cnt"] or 0
+                        cur["order_revenue"] += r["rev"] or 0
+                    else:
+                        cur["topups"] += r["cnt"] or 0
+                        cur["topup_revenue"] += r["rev"] or 0
+        if per_day:
+            return results
+        return results.get("all", {"orders": 0, "order_revenue": 0, "topups": 0, "topup_revenue": 0})
 
 
     def get_bot_daily_revenue(self, start_date: str, end_date: str):
-        """درآمد روزانه (سفارش‌های تاییدشده + شارژ کیف پول تاییدشده) در بازه‌ی میلادی YYYY-MM-DD."""
-        daily = {}
-        with self._get_conn() as conn:
-            for r in conn.execute(
-                "SELECT date(o.created_at) d, COUNT(*) cnt, "
-                "COALESCE(SUM(COALESCE(o.final_price, p.price)),0) rev "
-                "FROM orders o LEFT JOIN products p ON p.id=o.product_id "
-                "WHERE o.status='approved' AND date(o.created_at) BETWEEN ? AND ? GROUP BY d",
-                (start_date, end_date),
-            ).fetchall():
-                daily[r["d"]] = {"revenue": r["rev"] or 0, "orders": r["cnt"] or 0}
-            for r in conn.execute(
-                "SELECT date(created_at) d, COUNT(*) cnt, COALESCE(SUM(amount),0) rev "
-                "FROM wallet_topups WHERE status='approved' AND date(created_at) BETWEEN ? AND ? GROUP BY d",
-                (start_date, end_date),
-            ).fetchall():
-                cur = daily.setdefault(r["d"], {"revenue": 0, "orders": 0})
-                cur["revenue"] += r["rev"] or 0
-                cur["orders"] += r["cnt"] or 0
-        return daily
+        """درآمد روزانه (وقت تهران) در بازه‌ی میلادی YYYY-MM-DD به تفکیک سفارش و شارژ کیف پول."""
+        return self._bot_revenue_rows(start_date, end_date, per_day=True)
 
 
     def queue_db_purge(self, bot_token: str, db_path: str):
