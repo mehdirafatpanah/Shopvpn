@@ -453,9 +453,27 @@ EXTRA_SETTINGS_GROUPS: List[Dict[str, Any]] = [
         "id": "ai_general", "title": "🤖 دستیار هوش مصنوعی: عمومی", "web": True, "mini": True, "bot": True,
         "fields": [
             _b("ai_support_enabled", "فعال بودن دستیار هوشمند پشتیبانی", "1"),
-            _b("buy_guide_enabled", "راهنمای خرید هوشمند (دکمه‌ی «راهنمای خرید» در مسیر خرید)", "1"),
             _b("ai_stream_enabled", "پاسخ تدریجی (stream) دستیار هوش مصنوعی", "1"),
             _sel("ai_provider", "مسیر انتخاب مدل", _AI_PROVIDER_OPTIONS, "auto"),
+        ],
+    },
+    {
+        "id": "ai_buy_guide", "title": "🛒 دستیار هوشمند خرید", "web": True, "mini": True, "bot": True,
+        "bot_back": "adm_ai_agents", "bot_hidden_in_list": True,
+        "fields": [
+            _b("buy_guide_enabled", "فعال بودن دستیار هوشمند خرید (دکمه‌ی «راهنمای خرید» در مسیر خرید)", "1"),
+            {**_ta("buy_guide_questions",
+                   "سوال‌های راهنمای خرید (هر خط یک سوال: «عنوان | متن سوال | گزینه۱ ; گزینه۲ ; ...»)",
+                   _default_setting("buy_guide_questions"),
+                   "حداکثر ۸ سوال و هر سوال ۲ تا ۸ گزینه (جداشده با ;). عنوان در خلاصه‌ی جواب‌ها به AI داده می‌شود. "
+                   "خالی = سوال‌های پیش‌فرض."),
+             "maxlen": 3000, "plain": True},
+            {**_ta("buy_guide_prompt",
+                   "دستورالعمل AI در راهنمای خرید (سبک پیشنهاد و لحن)",
+                   _default_setting("buy_guide_prompt"),
+                   "قوانین ایمنی (فقط محصولات واقعی از list_products، پنهان‌ماندن توضیح داخلی محصول، موجودی، کارت خرید) "
+                   "ثابت‌اند و با ویرایش این متن حذف نمی‌شوند. خالی = متن پیش‌فرض."),
+             "maxlen": 3000, "plain": True},
         ],
     },
     {
@@ -741,6 +759,12 @@ def _cross_check(values: Dict[str, str], db) -> None:
             raise SettingsValidationError("نام مدل نباید فاصله داشته باشد و باید حداکثر ۱۲۰ نویسه باشد.")
         if k == "cloudflare_model" and not v.startswith(("@cf/", "@hf/")):
             raise SettingsValidationError("نام مدل Workers AI نامعتبر است (باید با @cf/ یا @hf/ شروع شود).")
+    if values.get("buy_guide_questions", "").strip():
+        import buy_guide as _bg
+        _qs, _qerrors = _bg.parse_questions(values["buy_guide_questions"])
+        if _qerrors:
+            raise SettingsValidationError("؛ ".join(_qerrors[:3]))
+        values["buy_guide_questions"] = _bg.serialize_questions(_qs)
     if "main_menu_reply_enabled" in values or "main_menu_inline_enabled" in values:
         if cur("main_menu_reply_enabled") != "1" and cur("main_menu_inline_enabled") != "1":
             raise SettingsValidationError("حداقل یکی از «منوی پایین» یا «منوی شیشه‌ای» باید روشن بماند.")

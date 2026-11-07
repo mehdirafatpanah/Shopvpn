@@ -96,7 +96,7 @@ def _bounds(field):
 def register(router: Router, db, senior_admin_only, deny_mid, replace_admin_view):
 
     def _groups_view():
-        rows = [[_btn(tr(g["title"]), f"adm_xs_g:{g['id']}")] for g in _groups()]
+        rows = [[_btn(tr(g["title"]), f"adm_xs_g:{g['id']}")] for g in _groups() if not g.get("bot_hidden_in_list")]
         rows.append([_btn(tr("⬅️ بازگشت"), "adm_cat:management")])
         text = tr("🧩 تنظیمات تکمیلی\n\nیک گروه را انتخاب کن. همین گزینه‌ها در مینی‌اپ هم هستند.")
         return text, _kb(rows)
@@ -113,7 +113,7 @@ def register(router: Router, db, senior_admin_only, deny_mid, replace_admin_view
                 rows.append([_btn(("✅ " if on else "⬜ ") + _short(tr(f["label"])), f"adm_xs_t:{group['id']}:{i}")])
             else:
                 rows.append([_btn("✏️ " + _short(tr(f["label"])), f"adm_xs_e:{group['id']}:{i}")])
-        rows.append([_btn(tr("⬅️ بازگشت"), ENTRY_CB)])
+        rows.append([_btn(tr("⬅️ بازگشت"), group.get("bot_back") or ENTRY_CB)])
         return "\n".join(lines), _kb(rows)
 
     async def _log(user_id, key, detail):
@@ -249,7 +249,7 @@ def register(router: Router, db, senior_admin_only, deny_mid, replace_admin_view
         if not field:
             await state.clear()
             return await message.answer(tr("این گزینه دیگر وجود ندارد."))
-        if field["type"] == "textarea":
+        if field["type"] == "textarea" and not field.get("plain"):
             # html_text تا قالب‌بندی و ایموجی‌های پریمیوم حفظ شود (همان رفتار «ویرایش پیام خوش‌آمد»).
             value = message.html_text or ""
         else:

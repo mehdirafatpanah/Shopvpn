@@ -370,9 +370,9 @@ def categories_kb(db, categories, is_main_bot: bool = True) -> InlineKeyboardMar
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def buy_guide_question_kb(step: int) -> InlineKeyboardMarkup:
+def buy_guide_question_kb(step: int, db=None) -> InlineKeyboardMarkup:
     import buy_guide
-    item = buy_guide.question(step)
+    item = buy_guide.question(step, db)
     rows = [[InlineKeyboardButton(text=tr(label), callback_data=f"bg_a:{step}:{i}")]
             for i, (_value, label) in enumerate(item["options"])]
     nav = []
@@ -1426,6 +1426,7 @@ def ai_agents_hub_kb(db) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=f"🔀 {tr('مسیر مدل')}: {tr(provider_label)}", callback_data="adm_ai_set_provider")],
         [InlineKeyboardButton(text=tr("🧠 انتخاب مدل"), callback_data="adm_ai_set_model")],
         [InlineKeyboardButton(text=tr("🤖 دستیار پشتیبانی و سوالات متداول"), callback_data="adm_ai_support_settings")],
+        [InlineKeyboardButton(text=tr("🛒 دستیار هوشمند خرید"), callback_data="adm_xs_g:ai_buy_guide")],
         [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:access")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)

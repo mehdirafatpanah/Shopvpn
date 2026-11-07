@@ -8044,8 +8044,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     # راهنمای خرید هوشمند: سوال‌های ثابت با دکمه + گفتگوی آزاد با AI
     # ---------------------------------------------------------------
     def _bg_question_text(step: int) -> str:
-        item = buy_guide.question(step)
-        return tr(f"🤖 راهنمای خرید ({step + 1} از {len(buy_guide.QUESTIONS)})\n\n{item['q']}")
+        item = buy_guide.question(step, db)
+        return tr(f"🤖 راهنمای خرید ({step + 1} از {buy_guide.question_count(db)})\n\n{item['q']}")
 
     async def _bg_show_product(message: Message, user_id: int, product_id):
         product = await asyncio.to_thread(db.get_product, product_id)
@@ -8078,11 +8078,11 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
     async def _bg_run(message: Message, bot: Bot, user, state: FSMContext):
         data = await state.get_data()
-        answers = buy_guide.normalize_answers(data.get("bg_answers"))
+        answers = buy_guide.normalize_answers(data.get("bg_answers"), db)
         await state.set_state(BuyGuideFlow.chatting)
         thinking = await message.answer(db.get_text('handlers_user.auto_ba4923c8', 'در حال بررسی... ⏳'))
         try:
-            result = await buy_guide.get_reply(db, user.id, answers, buy_guide.first_message(answers))
+            result = await buy_guide.get_reply(db, user.id, answers, buy_guide.first_message(answers, db))
         except Exception:
             logging.getLogger("handlers_user").exception("خطا در راهنمای خرید هوشمند برای کاربر %s.", user.id)
             result = {"reply": "الان نتونستم پیشنهاد بدم؛ لطفاً از لیست محصولات انتخاب کن.", "escalate": False}
@@ -8100,7 +8100,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await asyncio.to_thread(db.clear_ai_conversation, call.from_user.id)
         await state.clear()
         await state.update_data(bg_answers={})
-        await _safe_edit(call.message, _bg_question_text(0), reply_markup=kb.buy_guide_question_kb(0))
+        await _safe_edit(call.message, _bg_question_text(0), reply_markup=kb.buy_guide_question_kb(0, db))
         await call.answer()
 
     @router.callback_query(F.data.startswith("bg_q:"))
@@ -8109,14 +8109,14 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             step = int(call.data.split(":")[1])
         except ValueError:
             return await call.answer()
-        if buy_guide.question(step) is None:
+        if buy_guide.question(step, db) is None:
             return await call.answer()
-        await _safe_edit(call.message, _bg_question_text(step), reply_markup=kb.buy_guide_question_kb(step))
+        await _safe_edit(call.message, _bg_question_text(step), reply_markup=kb.buy_guide_question_kb(step, db))
         await call.answer()
 
     async def _bg_advance(call: CallbackQuery, state: FSMContext, bot: Bot, step: int):
-        if step + 1 < len(buy_guide.QUESTIONS):
-            await _safe_edit(call.message, _bg_question_text(step + 1), reply_markup=kb.buy_guide_question_kb(step + 1))
+        if step + 1 < buy_guide.question_count(db):
+            await _safe_edit(call.message, _bg_question_text(step + 1), reply_markup=kb.buy_guide_question_kb(step + 1, db))
             await call.answer()
             return
         await call.answer()
@@ -8131,7 +8131,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         try:
             _, step_s, idx_s = call.data.split(":")
             step, idx = int(step_s), int(idx_s)
-            item = buy_guide.question(step)
+            item = buy_guide.question(step, db)
             value = item["options"][idx][0]
         except (ValueError, TypeError, IndexError):
             return await call.answer()
@@ -8147,7 +8147,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             step = int(call.data.split(":")[1])
         except ValueError:
             return await call.answer()
-        if buy_guide.question(step) is None:
+        if buy_guide.question(step, db) is None:
             return await call.answer()
         await _bg_advance(call, state, bot, step)
 
@@ -8175,7 +8175,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
         _ai_last_call_at[user.id] = now
         data = await state.get_data()
-        answers = buy_guide.normalize_answers(data.get("bg_answers"))
+        answers = buy_guide.normalize_answers(data.get("bg_answers"), db)
         thinking = await message.answer(db.get_text('handlers_user.auto_ba4923c8', 'در حال بررسی... ⏳'))
         try:
             result = await buy_guide.get_reply(db, user.id, answers, text[:2000])
