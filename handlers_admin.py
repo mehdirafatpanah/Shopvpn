@@ -67,6 +67,7 @@ import ai_media
 import admin_tools
 import admin_extra_settings
 import admin_dedicated_sub
+import dedicated_sub
 import admin_links
 import admin_panel_migration
 import admin_update
@@ -95,6 +96,7 @@ from states import (
     AdminBulkDiscount,
     AdminUserManage,
     AdminConfigManage,
+    AdminConfigSearch,
     AdminCreateWalletGift,
     AdminAddCategory,
     AdminAddProduct,
@@ -14671,6 +14673,24 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         )
         await call.answer()
 
+    def _fmt_gb(value_bytes) -> str:
+        return f"{(value_bytes or 0) / (1024 ** 3):.2f}"
+
+    async def _config_live_usage(cc) -> str:
+        """مصرف زنده از خود پنل (best-effort)؛ در هر خطا رشته‌ی خالی."""
+        try:
+            if not cc["panel_server_id"]:
+                return ""
+            server = await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])
+            if not server or not server["is_active"]:
+                return ""
+            usage = await asyncio.wait_for(get_provider(server).get_user_usage(cc["username"]), timeout=8)
+            limit = usage.get("data_limit_bytes") or 0
+            limit_txt = f"{_fmt_gb(limit)} گیگ" if limit else "نامحدود"
+            return f"مصرف زنده از پنل: {_fmt_gb(usage.get('used_bytes'))} از {limit_txt}"
+        except Exception:
+            return ""
+
     async def _show_config_detail(message: Message, tg_id: int, cc_id: int, note: str = None):
         custom_configs = await asyncio.to_thread(db.get_custom_configs_for_user, tg_id)
         cc = next((c for c in custom_configs if c["id"] == cc_id), None)
@@ -14681,6 +14701,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         auto_renew = (cc["auto_renew"] if "auto_renew" in cc.keys() else 0) == 1
         can_auto_renew = (cc["duration_days"] or 0) > 0
         name = cc["display_name"] or cc["username"]
+        is_test = cc["source"] == "test"
         lines = [
             f"🛠 کانفیگ «{name}» (کاربر {tg_id})",
             f"وضعیت: {'🟢 فعال' if enabled else '🔴 غیرفعال'}",
@@ -14689,11 +14710,40 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             f"حجم/مدت: {cc['volume_gb']:g} گیگ / {cc['duration_days']:g} روز",
             f"انقضا: {to_jalali_str(cc['expires_at']) if cc['expires_at'] else '—'}",
         ]
+        has_dsub = False
+        if is_main_bot:
+            owner = await asyncio.to_thread(db.get_user, tg_id)
+            owner_txt = str(tg_id)
+            if owner:
+                uname = f"@{owner['username']}" if owner["username"] else ""
+                fname = owner["first_name"] or ""
+                owner_txt = " ".join(x for x in (str(tg_id), uname, fname) if x)
+            server = (await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])) if cc["panel_server_id"] else None
+            lines.insert(1, f"🆔 آیدی کانفیگ: {cc['id']}" + (" (🧪 تست)" if is_test else ""))
+            lines.insert(2, f"👤 مالک: {owner_txt}")
+            lines.append(f"پنل: {(server['name'] if server else '—')} | یوزرنیم روی پنل: {cc['username']}")
+            lines.append(f"سفارش: #{cc['order_id'] or '—'} | ساخت: {to_jalali_str(cc['created_at']) if cc['created_at'] else '—'}")
+            usage_line = await _config_live_usage(cc)
+            if usage_line:
+                lines.append(usage_line)
+            if cc["subscription_url"]:
+                lines.append(f"🔗 ساب پنل:\n{cc['subscription_url']}")
+            try:
+                has_dsub = dedicated_sub.is_enabled(db)
+                if has_dsub:
+                    dlink = await asyncio.to_thread(dedicated_sub.link_for_config, db, cc["id"])
+                    if dlink:
+                        lines.append(f"🔗 ساب اختصاصی:\n{dlink}")
+            except Exception:
+                has_dsub = False
         text = "\n".join(lines)
         if note:
             text = note + "\n\n" + text
         await message.answer(
-            text, reply_markup=kb.admin_config_detail_kb(tg_id, cc_id, enabled, auto_renew, can_auto_renew)
+            text, reply_markup=kb.admin_config_detail_kb(
+                tg_id, cc_id, enabled, auto_renew, can_auto_renew,
+                extended=is_main_bot, is_test=is_test, has_dsub=has_dsub,
+            ),
         )
 
     @router.callback_query(F.data.startswith("adm_cfg_view:"))
@@ -14933,6 +14983,345 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         for chunk_start in range(0, len(text), 3500):
             await call.message.answer(text[chunk_start:chunk_start + 3500])
         await call.answer()
+
+    # -------------------------------------------------------------------
+    # جستجوی کانفیگ (فقط بات اصلی): با لینک ساب پنل، لینک/توکن ساب اختصاصی،
+    # آیدی کانفیگ یا نام -> مالک کانفیگ + همه‌ی اقدامات روی آن
+    # -------------------------------------------------------------------
+
+    async def _cfg_ext_guard(call: CallbackQuery) -> bool:
+        if not is_main_bot:
+            await call.answer(tr("این قابلیت فعلاً فقط روی بات اصلی فعال است."), show_alert=True)
+            return False
+        if not senior_admin_only(call.from_user.id):
+            await deny_mid(call)
+            return False
+        return True
+
+    def _parse_cfg_cb(data: str):
+        try:
+            _, tg_id_s, cc_id_s = data.split(":", 2)
+            return int(tg_id_s), int(cc_id_s)
+        except (ValueError, IndexError):
+            return None, None
+
+    async def _get_cfg_of_user(tg_id: int, cc_id: int):
+        rows = await asyncio.to_thread(db.get_custom_configs_for_user, tg_id)
+        return next((c for c in rows if c["id"] == cc_id), None)
+
+    _CFG_SEARCH_PROMPT = (
+        "🔎 جستجوی کانفیگ\n\n"
+        "یکی از این‌ها را بفرست:\n"
+        "• لینک ساب پنل\n"
+        "• لینک ساب اختصاصی (یا فقط توکن آن)\n"
+        "• آیدی عددی کانفیگ\n"
+        "• یوزرنیم/نام کانفیگ\n"
+        "• بخشی از لینک کانفیگ بانک محصول (مثلاً vless://...)"
+    )
+
+    @router.callback_query(F.data == "adm_cfg_search")
+    async def cb_admin_cfg_search(call: CallbackQuery, state: FSMContext):
+        if not await _cfg_ext_guard(call):
+            return
+        await state.set_state(AdminConfigSearch.waiting_query)
+        await replace_admin_view(call, tr(_CFG_SEARCH_PROMPT), reply_markup=kb.admin_back_kb("adm_cat:management"))
+        await call.answer()
+
+    def _owner_label(tg_id) -> str:
+        if not tg_id:
+            return "—"
+        u = db.get_user(tg_id)
+        if not u:
+            return str(tg_id)
+        return " ".join(x for x in (str(tg_id), f"@{u['username']}" if u["username"] else "", u["first_name"] or "") if x)
+
+    @router.message(AdminConfigSearch.waiting_query)
+    async def process_admin_cfg_search(message: Message, state: FSMContext):
+        if not is_main_bot or not senior_admin_only(message.from_user.id):
+            await state.clear()
+            return
+        query = (message.text or "").strip()
+        if not query:
+            await message.answer(tr("لطفاً متن جستجو را بفرست."))
+            return
+        custom_rows = await asyncio.to_thread(db.search_custom_configs, query)
+        bank_rows = await asyncio.to_thread(db.search_bank_configs, query)
+        if not custom_rows and not bank_rows:
+            await message.answer(
+                tr("❌ کانفیگی با این مشخصات پیدا نشد. دوباره بفرست (لینک ساب، توکن ساب اختصاصی، آیدی یا نام کانفیگ)."),
+                reply_markup=kb.admin_back_kb("adm_cat:management"),
+            )
+            return
+        await state.clear()
+        if len(custom_rows) == 1 and not bank_rows:
+            r = custom_rows[0]
+            await _show_config_detail(message, r["user_id"], r["id"])
+            return
+        if custom_rows:
+            buttons = []
+            for r in custom_rows:
+                owner = await asyncio.to_thread(_owner_label, r["user_id"])
+                name = r["display_name"] or r["username"]
+                buttons.append((r["id"], r["user_id"], f"#{r['id']} {name} ← {owner}"))
+            await message.answer(
+                tr(f"🔎 {len(custom_rows)} کانفیگ پیدا شد؛ یکی را انتخاب کن:"),
+                reply_markup=kb.admin_cfg_search_results_kb(buttons),
+            )
+        for c in bank_rows[:5]:
+            owner_id = c["assigned_user_id"]
+            owner = await asyncio.to_thread(_owner_label, owner_id)
+            disabled = bool(c["is_disabled"]) if "is_disabled" in c.keys() else False
+            status = "🔴 غیرفعال" if disabled else ("🟢 تحویل‌شده" if c["is_used"] else "⚪️ هنوز فروخته نشده")
+            expires = c["expires_at"] if "expires_at" in c.keys() else None
+            text = (
+                f"🏦 کانفیگ بانک محصول #{c['id']}\n"
+                f"محصول: {c['product_name'] or 'نامشخص'}\n"
+                f"وضعیت: {status}\n"
+                f"👤 مالک: {owner}\n"
+                f"اختصاص: {to_jalali_str(c['assigned_at']) if c['assigned_at'] else '—'} | "
+                f"انقضا: {to_jalali_str(expires) if expires else '—'}"
+            )
+            rows = []
+            if owner_id:
+                rows.append([InlineKeyboardButton(text=tr("👤 پروفایل کاربر"), callback_data=f"adm_user_view:{owner_id}")])
+            rows.append([InlineKeyboardButton(text=tr("🔎 جستجوی جدید"), callback_data="adm_cfg_search")])
+            await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+    # ----- قطع دسترسی و صدور لینک جدید -----
+    @router.callback_query(F.data.startswith("adm_cfg_cut:"))
+    async def cb_admin_cfg_cut_ask(call: CallbackQuery):
+        if not await _cfg_ext_guard(call):
+            return
+        tg_id, cc_id = _parse_cfg_cb(call.data)
+        cc = await _get_cfg_of_user(tg_id, cc_id) if tg_id else None
+        if not cc:
+            await call.answer(tr("این کانفیگ یافت نشد."), show_alert=True)
+            return
+        if cc["source"] == "test":
+            await call.answer(tr("این قابلیت برای کانفیگ تست در دسترس نیست."), show_alert=True)
+            return
+        await call.message.answer(
+            tr("⚠️ با این کار لینک/کانفیگ فعلی از کار می‌افتد و بلافاصله یک لینک جدید با همان حجم و زمان باقی‌مانده صادر می‌شود. "
+               "این عملیات غیرقابل بازگشت است."),
+            reply_markup=kb.admin_cfg_danger_confirm_kb("cut", tg_id, cc_id, tr("⚠️ بله، قطع شود")),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_cfg_cutok:"))
+    async def cb_admin_cfg_cut_confirm(call: CallbackQuery):
+        if not await _cfg_ext_guard(call):
+            return
+        tg_id, cc_id = _parse_cfg_cb(call.data)
+        cc = await _get_cfg_of_user(tg_id, cc_id) if tg_id else None
+        if not cc or cc["source"] == "test":
+            await call.answer(tr("این کانفیگ یافت نشد."), show_alert=True)
+            return
+        server = (await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])) if cc["panel_server_id"] else None
+        if not server or not server["is_active"]:
+            await call.answer(tr("سرور پنل مربوط به این سرویس یافت نشد یا غیرفعال است."), show_alert=True)
+            return
+        await call.answer(tr("در حال اعمال..."))
+        try:
+            result = await get_provider(server).revoke_credentials(cc["username"])
+        except PanelError as e:
+            await call.message.answer(tr(f"⛔️ قطع دسترسی ناموفق بود: {e}"))
+            return
+        if result.subscription_url:
+            await asyncio.to_thread(db.update_custom_config_subscription_url, cc_id, result.subscription_url)
+        try:
+            import leak_index
+            leak_index.schedule_refresh(db, cc_id)
+        except Exception:
+            pass
+        await asyncio.to_thread(
+            db.add_custom_config_history, cc_id, "cut_access",
+            f"دسترسی قطع و لینک جدید صادر شد (توسط ادمین {call.from_user.id} - بات)",
+        )
+        await asyncio.to_thread(
+            db.log_admin_action, call.from_user.id, "custom_config_cut_access",
+            f"دسترسی سرویس «{cc['username']}» کاربر {tg_id} قطع و لینک جدید صادر شد (بات)", "user", tg_id,
+        )
+        await _show_config_detail(call.message, tg_id, cc_id, "✅ دسترسی قبلی قطع شد و لینک جدید صادر شد.")
+
+    # ----- حذف کامل -----
+    @router.callback_query(F.data.startswith("adm_cfg_del:"))
+    async def cb_admin_cfg_delete_ask(call: CallbackQuery):
+        if not await _cfg_ext_guard(call):
+            return
+        tg_id, cc_id = _parse_cfg_cb(call.data)
+        cc = await _get_cfg_of_user(tg_id, cc_id) if tg_id else None
+        if not cc:
+            await call.answer(tr("این کانفیگ یافت نشد."), show_alert=True)
+            return
+        if cc["source"] == "test":
+            await call.answer(tr("این قابلیت برای کانفیگ تست در دسترس نیست."), show_alert=True)
+            return
+        await call.message.answer(
+            tr(f"🗑 کانفیگ «{cc['display_name'] or cc['username']}» (کاربر {tg_id}) هم از روی پنل VPN و هم از دیتابیس حذف می‌شود. "
+               "این عملیات غیرقابل بازگشت است."),
+            reply_markup=kb.admin_cfg_danger_confirm_kb("del", tg_id, cc_id, tr("🗑 بله، حذف شود")),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_cfg_delok:"))
+    async def cb_admin_cfg_delete_confirm(call: CallbackQuery):
+        if not await _cfg_ext_guard(call):
+            return
+        tg_id, cc_id = _parse_cfg_cb(call.data)
+        cc = await _get_cfg_of_user(tg_id, cc_id) if tg_id else None
+        if not cc or cc["source"] == "test":
+            await call.answer(tr("این کانفیگ یافت نشد (شاید قبلاً حذف شده)."), show_alert=True)
+            return
+        await call.answer(tr("در حال حذف..."))
+        if cc["panel_server_id"]:
+            server = await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])
+            if server:
+                try:
+                    await get_provider(server).delete_user(cc["username"])
+                except Exception:
+                    logging.getLogger("handlers_admin").exception(
+                        "حذف کاربر «%s» از پنل سرور #%s ناموفق بود؛ در هر صورت از دیتابیس حذف می‌شود.",
+                        cc["username"], cc["panel_server_id"],
+                    )
+        try:
+            from multi_target import delete_linked_panel_users
+            await delete_linked_panel_users(db, cc_id)
+        except Exception:
+            logging.getLogger("handlers_admin").exception("حذف پنل‌های لینک‌شده‌ی کانفیگ %s ناموفق بود", cc_id)
+        await asyncio.to_thread(db.delete_owned_custom_config, cc_id, cc["user_id"])
+        await asyncio.to_thread(
+            db.log_admin_action, call.from_user.id, "custom_config_delete_admin",
+            f"سرویس «{cc['username']}» کاربر {cc['user_id']} حذف شد (بات)", "user", cc["user_id"],
+        )
+        await call.message.answer(
+            tr(f"✅ کانفیگ «{cc['display_name'] or cc['username']}» حذف شد."),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=tr("🔎 جستجوی کانفیگ"), callback_data="adm_cfg_search")],
+                [InlineKeyboardButton(text=tr("👤 پروفایل کاربر"), callback_data=f"adm_user_view:{cc['user_id']}")],
+            ]),
+        )
+
+    # ----- توکن جدید ساب اختصاصی -----
+    @router.callback_query(F.data.startswith("adm_cfg_dsubnew:"))
+    async def cb_admin_cfg_dsub_new(call: CallbackQuery):
+        if not await _cfg_ext_guard(call):
+            return
+        tg_id, cc_id = _parse_cfg_cb(call.data)
+        cc = await _get_cfg_of_user(tg_id, cc_id) if tg_id else None
+        if not cc:
+            await call.answer(tr("این کانفیگ یافت نشد."), show_alert=True)
+            return
+        if not dedicated_sub.is_enabled(db):
+            await call.answer(tr("ساب اختصاصی روشن نیست."), show_alert=True)
+            return
+        token = await asyncio.to_thread(db.ds_regenerate_token, cc_id)
+        if not token:
+            await call.answer(tr("ساخت توکن ناموفق بود."), show_alert=True)
+            return
+        await asyncio.to_thread(
+            db.add_custom_config_history, cc_id, "dsub_regen",
+            f"توکن ساب اختصاصی تازه شد (توسط ادمین {call.from_user.id})",
+        )
+        await asyncio.to_thread(
+            db.log_admin_action, call.from_user.id, "custom_config_dsub_regen",
+            f"توکن ساب اختصاصی سرویس «{cc['username']}» کاربر {tg_id} تازه شد (بات)", "user", tg_id,
+        )
+        await call.answer(tr("✅ توکن جدید ساخته شد."))
+        await _show_config_detail(call.message, tg_id, cc_id, "✅ لینک اختصاصی قبلی باطل و لینک جدید ساخته شد.")
+
+    # ----- افزودن حجم / روز -----
+    async def _cfg_add_ask(call: CallbackQuery, state: FSMContext, kind: str):
+        if not await _cfg_ext_guard(call):
+            return
+        tg_id, cc_id = _parse_cfg_cb(call.data)
+        cc = await _get_cfg_of_user(tg_id, cc_id) if tg_id else None
+        if not cc:
+            await call.answer(tr("این کانفیگ یافت نشد."), show_alert=True)
+            return
+        if kind == "vol" and (cc["volume_gb"] or 0) <= 0:
+            await call.answer(tr("حجم این سرویس نامحدود است."), show_alert=True)
+            return
+        if kind == "day" and ((cc["duration_days"] or 0) <= 0 or (cc["start_on_first_use"] and not cc["expires_at"])):
+            await call.answer(tr("این سرویس نامحدود است یا هنوز شروع نشده (On-hold)."), show_alert=True)
+            return
+        pool = await asyncio.to_thread(db.quota_pool_for_custom_config, cc_id)
+        if pool:
+            await call.answer(tr("این سرویس ترکیبی VPN+SSH با سهمیه‌ی مشترک است؛ از بخش مربوط به سهمیه‌ی مشترک تغییر بده."), show_alert=True)
+            return
+        await state.set_state(AdminConfigManage.waiting_add_volume if kind == "vol" else AdminConfigManage.waiting_add_days)
+        await state.update_data(target_user_id=tg_id, target_cc_id=cc_id)
+        prompt = ("➕ چند گیگ به این کانفیگ اضافه شود؟ (عدد، مثلاً 10 یا 2.5)" if kind == "vol"
+                  else "➕ چند روز به انقضای این کانفیگ اضافه شود؟ (عدد صحیح)")
+        await call.message.answer(tr(prompt), reply_markup=kb.admin_back_kb(f"adm_cfg_view:{tg_id}:{cc_id}"))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_cfg_addvol:"))
+    async def cb_admin_cfg_addvol(call: CallbackQuery, state: FSMContext):
+        await _cfg_add_ask(call, state, "vol")
+
+    @router.callback_query(F.data.startswith("adm_cfg_addday:"))
+    async def cb_admin_cfg_addday(call: CallbackQuery, state: FSMContext):
+        await _cfg_add_ask(call, state, "day")
+
+    async def _cfg_add_apply(message: Message, state: FSMContext, kind: str):
+        if not is_main_bot or not senior_admin_only(message.from_user.id):
+            await state.clear()
+            return
+        raw = (message.text or "").strip().replace(",", ".")
+        try:
+            amount = float(raw)
+        except ValueError:
+            amount = 0
+        if kind == "day":
+            amount = int(amount) if amount == int(amount) else 0
+        if amount <= 0 or amount > (100000 if kind == "vol" else 3650):
+            await message.answer(tr("❌ عدد نامعتبر است؛ یک عدد مثبت بفرست."))
+            return
+        data = await state.get_data()
+        tg_id, cc_id = data.get("target_user_id"), data.get("target_cc_id")
+        await state.clear()
+        cc = await _get_cfg_of_user(tg_id, cc_id) if tg_id and cc_id else None
+        if not cc:
+            await message.answer(tr("این کانفیگ دیگر یافت نشد."))
+            return
+        server = (await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])) if cc["panel_server_id"] else None
+        if not server or not server["is_active"]:
+            await message.answer(tr("سرور پنل مربوط به این سرویس یافت نشد یا غیرفعال است."))
+            return
+        try:
+            from product_targets import apply_target_config
+            server = apply_target_config(server, cc["panel_target_config"])
+        except (KeyError, IndexError, TypeError, ImportError):
+            pass
+        add_vol = amount if kind == "vol" else 0
+        add_days = amount if kind == "day" else 0
+        try:
+            await get_provider(server).update_user(
+                cc["username"], add_volume_gb=add_vol, add_days=add_days,
+                reset_usage=False, preserve_remaining=False,
+            )
+        except PanelError as e:
+            await message.answer(tr(f"⛔️ ناموفق بود: {e}"))
+            return
+        await asyncio.to_thread(db.apply_custom_config_renewal, cc_id, add_vol, add_days)
+        label = f"+{amount:g} گیگ" if kind == "vol" else f"+{amount} روز"
+        await asyncio.to_thread(
+            db.add_custom_config_history, cc_id, "admin_extend",
+            f"{label} (توسط ادمین {message.from_user.id} - بات)",
+        )
+        await asyncio.to_thread(
+            db.log_admin_action, message.from_user.id, "custom_config_admin_extend",
+            f"سرویس «{cc['username']}» کاربر {tg_id}: {label} (بات)", "user", tg_id,
+        )
+        await _show_config_detail(message, tg_id, cc_id, f"✅ {label} به کانفیگ اضافه شد.")
+
+    @router.message(AdminConfigManage.waiting_add_volume)
+    async def process_admin_cfg_add_volume(message: Message, state: FSMContext):
+        await _cfg_add_apply(message, state, "vol")
+
+    @router.message(AdminConfigManage.waiting_add_days)
+    async def process_admin_cfg_add_days(message: Message, state: FSMContext):
+        await _cfg_add_apply(message, state, "day")
 
     # -------------------------------------------------------------------
     # گروه گزارش تاپیک‌دار

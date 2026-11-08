@@ -1772,6 +1772,7 @@ ADMIN_PANEL_ITEMS = [
     ("adm_cposts", "🤖 مدیریت محتوای کانال با AI", "adm_cposts"),
     ("adm_stats", "📊 آمار فروش", "adm_stats"),
     ("adm_user_search", "👥 مدیریت کاربران", "adm_stats_user"),
+    ("adm_cfg_search", "🔎 جستجوی کانفیگ", "adm_cfg_search"),
     ("adm_backup_menu", "🗄 بکاپ و بازیابی", "adm_backup_menu"),
     ("adm_report_group", "📣 گروه گزارش تاپیک‌دار", "adm_report_group"),
     ("adm_bulk_gift", "🎁 هدیه‌ی گروهی", "adm_bulk_gift"),
@@ -1918,6 +1919,7 @@ ADMIN_PANEL_CATEGORIES = [
         "adm_update",
         "adm_stats",
         "adm_user_search",
+        "adm_cfg_search",
         "adm_backup_menu",
         "adm_report_group",
         "adm_spam_settings",
@@ -1980,6 +1982,9 @@ def _is_item_visible(db, key: str, is_main_bot: bool) -> bool:
         return (not is_main_bot) and _is_volume_credit_owner(db)
     if key.startswith(("adm_set_xgw_", "adm_xgw_pay_")) and not is_main_bot:
         return False
+    if key == "adm_cfg_search":
+        # جستجوی کانفیگ فعلاً فقط روی بات اصلی
+        return is_main_bot
     if key == "adm_update":
         # آپدیت پروژه فقط از بات اصلی (یک نصب = یک پروژه)، نه بات‌های نمایندگی
         return is_main_bot and db.is_full_access_bot(is_main_bot)
@@ -2764,7 +2769,8 @@ def admin_user_config_list_kb(tg_id: int, configs) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_config_detail_kb(tg_id: int, cc_id: int, enabled: bool, auto_renew: bool, can_auto_renew: bool) -> InlineKeyboardMarkup:
+def admin_config_detail_kb(tg_id: int, cc_id: int, enabled: bool, auto_renew: bool, can_auto_renew: bool,
+                           extended: bool = False, is_test: bool = False, has_dsub: bool = False) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(
             text=tr("🔴 غیرفعال کردن") if enabled else tr("🟢 فعال کردن"),
@@ -2779,8 +2785,36 @@ def admin_config_detail_kb(tg_id: int, cc_id: int, enabled: bool, auto_renew: bo
     rows.append([InlineKeyboardButton(text=tr("✏️ تغییر نام"), callback_data=f"adm_cfg_rename:{tg_id}:{cc_id}")])
     rows.append([InlineKeyboardButton(text=tr("👤 انتقال به کاربر دیگر"), callback_data=f"adm_cfg_transfer:{tg_id}:{cc_id}")])
     rows.append([InlineKeyboardButton(text=tr("🕒 تاریخچه"), callback_data=f"adm_cfg_history:{tg_id}:{cc_id}")])
+    if extended:
+        rows.append([
+            InlineKeyboardButton(text=tr("➕ افزودن حجم"), callback_data=f"adm_cfg_addvol:{tg_id}:{cc_id}"),
+            InlineKeyboardButton(text=tr("➕ افزودن روز"), callback_data=f"adm_cfg_addday:{tg_id}:{cc_id}"),
+        ])
+        if has_dsub:
+            rows.append([InlineKeyboardButton(text=tr("♻️ توکن جدید ساب اختصاصی"), callback_data=f"adm_cfg_dsubnew:{tg_id}:{cc_id}")])
+        if not is_test:
+            rows.append([InlineKeyboardButton(text=tr("✂️ قطع دسترسی و لینک جدید"), callback_data=f"adm_cfg_cut:{tg_id}:{cc_id}")])
+            rows.append([InlineKeyboardButton(text=tr("🗑 حذف کامل کانفیگ"), callback_data=f"adm_cfg_del:{tg_id}:{cc_id}")])
+        rows.append([InlineKeyboardButton(text=tr("👤 پروفایل کاربر"), callback_data=f"adm_user_view:{tg_id}")])
+        rows.append([InlineKeyboardButton(text=tr("🔎 جستجوی کانفیگ دیگر"), callback_data="adm_cfg_search")])
     rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت به لیست کانفیگ‌ها"), callback_data=f"adm_user_cfglist:{tg_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_cfg_danger_confirm_kb(action: str, tg_id: int, cc_id: int, yes_text: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=yes_text, callback_data=f"adm_cfg_{action}ok:{tg_id}:{cc_id}")],
+        [InlineKeyboardButton(text=tr("❌ انصراف"), callback_data=f"adm_cfg_view:{tg_id}:{cc_id}")],
+    ])
+
+
+def admin_cfg_search_results_kb(rows) -> InlineKeyboardMarkup:
+    """rows: لیست (cc_id, tg_id, label)"""
+    kb_rows = [[InlineKeyboardButton(text=label[:60], callback_data=f"adm_cfg_view:{tg_id}:{cc_id}")]
+               for cc_id, tg_id, label in rows]
+    kb_rows.append([InlineKeyboardButton(text=tr("🔎 جستجوی جدید"), callback_data="adm_cfg_search")])
+    kb_rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:management")])
+    return InlineKeyboardMarkup(inline_keyboard=kb_rows)
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 
 

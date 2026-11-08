@@ -662,6 +662,12 @@ class AdminUserManage(StatesGroup):
 class AdminConfigManage(StatesGroup):
     waiting_rename = State()
     waiting_transfer_target = State()
+    waiting_add_volume = State()
+    waiting_add_days = State()
+
+
+class AdminConfigSearch(StatesGroup):
+    waiting_query = State()
 
 
 class AdminSetPanelTemplate(StatesGroup):
