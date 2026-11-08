@@ -12,6 +12,7 @@
 import asyncio
 import base64
 import contextvars
+import csv
 import hmac
 import io
 import json
@@ -23,6 +24,7 @@ import secrets
 import sqlite3
 import time
 import tempfile
+from urllib.parse import quote
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, List, Dict, Any
@@ -8681,3 +8683,368 @@ def serve_setup_page():
 
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 # 		   		 		  	 	 		 		   		  	 	 		 			  		 				 			  	 
+
+
+# ===================================================== database manager ===
+# This module is deliberately restricted to the primary tenant and owner.
+_DB_ADMIN_HIDDEN_TABLES = {"_shopvpn_db_audit"}
+_DB_ADMIN_SENSITIVE = re.compile(r"(token|secret|password|passwd|hash|config|credential|private.?key|api.?key)", re.I)
+_DB_ADMIN_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _db_admin_resolve_path(tenant=""):
+    """Resolve a database only from the main tenant registry, never from a client path."""
+    if not tenant:
+        return os.path.abspath(DB_PATH)
+    if not str(tenant).isdigit():
+        raise HTTPException(400, "شناسه تنانت معتبر نیست.")
+    row = main_db.get_reseller_bot(int(tenant))
+    if not row:
+        raise HTTPException(404, "تنانت پیدا نشد.")
+    path = resolve_db_path(row["db_path"])
+    if not os.path.isfile(path):
+        raise HTTPException(404, "فایل دیتابیس تنانت موجود نیست.")
+    return os.path.abspath(path)
+
+
+def _db_admin_conn(readonly=True, tenant=""):
+    """Open an isolated SQLite connection; never reuse the bot's live connection."""
+    path = _db_admin_resolve_path(tenant)
+    if readonly:
+        uri = "file:" + quote(path.replace("\\", "/"), safe="/:") + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=3)
+    else:
+        conn = sqlite3.connect(path, timeout=5)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=3000")
+    return conn
+
+
+def _db_admin_tables(conn):
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+    ).fetchall()
+    return [r["name"] for r in rows if r["name"] not in _DB_ADMIN_HIDDEN_TABLES
+            and not r["name"].startswith("sqlite_")]
+
+
+def _db_admin_table(name, conn):
+    if not isinstance(name, str) or name not in _db_admin_tables(conn):
+        raise HTTPException(404, "جدول معتبر نیست.")
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _db_admin_masked(row, columns):
+    out = {}
+    for col in columns:
+        value = row[col]
+        if _DB_ADMIN_SENSITIVE.search(col):
+            out[col] = "••••••••" if value not in (None, "") else value
+        elif isinstance(value, bytes):
+            out[col] = f"[BLOB: {len(value)} bytes]"
+        else:
+            out[col] = value
+    return out
+
+
+def _db_admin_backup(tenant=''):
+    db_path = _db_admin_resolve_path(tenant)
+    backup_dir = os.path.join(os.path.dirname(db_path), "backups")
+    os.makedirs(backup_dir, exist_ok=True)
+    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+    dest = os.path.join(backup_dir, f"db_manager_{stamp}.db")
+    src_conn = _db_admin_conn(readonly=True, tenant=tenant)
+    dst_conn = sqlite3.connect(dest)
+    try:
+        src_conn.backup(dst_conn, pages=256, sleep=0.05)
+        dst_conn.commit()
+    finally:
+        dst_conn.close()
+        src_conn.close()
+    return dest
+
+
+def _db_admin_audit(conn, admin, action, table, details):
+    conn.execute("""CREATE TABLE IF NOT EXISTS _shopvpn_db_audit (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, admin_id INTEGER, username TEXT,
+        action TEXT NOT NULL, table_name TEXT, details TEXT, created_at TEXT NOT NULL
+    )""")
+    conn.execute(
+        "INSERT INTO _shopvpn_db_audit(admin_id,username,action,table_name,details,created_at) VALUES(?,?,?,?,?,?)",
+        (admin["id"], admin["username"], action, table, json.dumps(details, ensure_ascii=False, default=str)[:4000],
+         datetime.utcnow().isoformat(timespec="seconds") + "Z")
+    )
+
+
+@app.get("/api/database/tenants")
+def db_admin_tenants_api(admin=Depends(require_owner), _main=Depends(require_main_tenant)):
+    result = [{"id": "", "name": "بات اصلی", "db": os.path.basename(DB_PATH)}]
+    for row in main_db.list_reseller_bots(active_only=False):
+        try:
+            path = resolve_db_path(row["db_path"])
+            if os.path.isfile(path):
+                label = row["bot_username"] or row["link_slug"] or row["owner_name"] or f"نمایندگی {row['id']}"
+                result.append({"id": str(row["id"]), "name": label,
+                               "db": os.path.basename(path)})
+        except Exception:
+            continue
+    return {"tenants": result}
+
+
+@app.get("/api/database/tables")
+def db_admin_tables_api(tenant: str = Query(""), admin=Depends(require_owner), _main=Depends(require_main_tenant)):
+    conn = _db_admin_conn(True, tenant)
+    try:
+        result = []
+        for name in _db_admin_tables(conn):
+            quoted = _db_admin_table(name, conn)
+            count = conn.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()[0]
+            result.append({"name": name, "rows": count})
+        return {"tables": result, "database": os.path.basename(DB_PATH)}
+    finally:
+        conn.close()
+
+
+@app.get("/api/database/table/{table_name}")
+def db_admin_table_api(table_name: str, page: int = 1, page_size: int = 50,
+                       search: str = "", sort: str = "", direction: str = "asc", tenant: str = Query(""),
+                       admin=Depends(require_owner), _main=Depends(require_main_tenant)):
+    page = max(1, min(int(page), 1000000))
+    page_size = max(1, min(int(page_size), 200))
+    conn = _db_admin_conn(True, tenant)
+    try:
+        table = _db_admin_table(table_name, conn)
+        info = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        columns = [r["name"] for r in info]
+        if not columns:
+            raise HTTPException(400, "ساختار جدول قابل خواندن نیست.")
+        where, params = "", []
+        if search:
+            terms = [f"CAST({chr(34)+c+chr(34)} AS TEXT) LIKE ?" for c in columns
+                     if not _DB_ADMIN_SENSITIVE.search(c)]
+            if terms:
+                where = " WHERE (" + " OR ".join(terms) + ")"
+                params = [f"%{search[:100]}%"] * len(terms)
+        order = ""
+        if sort and sort in columns:
+            order = f' ORDER BY "{sort}" {"DESC" if direction.lower()=="desc" else "ASC"}'
+        total = conn.execute(f"SELECT COUNT(*) FROM {table}{where}", params).fetchone()[0]
+        rows = conn.execute(f"SELECT * FROM {table}{where}{order} LIMIT ? OFFSET ?",
+                            params + [page_size, (page-1)*page_size]).fetchall()
+        return {"table": table_name, "columns": columns,
+                "rows": [_db_admin_masked(r, columns) for r in rows],
+                "total": total, "page": page, "page_size": page_size}
+    finally:
+        conn.close()
+
+
+@app.get("/api/database/schema/{table_name}")
+def db_admin_schema_api(table_name: str, tenant: str = Query(""), admin=Depends(require_owner), _main=Depends(require_main_tenant)):
+    conn = _db_admin_conn(True, tenant)
+    try:
+        table = _db_admin_table(table_name, conn)
+        cols = [dict(r) for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        indexes = [dict(r) for r in conn.execute(f"PRAGMA index_list({table})").fetchall()]
+        return {"columns": cols, "indexes": indexes}
+    finally:
+        conn.close()
+
+
+@app.get("/api/database/backup")
+def db_admin_backup_api(tenant: str = Query(""), admin=Depends(require_owner), _main=Depends(require_main_tenant)):
+    path = _db_admin_backup(tenant)
+    return FileResponse(path, filename=os.path.basename(path), media_type="application/octet-stream")
+
+
+@app.get("/api/database/export/{table_name}")
+def db_admin_export_api(table_name: str, format: str = "json", tenant: str = Query(""),
+                        admin=Depends(require_owner), _main=Depends(require_main_tenant)):
+    conn = _db_admin_conn(True, tenant)
+    try:
+        table = _db_admin_table(table_name, conn)
+        cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        rows = conn.execute(f"SELECT * FROM {table} LIMIT 100000").fetchall()
+        safe = [_db_admin_masked(r, cols) for r in rows]
+        if format.lower() == "csv":
+            output = io.StringIO()
+            writer = csv.DictWriter(output, fieldnames=cols)
+            writer.writeheader()
+            writer.writerows(safe)
+            return Response(output.getvalue(), media_type="text/csv; charset=utf-8",
+                            headers={"Content-Disposition": f'attachment; filename="{table_name}.csv"'})
+        if format.lower() != "json":
+            raise HTTPException(400, "فرمت پشتیبانی نمی‌شود.")
+        return JSONResponse({"table": table_name, "rows": safe},
+                            headers={"Content-Disposition": f'attachment; filename="{table_name}.json"'})
+    finally:
+        conn.close()
+
+
+@app.post("/api/database/query")
+async def db_admin_query_api(request: Request, admin=Depends(require_owner), _main=Depends(require_main_tenant)):
+    body = await request.json()
+    tenant = str(body.get("tenant") or "")
+    sql = str(body.get("sql") or "").strip()
+    if not sql or len(sql) > 4000 or ";" in sql.rstrip(";"):
+        raise HTTPException(400, "فقط یک دستور SELECT مجاز است.")
+    sql = sql.rstrip(";").strip()
+    if not re.match(r"(?is)^SELECT\b", sql):
+        raise HTTPException(400, "کنسول فقط دستور SELECT را می‌پذیرد.")
+    conn = _db_admin_conn(True, tenant)
+    deadline = time.monotonic() + 2.0
+    def authorizer(action, arg1, arg2, dbname, source):
+        allowed = {sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION,
+                   getattr(sqlite3, "SQLITE_RECURSIVE", -1)}
+        if action not in allowed:
+            return sqlite3.SQLITE_DENY
+        if action == sqlite3.SQLITE_FUNCTION and (arg2 or arg1 or "").lower() in {"load_extension"}:
+            return sqlite3.SQLITE_DENY
+        if action == sqlite3.SQLITE_READ and _DB_ADMIN_SENSITIVE.search(str(arg2 or "")):
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+    conn.set_authorizer(authorizer)
+    conn.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 1000)
+    try:
+        cur = conn.execute(f"SELECT * FROM ({sql}) AS _q LIMIT 501")
+        cols = [d[0] for d in cur.description or []]
+        rows = cur.fetchmany(501)
+        return {"columns": cols, "rows": [_db_admin_masked(r, cols) for r in rows[:500]],
+                "truncated": len(rows) > 500}
+    except sqlite3.Error as e:
+        raise HTTPException(400, f"خطای SQL: {str(e)[:300]}")
+    finally:
+        conn.close()
+
+
+@app.post("/api/database/row")
+async def db_admin_update_row(request: Request, admin=Depends(require_owner), _main=Depends(require_main_tenant)):
+    body = await request.json()
+    tenant = str(body.get("tenant") or "")
+    table_name, values, pk = body.get("table"), body.get("values"), body.get("pk")
+    if not isinstance(values, dict) or not values or not isinstance(pk, dict) or not pk:
+        raise HTTPException(400, "اطلاعات ردیف ناقص است.")
+    backup_path = _db_admin_backup(tenant)
+    conn = _db_admin_conn(False, tenant)
+    try:
+        table = _db_admin_table(table_name, conn)
+        info = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        columns = {r["name"] for r in info}
+        pk_cols = [r["name"] for r in info if r["pk"]]
+        if not pk_cols or set(pk) != set(pk_cols) or not set(values).issubset(columns):
+            raise HTTPException(400, "کلید اصلی یا ستون‌های ارسالی معتبر نیستند.")
+        if any(_DB_ADMIN_SENSITIVE.search(k) for k in pk_cols):
+            raise HTTPException(403, "عملیات روی جدول با کلید اصلی حساس از این بخش مجاز نیست.")
+        if any(_DB_ADMIN_SENSITIVE.search(k) for k in values):
+            raise HTTPException(403, "ویرایش فیلدهای حساس از این بخش مجاز نیست.")
+        set_sql = ", ".join('"' + k.replace('"','""') + '"=?' for k in values)
+        where_sql = " AND ".join('"' + k.replace('"','""') + '" IS ?' for k in pk)
+        cur = conn.execute(f"UPDATE {table} SET {set_sql} WHERE {where_sql}",
+                           list(values.values()) + list(pk.values()))
+        if cur.rowcount != 1:
+            raise HTTPException(404, "ردیف پیدا نشد یا یکتا نیست.")
+        _db_admin_audit(conn, admin, "update", table_name, {"pk": pk, "changed_columns": list(values)})
+        conn.commit()
+        return {"ok": True, "backup": os.path.basename(backup_path)}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@app.post("/api/database/delete-row")
+async def db_admin_delete_row(request: Request, admin=Depends(require_owner), _main=Depends(require_main_tenant)):
+    body = await request.json()
+    tenant = str(body.get("tenant") or "")
+    table_name, pk = body.get("table"), body.get("pk")
+    if not isinstance(pk, dict) or not pk:
+        raise HTTPException(400, "کلید اصلی ردیف مشخص نیست.")
+    backup_path = _db_admin_backup(tenant)
+    conn = _db_admin_conn(False, tenant)
+    try:
+        table = _db_admin_table(table_name, conn)
+        info = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        pk_cols = [r["name"] for r in info if r["pk"]]
+        if not pk_cols or set(pk) != set(pk_cols):
+            raise HTTPException(400, "کلید اصلی معتبر نیست.")
+        if any(_DB_ADMIN_SENSITIVE.search(k) for k in pk_cols):
+            raise HTTPException(403, "عملیات روی جدول با کلید اصلی حساس از این بخش مجاز نیست.")
+        where_sql = " AND ".join('"' + k.replace('"','""') + '" IS ?' for k in pk)
+        cur = conn.execute(f"DELETE FROM {table} WHERE {where_sql}", list(pk.values()))
+        if cur.rowcount != 1:
+            raise HTTPException(404, "ردیف پیدا نشد یا یکتا نیست.")
+        _db_admin_audit(conn, admin, "delete", table_name, {"pk": pk})
+        conn.commit()
+        return {"ok": True, "backup": os.path.basename(backup_path)}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@app.post("/api/database/vacuum")
+async def db_admin_vacuum_api(request: Request, admin=Depends(require_owner), _main=Depends(require_main_tenant)):
+    body = await request.json()
+    tenant = str(body.get("tenant") or "")
+    backup_path = _db_admin_backup(tenant)
+    conn = _db_admin_conn(False, tenant)
+    try:
+        conn.execute("VACUUM")
+        conn.close()
+        return {"ok": True, "backup": os.path.basename(backup_path)}
+    except Exception:
+        conn.close()
+        raise
+
+
+@app.get("/api/database/audit")
+def db_admin_audit_api(tenant: str = Query(""), admin=Depends(require_owner), _main=Depends(require_main_tenant)):
+    conn = _db_admin_conn(True, tenant)
+    try:
+        exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_shopvpn_db_audit'").fetchone()
+        if not exists:
+            return {"rows": []}
+        rows = conn.execute("SELECT id,admin_id,username,action,table_name,details,created_at FROM _shopvpn_db_audit ORDER BY id DESC LIMIT 200").fetchall()
+        return {"rows": [dict(r) for r in rows]}
+    finally:
+        conn.close()
+
+
+
+@app.post("/api/database/import/{table_name}")
+async def db_admin_import_api(table_name: str, request: Request,
+                              admin=Depends(require_owner), _main=Depends(require_main_tenant)):
+    body = await request.json()
+    tenant = str(body.get("tenant") or "")
+    rows = body.get("rows")
+    if not isinstance(rows, list) or not rows or len(rows) > 5000:
+        raise HTTPException(400, "فایل ورودی باید شامل ۱ تا ۵۰۰۰ ردیف باشد.")
+    backup_path = _db_admin_backup(tenant)
+    conn = _db_admin_conn(False, tenant)
+    try:
+        table = _db_admin_table(table_name, conn)
+        info = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        allowed = {r["name"] for r in info}
+        if not info:
+            raise HTTPException(400, "جدول نامعتبر است.")
+        for row in rows:
+            if not isinstance(row, dict) or not row or not set(row).issubset(allowed):
+                raise HTTPException(400, "ساختار یکی از ردیف‌ها معتبر نیست.")
+            if any(_DB_ADMIN_SENSITIVE.search(k) for k in row):
+                raise HTTPException(403, "ورود فیلدهای حساس از این بخش مجاز نیست.")
+        cols = list(rows[0])
+        if any(set(r) != set(cols) for r in rows):
+            raise HTTPException(400, "ستون‌های تمام ردیف‌ها باید یکسان باشند.")
+        names = ", ".join('"' + c.replace('"','""') + '"' for c in cols)
+        marks = ", ".join("?" for _ in cols)
+        conn.executemany(f"INSERT INTO {table} ({names}) VALUES ({marks})",
+                         [[r[c] for c in cols] for r in rows])
+        _db_admin_audit(conn, admin, "import", table_name, {"rows": len(rows), "columns": cols})
+        conn.commit()
+        return {"ok": True, "imported": len(rows), "backup": os.path.basename(backup_path)}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
