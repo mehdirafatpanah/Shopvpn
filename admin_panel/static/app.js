@@ -418,7 +418,7 @@ const NAV_GROUPS = [
   { id: 'botconfig', label: 'ربات و تنظیمات', items: [
     { key: 'subscription-page', label: 'تنظیمات صفحه اشتراک', icon: 'link', role: 'settings' },
     { key: 'settings', label: 'تنظیمات و برندینگ', icon: 'settings', role: 'settings',
-      subs: [['content', 'محتوا و متن‌ها'], ['payment', 'پرداخت و مالی'], ['services', 'سرویس‌های ویژه'], ['mobile_app', 'اپ موبایل'], ['extra', 'تنظیمات تکمیلی']] },
+      subs: [['content', 'محتوا و متن‌ها'], ['payment', 'پرداخت و مالی'], ['sales', 'فروش و سرویس‌ها'], ['growth', 'رشد و تعامل'], ['sub', 'اشتراک اختصاصی'], ['ai', 'هوش مصنوعی'], ['system', 'سیستم و پایش'], ['mobile_app', 'اپ موبایل']] },
     { key: 'buttons', label: 'دکمه‌های ربات', icon: 'buttons', role: 'settings' },
     { key: 'bottexts', label: 'متن‌های ربات', icon: 'bottexts', role: 'settings' },
     { key: 'languages', label: 'زبان‌ها', icon: 'globe', role: 'settings' },
@@ -8091,10 +8091,27 @@ function rateCardHtml(r) {
 const SETTINGS_TABS = [
   { key: 'content', label: '📝 محتوا و متن‌ها' },
   { key: 'payment', label: '💳 پرداخت و مالی' },
-  { key: 'services', label: '⚙️ سرویس‌های ویژه' },
+  { key: 'sales', label: '🛒 فروش و سرویس‌ها' },
+  { key: 'growth', label: '🎁 رشد و تعامل' },
+  { key: 'sub', label: '🔗 اشتراک اختصاصی' },
+  { key: 'ai', label: '🤖 هوش مصنوعی' },
+  { key: 'system', label: '🛠 سیستم و پایش' },
   { key: 'mobile_app', label: '📱 اپ موبایل' },
-  { key: 'extra', label: '⚙️ تنظیمات تکمیلی' },
 ];
+const EXTRA_GROUP_TABS = {
+  content: ['terms', 'welcome', 'support_texts', 'translation_keys', 'post_tools'],
+  payment: ['currency', 'card_to_card_ui', 'crypto_payment_toggle_mini', 'wallet'],
+  sales: ['main_menu', 'delivery', 'smart_sub', 'location', 'provisioning', 'free_test', 'cleanup', 'alerts', 'acct_svc_buttons_mini', 'acct_svc_buttons_web', 'service_buttons_extra'],
+  growth: ['signup_gift', 'referral_adv', 'referral_fraud', 'lottery', 'engagement', 'season', 'daily_quiz', 'gift_cards', 'renewal_adv', 'churn', 'reminder_discount_codes', 'force_join'],
+  sub: ['dsub_enable_web', 'dsub_basic', 'dsub_apps'],
+  ai: ['ai_general', 'ai_providers', 'ai_buy_guide', 'ai_extra_agents', 'receipt_ai'],
+  system: ['system', 'report_and_server_monitoring', 'backup', 'spam_limits', 'misc_admin', 'parity_extra'],
+};
+const EXTRA_GROUP_TAB_INDEX = (() => {
+  const m = {};
+  Object.keys(EXTRA_GROUP_TABS).forEach(tab => EXTRA_GROUP_TABS[tab].forEach((id, i) => { m[id] = { tab, order: i }; }));
+  return m;
+})();
 // نکته: تنظیمات رفرال، گردونه‌شانس، کریپتو، یادآوری تمدید/حجم، کانفیگ تست خودکار،
 // عضویت اجباری و هشدار موجودی همگی به‌طور کامل‌تر در صفحه‌ی «تنظیمات فروش» هستند؛
 // اینجا تکرار نمی‌شوند تا تنظیمات فروش فقط یک مرجع داشته باشد.
@@ -8189,32 +8206,32 @@ const SETTINGS_GROUPS = [
   ]},
 
   // ------------------------------------------------------ سرویس‌های ویژه
-  { tab: 'services', title: '🛒 سقف تعداد خرید در هر سفارش', fields: [
+  { tab: 'sales', title: '🛒 سقف تعداد خرید در هر سفارش', fields: [
     { key: 'auto_provision_max_qty', label: 'حداکثر تعداد محصولات خودکار در هر سفارش (۰=نامحدود)', type: 'number' },
   ] },
-  { tab: 'services', title: '🧹 پاکسازی سرویس‌ها', fields: [
+  { tab: 'sales', title: '🧹 پاکسازی سرویس‌ها', fields: [
     { key: 'inactive_config_delete_time', label: 'ساعت حذف خودکار کانفیگ‌های غیرفعال (HH:MM به وقت تهران؛ خالی = خاموش)', type: 'text' },
   ]},
-  { tab: 'services', title: '📊 گزارش روزانه‌ی فروش', fields: [
+  { tab: 'system', title: '📊 گزارش روزانه‌ی فروش', fields: [
     { key: 'daily_report_enabled', label: 'ارسال گزارش روزانه‌ی فروش به مدیران', type: 'bool' },
     { key: 'daily_report_time', label: 'ساعت ارسال به وقت تهران (مثل 23:45)', type: 'text' },
   ] },
-  { tab: 'services', title: '🩺 پایش سلامت پنل‌های VPN', fields: [
+  { tab: 'system', title: '🩺 پایش سلامت پنل‌های VPN', fields: [
     { key: 'panel_health_enabled', label: 'هشدار قطعی و بازیابی پنل‌ها به مدیران (بررسی هر ۵ دقیقه)', type: 'bool' },
   ] },
-  { tab: 'services', title: '🛡 ضداسپم کاربران', fields: [
+  { tab: 'system', title: '🛡 ضداسپم کاربران', fields: [
     { key: 'spam_guard_enabled', label: 'فعال بودن ضداسپم (هشدار و سپس مسدودسازی خودکار)', type: 'bool' },
     { key: 'spam_limit', label: 'حداکثر تعداد درخواست در بازه‌ی زمانی', type: 'number' },
     { key: 'spam_window', label: 'بازه‌ی زمانی (ثانیه)', type: 'number' },
   ] },
-  { tab: 'services', title: 'کانفیگ شخصی/سفارشی', fields: [
+  { tab: 'sales', title: 'کانفیگ شخصی/سفارشی', fields: [
     { key: 'custom_config_enabled', label: 'فعال بودن ساخت کانفیگ شخصی', type: 'bool' },
     { key: 'custom_config_min_gb', label: 'حداقل حجم مجاز (گیگ)', type: 'number' },
     { key: 'custom_config_max_gb', label: 'حداکثر حجم مجاز (گیگ)', type: 'number' },
     { key: 'custom_config_duration_days', label: 'مدت اعتبار (روز)', type: 'number' },
     { key: 'btn_custom_config', label: 'متن دکمه ساخت کانفیگ شخصی', type: 'text' },
   ]},
-  { tab: 'services', title: '🧾 نمایش دکمه‌های حساب کاربری', fields: [
+  { tab: 'sales', title: '🧾 نمایش دکمه‌های حساب کاربری', fields: [
     { key: 'acct_show_orders', label: 'نمایش «سرویس‌ها و سفارش‌های من»', type: 'bool' },
     { key: 'acct_show_referral', label: 'نمایش «زیرمجموعه‌گیری من»', type: 'bool' },
     { key: 'acct_show_wallet', label: 'نمایش «کیف پول من»', type: 'bool' },
@@ -8222,7 +8239,7 @@ const SETTINGS_GROUPS = [
     { key: 'acct_show_merge', label: 'نمایش «ادغام با حساب ایمیلی»', type: 'bool' },
     { key: 'acct_add_service_by_username', label: 'افزودن حساب با نام کاربری کانفیگ (علاوه بر لینک ساب)', type: 'bool' },
   ]},
-  { tab: 'services', title: '🛠 نمایش دکمه‌های سرویس', fields: [
+  { tab: 'sales', title: '🛠 نمایش دکمه‌های سرویس', fields: [
     { key: 'svc_show_renew_full', label: 'دکمه «تمدید کامل سرویس»', type: 'bool' },
     { key: 'svc_show_renew_volume', label: 'دکمه «تمدید حجم سرویس»', type: 'bool' },
     { key: 'svc_show_renew_time', label: 'دکمه «تمدید زمان سرویس»', type: 'bool' },
@@ -8524,7 +8541,7 @@ function switchSettingsTab(tab, root) {
 const EXTRA_SECRET_MASK = '••••••••';
 
 function extraSettingsTabHtml() {
-  return `<div data-settings-tab="extra" id="extra-settings-root" style="${settingsActiveTab === 'extra' ? '' : 'display:none'}"></div>`;
+  return `<div id="extra-settings-root"></div>`;
 }
 
 function extraFieldHtml(f, values) {
@@ -8611,13 +8628,22 @@ function extraSettingsHtml(data) {
   // دو فرم روی یک کلید همدیگر را بازنویسی نکنند.
   const existing = new Set();
   SETTINGS_GROUPS.forEach(g => g.fields.forEach(f => existing.add(f.key)));
+  const placeOf = g => EXTRA_GROUP_TAB_INDEX[g.id] || { tab: 'system', order: 999 };
+  const tabOrder = SETTINGS_TABS.map(t => t.key);
   const groups = (data.groups || []).map(g => ({ ...g, fields: (g.fields || []).filter(f => !existing.has(f.key)) }))
-    .filter(g => g.fields.length);
+    .filter(g => g.fields.length)
+    .sort((a, b) => (tabOrder.indexOf(placeOf(a).tab) - tabOrder.indexOf(placeOf(b).tab)) || (placeOf(a).order - placeOf(b).order));
+  const seenTab = new Set();
+  const legacyTabs = new Set(SETTINGS_GROUPS.map(g => g.tab));
   return `
     <div class="extra-search"><input class="input" type="search" id="extra-search-input" placeholder="${esc(T('جستجو در تنظیمات...'))}" autocomplete="off"></div>
     <div class="settings-accordion" id="extra-accordion">
-      ${groups.map((g, i) => `
-        <div class="settings-group extra-group ${i === 0 ? 'open' : ''}" data-extra-group="${esc(g.id)}" data-extra-title="${esc(String(g.title || '').toLowerCase())}">
+      ${groups.map(g => {
+        const tab = placeOf(g).tab;
+        const firstInTab = !legacyTabs.has(tab) && !seenTab.has(tab);
+        seenTab.add(tab);
+        return `
+        <div class="settings-group extra-group ${firstInTab ? 'open' : ''}" data-settings-tab="${tab}" style="${tab === settingsActiveTab ? '' : 'display:none'}" data-extra-group="${esc(g.id)}" data-extra-title="${esc(String(g.title || '').toLowerCase())}">
           <button type="button" class="settings-group-head">
             <span>${esc(T(g.title))}</span>
             <span class="settings-group-arrow">˅</span>
@@ -8627,7 +8653,8 @@ function extraSettingsHtml(data) {
             ${g.id === 'post_tools' ? extraQrBackgroundHtml() : ''}
             <button type="button" class="btn btn-primary extra-save-btn" data-group="${esc(g.id)}" style="margin-top:12px">${esc(T('ذخیره'))}</button>
           </div>
-        </div>`).join('')}
+        </div>`;
+      }).join('')}
     </div>
     <div class="card-sub extra-empty" style="display:none">${esc(T('موردی پیدا نشد.'))}</div>`;
 }
@@ -8636,6 +8663,7 @@ function filterExtraSettings(box, q) {
   q = (q || '').trim().toLowerCase();
   let anyGroup = false;
   $$('.extra-group', box).forEach(g => {
+    if (g.dataset.settingsTab !== settingsActiveTab) return;
     const titleHit = !!q && (g.dataset.extraTitle || '').includes(q);
     let shown = 0;
     $$('.extra-field', g).forEach(fl => {
@@ -8695,10 +8723,18 @@ async function ensureExtraSettings(root) {
 }
 
 function syncExtraSettingsTab(root) {
-  const isExtra = settingsActiveTab === 'extra';
-  // این تب دکمه‌ی ذخیره‌ی مخصوص هر گروه دارد؛ نوار «ذخیره تغییرات» عمومی اینجا بی‌معناست.
-  $$('.settings-save-bar', root).forEach(el => { el.style.display = isExtra ? 'none' : ''; });
-  if (isExtra) ensureExtraSettings(root);
+  const hasLegacy = SETTINGS_GROUPS.some(g => g.tab === settingsActiveTab);
+  $$('.settings-save-bar', root).forEach(el => { el.style.display = hasLegacy ? '' : 'none'; });
+  ensureExtraSettings(root);
+  const box = $('#extra-settings-root', root);
+  const si = box && $('#extra-search-input', box);
+  const bar = box && $('.extra-search', box);
+  if (bar) bar.style.display = $$('.extra-group', box).some(g => g.dataset.settingsTab === settingsActiveTab) ? '' : 'none';
+  if (si) {
+    $$('.extra-group', box).forEach(g => { g.style.display = g.dataset.settingsTab === settingsActiveTab ? '' : 'none'; $$('.extra-field', g).forEach(fl => { fl.style.display = ''; }); });
+    si.value = '';
+    const empty = $('.extra-empty', box); if (empty) empty.style.display = 'none';
+  }
 }
 
 /* --------------------------------------------- تنظیمات: اپ موبایل مدیریت -- */
@@ -10639,6 +10675,7 @@ async function renderSubscriptionPageSettings() {
 }
 
 async function renderSettings() {
+  if (!SETTINGS_TABS.some(t => t.key === settingsActiveTab)) settingsActiveTab = 'content';
   const [settings, rate, mainMenuDisplay, gateways, methods, c2cCards, c2cWebhook, c2cInvoices, mobileTokens] = await Promise.all([
     apiGet('/settings'),
     apiGet('/exchange-rate').catch(e => ({ ok: false, rate: null, source: null, updated_at: null, error: e.message })),
