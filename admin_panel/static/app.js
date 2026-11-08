@@ -4244,6 +4244,46 @@ function openProductEditModal(product, categories, panelServers, sshNodes) {
   });
 }
 
+let catalogSearch = '';
+
+function normSearch(v) {
+  return String(v == null ? '' : v).toLowerCase().replace(/ي/g, 'ی').replace(/ك/g, 'ک').replace(/[\u200c\u200d]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function productSearchAttr(p) {
+  return esc(normSearch(`${p.name} ${p.category_name}`));
+}
+
+function productSearchInputHtml() {
+  return `<input class="input" id="prod-search" type="search" placeholder="جستجو در محصولات (نام یا دسته‌بندی)" value="${esc(catalogSearch)}" style="max-width:300px;min-width:180px">`;
+}
+
+function wireProductSearch(body, itemSelector, containerSelector) {
+  const input = $('#prod-search', body);
+  const items = $$(itemSelector, body);
+  if (!input || !items.length) return;
+  const container = $(containerSelector, body);
+  const empty = document.createElement('div');
+  empty.className = 'empty-state';
+  empty.style.display = 'none';
+  empty.textContent = 'محصولی با این مشخصات پیدا نشد.';
+  if (container) container.insertAdjacentElement('afterend', empty);
+  const apply = () => {
+    catalogSearch = input.value;
+    const terms = normSearch(input.value).split(' ').filter(Boolean);
+    let shown = 0;
+    items.forEach(el => {
+      const hay = el.dataset.search || '';
+      const ok = terms.every(t => hay.includes(t));
+      el.style.display = ok ? '' : 'none';
+      if (ok) shown++;
+    });
+    empty.style.display = shown ? 'none' : '';
+  };
+  input.addEventListener('input', apply);
+  apply();
+}
+
 async function renderCatalog() {
   const [categories, products, panelServers, sshNodes, paymentMethods, multiInfo] = await Promise.all([
     apiGet('/categories'), apiGet('/products'), apiGet('/panel-servers-lite'), apiGet('/ssh/nodes-lite').catch(() => []), apiGet('/payment-methods'),
@@ -4291,13 +4331,14 @@ async function renderCatalog() {
       <button class="btn btn-primary btn-sm" id="add-prod" ${activeCategories.length ? '' : 'disabled'}>+ محصول جدید</button>
       ${activeCategories.length ? '' : '<span class="card-sub">برای ساخت محصول، ابتدا حداقل یک دسته‌بندی فعال بسازید.</span>'}
       <button class="btn btn-sm" id="add-cat-inline">+ دسته‌بندی جدید</button>
+      ${productSearchInputHtml()}
     </div>
     ${activeCategories.length ? '' : '<div class="card" style="margin-bottom:12px"><div class="empty-state">هنوز دسته‌بندی فعالی برای فروش وجود ندارد. ابتدا دسته‌بندی بسازید و آن را فعال نگه دارید.</div></div>'}
     <div class="card"><div class="table-wrap"><table><thead><tr><th>نام</th><th>دسته</th><th>قیمت</th><th>موجودی</th><th>وضعیت</th><th>عملیات</th></tr></thead>
     <tbody>${products.map((p, i) => {
       const sameCat = products.filter(x => x.category_id === p.category_id);
       const posInCat = sameCat.findIndex(x => x.id === p.id);
-      return `<tr>
+      return `<tr data-search="${productSearchAttr(p)}">
       <td>
         <div class="reorder-col">
           <button class="btn btn-xs" data-prod-up="${p.id}" data-cat="${p.category_id}" ${posInCat === 0 ? 'disabled' : ''}>▲</button>
@@ -4318,6 +4359,7 @@ async function renderCatalog() {
     }).join('') || '<tr><td colspan="6" class="empty-state">محصولی نیست</td></tr>'}</tbody></table></div></div>`;
 
   $('#add-cat-inline').addEventListener('click', () => openCategoryCreateModal(categories));
+  wireProductSearch(body, 'tbody tr[data-search]', '.card');
   if (!activeCategories.length) return;
   $('#add-prod').addEventListener('click', () => { window.__productPrefillTargetConfig = null; openModal('محصول جدید', `
     <div class="form-grid">
@@ -4430,10 +4472,10 @@ function renderCatalogBento(categories, products, panelServers, sshNodes, paymen
   }
 
   body.innerHTML = `
-    <div class="bn-toolbar" style="justify-content:flex-end"><button class="bn-btn bn-btn-ok" id="add-prod">+ محصول جدید</button></div>
+    <div class="bn-toolbar" style="justify-content:flex-end;gap:8px">${productSearchInputHtml()}<button class="bn-btn bn-btn-ok" id="add-prod">+ محصول جدید</button></div>
     <div class="bn-card-grid">
       ${products.map((p, i) => `
-        <div class="bn-card bn-card-anim" style="animation-delay:${Math.min(i * 30, 260)}ms">
+        <div class="bn-card bn-card-anim" data-search="${productSearchAttr(p)}" style="animation-delay:${Math.min(i * 30, 260)}ms">
           <div class="bw ${BN_ACCENTS[i % BN_ACCENTS.length]}" style="border-radius:16px;padding:12px 14px">
             <span class="bw-value mono" style="font-size:18px">${fmt(p.price)} ت</span>
           </div>
@@ -4451,6 +4493,7 @@ function renderCatalogBento(categories, products, panelServers, sshNodes, paymen
       `).join('') || `<div class="empty-state" style="grid-column:1/-1"><div class="icon">${svg('empty')}</div>محصولی نیست</div>`}
     </div>`;
 
+  wireProductSearch(body, '.bn-card[data-search]', '.bn-card-grid');
   $('#add-prod').addEventListener('click', () => openModal('محصول جدید', `
     <div class="form-grid">
       <select class="input" id="prod-cat">${categories.map(c => `<option value="${c.id}">${esc(c.path || c.name)}</option>`).join('')}</select>
@@ -4555,12 +4598,13 @@ function renderCatalogBrutalist(categories, products, panelServers, sshNodes, pa
   }
 
   body.innerHTML = `
-    <div class="bru-toolbar" style="justify-content:flex-end">
+    <div class="bru-toolbar" style="justify-content:flex-end;gap:8px">
+      ${productSearchInputHtml()}
       <button class="bru-stamp bru-stamp-ok" id="add-prod" style="--r:-3deg">+ محصول جدید</button>
     </div>
     <div class="bru-product-grid">
       ${products.map((p, i) => `
-        <div class="bru-product-card bru-card-anim" style="animation-delay:${Math.min(i * 35, 300)}ms">
+        <div class="bru-product-card bru-card-anim" data-search="${productSearchAttr(p)}" style="animation-delay:${Math.min(i * 35, 300)}ms">
           <div class="bru-product-tag">
             <span class="bru-product-tag-hole"></span>
             <span class="bru-product-price mono">${fmt(p.price)} ت</span>
@@ -4582,6 +4626,7 @@ function renderCatalogBrutalist(categories, products, panelServers, sshNodes, pa
       `).join('') || `<div class="empty-state" style="grid-column:1/-1"><div class="icon">${svg('empty')}</div>محصولی نیست</div>`}
     </div>`;
 
+  wireProductSearch(body, '.bru-product-card[data-search]', '.bru-product-grid');
   $('#add-prod').addEventListener('click', () => openModal('محصول جدید', `
     <div class="form-grid">
       <select class="input" id="prod-cat">${categories.map(c => `<option value="${c.id}">${esc(c.path || c.name)}</option>`).join('')}</select>
@@ -6102,6 +6147,14 @@ async function renderSalesSettings() {
 
   function _tpVol(mb) { return mb >= 1024 ? `${(mb / 1024).toFixed(2).replace(/\.?0+$/, '')} گیگ` : `${mb} مگابایت`; }
   function _tpDur(h) { return (h >= 24 && h % 24 === 0) ? `${h / 24} روز` : `${h} ساعت`; }
+  function _tpTargets(p) {
+    const parts = [];
+    if (p.panel_server_name) parts.push(`پنل: ${esc(p.panel_server_name)}`);
+    if (p.provision_ssh_node_name) parts.push(`SSH: ${esc(p.provision_ssh_node_name)}`);
+    const extra = (p.extra_panel_ids || []).length + (p.extra_ssh_node_ids || []).length;
+    if (extra) parts.push(`+${extra} مقصد`);
+    return parts.join(' · ') || 'پنل: —';
+  }
 
   function renderTestPlansList(plans) {
     const box = $('#test-plans-list', root);
@@ -6113,7 +6166,7 @@ async function renderSalesSettings() {
       <div class="row-item" data-plan-id="${p.id}" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border,#333)">
         <div>
           <b>${p.is_active ? '🟢' : '🔴'} ${esc(p.name)}</b>
-          <div class="card-sub">پیشوند: ${esc(p.name_prefix)} · پنل: ${esc(p.panel_server_name || '—')} · ${_tpVol(p.volume_mb)} / ${_tpDur(p.duration_hours)}</div>
+          <div class="card-sub">پیشوند: ${esc(p.name_prefix)} · ${_tpTargets(p)} · ${_tpVol(p.volume_mb)} / ${_tpDur(p.duration_hours)}${p.base_users ? ` · ${p.base_users} کاربر` : ''}</div>
         </div>
         <div style="display:flex;gap:6px">
           <button class="btn btn-sm" data-tp-edit="${p.id}">ویرایش</button>
@@ -6141,25 +6194,59 @@ async function renderSalesSettings() {
     renderTestPlansList(plans);
   }
 
-  function openTestPlanForm(plan) {
+  async function openTestPlanForm(plan) {
     if (!panelServers.length) { toast('اول باید حداقل یک سرور پنل فعال ثبت کنی.'); return; }
     const isEdit = !!plan;
-    const serverOptions = panelServers.map(s => `<option value="${s.id}" ${plan && plan.panel_server_id === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('');
+    const [sshNodes, multiInfo] = await Promise.all([
+      apiGet('/ssh/nodes-lite').catch(() => []),
+      apiGet('/products/multi-target-info').catch(() => ({ dsub_enabled: false })),
+    ]);
+    catalogDsubEnabled = !!(multiInfo && multiInfo.dsub_enabled);
+    const prefill = plan
+      ? { ...plan, provision_server_id: plan.panel_server_id }
+      : { provision_server_id: panelServers[0].id, provision_ssh_protocol: 'ssh', extra_panel_ids: [], extra_ssh_node_ids: [] };
+    window.__productPrefillTargetConfig = (plan && plan.provision_target_config) || null;
     openModal(isEdit ? 'ویرایش پلن کانفیگ تست' : 'افزودن پلن کانفیگ تست', `
-      <label class="field"><span>نام پلن</span><input class="input" id="tpf-name" value="${plan ? esc(plan.name) : ''}"></label>
-      <label class="field"><span>پیشوند نام کاربری (فقط حروف/عدد انگلیسی)</span><input class="input" id="tpf-prefix" style="direction:ltr;text-align:left" value="${plan ? esc(plan.name_prefix) : 'test'}"></label>
-      <label class="field"><span>پنل</span><select class="input" id="tpf-server">${serverOptions}</select></label>
-      <label class="field"><span>حجم (مگابایت - برای ۱ گیگ عدد 1024 بزن)</span><input class="input" id="tpf-volume" type="number" value="${plan ? plan.volume_mb : 1024}"></label>
-      <label class="field"><span>مدت (ساعت - برای ۱ روز عدد 24 بزن)</span><input class="input" id="tpf-duration" type="number" value="${plan ? plan.duration_hours : 24}"></label>
-      <button class="btn btn-primary btn-sm" id="tpf-save">ذخیره</button>
+      <div class="form-grid">
+        <label class="field"><span>نام پلن</span><input class="input" id="tpf-name" value="${plan ? esc(plan.name) : ''}"></label>
+        <label class="field"><span>پیشوند نام کاربری (فقط حروف/عدد انگلیسی)</span><input class="input" id="tpf-prefix" style="direction:ltr;text-align:left" value="${plan ? esc(plan.name_prefix) : 'test'}"></label>
+        <label class="field"><span>حجم (مگابایت - برای ۱ گیگ عدد 1024 بزن)</span><input class="input" id="tpf-volume" type="number" value="${plan ? plan.volume_mb : 1024}"></label>
+        <label class="field"><span>مدت (ساعت - برای ۱ روز عدد 24 بزن)</span><input class="input" id="tpf-duration" type="number" value="${plan ? plan.duration_hours : 24}"></label>
+        ${productProvisionFieldsHtml(panelServers, sshNodes, prefill)}
+        <button class="btn btn-primary btn-sm" id="tpf-save">ذخیره</button>
+      </div>
     `, (body, close) => {
+      wireProductProvisionToggle(body);
+      const directRadio = body.querySelector('input[name="prod-source"][value="direct"]');
+      directRadio.checked = true;
+      const radioRow = directRadio.closest('.form-row');
+      if (radioRow) radioRow.style.display = 'none';
+      ['#prod-duration-unlimited', '#prod-volume', '#prod-volume-unlimited'].forEach(sel => {
+        const el = body.querySelector(sel);
+        if (el) (el.closest('label') || el).style.display = 'none';
+      });
+      body.querySelector('#prod-volume').value = 1;
+      const renewBox = body.querySelector('#prod-renew-rules');
+      if (renewBox) renewBox.style.display = 'none';
+      body.querySelector('#prod-direct-fields').style.display = '';
       body.querySelector('#tpf-save').addEventListener('click', async () => {
+        const prov = readProductProvisionFields(body);
+        if (!prov.ok) return;
         const body_ = {
           name: body.querySelector('#tpf-name').value.trim(),
           name_prefix: body.querySelector('#tpf-prefix').value.trim(),
-          panel_server_id: Number(body.querySelector('#tpf-server').value),
           volume_mb: Number(body.querySelector('#tpf-volume').value) || 0,
           duration_hours: Number(body.querySelector('#tpf-duration').value) || 0,
+          panel_server_id: prov.provision_server_id,
+          provision_target_values: prov.provision_target_values,
+          extra_panel_target_values: prov.extra_panel_target_values,
+          provision_ssh_node_id: prov.provision_ssh_node_id,
+          provision_ssh_protocol: prov.provision_ssh_protocol,
+          extra_panel_ids: prov.extra_panel_ids,
+          extra_ssh_node_ids: prov.extra_ssh_node_ids,
+          base_users: prov.base_users,
+          extra_user_price: prov.extra_user_price,
+          max_users: prov.max_users,
         };
         try {
           if (isEdit) await apiPut(`/test-config/plans/${plan.id}`, body_);
@@ -11604,6 +11691,16 @@ async function renderAccount() {
       <span class="card-sub">این یک ترجیح شخصیه و فقط برای همین مرورگر ذخیره می‌شود؛ روی نمایش پنل برای بقیه‌ی ادمین‌ها اثری ندارد.${activeMeta.supportsMode ? ' سوییچ روشن/تیره از نوار بالا در دسترسه.' : ''}</span>
     </div>
 
+    <div class="card" style="max-width:420px;margin-bottom:18px">
+      <div class="card-head"><h3>تغییر یوزرنیم</h3></div>
+      <div class="form-grid">
+        <span class="card-sub">یوزرنیم فعلی: <b class="mono">${esc(ME.username)}</b></span>
+        <input class="input" id="acc-new-username" type="text" autocomplete="off" placeholder="یوزرنیم جدید (حداقل ۳ کاراکتر)">
+        <input class="input" id="acc-username-pass" type="password" placeholder="پسورد فعلی">
+        <button class="btn btn-primary" id="acc-username-save">تغییر یوزرنیم</button>
+      </div>
+    </div>
+
     <div class="card" style="max-width:420px">
       <div class="card-head"><h3>تغییر پسورد</h3></div>
       <div class="form-grid">
@@ -11620,6 +11717,16 @@ async function renderAccount() {
     applyThemeChoice(id);
     renderAccount();
   }));
+  $('#acc-username-save').addEventListener('click', async () => {
+    try {
+      const res = await apiPost('/me/username', { current_password: $('#acc-username-pass').value, new_username: $('#acc-new-username').value });
+      ME.username = res.username;
+      $('#me-username').textContent = ME.username;
+      $('#me-avatar').textContent = ME.username.slice(0, 2).toUpperCase();
+      toast('یوزرنیم تغییر کرد.');
+      renderAccount();
+    } catch (e) { handleErr(e); }
+  });
   $('#acc-save').addEventListener('click', async () => {
     try {
       await apiPost('/me/password', { current_password: $('#acc-cur').value, new_password: $('#acc-new').value });
