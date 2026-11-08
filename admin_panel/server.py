@@ -3954,7 +3954,7 @@ def api_products(admin=Depends(require_permission("catalog"))):
 
 
 @app.get("/api/products/multi-target-info")
-def api_products_multi_target_info(admin=Depends(require_permission("catalog"))):
+def api_products_multi_target_info(admin=Depends(require_any_permission("catalog", "settings"))):
     """چند پنل/نود برای یک محصول (و ترکیب پنل+نود) فقط وقتی ساب اختصاصی فعال است ممکن است."""
     import dedicated_sub
     return {"dsub_enabled": bool(dedicated_sub.is_enabled(db))}
@@ -3969,7 +3969,7 @@ def api_panel_servers_lite(admin=Depends(require_permission("catalog"))):
             for s in db.get_panel_servers(active_only=True)]
 
 @app.get("/api/panel-servers/{server_id}/product-targets")
-async def api_panel_product_targets(server_id: int, admin=Depends(require_permission("catalog"))):
+async def api_panel_product_targets(server_id: int, admin=Depends(require_any_permission("catalog", "settings"))):
     """Fetch live selectable destinations for one connected VPN panel."""
     server = db.get_panel_server(server_id)
     if not server or not server["is_active"]:
@@ -3983,7 +3983,7 @@ async def api_panel_product_targets(server_id: int, admin=Depends(require_permis
 
 
 @app.get("/api/ssh/nodes-lite")
-def api_ssh_nodes_lite(admin=Depends(require_permission("catalog")), _fa=Depends(require_full_access_tenant)):
+def api_ssh_nodes_lite(admin=Depends(require_any_permission("catalog", "settings")), _fa=Depends(require_full_access_tenant)):
     """Only active Linux Agent nodes can currently be attached to paid SSH products."""
     import ssh_service
     from panel_capabilities import node_capabilities
@@ -7684,9 +7684,18 @@ class TestConfigToggleBody(BaseModel):
 class TestPlanBody(BaseModel):
     name: str
     name_prefix: str
-    panel_server_id: int
+    panel_server_id: Optional[int] = None
     volume_mb: int
     duration_hours: int
+    provision_target_values: Optional[List[str]] = None
+    extra_panel_target_values: Optional[Dict[str, List[str]]] = None
+    provision_ssh_node_id: Optional[int] = None
+    provision_ssh_protocol: Optional[str] = None
+    extra_panel_ids: Optional[List[int]] = None
+    extra_ssh_node_ids: Optional[List[int]] = None
+    base_users: int = 0
+    extra_user_price: int = 0
+    max_users: int = 0
 
 
 @app.get("/api/settings/test-config")
@@ -7715,7 +7724,15 @@ def api_reset_all_test_configs(admin=Depends(require_permission("settings"))):
 # --- پلن‌های کانفیگ تست (چندمدلی، مثل محصولات) ---
 
 def _serialize_test_plan(p) -> dict:
-    server = db.get_panel_server(p["panel_server_id"])
+    server = db.get_panel_server(p["panel_server_id"]) if p["panel_server_id"] else None
+    extra = db.get_product_extra_targets(-int(p["id"]))
+    node = None
+    if p["provision_ssh_node_id"]:
+        node = next((n for n in db.list_ssh_nodes() if int(n["id"]) == int(p["provision_ssh_node_id"])), None)
+    try:
+        target_config = json.loads(p["provision_target_config"]) if p["provision_target_config"] else None
+    except (TypeError, ValueError):
+        target_config = None
     return {
         "id": p["id"],
         "name": p["name"],
@@ -7726,6 +7743,100 @@ def _serialize_test_plan(p) -> dict:
         "duration_hours": p["duration_hours"],
         "is_active": bool(p["is_active"]),
         "sort_order": p["sort_order"],
+        "provision_ssh_node_id": p["provision_ssh_node_id"],
+        "provision_ssh_node_name": node["name"] if node else None,
+        "provision_ssh_protocol": p["provision_ssh_protocol"] or "ssh",
+        "provision_target_config": target_config,
+        "extra_panel_ids": extra["panels"],
+        "extra_ssh_node_ids": extra["ssh"],
+        "extra_panel_target_configs": extra.get("panel_target_configs", {}),
+        "base_users": p["base_users"] or 0,
+        "extra_user_price": p["extra_user_price"] or 0,
+        "max_users": p["max_users"] or 0,
+    }
+
+
+async def _test_plan_provision_spec(body: TestPlanBody, admin) -> dict:
+    """همان اعتبارسنجی «ساخت محصول متصل به پنل» برای پلن تست: پنل VPN، نود SSH،
+    گروه/Inbound مقصد، چندپنلی/ترکیبی و محدودیت کاربر."""
+    if not body.name.strip():
+        raise HTTPException(400, tr("نام پلن الزامی است."))
+    if not re.fullmatch(r"[A-Za-z0-9_]+", body.name_prefix.strip()):
+        raise HTTPException(400, tr("پیشوند نام کاربری فقط باید شامل حروف/عدد انگلیسی و آندرلاین باشد."))
+    if body.volume_mb <= 0 or body.duration_hours <= 0:
+        raise HTTPException(400, tr("حجم و مدت باید بزرگ‌تر از صفر باشند."))
+    server_id = body.panel_server_id or None
+    node_id = body.provision_ssh_node_id or None
+    if not (server_id or node_id):
+        raise HTTPException(400, tr("حداقل یک پنل VPN یا نود SSH انتخاب کنید."))
+    vpn_server = None
+    if server_id:
+        vpn_server = db.get_panel_server(server_id)
+        if not vpn_server or not vpn_server["is_active"]:
+            raise HTTPException(400, tr("پنل انتخاب‌شده یافت نشد یا غیرفعال است."))
+    ssh_node = None
+    if node_id:
+        if admin["tenant"]:
+            raise HTTPException(403, tr("اتصال مستقیم به پنل یا نود SSH فقط برای بات اصلی مجاز است."))
+        ssh_node = next((n for n in db.list_ssh_nodes(active_only=True) if int(n["id"]) == int(node_id)), None)
+        if not ssh_node or ssh_node.get("node_type") != "linux":
+            raise HTTPException(400, tr("فقط نود Linux Agent فعال برای محصول SSH پشتیبانی می‌شود."))
+    ssh_protocol = _checked_ssh_protocol(
+        body.provision_ssh_protocol, server_id, ssh_node,
+        multi=bool(body.extra_panel_ids or body.extra_ssh_node_ids))
+    target_config = None
+    if server_id:
+        try:
+            from product_targets import list_product_targets, build_target_config
+            target_info = await list_product_targets(vpn_server)
+            choices = target_info.get("choices") or []
+            if choices:
+                if body.provision_target_values:
+                    target_config = build_target_config(vpn_server, body.provision_target_values, target_info)
+                elif not (body.extra_panel_ids or body.extra_ssh_node_ids):
+                    raise ValueError("برای این پنل حداقل یک گروه یا Inbound انتخاب کنید.")
+            elif body.provision_target_values:
+                raise ValueError("این پنل مقصد قابل انتخاب زنده‌ای ارائه نمی‌کند.")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except Exception as exc:
+            logger.warning("test plan target validation failed for panel %s: %s", server_id, exc)
+            raise HTTPException(400, tr(f"بررسی مقصدهای پنل ناموفق بود: {str(exc)[:220]}"))
+    extra_panels, extra_nodes = _checked_extra_targets(
+        server_id, node_id, body.extra_panel_ids, body.extra_ssh_node_ids, ssh_protocol, admin)
+    extra_panel_target_configs = {}
+    if extra_panels:
+        from product_targets import list_product_targets, build_target_config
+        supplied = body.extra_panel_target_values or {}
+        for extra_sid in extra_panels:
+            extra_server = db.get_panel_server(extra_sid)
+            try:
+                info = await list_product_targets(extra_server)
+                choices = info.get("choices") or []
+                values = supplied.get(str(extra_sid), supplied.get(extra_sid))
+                if choices and not values:
+                    raise ValueError(f"برای پنل {extra_server['name']} باید مقصد مستقل انتخاب کنید.")
+                if values:
+                    extra_panel_target_configs[int(extra_sid)] = build_target_config(extra_server, values, info)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc))
+            except Exception as exc:
+                raise HTTPException(400, tr(f"دریافت مقصدهای پنل {extra_sid} ناموفق بود: {str(exc)[:180]}"))
+    target_panel_ids = ([int(server_id)] if server_id else []) + [int(x) for x in (extra_panels or [])]
+    supports_limit = all_panels_support([db.get_panel_server(pid) for pid in target_panel_ids], USER_LIMIT)
+    try:
+        base_users, extra_user_price, max_users = normalize_user_limit(
+            body.base_users, body.extra_user_price, body.max_users, supported=supports_limit)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {
+        "name": body.name.strip(), "name_prefix": body.name_prefix.strip(),
+        "panel_server_id": server_id, "volume_mb": body.volume_mb, "duration_hours": body.duration_hours,
+        "provision_ssh_node_id": node_id, "provision_ssh_protocol": ssh_protocol,
+        "provision_target_config": target_config,
+        "base_users": base_users, "extra_user_price": extra_user_price, "max_users": max_users,
+        "extra_panel_ids": extra_panels, "extra_ssh_node_ids": extra_nodes,
+        "extra_panel_target_configs": extra_panel_target_configs,
     }
 
 
@@ -7745,40 +7856,19 @@ def api_list_test_plans(admin=Depends(require_permission("settings"))):
 
 
 @app.post("/api/test-config/plans")
-def api_create_test_plan(body: TestPlanBody, admin=Depends(require_permission("settings"))):
-    if not body.name.strip():
-        raise HTTPException(400, tr("نام پلن الزامی است."))
-    if not re.fullmatch(r"[A-Za-z0-9_]+", body.name_prefix.strip()):
-        raise HTTPException(400, tr("پیشوند نام کاربری فقط باید شامل حروف/عدد انگلیسی و آندرلاین باشد."))
-    if body.volume_mb <= 0 or body.duration_hours <= 0:
-        raise HTTPException(400, tr("حجم و مدت باید بزرگ‌تر از صفر باشند."))
-    server = db.get_panel_server(body.panel_server_id)
-    if not server or not server["is_active"]:
-        raise HTTPException(400, tr("پنل انتخاب‌شده یافت نشد یا غیرفعال است."))
-    plan_id = db.create_test_config_plan(
-        body.name.strip(), body.name_prefix.strip(), body.panel_server_id, body.volume_mb, body.duration_hours,
-    )
+async def api_create_test_plan(body: TestPlanBody, admin=Depends(require_permission("settings"))):
+    spec = await _test_plan_provision_spec(body, admin)
+    plan_id = db.create_test_config_plan(**spec)
     db.log_admin_action(admin["id"], "test_plan_create", f"پلن «{body.name}» (پنل وب)", "test_config_plan", str(plan_id))
     return _serialize_test_plan(db.get_test_config_plan(plan_id))
 
 
 @app.put("/api/test-config/plans/{plan_id}")
-def api_update_test_plan(plan_id: int, body: TestPlanBody, admin=Depends(require_permission("settings"))):
+async def api_update_test_plan(plan_id: int, body: TestPlanBody, admin=Depends(require_permission("settings"))):
     if not db.get_test_config_plan(plan_id):
         raise HTTPException(404, tr("این پلن یافت نشد."))
-    if not body.name.strip():
-        raise HTTPException(400, tr("نام پلن الزامی است."))
-    if not re.fullmatch(r"[A-Za-z0-9_]+", body.name_prefix.strip()):
-        raise HTTPException(400, tr("پیشوند نام کاربری فقط باید شامل حروف/عدد انگلیسی و آندرلاین باشد."))
-    if body.volume_mb <= 0 or body.duration_hours <= 0:
-        raise HTTPException(400, tr("حجم و مدت باید بزرگ‌تر از صفر باشند."))
-    server = db.get_panel_server(body.panel_server_id)
-    if not server or not server["is_active"]:
-        raise HTTPException(400, tr("پنل انتخاب‌شده یافت نشد یا غیرفعال است."))
-    db.update_test_config_plan(
-        plan_id, name=body.name.strip(), name_prefix=body.name_prefix.strip(),
-        panel_server_id=body.panel_server_id, volume_mb=body.volume_mb, duration_hours=body.duration_hours,
-    )
+    spec = await _test_plan_provision_spec(body, admin)
+    db.update_test_config_plan(plan_id, **spec)
     db.log_admin_action(admin["id"], "test_plan_update", f"پلن #{plan_id} (پنل وب)", "test_config_plan", str(plan_id))
     return _serialize_test_plan(db.get_test_config_plan(plan_id))
 
@@ -8428,6 +8518,33 @@ def api_change_my_password(body: MyPasswordBody, admin=Depends(get_current_admin
         raise HTTPException(400, tr("پسورد جدید باید حداقل ۸ کاراکتر باشد."))
     db.set_web_admin_password(admin["id"], hash_password(body.new_password))
     return {"ok": True}
+
+
+class MyUsernameBody(BaseModel):
+    current_password: str
+    new_username: str
+
+
+@app.post("/api/me/username")
+def api_change_my_username(body: MyUsernameBody, admin=Depends(get_current_admin)):
+    row = db.get_web_admin(admin["id"])
+    if not verify_password(body.current_password, row["password_hash"]):
+        raise HTTPException(400, tr("پسورد فعلی اشتباه است."))
+    new_username = (body.new_username or "").strip().lower()
+    if len(new_username) < 3 or len(new_username) > 64:
+        raise HTTPException(400, tr("یوزرنیم باید بین ۳ تا ۶۴ کاراکتر باشد."))
+    if re.search(r"\s", new_username):
+        raise HTTPException(400, tr("یوزرنیم نباید فاصله داشته باشد."))
+    if new_username == row["username"]:
+        raise HTTPException(400, tr("یوزرنیم جدید با یوزرنیم فعلی یکسان است."))
+    if not db.set_web_admin_username(admin["id"], new_username):
+        raise HTTPException(400, tr("این یوزرنیم قبلاً توسط حساب دیگری استفاده شده است."))
+    db.log_admin_action(
+        admin["id"], "web_admin_username_change",
+        f"یوزرنیم پنل وب از «{row['username']}» به «{new_username}» تغییر کرد.",
+        "web_admin", admin["id"],
+    )
+    return {"ok": True, "username": new_username}
 
 
 # ------------------------------------------------------------------ static --
