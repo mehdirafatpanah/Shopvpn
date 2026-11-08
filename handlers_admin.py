@@ -10985,6 +10985,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await replace_admin_view(call, tr("🎨 رنگ‌آمیزی دکمه‌های خرید:"), reply_markup=kb.buy_flow_colors_kb(db))
         await call.answer()
 
+    @router.callback_query(F.data == "adm_buyflow_layout_toggle")
+    async def cb_admin_buyflow_layout_toggle(call: CallbackQuery):
+        current = await asyncio.to_thread(db.get_setting, "buy_product_layout", "classic")
+        new_value = "classic" if current == "split" else "split"
+        await asyncio.to_thread(db.set_setting, "buy_product_layout", new_value)
+        await safe_edit(call, tr("🎨 رنگ‌آمیزی دکمه‌های خرید:"), reply_markup=kb.buy_flow_colors_kb(db))
+        await call.answer(tr("✅ چیدمان لیست محصولات: باکس جدا") if new_value == "split" else tr("✅ چیدمان لیست محصولات: کلاسیک"))
+
     # -------------------------------------------------------------------
     # تنظیم شماره کارت
     # -------------------------------------------------------------------

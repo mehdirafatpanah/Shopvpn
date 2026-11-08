@@ -2635,6 +2635,11 @@ def buy_flow_colors_kb(db) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text=tr("🎨 تغییر رنگ"), callback_data=f"adm_btn_color_menu:{key}"),
             ]
         )
+    split = db.get_setting("buy_product_layout", "classic") == "split"
+    layout_label = "باکس جدا" if split else "کلاسیک"
+    rows.append([InlineKeyboardButton(
+        text=f"{tr('📐 چیدمان لیست محصولات')}: {tr(layout_label)}",
+        callback_data="adm_buyflow_layout_toggle")])
     rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:appearance")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

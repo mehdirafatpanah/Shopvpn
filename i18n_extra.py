@@ -2327,3 +2327,11 @@ EXTRA_DYNAMIC_PHRASES.extend([
     ('❌ ارسال پیام به کاربر {x} ناموفق بود (احتمالاً ربات را بلاک کرده یا هنوز استارت نکرده).\n{x}', '❌ Sending the message to user {x} failed (they probably blocked the bot or never started it).\n{x}'),
     ('📣 متن یا عکس (با یا بدون کپشن) پستی که باید در کانال {x} منتشر شود را بفرست:', '📣 Send the text or photo (with or without a caption) of the post to publish in channel {x}:'),
 ])
+
+EXTRA_PHRASES.update({
+    '📐 چیدمان لیست محصولات': '📐 Product list layout',
+    'باکس جدا': 'Split boxes',
+    'کلاسیک': 'Classic',
+    '✅ چیدمان لیست محصولات: باکس جدا': '✅ Product list layout: Split boxes',
+    '✅ چیدمان لیست محصولات: کلاسیک': '✅ Product list layout: Classic',
+})
