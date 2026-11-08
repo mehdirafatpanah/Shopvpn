@@ -343,6 +343,14 @@ EXTRA_SETTINGS_GROUPS: List[Dict[str, Any]] = [
         ],
     },
     {
+        "id": "buy_flow_ui", "title": "🛍 ظاهر لیست محصولات در بات", "web": True, "mini": True, "bot": True,
+        "fields": [
+            _sel("buy_product_layout", "مدل نمایش دکمه‌ی محصول",
+                 [["classic", "کلاسیک (نام و قیمت داخل یک دکمه)"], ["split", "باکس جدا (نام در یک کادر، قیمت در کادر کناری)"]], "classic",
+                 "در حالت باکس جدا، هر محصول یک ردیف با دو کادر است: کادر نام و کادر قیمت؛ لمس هر دو، صفحه‌ی همان محصول را باز می‌کند."),
+        ],
+    },
+    {
         "id": "card_to_card_ui", "title": "💳 ظاهر و دکمه‌های کارت‌به‌کارت", "web": True, "mini": True, "bot": True,
         "fields": [
             _sel("c2c_message_style", "ظاهر پیام اطلاعات واریز",

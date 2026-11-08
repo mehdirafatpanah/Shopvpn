@@ -34,6 +34,11 @@ MULTI_TARGET_NEEDS_DSUB = ("محصول با چند پنل/نود یا ترکیب
                            "ساب اختصاصی را فعال کنید.")
 
 
+def _whole_or_fraction(value):
+    number = float(value)
+    return int(number) if number == int(number) else number
+
+
 def _random_username(prefix: str = "") -> str:
     suffix = "d" + "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
     return f"{prefix}-{suffix}" if prefix else suffix
@@ -128,7 +133,8 @@ async def _provision_vpn(db, product, quantity: int = 1, user_id: int = None, or
     prefix = db.get_custom_config_prefix()
     planned = []
     order = db.get_order(order_id) if order_id is not None else None
-    naming_active = account_naming.is_active(server)
+    test_prefix = (product["test_username_prefix"] if "test_username_prefix" in product.keys() else None) or None
+    naming_active = False if test_prefix else account_naming.is_active(server)
     order_name = _order_config_name(order).strip()
     if order and order["config_name"] and not naming_active:
         planned = planned_usernames(order["config_name"], quantity)
@@ -167,6 +173,8 @@ async def _provision_vpn(db, product, quantity: int = 1, user_id: int = None, or
                     candidate = wanted
                 elif wanted:
                     candidate = wanted + "_" + "".join(random.choices(string.ascii_lowercase + string.digits, k=3))
+                elif test_prefix:
+                    candidate = test_prefix + "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
                 else:
                     candidate = _random_username(prefix)
                 if db.is_custom_username_taken(candidate):
@@ -303,7 +311,7 @@ async def _provision_multi(db, product, targets: dict, quantity: int = 1, user_i
         if not server or not server["is_active"]:
             raise ProvisionError(f"پنل #{sid} متصل به این محصول یافت نشد یا غیرفعال است؛ با پشتیبانی تماس بگیرید.")
     volume_gb = float(product["auto_provision_volume_gb"] or 0)
-    duration_days = int(product["duration_days"] if product["duration_days"] is not None else 30)
+    duration_days = _whole_or_fraction(product["duration_days"] if product["duration_days"] is not None else 30)
     if volume_gb < 0 or duration_days < 0:
         raise ProvisionError("حجم یا مدت محصول نامعتبر است.")
     expires_at = (datetime.now(timezone.utc) + timedelta(days=duration_days)).isoformat() if duration_days else None
@@ -449,7 +457,7 @@ async def provision_ssh_direct(db, product, quantity: int = 1, user_id: int = No
     if protocol not in node_protocols(node):
         raise ProvisionError(f"پروتکل {protocol} روی این نود نصب نشده است.")
     volume_gb = float(product["auto_provision_volume_gb"] or 0)
-    duration_days = int(product["duration_days"] if product["duration_days"] is not None else 30)
+    duration_days = _whole_or_fraction(product["duration_days"] if product["duration_days"] is not None else 30)
     if volume_gb < 0 or duration_days < 0:
         raise ProvisionError("حجم یا مدت محصول SSH نامعتبر است.")
     expires_at = (datetime.now(timezone.utc) + timedelta(days=duration_days)).isoformat() if duration_days else None

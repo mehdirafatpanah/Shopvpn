@@ -15,6 +15,7 @@ import secrets
 import hashlib
 import html
 import asyncio
+import time
 from datetime import date, datetime, timedelta
 from price_display import price_range
 import tempfile
@@ -530,13 +531,45 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     # مدیریت دسته‌بندی‌ها
     # -------------------------------------------------------------------
 
+    async def _category_view(pid: int):
+        pid = int(pid or 0)
+        if pid:
+            path = await asyncio.to_thread(db.get_category_path, pid)
+            names = " › ".join(c["name"] for c in path)
+            kids = await asyncio.to_thread(db.get_child_categories, pid, False)
+            hint = tr("زیردسته‌ها:") if kids else tr("این دسته زیردسته‌ای ندارد.")
+            text = f"📂 {names}\n{hint}"
+        else:
+            text = tr("📂 مدیریت دسته‌بندی‌ها:")
+        return text, await asyncio.to_thread(kb.admin_categories_kb, db, pid)
+
+    async def _category_parent_id(cat_id: int) -> int:
+        row = await asyncio.to_thread(db.get_category, cat_id)
+        return int(row["parent_id"]) if row and row["parent_id"] else 0
+
     @router.callback_query(F.data == "adm_categories")
     async def cb_admin_categories(call: CallbackQuery):
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         try:
-            categories = (await asyncio.to_thread(db.get_categories, active_only=False))
-            await replace_admin_view(call, tr("📂 مدیریت دسته‌بندی‌ها:"), kb.admin_categories_kb(categories))
+            text, markup = await _category_view(0)
+            await replace_admin_view(call, text, markup)
+            await call.answer()
+        except Exception:
+            await call.answer(db.get_text('handlers_admin.auto_9a43de7a', '⚠️ بارگذاری دسته\u200cبندی\u200cها ناموفق بود. دوباره تلاش کنید.'), show_alert=True)
+
+    @router.callback_query(F.data.startswith("adm_cat_open:"))
+    async def cb_admin_cat_open(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        cat_id = callback_id(call.data, "adm_cat_open")
+        if cat_id is None:
+            return await call.answer(db.get_text('handlers_admin.auto_f25a5f7a', '⚠️ درخواست نامعتبر است.'), show_alert=True)
+        try:
+            if (await asyncio.to_thread(db.get_category, cat_id)) is None:
+                return await call.answer(db.get_text('handlers_admin.auto_1da46abb', '⚠️ این دسته\u200cبندی دیگر وجود ندارد.'), show_alert=True)
+            text, markup = await _category_view(cat_id)
+            await safe_edit(call, text, markup)
             await call.answer()
         except Exception:
             await call.answer(db.get_text('handlers_admin.auto_9a43de7a', '⚠️ بارگذاری دسته\u200cبندی\u200cها ناموفق بود. دوباره تلاش کنید.'), show_alert=True)
@@ -551,13 +584,22 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         try:
             if (await asyncio.to_thread(db.get_category, cat_id)) is None:
                 return await call.answer(db.get_text('handlers_admin.auto_1da46abb', '⚠️ این دسته\u200cبندی دیگر وجود ندارد.'), show_alert=True)
+            parent_id = await _category_parent_id(cat_id)
             (await asyncio.to_thread(db.toggle_category, cat_id))
             (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "category_toggle", f"دسته‌بندی #{cat_id}"))
-            categories = (await asyncio.to_thread(db.get_categories, active_only=False))
-            await safe_edit(call, db.get_text('handlers_admin.auto_e7f6733a', '📂 مدیریت دسته\u200cبندی\u200cها:'), kb.admin_categories_kb(categories))
+            text, markup = await _category_view(parent_id)
+            await safe_edit(call, text, markup)
             await call.answer(db.get_text('handlers_admin.auto_d5ebb39c', 'وضعیت تغییر کرد.'))
         except Exception:
             await call.answer(db.get_text('handlers_admin.auto_0040e660', '⚠️ تغییر وضعیت دسته\u200cبندی ناموفق بود. دوباره تلاش کنید.'), show_alert=True)
+
+    async def _delete_category_and_refresh(call: CallbackQuery, cat_id: int):
+        parent_id = await _category_parent_id(cat_id)
+        (await asyncio.to_thread(db.delete_category, cat_id))
+        (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "category_delete", f"دسته‌بندی #{cat_id}"))
+        text, markup = await _category_view(parent_id)
+        await safe_edit(call, text, markup)
+        await call.answer(db.get_text('handlers_admin.auto_333cfcc1', 'دسته\u200cبندی حذف شد.'))
 
     @router.callback_query(F.data.startswith("adm_cat_del:"))
     async def cb_admin_cat_del(call: CallbackQuery):
@@ -567,22 +609,54 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if cat_id is None:
             return await call.answer(db.get_text('handlers_admin.auto_f25a5f7a', '⚠️ درخواست نامعتبر است.'), show_alert=True)
         try:
+            cat = await asyncio.to_thread(db.get_category, cat_id)
+            if cat is None:
+                return await call.answer(db.get_text('handlers_admin.auto_3c406624', '⚠️ این دسته\u200cبندی قبلاً حذف شده است.'), show_alert=True)
+            if await asyncio.to_thread(db.category_has_children, cat_id):
+                await safe_edit(
+                    call,
+                    tr(f"⚠️ دسته «{cat['name']}» زیردسته دارد.\nبا حذف آن همه‌ی زیردسته‌هایش هم حذف می‌شوند. مطمئن هستید؟"),
+                    kb.admin_category_delete_confirm_kb(db, cat_id),
+                )
+                return await call.answer()
+            await _delete_category_and_refresh(call, cat_id)
+        except Exception:
+            await call.answer(db.get_text('handlers_admin.auto_f0a51b8a', '⚠️ حذف دسته\u200cبندی ناموفق بود. دوباره تلاش کنید.'), show_alert=True)
+
+    @router.callback_query(F.data.startswith("adm_cat_delok:"))
+    async def cb_admin_cat_delok(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        cat_id = callback_id(call.data, "adm_cat_delok")
+        if cat_id is None:
+            return await call.answer(db.get_text('handlers_admin.auto_f25a5f7a', '⚠️ درخواست نامعتبر است.'), show_alert=True)
+        try:
             if (await asyncio.to_thread(db.get_category, cat_id)) is None:
                 return await call.answer(db.get_text('handlers_admin.auto_3c406624', '⚠️ این دسته\u200cبندی قبلاً حذف شده است.'), show_alert=True)
-            (await asyncio.to_thread(db.delete_category, cat_id))
-            (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "category_delete", f"دسته‌بندی #{cat_id}"))
-            categories = (await asyncio.to_thread(db.get_categories, active_only=False))
-            await safe_edit(call, db.get_text('handlers_admin.auto_e7f6733a', '📂 مدیریت دسته\u200cبندی\u200cها:'), kb.admin_categories_kb(categories))
-            await call.answer(db.get_text('handlers_admin.auto_333cfcc1', 'دسته\u200cبندی حذف شد.'))
+            await _delete_category_and_refresh(call, cat_id)
         except Exception:
             await call.answer(db.get_text('handlers_admin.auto_f0a51b8a', '⚠️ حذف دسته\u200cبندی ناموفق بود. دوباره تلاش کنید.'), show_alert=True)
 
     @router.callback_query(F.data == "adm_cat_add")
+    @router.callback_query(F.data.startswith("adm_cat_add:"))
     async def cb_admin_cat_add(call: CallbackQuery, state: FSMContext):
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
+        parent_id = 0
+        if call.data != "adm_cat_add":
+            parent_id = callback_id(call.data, "adm_cat_add")
+            if parent_id is None:
+                return await call.answer(db.get_text('handlers_admin.auto_f25a5f7a', '⚠️ درخواست نامعتبر است.'), show_alert=True)
+            if (await asyncio.to_thread(db.get_category, parent_id)) is None:
+                return await call.answer(db.get_text('handlers_admin.auto_1da46abb', '⚠️ این دسته\u200cبندی دیگر وجود ندارد.'), show_alert=True)
+        await state.update_data(cat_parent_id=parent_id)
         await state.set_state(AdminAddCategory.waiting_name)
-        await safe_edit(call, db.get_text('handlers_admin.auto_1935fbea', 'نام دسته\u200cبندی جدید را ارسال کنید:'), reply_markup=kb.admin_back_kb("adm_categories"))
+        if parent_id:
+            path = await asyncio.to_thread(db.get_category_path, parent_id)
+            names = " › ".join(c["name"] for c in path)
+            await safe_edit(call, tr(f"نام زیردسته‌ی جدید داخل «{names}» را ارسال کنید:"), reply_markup=kb.admin_back_kb(f"adm_cat_open:{parent_id}"))
+        else:
+            await safe_edit(call, db.get_text('handlers_admin.auto_1935fbea', 'نام دسته\u200cبندی جدید را ارسال کنید:'), reply_markup=kb.admin_back_kb("adm_categories"))
         await call.answer()
 
     @router.message(AdminAddCategory.waiting_name)
@@ -596,11 +670,16 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if len(name) > 100:
             await message.answer(db.get_text('handlers_admin.auto_72f54ac8', 'نام دسته\u200cبندی نباید بیشتر از ۱۰۰ کاراکتر باشد.'))
             return
+        parent_id = int((await state.get_data()).get("cat_parent_id") or 0)
         try:
-            (await asyncio.to_thread(db.add_category, name))
-            (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "category_add", f"دسته‌بندی «{name}»"))
+            (await asyncio.to_thread(db.add_category, name, parent_id or None))
+            (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "category_add", f"دسته‌بندی «{name}»" + (f" (زیردسته‌ی #{parent_id})" if parent_id else "")))
             await state.clear()
-            await message.answer(db.get_text('handlers_admin.auto_83f1db24', '✅ دسته\u200cبندی اضافه شد.'), reply_markup=kb.admin_category_kb(db, is_main_bot, "products"))
+            if parent_id:
+                text, markup = await _category_view(parent_id)
+                await message.answer(tr("✅ زیردسته اضافه شد.") + "\n" + text, reply_markup=markup)
+            else:
+                await message.answer(db.get_text('handlers_admin.auto_83f1db24', '✅ دسته\u200cبندی اضافه شد.'), reply_markup=kb.admin_category_kb(db, is_main_bot, "products"))
         except Exception:
             await message.answer(db.get_text('handlers_admin.auto_0b5d6142', '⚠️ افزودن دسته\u200cبندی ناموفق بود. دوباره تلاش کنید.'))
 
@@ -1198,10 +1277,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def cb_admin_products(call: CallbackQuery):
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
-        categories = (await asyncio.to_thread(db.get_categories, active_only=False))
         await replace_admin_view(call, 
             tr("📦 مدیریت محصولات - ابتدا دسته‌بندی را انتخاب کنید:"),
-            reply_markup=kb.admin_products_categories_kb(categories),
+            reply_markup=await asyncio.to_thread(kb.admin_products_categories_kb, db),
         )
         await call.answer()
 
@@ -1214,10 +1292,12 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await call.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
             return
         products = (await asyncio.to_thread(db.get_products, cat_id, active_only=False))
-        if not products:
+        has_children = await asyncio.to_thread(db.category_has_children, cat_id)
+        if not products and not has_children:
             await call.answer(db.get_text('handlers_admin.auto_aa02e69e', 'محصولی در این دسته وجود ندارد.'), show_alert=True)
             return
-        await safe_edit(call, db.get_text('handlers_admin.auto_c8caee2c', 'لیست محصولات این دسته\u200cبندی:'), reply_markup=kb.admin_products_list_kb(db, products))
+        title = tr("زیردسته یا محصول را انتخاب کنید:") if has_children else db.get_text('handlers_admin.auto_c8caee2c', 'لیست محصولات این دسته\u200cبندی:')
+        await safe_edit(call, title, reply_markup=await asyncio.to_thread(kb.admin_products_list_kb, db, products, cat_id))
         await call.answer()
 
     @router.callback_query(F.data.startswith("adm_prod_toggle:"))
@@ -1255,7 +1335,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "product_delete", f"محصول «{product['name'] if product else product_id}»"))
         if cat_id:
             products = (await asyncio.to_thread(db.get_products, cat_id, active_only=False))
-            await safe_edit(call, db.get_text('handlers_admin.auto_c8caee2c', 'لیست محصولات این دسته\u200cبندی:'), reply_markup=kb.admin_products_list_kb(db, products))
+            await safe_edit(call, db.get_text('handlers_admin.auto_c8caee2c', 'لیست محصولات این دسته\u200cبندی:'), reply_markup=kb.admin_products_list_kb(db, products, cat_id))
         await call.answer(db.get_text('handlers_admin.auto_1002ca8f', 'محصول حذف شد.'))
 
     @router.callback_query(F.data.startswith("adm_prod_srv:"))
@@ -2227,8 +2307,26 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.set_state(AdminAddProduct.waiting_category)
         await safe_edit(call, 
             db.get_text('handlers_admin.auto_f07f2021', 'محصول جدید در کدام دسته\u200cبندی اضافه شود؟'),
-            reply_markup=kb.admin_pick_category_kb(categories, "adm_newprod_cat"),
+            reply_markup=await asyncio.to_thread(kb.admin_newprod_nav_kb, db, 0),
         )
+        await call.answer()
+
+    @router.callback_query(AdminAddProduct.waiting_category, F.data.startswith("adm_newprod_nav:"))
+    async def cb_nav_category_for_new_product(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        cat_id = callback_id(call.data, "adm_newprod_nav")
+        if cat_id is None:
+            await call.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
+            return
+        if cat_id and (await asyncio.to_thread(db.get_category, cat_id)) is None:
+            await call.answer(db.get_text('handlers_admin.auto_1da46abb', '⚠️ این دسته\u200cبندی دیگر وجود ندارد.'), show_alert=True)
+            return
+        title = db.get_text('handlers_admin.auto_f07f2021', 'محصول جدید در کدام دسته\u200cبندی اضافه شود؟')
+        if cat_id:
+            path = await asyncio.to_thread(db.get_category_path, cat_id)
+            title = f"📂 {' › '.join(c['name'] for c in path)}\n{title}"
+        await safe_edit(call, title, reply_markup=await asyncio.to_thread(kb.admin_newprod_nav_kb, db, cat_id))
         await call.answer()
 
     @router.callback_query(AdminAddProduct.waiting_category, F.data.startswith("adm_newprod_cat:"))
@@ -11795,6 +11893,23 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     # پیام همگانی
     # -------------------------------------------------------------------
 
+    _BC_TARGET_INFO = {
+        "all": ("همه‌ی کاربران", "برای همه کاربران ارسال می‌شود"),
+        "active": ("کاربران فعال", "فقط برای کاربرانی که الان حداقل یک سرویس فعال دارند ارسال می‌شود"),
+        "expired": ("اکانت‌های منقضی", "فقط برای کاربرانی که سابقه‌ی سرویس دارند ولی الان هیچ سرویس فعالی ندارند ارسال می‌شود"),
+        "inactive": ("کاربران غیرفعال", "فقط برای کاربرانی که هیچ‌وقت سرویس نگرفته‌اند و کانفیگ تست هم نگرفته‌اند ارسال می‌شود"),
+        "test_only": ("کاربران فقط دارای اکانت تست", "فقط برای کاربرانی که فقط کانفیگ تست گرفته‌اند و هنوز سرویس واقعی ندارند ارسال می‌شود"),
+    }
+    _BC_SERVICE_STATE_TARGETS = ("active", "expired", "inactive", "test_only")
+
+    # وضعیت ارسال همگانی در حال اجرا (برای دکمه‌های «وضعیت ارسال» و «لغو ارسال»).
+    # فقط در حافظه‌ی همین پروسه/همین بات نگه داشته می‌شود؛ با ری‌استارت بات از بین می‌رود.
+    _bc_jobs = {"current": None, "last": None, "seq": 0, "tasks": set()}
+
+    def _bc_job_active() -> bool:
+        job = _bc_jobs["current"]
+        return bool(job and job["status"] in ("preparing", "running"))
+
     @router.callback_query(F.data == "adm_broadcast_edit")
     async def cb_admin_broadcast_edit(call: CallbackQuery, state: FSMContext):
         if not full_admin_only(call.from_user.id):
@@ -11804,15 +11919,19 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         target_server_id = data.get("broadcast_target_server_id")
         await state.update_data(broadcast_target=target, broadcast_target_server_id=target_server_id)
         await state.set_state(AdminBroadcast.waiting_message)
-        if target == "server" and target_server_id:
+        if data.get("broadcast_mode") == "forward":
+            prompt = "پیام مورد نظر را از هر کانال/چتی که می‌خواهی فوروارد کن (برای همه کاربران فوروارد می‌شود):"
+        elif target == "server" and target_server_id:
             server = (await asyncio.to_thread(db.get_panel_server, target_server_id))
             server_name = server["name"] if server else target_server_id
             prompt = f"متن یا عکس (با یا بدون کپشن) پیام همگانی را ارسال کنید (فقط برای کاربران دارای سرویس فعال روی سرور «{server_name}» ارسال می‌شود):"
         elif target == "no_config":
             prompt = "متن یا عکس (با یا بدون کپشن) پیام همگانی را ارسال کنید (فقط برای کاربرانی که الان هیچ کانفیگی ندارند ارسال می‌شود):"
+        elif target in _BC_TARGET_INFO:
+            prompt = f"متن یا عکس (با یا بدون کپشن) پیام همگانی را ارسال کنید ({_BC_TARGET_INFO[target][1]}):"
         else:
             prompt = "متن یا عکس (با یا بدون کپشن) پیام همگانی را ارسال کنید (برای همه کاربران ارسال می‌شود):"
-        await replace_admin_view(call, prompt, reply_markup=kb.admin_back_kb("adm_cat:marketing"))
+        await replace_admin_view(call, prompt, reply_markup=kb.admin_back_kb("adm_broadcast"))
         await call.answer()
 
     @router.callback_query(F.data == "adm_broadcast")
@@ -11820,8 +11939,189 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
         await state.clear()
-        await replace_admin_view(call, tr("📢 پیام همگانی به چه کسانی ارسال شود؟"), reply_markup=kb.admin_broadcast_target_kb())
+        await replace_admin_view(call, tr("📢 بخش ارسال پیام\n\nنوع ارسال را انتخاب کن:"), reply_markup=kb.admin_broadcast_target_kb())
         await call.answer()
+
+    @router.callback_query(F.data == "adm_broadcast_adv")
+    async def cb_admin_broadcast_adv(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await state.clear()
+        await replace_admin_view(call, tr("🎯 هدف‌گیری‌های دیگر - پیام همگانی به چه کسانی ارسال شود؟"), reply_markup=kb.admin_broadcast_advanced_kb())
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_broadcast_fwd")
+    async def cb_admin_broadcast_fwd(call: CallbackQuery, state: FSMContext):
+        """فوروارد به همه: ادمین پیام را از هر کانال/چتی فوروارد می‌کند و همان پیام
+        (با نشان «Forwarded from» منبع اصلی) برای همه‌ی کاربران فوروارد می‌شود."""
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await state.clear()
+        await state.update_data(broadcast_target="all", broadcast_target_server_id=None, broadcast_mode="forward")
+        await state.set_state(AdminBroadcast.waiting_message)
+        await replace_admin_view(
+            call,
+            tr("📤 پیام مورد نظر را از هر کانال/چتی که می‌خواهی فوروارد کن تا برای همه‌ی کاربران فوروارد شود (با نام منبع اصلی):"),
+            reply_markup=kb.admin_back_kb("adm_broadcast"),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_broadcast_status")
+    async def cb_admin_broadcast_status(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        job = _bc_jobs["current"] if _bc_job_active() else _bc_jobs["last"]
+        if not job:
+            await call.answer(tr("ℹ️ هنوز هیچ ارسالی انجام نشده."), show_alert=True)
+            return
+        done = job["success"] + job["failed"]
+        elapsed = int((job["ended"] or time.time()) - job["started"])
+        state_label = tr({
+            "preparing": "⏳ در حال آماده‌سازی لیست مخاطبان",
+            "running": "🚀 در حال ارسال",
+            "done": "✅ تمام شد",
+            "cancelled": "🛑 لغو شد",
+            "error": "⚠️ با خطا متوقف شد",
+        }.get(job["status"], "⚠️ با خطا متوقف شد"))
+        mode_label = tr("فوروارد به") if job["mode"] == "forward" else tr("ارسال به")
+        text = (
+            f"{tr('⏳ وضعیت آخرین ارسال')}\n\n"
+            f"{tr('وضعیت')}: {state_label}\n"
+            f"{tr('نوع')}: {mode_label} {tr(job['label'])}\n"
+            f"{tr('📊 پیشرفت')}: {done} / {job['total']}\n"
+            f"{tr('✅ موفق')}: {job['success']}\n"
+            f"{tr('❌ ناموفق')}: {job['failed']}\n"
+            f"{tr('⌛️ مدت (ثانیه)')}: {elapsed}"
+        )
+        if job["pinned"]:
+            text += f"\n{tr('📌 پین‌شده')}: {job['pinned']}"
+        await call.answer()
+        await call.message.answer(text, reply_markup=kb.admin_broadcast_target_kb())
+
+    @router.callback_query(F.data == "adm_broadcast_stop")
+    async def cb_admin_broadcast_stop(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        if _bc_job_active():
+            _bc_jobs["current"]["cancel"] = True
+            await call.answer(tr("🛑 درخواست لغو ثبت شد؛ ارسال به‌زودی متوقف می‌شود (پیام‌های ارسال‌شده حذف نمی‌شوند)."), show_alert=True)
+            return
+        if await state.get_state():
+            await state.clear()
+            await replace_admin_view(call, tr("❌ ارسال پیام لغو شد."), reply_markup=kb.admin_broadcast_target_kb())
+            await call.answer()
+            return
+        await call.answer(tr("ℹ️ الان ارسالی در حال انجام نیست."), show_alert=True)
+
+    @router.callback_query(F.data == "adm_broadcast_single")
+    async def cb_admin_broadcast_single(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await state.clear()
+        await state.set_state(AdminBroadcast.waiting_single_user)
+        await replace_admin_view(
+            call,
+            tr("✍️ آیدی عددی یا یوزرنیم کاربر را بفرست (مثلاً 123456789 یا @username):"),
+            reply_markup=kb.admin_back_kb("adm_broadcast"),
+        )
+        await call.answer()
+
+    @router.message(AdminBroadcast.waiting_single_user)
+    async def process_broadcast_single_user(message: Message, state: FSMContext):
+        if not full_admin_only(message.from_user.id):
+            return
+        user = (await asyncio.to_thread(db.find_user_by_identifier, message.text or ""))
+        if not user:
+            await message.answer(tr("⚠️ کاربری با این مشخصات پیدا نشد. آیدی عددی یا یوزرنیم را دوباره بفرست."))
+            return
+        await state.update_data(broadcast_single_uid=int(user["telegram_id"]))
+        await state.set_state(AdminBroadcast.waiting_single_message)
+        name = user["first_name"] or user["username"] or user["telegram_id"]
+        await message.answer(
+            tr(f"✍️ پیام برای «{name}» ({user['telegram_id']}) را بفرست (متن، عکس یا هر پیام دیگر):"),
+            reply_markup=kb.admin_back_kb("adm_broadcast"),
+        )
+
+    @router.message(AdminBroadcast.waiting_single_message)
+    async def process_broadcast_single_message(message: Message, state: FSMContext, bot: Bot):
+        if not full_admin_only(message.from_user.id):
+            return
+        if message.media_group_id:
+            await message.answer(tr("⚠️ ارسال آلبوم پشتیبانی نمی‌شود. فقط یک پیام تکی بفرست."))
+            return
+        data = await state.get_data()
+        uid = data.get("broadcast_single_uid")
+        await state.clear()
+        if not uid:
+            await message.answer(tr("⚠️ اطلاعات ناقص بود؛ دوباره از اول شروع کن."), reply_markup=kb.admin_broadcast_target_kb())
+            return
+        try:
+            await bot.copy_message(uid, from_chat_id=message.chat.id, message_id=message.message_id)
+        except Exception as exc:
+            await message.answer(
+                tr(f"❌ ارسال پیام به کاربر {uid} ناموفق بود (احتمالاً ربات را بلاک کرده یا هنوز استارت نکرده).\n{type(exc).__name__}"),
+                reply_markup=kb.admin_broadcast_target_kb(),
+            )
+            return
+        await asyncio.to_thread(db.log_admin_action, message.from_user.id, "broadcast_single", f"ارسال پیام به کاربر {uid}")
+        await message.answer(tr(f"✅ پیام برای کاربر {uid} ارسال شد."), reply_markup=kb.admin_broadcast_target_kb())
+
+    @router.callback_query(F.data == "adm_broadcast_channel")
+    async def cb_admin_broadcast_channel(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        channel = ((await asyncio.to_thread(db.get_setting, "promo_channel_id", "")) or "").strip()
+        if not channel:
+            await call.answer(tr("⚠️ کانال تبلیغاتی تنظیم نشده. از تنظیمات، «کانال تبلیغاتی/کمپین» را وارد کن."), show_alert=True)
+            return
+        await state.clear()
+        await state.set_state(AdminBroadcast.waiting_channel_message)
+        await replace_admin_view(
+            call,
+            tr(f"📣 متن یا عکس (با یا بدون کپشن) پستی که باید در کانال {channel} منتشر شود را بفرست:"),
+            reply_markup=kb.admin_back_kb("adm_broadcast"),
+        )
+        await call.answer()
+
+    @router.message(AdminBroadcast.waiting_channel_message)
+    async def process_broadcast_channel_message(message: Message, state: FSMContext, bot: Bot):
+        if not full_admin_only(message.from_user.id):
+            return
+        if message.media_group_id:
+            await message.answer(tr("⚠️ ارسال آلبوم پشتیبانی نمی‌شود. فقط یک عکس یا متن تکی بفرست."))
+            return
+        await state.update_data(broadcast_chat_id=message.chat.id, broadcast_message_id=message.message_id)
+        await message.answer(tr("👁 نمونه‌ی پستی که در کانال منتشر می‌شود:"))
+        await bot.copy_message(message.chat.id, from_chat_id=message.chat.id, message_id=message.message_id)
+        await message.answer(
+            tr("☝️ اگر درست است «✅ ارسال به کانال» را بزن؛ برای اصلاح «✏️ ویرایش متن/عکس» و برای انصراف «❌ لغو ارسال»."),
+            reply_markup=kb.admin_broadcast_channel_confirm_kb(),
+        )
+
+    @router.callback_query(F.data == "adm_broadcast_channel_go")
+    async def cb_admin_broadcast_channel_go(call: CallbackQuery, state: FSMContext, bot: Bot):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        data = await state.get_data()
+        chat_id, message_id = data.get("broadcast_chat_id"), data.get("broadcast_message_id")
+        channel = ((await asyncio.to_thread(db.get_setting, "promo_channel_id", "")) or "").strip()
+        if not chat_id or not message_id or not channel:
+            await call.answer(tr("⚠️ اطلاعات ناقص بود؛ دوباره از اول شروع کن."), show_alert=True)
+            return
+        target = int(channel) if re.fullmatch(r"-?\d+", channel) else channel
+        try:
+            await bot.copy_message(target, from_chat_id=chat_id, message_id=message_id)
+        except Exception as exc:
+            await call.answer()
+            await call.message.answer(
+                tr(f"❌ ارسال به کانال {channel} ناموفق بود. مطمئن شو ربات در کانال ادمین است و اجازه‌ی ارسال پیام دارد.\n{type(exc).__name__}"),
+                reply_markup=kb.admin_broadcast_target_kb(),
+            )
+            return
+        await state.clear()
+        await asyncio.to_thread(db.log_admin_action, call.from_user.id, "broadcast_channel", f"ارسال پیام به کانال {channel}")
+        await call.answer()
+        await call.message.answer(tr(f"✅ پست در کانال {channel} منتشر شد."), reply_markup=kb.admin_broadcast_target_kb())
 
     @router.callback_query(F.data.startswith("adm_broadcast_target:"))
     async def cb_admin_broadcast_target(call: CallbackQuery, state: FSMContext):
@@ -11876,9 +12176,20 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             )
             await call.answer()
             return
-        await state.update_data(broadcast_target="all", broadcast_target_server_id=None)
+        if choice in _BC_SERVICE_STATE_TARGETS:
+            ids = (await asyncio.to_thread(db.get_user_ids_by_service_state, choice))
+            await state.update_data(broadcast_target=choice, broadcast_target_server_id=None, broadcast_mode="copy")
+            await state.set_state(AdminBroadcast.waiting_message)
+            await replace_admin_view(
+                call,
+                tr(f"متن یا عکس (با یا بدون کپشن) پیام همگانی را ارسال کنید ({tr(_BC_TARGET_INFO[choice][1])}).\n👥 تعداد مخاطبان فعلی: {len(ids)}"),
+                reply_markup=kb.admin_back_kb("adm_broadcast"),
+            )
+            await call.answer()
+            return
+        await state.update_data(broadcast_target="all", broadcast_target_server_id=None, broadcast_mode="copy")
         await state.set_state(AdminBroadcast.waiting_message)
-        await replace_admin_view(call, tr("متن یا عکس (با یا بدون کپشن) پیام همگانی را ارسال کنید (برای همه کاربران ارسال می‌شود):"), reply_markup=kb.admin_back_kb("adm_cat:marketing"))
+        await replace_admin_view(call, tr("متن یا عکس (با یا بدون کپشن) پیام همگانی را ارسال کنید (برای همه کاربران ارسال می‌شود):"), reply_markup=kb.admin_back_kb("adm_broadcast"))
         await call.answer()
 
     @router.message(AdminBroadcast.waiting_no_purchase_days)
@@ -11937,11 +12248,15 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         # برای خودِ کاربران استفاده می‌شود، اینجا یک بار برای خودِ ادمین هم کپی
         # می‌شود - یعنی دقیقاً همان چیزی که کاربران می‌بینند (نه صرفاً متنی که
         # ادمین تایپ کرده)، پیش از این‌که ادمین مدت حذف خودکار/ارسال را تایید کند.
+        forward_mode = (await state.get_data()).get("broadcast_mode") == "forward"
         await message.answer(db.get_text('handlers_admin.auto_53032292', '👁 نمونه\u200cی دقیق پیامی که برای همه\u200cی کاربران ارسال می\u200cشود:'))
-        await bot.copy_message(message.chat.id, from_chat_id=message.chat.id, message_id=message.message_id)
+        if forward_mode:
+            await bot.forward_message(message.chat.id, from_chat_id=message.chat.id, message_id=message.message_id)
+        else:
+            await bot.copy_message(message.chat.id, from_chat_id=message.chat.id, message_id=message.message_id)
         await message.answer(
             db.get_text('handlers_admin.auto_18038d8a', '☝️ اگر همین درست است، مدت حذف خودکار را انتخاب کن تا ارسال شود؛ برای اصلاح پیام «✏️ ویرایش متن/عکس» و برای انصراف کامل «❌ لغو ارسال» را بزن.'),
-            reply_markup=kb.admin_broadcast_duration_kb(pin_after_send=False),
+            reply_markup=kb.admin_broadcast_duration_kb(pin_after_send=False, allow_schedule=not forward_mode),
         )
 
     @router.callback_query(F.data == "adm_broadcast_toggle_pin")
@@ -11955,37 +12270,29 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         new_value = not bool(data.get("broadcast_pin"))
         await state.update_data(broadcast_pin=new_value)
         try:
-            await call.message.edit_reply_markup(reply_markup=kb.admin_broadcast_duration_kb(pin_after_send=new_value))
+            await call.message.edit_reply_markup(reply_markup=kb.admin_broadcast_duration_kb(
+                pin_after_send=new_value, allow_schedule=data.get("broadcast_mode") != "forward"))
         except Exception:
             pass
         await call.answer("📌 پین بعد از ارسال روشن شد." if new_value else "📌 پین بعد از ارسال خاموش شد.")
 
-    async def _finalize_broadcast(state: FSMContext, bot: Bot, admin_id: int, seconds: int, answer_fn):
-        data = await state.get_data()
-        chat_id = data.get("broadcast_chat_id")
-        message_id = data.get("broadcast_message_id")
-        target = data.get("broadcast_target", "all")
+    async def _bc_recipients(bot: Bot, target: str, data: dict):
+        """لیست مخاطبان و برچسب فارسی‌شان را بر اساس هدف انتخاب‌شده برمی‌گرداند."""
         target_server_id = data.get("broadcast_target_server_id")
-        pin_after_send = bool(data.get("broadcast_pin"))
-        await state.clear()
-        if not chat_id or not message_id:
-            await answer_fn("⚠️ اطلاعات پیام همگانی ناقص بود؛ دوباره از اول شروع کن.")
-            return
         if target == "server" and target_server_id:
             user_ids = (await asyncio.to_thread(db.get_user_ids_by_panel_server, target_server_id))
             server = (await asyncio.to_thread(db.get_panel_server, target_server_id))
-            target_label = f"کاربران سرور «{server['name']}»" if server else f"کاربران سرور #{target_server_id}"
-        elif target == "no_config":
-            user_ids = (await asyncio.to_thread(db.get_user_ids_without_config))
-            target_label = "کاربران بدون کانفیگ"
-        elif target == "inactive_config":
-            user_ids = (await asyncio.to_thread(db.get_user_ids_with_inactive_config))
-            target_label = "کاربران دارای کانفیگ غیرفعال"
-        elif target == "no_purchase":
+            return user_ids, (f"کاربران سرور «{server['name']}»" if server else f"کاربران سرور #{target_server_id}")
+        if target == "no_config":
+            return (await asyncio.to_thread(db.get_user_ids_without_config)), "کاربران بدون کانفیگ"
+        if target == "inactive_config":
+            return (await asyncio.to_thread(db.get_user_ids_with_inactive_config)), "کاربران دارای کانفیگ غیرفعال"
+        if target == "no_purchase":
             days = int(data.get("broadcast_no_purchase_days") or 30)
-            user_ids = (await asyncio.to_thread(db.get_user_ids_without_recent_purchase, days))
-            target_label = f"کاربران بدون خرید در {days} روز اخیر"
-        elif target == "left_channel":
+            return (await asyncio.to_thread(db.get_user_ids_without_recent_purchase, days)), f"کاربران بدون خرید در {days} روز اخیر"
+        if target in _BC_SERVICE_STATE_TARGETS:
+            return (await asyncio.to_thread(db.get_user_ids_by_service_state, target)), _BC_TARGET_INFO[target][0]
+        if target == "left_channel":
             fj_settings = (await asyncio.to_thread(db.get_force_join_settings))
             fj_channels = fj_settings["channels"]
             all_ids = (await asyncio.to_thread(db.get_all_user_ids))
@@ -11999,56 +12306,113 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                     if await missing_channels(bot, fj_channels, uid):
                         user_ids.append(uid)
                     await asyncio.sleep(0.05)
-            target_label = "کاربران خارج‌شده از کانال اجباری"
-        else:
-            user_ids = (await asyncio.to_thread(db.get_all_user_ids))
-            target_label = "همه‌ی کاربران"
-        success, failed, pinned = 0, 0, 0
-        sent_targets = []
-        for uid in user_ids:
-            # قبلاً بدون sleep/retry بین ارسال‌ها بود: برای لیست‌های بزرگ خیلی سریع
-            # به محدودیت flood تلگرام می‌خورد و از همان‌جا به بعد اکثر پیام‌ها با
-            # TelegramRetryAfter رد می‌شدند (چون فقط except Exception بی‌قید-وشرط
-            # می‌گرفت و شمرده می‌شد failed، بدون صبر/تلاش مجدد) - از دید ادمین این
-            # دقیقاً همان «هنگ‌کردن/کرش پیام همگانی» بود، چون هم اکثر ارسال‌ها ناموفق
-            # می‌ماندند و هم کل حلقه به‌خاطر همین خطاهای پشت‌سرهم به‌شدت کند می‌شد.
-            for _attempt in range(3):
-                try:
-                    sent = await bot.copy_message(uid, from_chat_id=chat_id, message_id=message_id)
-                    success += 1
-                    if seconds > 0:
-                        sent_targets.append((uid, sent.message_id))
-                    if pin_after_send:
-                        try:
-                            await bot.pin_chat_message(uid, sent.message_id, disable_notification=True)
-                            pinned += 1
-                        except Exception:
-                            pass
+            return user_ids, "کاربران خارج‌شده از کانال اجباری"
+        return (await asyncio.to_thread(db.get_all_user_ids)), "همه‌ی کاربران"
+
+    async def _bc_run_job(job: dict, bot: Bot, data: dict, admin_id: int, seconds: int, answer_fn):
+        chat_id = data.get("broadcast_chat_id")
+        message_id = data.get("broadcast_message_id")
+        target = data.get("broadcast_target", "all")
+        pin_after_send = bool(data.get("broadcast_pin"))
+        forward_mode = job["mode"] == "forward"
+        try:
+            user_ids, target_label = await _bc_recipients(bot, target, data)
+            job["label"] = target_label
+            job["total"] = len(user_ids)
+            job["status"] = "running"
+            sent_targets = []
+            for uid in user_ids:
+                if job["cancel"]:
                     break
-                except TelegramRetryAfter as e:
-                    await asyncio.sleep(e.retry_after + 1)
-                    continue
-                except Exception:
-                    failed += 1
-                    break
-            await asyncio.sleep(0.05)
-        for uid, mid in sent_targets:
-            await schedule_message_autodelete(db, uid, mid, seconds)
+                # برای لیست‌های بزرگ بدون تاخیر/تلاش مجدد، خیلی زود به محدودیت flood تلگرام
+                # می‌خوردیم؛ پس TelegramRetryAfter صبر و دوباره تلاش می‌شود.
+                for _attempt in range(3):
+                    try:
+                        if forward_mode:
+                            sent = await bot.forward_message(uid, from_chat_id=chat_id, message_id=message_id)
+                        else:
+                            sent = await bot.copy_message(uid, from_chat_id=chat_id, message_id=message_id)
+                        job["success"] += 1
+                        if seconds > 0:
+                            sent_targets.append((uid, sent.message_id))
+                        if pin_after_send:
+                            try:
+                                await bot.pin_chat_message(uid, sent.message_id, disable_notification=True)
+                                job["pinned"] += 1
+                            except Exception:
+                                pass
+                        break
+                    except TelegramRetryAfter as e:
+                        await asyncio.sleep(e.retry_after + 1)
+                        continue
+                    except Exception:
+                        job["failed"] += 1
+                        break
+                await asyncio.sleep(0.05)
+            for uid, mid in sent_targets:
+                await schedule_message_autodelete(db, uid, mid, seconds)
+            job["status"] = "cancelled" if job["cancel"] else "done"
+        except Exception:
+            logging.getLogger(__name__).exception("broadcast job failed")
+            job["status"] = "error"
+        finally:
+            job["ended"] = time.time()
+            _bc_jobs["last"] = job
+            if _bc_jobs["current"] is job:
+                _bc_jobs["current"] = None
         label = _duration_label_fa(seconds) if seconds > 0 else "بدون حذف خودکار"
-        pin_note = f" | پین‌شده: {pinned}" if pin_after_send else ""
-        (await asyncio.to_thread(db.log_admin_action, admin_id, "broadcast", f"ارسال به {target_label} ({len(user_ids)} نفر) | موفق: {success} | ناموفق: {failed} | حذف خودکار: {label}{pin_note}"))
-        await answer_fn(
-            f"📢 پیام همگانی به {target_label} ارسال شد.\n👥 مجموع: {len(user_ids)}\n✅ موفق: {success}\n❌ ناموفق: {failed}\n⏱ حذف خودکار: {label}"
-            + (f"\n📌 پین‌شده: {pinned}" if pin_after_send else ""),
-            reply_markup=kb.admin_category_kb(db, is_main_bot, "marketing"),
-        )
+        pin_note = f" | پین‌شده: {job['pinned']}" if pin_after_send else ""
+        verb = "فوروارد" if forward_mode else "ارسال"
+        status_note = {"cancelled": " | لغو شد", "error": " | با خطا متوقف شد"}.get(job["status"], "")
+        try:
+            await asyncio.to_thread(
+                db.log_admin_action, admin_id, "broadcast",
+                f"{verb} به {job['label']} ({job['total']} نفر) | موفق: {job['success']} | ناموفق: {job['failed']} | حذف خودکار: {label}{pin_note}{status_note}",
+            )
+            head = {
+                "cancelled": f"🛑 {verb} به {job['label']} لغو شد.",
+                "error": f"⚠️ {verb} به {job['label']} با خطا متوقف شد.",
+            }.get(job["status"], f"📢 پیام به {job['label']} {'فوروارد' if forward_mode else 'ارسال'} شد.")
+            await answer_fn(
+                f"{head}\n👥 مجموع: {job['total']}\n✅ موفق: {job['success']}\n❌ ناموفق: {job['failed']}\n⏱ حذف خودکار: {label}"
+                + (f"\n📌 پین‌شده: {job['pinned']}" if pin_after_send else ""),
+                reply_markup=kb.admin_broadcast_target_kb(),
+            )
+        except Exception:
+            logging.getLogger(__name__).exception("broadcast job report failed")
+
+    async def _finalize_broadcast(state: FSMContext, bot: Bot, admin_id: int, seconds: int, answer_fn):
+        data = await state.get_data()
+        chat_id = data.get("broadcast_chat_id")
+        message_id = data.get("broadcast_message_id")
+        if _bc_job_active():
+            await answer_fn(tr("⏳ یک ارسال دیگر هنوز در حال انجام است. از «⏳ وضعیت ارسال» پیگیری کن یا «❌ لغو ارسال» را بزن، بعد دوباره امتحان کن."))
+            return
+        await state.clear()
+        if not chat_id or not message_id:
+            await answer_fn("⚠️ اطلاعات پیام همگانی ناقص بود؛ دوباره از اول شروع کن.")
+            return
+        _bc_jobs["seq"] += 1
+        job = {
+            "id": _bc_jobs["seq"], "label": "...", "mode": "forward" if data.get("broadcast_mode") == "forward" else "copy",
+            "total": 0, "success": 0, "failed": 0, "pinned": 0, "status": "preparing",
+            "cancel": False, "started": time.time(), "ended": None, "admin_id": admin_id,
+        }
+        _bc_jobs["current"] = job
+        # ارسال در پس‌زمینه اجرا می‌شود تا ادمین بتواند وضعیت را ببیند یا لغو کند
+        # (و در حالت webhook هم درخواست تلگرام تا پایان ارسال معلق نماند).
+        task = asyncio.create_task(_bc_run_job(job, bot, data, admin_id, seconds, answer_fn))
+        _bc_jobs["tasks"].add(task)
+        task.add_done_callback(_bc_jobs["tasks"].discard)
+        await answer_fn(tr("🚀 ارسال شروع شد. با «⏳ وضعیت ارسال» پیشرفتش را ببین و با «❌ لغو ارسال» می‌توانی متوقفش کنی."),
+                        reply_markup=kb.admin_broadcast_target_kb())
 
     @router.callback_query(F.data == "adm_broadcast_cancel")
     async def cb_broadcast_cancel(call: CallbackQuery, state: FSMContext):
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
         await state.clear()
-        await replace_admin_view(call, tr("❌ ارسال پیام همگانی لغو شد."), reply_markup=kb.admin_category_kb(db, is_main_bot, "marketing"))
+        await replace_admin_view(call, tr("❌ ارسال پیام همگانی لغو شد."), reply_markup=kb.admin_broadcast_target_kb())
         await call.answer()
 
     @router.callback_query(F.data.startswith("adm_broadcast_dur:"))
@@ -12069,6 +12433,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
         data = await state.get_data()
+        if data.get("broadcast_mode") == "forward":
+            await call.answer(tr("زمان‌بندی برای فوروارد ممکن نیست."), show_alert=True)
+            return
         if not (data.get("broadcast_text") or "").strip():
             await call.answer(db.get_text('handlers_admin.auto_8aaa4716', 'زمان\u200cبندی فقط برای پیام متنی ممکن است.'), show_alert=True)
             return

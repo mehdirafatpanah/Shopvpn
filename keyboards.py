@@ -422,17 +422,29 @@ def products_kb(db, products, category_id, children=None) -> InlineKeyboardMarku
         stock = db.count_available_configs(p["id"])
         stock_tag = "✅" if (p["is_auto_provision"] or stock > 0) and p["is_active"] else "⛔️"
         inactive_tag = tr(" (غیرفعال)") if not p["is_active"] else ""
-        btn = _styled_inline(
-            db,
-            f"{stock_tag} {p['name']} - {price_label_button(p, name=p['name'])}{inactive_tag}",
-            f"prod:{p['id']}",
-            "btn_product_select_style",
-        )
+        split = db.get_setting("buy_product_layout", "classic") == "split"
+        if split:
+            btn = _styled_inline(
+                db, f"{stock_tag} {p['name']}{inactive_tag}", f"prod:{p['id']}", "btn_product_select_style",
+            )
+            price_btn = _styled_inline(
+                db, price_label_button(p, name=""), f"prod:{p['id']}", "btn_product_select_style",
+            )
+        else:
+            btn = _styled_inline(
+                db,
+                f"{stock_tag} {p['name']} - {price_label_button(p, name=p['name'])}{inactive_tag}",
+                f"prod:{p['id']}",
+                "btn_product_select_style",
+            )
+            price_btn = None
         # رنگ اختصاصی محصول (از پنل وب) روی رنگ سراسری دکمه‌ی محصولات اولویت دارد.
         own_style = (p["btn_style"] if "btn_style" in p.keys() else "") or ""
         if own_style in ("primary", "success", "danger"):
             btn = InlineKeyboardButton(text=btn.text, callback_data=btn.callback_data, style=own_style)
-        rows.append([btn])
+            if price_btn is not None:
+                price_btn = InlineKeyboardButton(text=price_btn.text, callback_data=price_btn.callback_data, style=own_style)
+        rows.append([btn, price_btn] if price_btn is not None else [btn])
     back_text = db.get_setting("btn_buy_back_text", "⬅️ بازگشت به دسته‌بندی‌ها")
     rows.append([_styled_inline(db, back_text, _category_back_cb(db, category_id), "btn_buy_back_style")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -2487,14 +2499,39 @@ def qr_background_menu_kb(db) -> InlineKeyboardMarkup:
 
 
 def admin_broadcast_target_kb() -> InlineKeyboardMarkup:
+    """منوی اصلی بخش ارسال پیام (همگانی/فوروارد/تک‌کاربر/کانال/وضعیت/لغو)."""
+    def b(text, data):
+        return InlineKeyboardButton(text=tr(text), callback_data=data)
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=tr("👥 همه‌ی کاربران"), callback_data="adm_broadcast_target:all")],
+        [b("✍️ ارسال پیام برای یک کاربر", "adm_broadcast_single")],
+        [b("📩 ارسال به همه", "adm_broadcast_target:all"), b("📤 فوروارد به همه", "adm_broadcast_fwd")],
+        [b("📩 ارسال به اکانت‌های منقضی", "adm_broadcast_target:expired"), b("📩 ارسال به کاربران فعال", "adm_broadcast_target:active")],
+        [b("📩 ارسال به کاربران غیرفعال", "adm_broadcast_target:inactive")],
+        [b("🧪 ارسال به کاربران فقط دارای اکانت تست", "adm_broadcast_target:test_only")],
+        [b("📣 ارسال به کانال", "adm_broadcast_channel")],
+        [b("❌ لغو ارسال", "adm_broadcast_stop"), b("⏳ وضعیت ارسال", "adm_broadcast_status")],
+        [b("🎯 هدف‌گیری‌های دیگر", "adm_broadcast_adv")],
+        [b("⬅️ بازگشت", "adm_cat:marketing")],
+    ])
+
+
+def admin_broadcast_advanced_kb() -> InlineKeyboardMarkup:
+    """هدف‌گیری‌های قبلی (سرور، بدون کانفیگ، کانفیگ غیرفعال، بدون خرید، خارج‌شده از کانال)."""
+    return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=tr("🖥 کاربران یک سرور خاص"), callback_data="adm_broadcast_target:server")],
         [InlineKeyboardButton(text=tr("🚫 کاربران بدون کانفیگ"), callback_data="adm_broadcast_target:no_config")],
         [InlineKeyboardButton(text=tr("⛔️ کاربران دارای کانفیگ غیرفعال"), callback_data="adm_broadcast_target:inactive_config")],
         [InlineKeyboardButton(text=tr("📆 کاربران بدون خرید در N روز اخیر"), callback_data="adm_broadcast_target:no_purchase")],
         [InlineKeyboardButton(text=tr("🚪 خارج‌شده از کانال اجباری (ولی عضو ربات)"), callback_data="adm_broadcast_target:left_channel")],
-        [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:marketing")],
+        [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_broadcast")],
+    ])
+
+
+def admin_broadcast_channel_confirm_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=tr("✅ ارسال به کانال"), callback_data="adm_broadcast_channel_go")],
+        [InlineKeyboardButton(text=tr("✏️ ویرایش متن/عکس"), callback_data="adm_broadcast_channel")],
+        [InlineKeyboardButton(text=tr("❌ لغو ارسال"), callback_data="adm_broadcast_cancel")],
     ])
 
 
@@ -2506,11 +2543,11 @@ def admin_broadcast_server_select_kb(db) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(
             text=f"{icon} {s['name']}", callback_data=f"adm_broadcast_server:{s['id']}",
         )])
-    rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_broadcast")])
+    rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_broadcast_adv")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_broadcast_duration_kb(pin_after_send: bool = False) -> InlineKeyboardMarkup:
+def admin_broadcast_duration_kb(pin_after_send: bool = False, allow_schedule: bool = True) -> InlineKeyboardMarkup:
     pin_label = "📌 پین بعد از ارسال: روشن ✅" if pin_after_send else "📌 پین بعد از ارسال: خاموش"
     rows = [
         [InlineKeyboardButton(text=tr("🚫 بدون حذف خودکار"), callback_data="adm_broadcast_dur:0")],
@@ -2524,10 +2561,11 @@ def admin_broadcast_duration_kb(pin_after_send: bool = False) -> InlineKeyboardM
         ],
         [InlineKeyboardButton(text=tr("✏️ مدت دلخواه (دقیقه)"), callback_data="adm_broadcast_dur:custom")],
         [InlineKeyboardButton(text=pin_label, callback_data="adm_broadcast_toggle_pin")],
-        [InlineKeyboardButton(text=tr("⏰ زمان‌بندی ارسال (فقط متن)"), callback_data="adm_broadcast_schedule")],
         [InlineKeyboardButton(text=tr("✏️ ویرایش متن/عکس"), callback_data="adm_broadcast_edit")],
         [InlineKeyboardButton(text=tr("❌ لغو ارسال"), callback_data="adm_broadcast_cancel")],
     ]
+    if allow_schedule:
+        rows.insert(-2, [InlineKeyboardButton(text=tr("⏰ زمان‌بندی ارسال (فقط متن)"), callback_data="adm_broadcast_schedule")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -2809,20 +2847,45 @@ def deeplink_attach_discount_picker_kb(codes, product_token: str, back_callback:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_categories_kb(categories) -> InlineKeyboardMarkup:
+def _category_parent_cb(db, cat_id, open_prefix: str, root_cb: str) -> str:
+    try:
+        cat = db.get_category(int(cat_id)) if cat_id else None
+    except Exception:
+        cat = None
+    parent = cat["parent_id"] if cat and "parent_id" in cat.keys() else None
+    return f"{open_prefix}:{int(parent)}" if parent else root_cb
+
+
+def admin_categories_kb(db, parent_id=0) -> InlineKeyboardMarkup:
+    pid = int(parent_id or 0)
     rows = []
-    for cat in categories:
+    for cat in db.get_child_categories(pid or None, active_only=False):
         state_icon = "🟢" if cat["is_active"] else "🔴"
+        kids = len(db.get_child_categories(cat["id"], active_only=False))
+        label = f"{state_icon} 📁 {cat['name']}" + (f" ({kids})" if kids else "")
         rows.append(
             [
-                InlineKeyboardButton(text=f"{state_icon} {cat['name']}", callback_data="noop"),
+                InlineKeyboardButton(text=label, callback_data=f"adm_cat_open:{cat['id']}"),
                 InlineKeyboardButton(text=tr("تغییر وضعیت"), callback_data=f"adm_cat_toggle:{cat['id']}"),
                 InlineKeyboardButton(text=tr("🗑حذف"), callback_data=f"adm_cat_del:{cat['id']}"),
             ]
         )
-    rows.append([InlineKeyboardButton(text=tr("➕ افزودن دسته‌بندی جدید"), callback_data="adm_cat_add")])
-    rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:products")])
+    if pid:
+        rows.append([InlineKeyboardButton(text=tr("➕ افزودن زیردسته"), callback_data=f"adm_cat_add:{pid}")])
+        back_cb = _category_parent_cb(db, pid, "adm_cat_open", "adm_categories")
+    else:
+        rows.append([InlineKeyboardButton(text=tr("➕ افزودن دسته‌بندی جدید"), callback_data="adm_cat_add")])
+        back_cb = "adm_cat:products"
+    rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data=back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_category_delete_confirm_kb(db, cat_id) -> InlineKeyboardMarkup:
+    back_cb = f"adm_cat_open:{int(cat_id)}"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=tr("✅ بله، حذف شود"), callback_data=f"adm_cat_delok:{int(cat_id)}")],
+        [InlineKeyboardButton(text=tr("⬅️ انصراف"), callback_data=back_cb)],
+    ])
 
 
 def admin_custom_gateways_kb(gateways) -> InlineKeyboardMarkup:
@@ -2931,10 +2994,12 @@ def admin_bulk_wallet_credit_confirm_kb() -> InlineKeyboardMarkup:
 
 
 
-def admin_products_categories_kb(categories, prefix="adm_prod_cat") -> InlineKeyboardMarkup:
+def admin_products_categories_kb(db) -> InlineKeyboardMarkup:
     rows = []
-    for cat in categories:
-        rows.append([InlineKeyboardButton(text=f"📁 {cat['name']}", callback_data=f"{prefix}:{cat['id']}")])
+    for cat in db.get_child_categories(None, active_only=False):
+        kids = len(db.get_child_categories(cat["id"], active_only=False))
+        label = f"📁 {cat['name']}" + (f" ({kids})" if kids else "")
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"adm_prod_cat:{cat['id']}")])
     rows.append([InlineKeyboardButton(text=tr("➕ افزودن محصول جدید"), callback_data="adm_prod_add")])
     rows.append([InlineKeyboardButton(text=tr("💰 ویرایش گروهی قیمت"), callback_data="adm_bulk_price")])
     rows.append([InlineKeyboardButton(text=tr("↩️ Undo تغییرات قیمت"), callback_data="adm_bulk_price_undo")])
@@ -2942,8 +3007,16 @@ def admin_products_categories_kb(categories, prefix="adm_prod_cat") -> InlineKey
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_products_list_kb(db, products) -> InlineKeyboardMarkup:
+def admin_products_list_kb(db, products, category_id=None) -> InlineKeyboardMarkup:
     rows = []
+    if category_id is None and products and "category_id" in products[0].keys():
+        category_id = products[0]["category_id"]
+    if category_id:
+        for sub in db.get_child_categories(int(category_id), active_only=False):
+            state_icon = "🟢" if sub["is_active"] else "🔴"
+            kids = len(db.get_child_categories(sub["id"], active_only=False))
+            label = f"{state_icon} 📁 {sub['name']}" + (f" ({kids})" if kids else "")
+            rows.append([InlineKeyboardButton(text=label, callback_data=f"adm_prod_cat:{sub['id']}")])
     vip_bot = _is_volume_credit_owner(db)
     for p in products:
         stock = "∞" if p["is_auto_provision"] else db.count_available_configs(p["id"])
@@ -2997,7 +3070,8 @@ def admin_products_list_kb(db, products) -> InlineKeyboardMarkup:
             else:
                 users_label = "👥 محدودیت کاربر: غیرفعال"
             rows.append([InlineKeyboardButton(text=users_label, callback_data=f"adm_prod_users:{p['id']}")])
-    rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_products")])
+    back_cb = _category_parent_cb(db, category_id, "adm_prod_cat", "adm_products") if category_id else "adm_products"
+    rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data=back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -3214,6 +3288,23 @@ def admin_pick_category_kb(categories, prefix) -> InlineKeyboardMarkup:
     for cat in categories:
         rows.append([InlineKeyboardButton(text=f"📁 {cat['name']}", callback_data=f"{prefix}:{cat['id']}")])
     rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:products")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_newprod_nav_kb(db, parent_id=0) -> InlineKeyboardMarkup:
+    pid = int(parent_id or 0)
+    rows = []
+    if pid:
+        cat = db.get_category(pid)
+        name = cat["name"] if cat else ""
+        rows.append([InlineKeyboardButton(text=tr(f"✅ افزودن محصول در «{name}»"), callback_data=f"adm_newprod_cat:{pid}")])
+    for cat in db.get_child_categories(pid or None, active_only=True):
+        if db.get_child_categories(cat["id"], active_only=True):
+            rows.append([InlineKeyboardButton(text=f"📂 {cat['name']} ›", callback_data=f"adm_newprod_nav:{cat['id']}")])
+        else:
+            rows.append([InlineKeyboardButton(text=f"📁 {cat['name']}", callback_data=f"adm_newprod_cat:{cat['id']}")])
+    back_cb = _category_parent_cb(db, pid, "adm_newprod_nav", "adm_newprod_nav:0") if pid else "adm_cat:products"
+    rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data=back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

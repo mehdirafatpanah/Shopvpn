@@ -266,6 +266,9 @@ class AdminBroadcast(StatesGroup):
     waiting_custom_minutes = State()
     waiting_schedule_time = State()
     waiting_no_purchase_days = State()
+    waiting_single_user = State()
+    waiting_single_message = State()
+    waiting_channel_message = State()
 
 
 class AdminBulkDiscount(StatesGroup):
