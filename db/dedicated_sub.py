@@ -149,3 +149,79 @@ class DedicatedSubMixin:
         if before:
             pts.insert(0, (before["ts"], before["used"]))
         return pts
+
+    # ----- جستجوی کانفیگ (ادمین) ----------------------------------------------
+    @staticmethod
+    def _like_escape(text: str) -> str:
+        return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    @staticmethod
+    def _search_tokens(query: str):
+        """از ورودی ادمین (لینک ساب پنل، لینک اختصاصی، توکن یا نام) کلیدهای جستجو را درمی‌آورد."""
+        q = (query or "").strip().strip("<>\"'")
+        token = None
+        segment = None
+        if "/s/" in q:
+            token = q.split("/s/", 1)[1].split("?", 1)[0].split("#", 1)[0].strip("/")
+        if q.lower().startswith(("http://", "https://")):
+            path = q.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+            segment = path.rsplit("/", 1)[-1]
+        elif " " not in q and len(q) >= 8:
+            segment = q
+        if segment is not None and len(segment) < 8:
+            segment = None
+        return q, token, segment
+
+    def search_custom_configs(self, query: str, limit: int = 10) -> list:
+        """جستجوی سرویس‌های پنلی با: آیدی عددی کانفیگ، لینک ساب پنل، لینک/توکن ساب اختصاصی،
+        یوزرنیم روی پنل یا نام نمایشی. خروجی: لیست ردیف‌ها (جدیدترین اول) بدون تکرار."""
+        q, token, segment = self._search_tokens(query)
+        if not q:
+            return []
+        conds, params = [], []
+        if q.isdigit() and len(q) <= 12:
+            conds.append("c.id=?")
+            params.append(int(q))
+        conds.append("c.subscription_url=?")
+        params.append(q)
+        if token:
+            conds.append("c.sub_token=?")
+            params.append(token)
+        elif " " not in q and len(q) >= 10:
+            conds.append("c.sub_token=?")
+            params.append(q)
+        if segment:
+            conds.append("c.subscription_url LIKE ? ESCAPE '\\'")
+            params.append(f"%{self._like_escape(segment)}%")
+        conds.append("c.username=? COLLATE NOCASE")
+        params.append(q)
+        conds.append("c.display_name=? COLLATE NOCASE")
+        params.append(q)
+        if len(q) >= 3 and " " not in q and not q.lower().startswith(("http://", "https://")):
+            like = f"%{self._like_escape(q)}%"
+            conds.append("c.username LIKE ? ESCAPE '\\'")
+            params.append(like)
+            conds.append("c.display_name LIKE ? ESCAPE '\\'")
+            params.append(like)
+        sql = (
+            "SELECT c.*, p.name AS panel_name FROM custom_configs c "
+            "LEFT JOIN panel_servers p ON p.id=c.panel_server_id "
+            f"WHERE {' OR '.join(conds)} ORDER BY c.id DESC LIMIT ?"
+        )
+        params.append(int(limit))
+        with self._get_conn() as conn:
+            return conn.execute(sql, params).fetchall()
+
+    def search_bank_configs(self, query: str, limit: int = 10) -> list:
+        """جستجوی کانفیگ‌های بانک محصول (جدول configs) با بخشی از لینک/کانفیگ."""
+        q = (query or "").strip().strip("<>\"'")
+        if len(q) < 8 or " " in q:
+            return []
+        like = f"%{self._like_escape(q)}%"
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT cf.*, p.name AS product_name FROM configs cf "
+                "LEFT JOIN products p ON p.id=cf.product_id "
+                "WHERE cf.link LIKE ? ESCAPE '\\' ORDER BY cf.id DESC LIMIT ?",
+                (like, int(limit)),
+            ).fetchall()
