@@ -265,6 +265,7 @@ DEFAULT_SETTINGS = {
     # رنگ دکمه‌های شیشه‌ای مسیر خرید (دسته‌بندی/محصول/تایید و ...)
     "btn_cat_select_style": "primary",
     "btn_product_select_style": "primary",
+    "buy_product_layout": "classic",
     "btn_buy_continue_style": "success",
     "btn_enter_code_style": "",
     "btn_buy_back_style": "",

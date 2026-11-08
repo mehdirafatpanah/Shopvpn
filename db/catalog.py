@@ -1193,28 +1193,55 @@ class CatalogMixin:
             return conn.execute("SELECT * FROM test_config_plans WHERE id=?", (plan_id,)).fetchone()
 
 
-    def create_test_config_plan(self, name: str, name_prefix: str, panel_server_id: int,
-                                 volume_mb: int, duration_hours: int) -> int:
+    def create_test_config_plan(self, name: str, name_prefix: str, panel_server_id, volume_mb: int,
+                                 duration_hours: int, provision_ssh_node_id=None, provision_ssh_protocol="ssh",
+                                 provision_target_config=None, base_users: int = 0, extra_user_price: int = 0,
+                                 max_users: int = 0, extra_panel_ids=(), extra_ssh_node_ids=(),
+                                 extra_panel_target_configs=None) -> int:
         with self._get_conn() as conn:
             row = conn.execute("SELECT COALESCE(MAX(sort_order), -1) AS m FROM test_config_plans").fetchone()
             cur = conn.execute(
                 "INSERT INTO test_config_plans (name, name_prefix, panel_server_id, volume_mb, "
-                "duration_hours, is_active, sort_order) VALUES (?, ?, ?, ?, ?, 1, ?)",
-                (name, name_prefix, panel_server_id, volume_mb, duration_hours, row["m"] + 1),
+                "duration_hours, is_active, sort_order, provision_ssh_node_id, provision_ssh_protocol, "
+                "provision_target_config, base_users, extra_user_price, max_users) "
+                "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)",
+                (name, name_prefix, panel_server_id or None, volume_mb, duration_hours, row["m"] + 1,
+                 provision_ssh_node_id or None, provision_ssh_protocol or "ssh",
+                 json.dumps(provision_target_config, ensure_ascii=False) if provision_target_config else None,
+                 int(base_users or 0), int(extra_user_price or 0), int(max_users or 0)),
             )
-            return cur.lastrowid
+            plan_id = cur.lastrowid
+        self.set_product_extra_targets(-plan_id, extra_panel_ids, extra_ssh_node_ids, extra_panel_target_configs)
+        return plan_id
 
 
     def update_test_config_plan(self, plan_id: int, **fields) -> None:
         """fields می‌تواند شامل هرکدام از ستون‌های test_config_plans باشد،
-        مثلاً update_test_config_plan(3, name=\"پلن یک‌ساعته\", is_active=0)."""
+        مثلاً update_test_config_plan(3, name=\"پلن یک‌ساعته\", is_active=0).
+        مقصدهای اضافه (چندپنلی/چندنودی) با کلیدهای extra_panel_ids، extra_ssh_node_ids و
+        extra_panel_target_configs جدا ذخیره می‌شوند."""
+        if "panel_server_id" in fields and "provision_target_config" not in fields:
+            current = self.get_test_config_plan(plan_id)
+            if current is not None and (current["panel_server_id"] or None) != (fields["panel_server_id"] or None):
+                fields["provision_target_config"] = None
+        extra_keys = ("extra_panel_ids", "extra_ssh_node_ids", "extra_panel_target_configs")
+        if any(k in fields for k in extra_keys):
+            self.set_product_extra_targets(
+                -int(plan_id), fields.get("extra_panel_ids") or (), fields.get("extra_ssh_node_ids") or (),
+                fields.get("extra_panel_target_configs"),
+            )
         if not fields:
             return
         allowed = {"name", "name_prefix", "panel_server_id", "volume_mb", "duration_hours",
-                   "is_active", "sort_order"}
+                   "is_active", "sort_order", "provision_ssh_node_id", "provision_ssh_protocol",
+                   "provision_target_config", "base_users", "extra_user_price", "max_users"}
         sets, values = [], []
         for k, v in fields.items():
             if k in allowed:
+                if k == "provision_target_config":
+                    v = json.dumps(v, ensure_ascii=False) if v else None
+                if k in ("panel_server_id", "provision_ssh_node_id"):
+                    v = v or None
                 sets.append(f"{k}=?")
                 values.append(v)
         if not sets:
@@ -1227,6 +1254,15 @@ class CatalogMixin:
     def delete_test_config_plan(self, plan_id: int) -> None:
         with self._get_conn() as conn:
             conn.execute("DELETE FROM test_config_plans WHERE id=?", (plan_id,))
+        self.clear_product_extra_targets(-int(plan_id))
+
+
+    def retag_custom_config(self, config_id: int, source: str, product_id=None) -> None:
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE custom_configs SET source=?, product_id=? WHERE id=?",
+                (source, product_id, int(config_id)),
+            )
 
 
     def toggle_test_config_plan(self, plan_id: int) -> None:

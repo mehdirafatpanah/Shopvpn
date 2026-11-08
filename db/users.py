@@ -248,6 +248,42 @@ class UsersMixin:
             return [r["telegram_id"] for r in rows]
 
 
+    _USER_HAS_TEST_SQL = (
+        "(u.test_used > 0 OR "
+        "EXISTS (SELECT 1 FROM test_configs t WHERE t.assigned_user_id=u.telegram_id) OR "
+        "EXISTS (SELECT 1 FROM custom_configs cc WHERE cc.user_id=u.telegram_id AND cc.source = 'test'))"
+    )
+
+    def get_user_ids_by_service_state(self, state: str):
+        """آیدی کاربران (غیربلاک) بر اساس وضعیت سرویس، برای منوی پیام همگانی.
+        همان منطق جستجوی کاربران پنل (search_users) را استفاده می‌کند تا عددها یکی باشد:
+        - active: حداقل یک سرویس فعال (بانک کانفیگ یا کانفیگ شخصی غیرتست).
+        - expired: سابقه‌ی سرویس دارد ولی الان هیچ سرویس فعالی ندارد.
+        - test_only: هیچ سرویس واقعی ندارد ولی کانفیگ تست گرفته.
+        - inactive: نه سرویس واقعی دارد و نه تست گرفته (هیچ‌وقت فعال نشده).
+        """
+        now = datetime.utcnow().isoformat()
+        params = []
+        if state == "active":
+            cond = self._USER_HAS_ACTIVE_SQL
+            params = [now, now]
+        elif state == "expired":
+            cond = f"{self._USER_HAS_ANY_SQL} AND NOT {self._USER_HAS_ACTIVE_SQL}"
+            params = [now, now]
+        elif state == "test_only":
+            cond = f"NOT {self._USER_HAS_ANY_SQL} AND {self._USER_HAS_TEST_SQL}"
+        elif state == "inactive":
+            cond = f"NOT {self._USER_HAS_ANY_SQL} AND NOT {self._USER_HAS_TEST_SQL}"
+        else:
+            raise ValueError(f"unknown service state: {state}")
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                f"SELECT u.telegram_id AS uid FROM users u WHERE u.is_blocked=0 AND {cond}",
+                params,
+            ).fetchall()
+            return [r["uid"] for r in rows]
+
+
     def get_all_user_ids(self):
         with self._get_conn() as conn:
             rows = conn.execute("SELECT telegram_id FROM users WHERE is_blocked=0").fetchall()

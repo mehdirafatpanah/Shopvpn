@@ -273,12 +273,18 @@ class DatabaseBase:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
                     name_prefix TEXT NOT NULL DEFAULT 'test',
-                    panel_server_id INTEGER NOT NULL REFERENCES panel_servers(id),
+                    panel_server_id INTEGER REFERENCES panel_servers(id),
                     volume_mb INTEGER NOT NULL DEFAULT 1024,
                     duration_hours INTEGER NOT NULL DEFAULT 24,
                     is_active INTEGER DEFAULT 1,
                     sort_order INTEGER DEFAULT 0,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    provision_ssh_node_id INTEGER,
+                    provision_ssh_protocol TEXT DEFAULT 'ssh',
+                    provision_target_config TEXT,
+                    base_users INTEGER DEFAULT 0,
+                    extra_user_price INTEGER DEFAULT 0,
+                    max_users INTEGER DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_test_plans_active ON test_config_plans(is_active);
 
@@ -1796,7 +1802,47 @@ class DatabaseBase:
         return column in cols
 
 
+    TEST_PLAN_PRODUCT_COLUMNS = (
+        ("provision_ssh_node_id", "INTEGER"),
+        ("provision_ssh_protocol", "TEXT DEFAULT 'ssh'"),
+        ("provision_target_config", "TEXT"),
+        ("base_users", "INTEGER DEFAULT 0"),
+        ("extra_user_price", "INTEGER DEFAULT 0"),
+        ("max_users", "INTEGER DEFAULT 0"),
+    )
+
+    def _migrate_test_config_plans(self, conn):
+        if not self._column_exists(conn, "test_config_plans", "id"):
+            return
+        info = {r["name"]: r for r in conn.execute("PRAGMA table_info(test_config_plans)").fetchall()}
+        if info["panel_server_id"]["notnull"]:
+            old_cols = ["id", "name", "name_prefix", "panel_server_id", "volume_mb", "duration_hours",
+                        "is_active", "sort_order", "created_at"]
+            conn.execute("DROP TABLE IF EXISTS test_config_plans_new")
+            conn.execute(
+                "CREATE TABLE test_config_plans_new ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, "
+                "name_prefix TEXT NOT NULL DEFAULT 'test', "
+                "panel_server_id INTEGER REFERENCES panel_servers(id), "
+                "volume_mb INTEGER NOT NULL DEFAULT 1024, duration_hours INTEGER NOT NULL DEFAULT 24, "
+                "is_active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0, "
+                "created_at TEXT DEFAULT CURRENT_TIMESTAMP, "
+                "provision_ssh_node_id INTEGER, provision_ssh_protocol TEXT DEFAULT 'ssh', "
+                "provision_target_config TEXT, base_users INTEGER DEFAULT 0, "
+                "extra_user_price INTEGER DEFAULT 0, max_users INTEGER DEFAULT 0)"
+            )
+            cols = ", ".join(old_cols)
+            conn.execute(f"INSERT INTO test_config_plans_new ({cols}) SELECT {cols} FROM test_config_plans")
+            conn.execute("DROP TABLE test_config_plans")
+            conn.execute("ALTER TABLE test_config_plans_new RENAME TO test_config_plans")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_test_plans_active ON test_config_plans(is_active)")
+            return
+        for col, ddl in self.TEST_PLAN_PRODUCT_COLUMNS:
+            if col not in info:
+                conn.execute(f"ALTER TABLE test_config_plans ADD COLUMN {col} {ddl}")
+
     def _migrate_columns(self, conn):
+        self._migrate_test_config_plans(conn)
         if self._column_exists(conn, "product_extra_targets", "id") and not self._column_exists(conn, "product_extra_targets", "target_config"):
             conn.execute("ALTER TABLE product_extra_targets ADD COLUMN target_config TEXT")
 
