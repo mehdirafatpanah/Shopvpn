@@ -156,7 +156,13 @@ const ICONS = {
 };
 const svg = (name, cls = '') => `<svg class="icon ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>`;
 const fmt = n => (n === null || n === undefined) ? '—' : Number(n).toLocaleString('fa-IR');
-const fmtDate = iso => iso ? new Date(iso.replace(' ', 'T') + (iso.includes('Z') ? '' : 'Z')).toLocaleString('fa-IR') : '—';
+const fmtDate = iso => {
+  if (!iso) return '—';
+  const d = new Date(iso.replace(' ', 'T') + (iso.includes('Z') ? '' : 'Z'));
+  if (isNaN(d)) return '—';
+  const o = { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false };
+  return d.toLocaleString('fa-IR', o).replace(/[,،]/g, '').replace(/\s+/g, ' ');
+};
 // برای تاریخ‌های خالص بدون ساعت (مثل start_date/end_date بازه‌ی آمار که به
 // شکل 'YYYY-MM-DD' میلادی از سرور میاد) — به تاریخ شمسی تبدیل می‌کنه.
 const fmtDateOnly = iso => {
@@ -521,7 +527,12 @@ function applyResellerTierChrome() {
 
 /* ---- وضعیت منو: گروه‌های جمع‌شده + عبارت جستجو ---- */
 let NAV_COLLAPSED = new Set();
-try { NAV_COLLAPSED = new Set(JSON.parse(localStorage.getItem('admin_nav_collapsed') || '[]')); } catch (e) {}
+try {
+  const _savedCollapsed = localStorage.getItem('admin_nav_collapsed');
+  NAV_COLLAPSED = _savedCollapsed === null
+    ? new Set(NAV_GROUPS.map(g => g.id).filter(id => id !== 'overview'))
+    : new Set(JSON.parse(_savedCollapsed || '[]'));
+} catch (e) {}
 let NAV_QUERY = '';
 function saveNavCollapsed() {
   try { localStorage.setItem('admin_nav_collapsed', JSON.stringify([...NAV_COLLAPSED])); } catch (e) {}
@@ -4309,9 +4320,9 @@ async function renderCatalog() {
       <tbody>${categories.map(c => `<tr>
         <td>${catIndentHtml(c)}${esc(c.name)}</td>
         <td>${c.is_active ? '<span class="badge badge-approved">فعال</span>' : '<span class="badge badge-rejected">غیرفعال</span>'}</td>
-        <td>${catOrderButtonsHtml(c, categories)}
+        <td><div class="row-actions">${catOrderButtonsHtml(c, categories)}
         <button class="btn btn-sm" data-toggle-cat="${c.id}">${c.is_active ? 'غیرفعال کن' : 'فعال کن'}</button>
-        <button class="btn btn-danger btn-sm" data-del-cat="${c.id}">حذف</button></td>
+        <button class="btn btn-danger btn-sm" data-del-cat="${c.id}">حذف</button></div></td>
       </tr>`).join('') || '<tr><td colspan="3" class="empty-state">دسته‌بندی‌ای نیست</td></tr>'}</tbody></table></div></div>`;
     $('#add-cat').addEventListener('click', () => openCategoryCreateModal(categories));
     $$('[data-toggle-cat]', body).forEach(b => b.addEventListener('click', async () => {

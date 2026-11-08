@@ -2756,3 +2756,162 @@ html:not([data-theme="bento"]):not([data-theme="cyberpunk"]):not([data-theme="st
 .palette-chip:hover{ transform:translateY(-1px); border-color:var(--text); }
 .palette-chip.active{ border-color:var(--text); box-shadow:0 0 0 2px var(--surface), 0 0 0 4px var(--text); }
 .palette-chip i{ width:26px; height:26px; border-radius:50%; flex-shrink:0; }
+
+
+/* ====================================================================
+   layout.v2 — لایه‌ی یکپارچه‌سازی چیدمان پنل (آخرین بخش فایل؛ اولویت با ترتیب)
+   تمام قواعد با کمترین specificity نوشته شده تا استایل اختصاصی هر تم دست‌نخورده بماند.
+   ==================================================================== */
+:root{
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px; --sp-6:32px;
+  --ctl-h:40px; --ctl-h-sm:32px; --content-max:1360px;
+}
+
+/* ---------- ۱) قالب صفحه: عرض، فاصله‌ی عمودی ثابت بین بلوک‌ها ---------- */
+.content{
+  width:100%; max-width:var(--content-max); margin-inline:auto; box-sizing:border-box;
+  padding:var(--sp-5) var(--sp-5) 72px;
+  display:flex; flex-direction:column; gap:var(--sp-4);
+}
+.content > *{ margin-block:0 !important; flex-shrink:0; min-width:0; }
+.content > .tabs, .content > .section-nav{ margin-block:0 !important; }
+
+/* ---------- ۲) کنترل‌ها: ارتفاع یکسان تا لیبل‌ها و دکمه‌ها هم‌تراز شوند ---------- */
+.input, select.input,
+.field input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file]),
+.field select{
+  box-sizing:border-box; height:var(--ctl-h); padding-block:0; line-height:normal;
+}
+input[type=date].input, input[type=time].input, input[type=datetime-local].input{ padding-block:0; }
+.field select, select.input{ padding-inline:14px; }
+.field textarea, textarea.input{ box-sizing:border-box; line-height:1.7; min-height:96px; resize:vertical; }
+.field select{
+  background:var(--surface-2); border:1px solid var(--border); border-radius:var(--radius-sm);
+  color:var(--text); font-size:14px; outline:none;
+}
+.field > span{ line-height:1.5; }
+.btn{ min-height:var(--ctl-h); }
+.btn-sm{ min-height:var(--ctl-h-sm); }
+.btn-xs{ min-height:24px; }
+td .btn, th .btn, .card-head .btn-sm{ min-height:var(--ctl-h-sm); }
+
+/* ---------- ۳) نوار فیلتر/ابزار: یک الگو برای همه‌ی صفحه‌ها ---------- */
+.toolbar, .filter-bar{
+  display:flex; flex-wrap:wrap; align-items:flex-end; gap:var(--sp-3);
+}
+.toolbar > .field, .filter-bar > .field{ min-width:150px; flex:0 1 190px; }
+.toolbar > .field.grow, .filter-bar > .field.grow{ flex:1 1 240px; }
+.card > div[style*="align-items:end"]{ gap:var(--sp-3) !important; }
+.card > div[style*="align-items:end"] > .field{ min-width:0 !important; flex:0 1 190px; }
+.card > div[style*="align-items:end"] > .field:first-child{ flex:1 1 260px; }
+.card > div[style*="align-items:end"] > .btn{ flex:0 0 auto; }
+
+/* ---------- ۴) تب‌ها و بخش‌ها ---------- */
+.tabs, .section-nav{ display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-2); }
+.tab-btn{ min-height:var(--ctl-h-sm); display:inline-flex; align-items:center; justify-content:center; padding:0 var(--sp-4); }
+.tabs > .btn{ margin-inline-start:auto; }
+
+/* ---------- ۵) کارت‌ها ---------- */
+.card{ box-sizing:border-box; min-width:0; }
+.card-head{ min-height:var(--ctl-h-sm); margin-bottom:var(--sp-4); }
+.card-head h3{ line-height:1.5; }
+.card-sub{ line-height:1.6; }
+.grid{ gap:var(--sp-4); align-items:stretch; }
+.grid > .card{ height:100%; }
+.grid-2 > *, .grid-3 > *, .grid-4 > *{ min-width:0; }
+
+/* ---------- ۶) جدول‌ها ---------- */
+.table-wrap{ margin:0; padding:0; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+table{ table-layout:auto; }
+thead th, tbody td{ padding:var(--sp-3) var(--sp-3); vertical-align:middle; }
+thead th{ text-align:start; white-space:nowrap; line-height:1.4; }
+tbody td{ line-height:1.6; word-break:break-word; }
+tbody td.mono, tbody td .mono{ white-space:nowrap; }
+tbody tr:last-child td{ border-bottom:0; }
+tbody td:last-child:has(.btn){ white-space:nowrap; }
+tbody td:last-child .btn + .btn{ margin-inline-start:var(--sp-2); }
+td .btn + .btn, td .btn + .badge, td .badge + .btn{ margin-inline-start:var(--sp-2); }
+.table-wrap > table{ min-width:640px; }
+.empty-state{ padding:48px var(--sp-5); }
+
+/* ---------- ۷) فرم‌ها و مودال‌ها ---------- */
+.form-grid{ display:flex; flex-direction:column; gap:var(--sp-3); }
+.form-row{ display:flex; flex-wrap:wrap; gap:var(--sp-3); }
+.form-row > *{ flex:1 1 200px; min-width:0; }
+.modal{ box-sizing:border-box; max-height:90vh; }
+.modal-actions{
+  display:flex; flex-wrap:wrap; gap:var(--sp-2); margin-top:var(--sp-5);
+  position:sticky; bottom:calc(-1 * var(--sp-5)); padding-block:var(--sp-3);
+  background:var(--surface); border-top:1px solid var(--border-soft);
+}
+.modal-actions .btn{ flex:1 1 120px; }
+
+/* ---------- ۸) سایدبار ---------- */
+.sidebar{ width:260px; padding:var(--sp-4) var(--sp-3); }
+.nav-tunnel{ scrollbar-width:thin; padding-inline-end:2px; }
+.nav-item{ min-height:38px; padding-block:6px; margin-bottom:1px; }
+.nav-item > span:not(.nav-icon):not(.dot-count){ line-height:1.4; }
+.nav-section{
+  font-size:11.5px; letter-spacing:0; text-transform:none; font-weight:700;
+  color:var(--text-muted); margin:var(--sp-4) var(--sp-3) var(--sp-2); padding-top:var(--sp-3);
+}
+.nav-sublist{ margin-bottom:var(--sp-2); }
+.nav-sub{ min-height:30px; }
+.sidebar-footer{ margin-top:var(--sp-2); padding-top:var(--sp-3); }
+
+/* ---------- ۹) نوار بالا ---------- */
+.topbar{ padding:var(--sp-3) var(--sp-5); min-height:64px; box-sizing:border-box; gap:var(--sp-4); }
+.topbar-actions{ gap:var(--sp-2); flex-wrap:nowrap; }
+.topbar-actions .btn{ min-height:var(--ctl-h-sm); padding-block:0; }
+.page-heading h2{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+/* ---------- ۱۰) دسترس‌پذیری ---------- */
+:where(.btn, .tab-btn, .nav-item, .nav-sub, .input, select, input, textarea, [role="button"]):focus-visible{
+  outline:2px solid var(--primary); outline-offset:2px;
+}
+@media (hover:none){ .btn-sm, .tab-btn, .nav-sub{ min-height:40px; } }
+
+/* ---------- ۱۱) ریسپانسیو ---------- */
+@media (max-width:1100px){
+  .content{ padding-inline:var(--sp-4); }
+  .grid > .card{ height:auto; }
+}
+@media (max-width:960px){
+  .topbar{ padding-inline:var(--sp-4); }
+  .sidebar{ width:min(86vw, 300px); }
+}
+@media (max-width:640px){
+  .content{ padding:var(--sp-4) var(--sp-3) 88px; gap:var(--sp-3); }
+  .card{ padding:var(--sp-4); }
+  .tabs{ flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; padding-bottom:2px; }
+  .tabs::-webkit-scrollbar{ display:none; }
+  .tab-btn, .tabs > .btn{ flex-shrink:0; }
+  .toolbar > .field, .filter-bar > .field,
+  .card > div[style*="align-items:end"] > .field{ flex:1 1 100% !important; }
+  .card > div[style*="align-items:end"] > .btn{ flex:1 1 calc(50% - 6px); }
+  .form-row > *{ flex-basis:100%; }
+  .modal{ padding:var(--sp-4); max-height:94vh; }
+  .modal-backdrop{ padding:var(--sp-3); align-items:flex-end; }
+  .topbar-clock{ display:none; }
+  .table-wrap > table{ min-width:560px; }
+}
+td [data-history]{ min-height:24px; padding:2px 8px; font-size:11.5px; font-family:var(--font-body); margin-inline-start:var(--sp-2); }
+
+/* ---------- منو و دسته‌بندی‌ها ---------- */
+.row-actions{ display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-2); }
+.row-actions [data-cat-up], .row-actions [data-cat-down]{ min-width:32px; padding-inline:0; }
+.row-actions [data-cat-down]{ margin-inline-start:-6px; }
+.row-actions [data-add-subcat]{ margin-inline-start:var(--sp-3); }
+.row-actions [data-del-cat]{ margin-inline-start:auto; }
+.row-actions .btn:disabled{ opacity:.35; cursor:not-allowed; }
+html:not([data-theme="bento"]):not([data-theme="cyberpunk"]):not([data-theme="streetops"]) .nav-group-head{
+  margin:var(--sp-1) 0 0; padding:8px var(--sp-3); border-top:0; border-radius:var(--radius-xs);
+  color:var(--text-muted); font-size:12px; font-weight:700;
+}
+html:not([data-theme="bento"]):not([data-theme="cyberpunk"]):not([data-theme="streetops"]) .nav-group-head:hover{ background:var(--surface-hi); }
+html[data-theme="enterprise"] .nav-group-head{ color:#AAB5C9; }
+html[data-theme="enterprise"] .nav-group-head:not(.is-collapsed){ color:#EAF0FF; }
+html[data-theme="enterprise"] .nav-group-head:hover{ background:rgba(255,255,255,.06); color:#fff; }
+html:not([data-theme="bento"]):not([data-theme="cyberpunk"]):not([data-theme="streetops"]) .nav-group-head + .nav-item{ margin-top:2px; }
+.nav-tunnel{ padding-bottom:var(--sp-4); mask-image:linear-gradient(to bottom,#000 calc(100% - 20px),transparent); -webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 20px),transparent); }
+/* ==================== /layout.v2 ==================== */
