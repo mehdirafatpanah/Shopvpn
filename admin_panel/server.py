@@ -2624,6 +2624,27 @@ def api_system_jobs(admin=Depends(require_permission("system"))):
     }
 
 
+# -------------------------------------------------------------------- cron --
+
+
+@app.get("/api/cron/status")
+def api_cron_status(admin=Depends(require_permission("system")), _m=Depends(require_main_tenant)):
+    """نتیجه‌ی آخرین اجرای کرون ساعتی (چک همه‌ی سیستم‌ها)؛ فقط‌خواندنی."""
+    import cron_checks
+    state = cron_checks.load_state(db)
+    request = db.get_setting(cron_checks.REQUEST_KEY, "") or ""
+    state["requested"] = bool(request) and request != state.get("handled_request", "")
+    return state
+
+
+@app.post("/api/cron/run")
+def api_cron_run(admin=Depends(require_permission("system")), _m=Depends(require_main_tenant)):
+    """درخواست اجرای فوری؛ حلقه‌ی کرون در پردازش بات ظرف چند ثانیه آن را اجرا می‌کند."""
+    import cron_checks
+    cron_checks.request_run(db)
+    return {"ok": True}
+
+
 # ------------------------------------------------------------------ backup --
 
 @app.get("/api/system/backup/status")
