@@ -137,6 +137,7 @@ const ICONS = {
   panels: '<rect x="2" y="3" width="20" height="7" rx="2"></rect><rect x="2" y="14" width="20" height="7" rx="2"></rect><line x1="6" y1="6.5" x2="6.01" y2="6.5"></line><line x1="6" y1="17.5" x2="6.01" y2="17.5"></line>',
   settings: '<circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"></path>',
   logs: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="8" y1="13" x2="16" y2="13"></line><line x1="8" y1="17" x2="16" y2="17"></line>',
+  database: '<ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"></path>',
   system: '<ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>',
   webadmins: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"></path>',
   account: '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle>',
@@ -426,6 +427,7 @@ const NAV_GROUPS = [
     { key: 'subscription-page', label: 'تنظیمات صفحه اشتراک', icon: 'link', role: 'settings' },
   ] },
   { id: 'admin', label: 'مدیریت و امنیت', items: [
+    { key: 'database', label: 'مدیریت دیتابیس', icon: 'database', role: 'database' },
     { key: 'webadmins', label: 'کاربران پنل', icon: 'webadmins', role: 'owner' },
     { key: 'tgadmins', label: 'ادمین‌های ربات', icon: 'send', role: 'owner' },
     { key: 'logs', label: 'لاگ فعالیت ادمین‌ها', icon: 'logs', role: 'system' },
@@ -483,6 +485,7 @@ function hasPerm(perm) {
   return ME.role === 'owner' || (ME.permissions || []).includes(perm);
 }
 function canSee(navRole) {
+  if (navRole === 'database') return ME?.role === 'owner' && !ME?.tenant;
   const rp = ME?.reseller_profile;
   if (navRole === 'reseller-self') return !!(ME?.tenant && rp);
   if (ME?.tenant && rp) {
@@ -1156,6 +1159,7 @@ async function renderPage(tab) {
   setContent('<div class="loading">در حال بارگذاری...</div>');
   try {
     switch (tab) {
+      case 'database': return await renderDatabaseManager();
       case 'dashboard': return await renderDashboard();
       case 'analytics': return await renderAnalytics();
       case 'reseller-self': return await renderResellerSelfService();
@@ -1185,6 +1189,71 @@ async function renderPage(tab) {
       case 'account': return await renderAccount();
     }
   } catch (e) { handleErr(e); setContent(`<div class="empty-state">${esc(e.message)}</div>`); }
+}
+
+
+/* ================================================ database manager === */
+async function renderDatabaseManager() {
+  const api = async (url, opts={}) => {
+    const r = await fetch(url, {credentials:'same-origin', headers:{'Content-Type':'application/json'}, ...opts});
+    const d = await r.json().catch(()=>({}));
+    if (!r.ok) throw new Error(d.detail || 'درخواست ناموفق بود');
+    return d;
+  };
+  setContent(`<section class="hero"><div><h2>🗄️ مدیریت دیتابیس</h2>
+    <p>مدیریت امن دیتابیس بات اصلی و نمایندگی‌ها · فقط سوپرادمین</p></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><select id="db-tenant" class="field"><option value="">بات اصلی</option></select>
+    <button class="btn btn-primary" id="db-backup">⬇️ دانلود بکاپ کامل</button></div></section>
+    <div class="db-layout" style="display:grid;grid-template-columns:minmax(210px, .8fr) minmax(0,2.2fr);gap:16px;margin-top:16px">
+      <section class="card"><h3>جداول دیتابیس</h3><div id="db-tables" class="db-table-list">در حال بارگذاری...</div>
+        <hr><button class="btn btn-ghost btn-block" id="db-audit">📜 لاگ تغییرات</button>
+        <button class="btn btn-ghost btn-block" id="db-vacuum">🧹 بهینه‌سازی (VACUUM)</button></section>
+      <section class="card"><div id="db-view"><div class="empty-state">برای مشاهده اطلاعات، یک جدول را انتخاب کنید.</div></div></section>
+    </div>
+    <section class="card" style="margin-top:16px"><h3>کنسول SQL فقط‌خواندنی</h3>
+      <p class="muted">فقط SELECT مجاز است؛ حداکثر ۵۰۰ ردیف و ۲ ثانیه زمان اجرا.</p>
+      <textarea id="db-sql" rows="4" dir="ltr" style="width:100%;font-family:monospace" placeholder="SELECT name FROM sqlite_master WHERE type='table'"></textarea>
+      <button class="btn btn-primary" id="db-run-sql">اجرای کوئری</button><div id="db-sql-result"></div></section>`);
+  const tablesEl=$('#db-tables'), view=$('#db-view');
+  let selected='', selectedTenant='', currentPage=1, currentSearch='', currentSort='', currentDir='asc', currentData=null;
+  const escDb=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  async function loadTables(){
+    const d=await api('/api/database/tables?tenant='+encodeURIComponent(selectedTenant));
+    tablesEl.innerHTML=d.tables.map(t=>`<button class="btn btn-ghost btn-block db-table-btn" data-table="${escDb(t.name)}" style="display:flex;justify-content:space-between"><span>${escDb(t.name)}</span><b>${Number(t.rows).toLocaleString()}</b></button>`).join('') || 'جدولی وجود ندارد';
+    $$('.db-table-btn',tablesEl).forEach(b=>b.onclick=()=>{selected=b.dataset.table;currentPage=1;loadTable();});
+  }
+  async function loadTable(){
+    if(!selected)return;
+    const q=new URLSearchParams({page:currentPage,page_size:50,search:currentSearch,sort:currentSort,direction:currentDir,tenant:selectedTenant});
+    const [d, schema]=await Promise.all([api(`/api/database/table/${encodeURIComponent(selected)}?${q}`),api(`/api/database/schema/${encodeURIComponent(selected)}?tenant=${encodeURIComponent(selectedTenant)}`)]);
+    currentData=d;
+    const pkCols=schema.columns.filter(c=>c.pk).map(c=>c.name);
+    const headers=d.columns.map(c=>`<th><button class="btn btn-ghost btn-sm" data-sort="${escDb(c)}">${escDb(c)} ↕</button></th>`).join('');
+    const rows=d.rows.map(row=>`<tr>${d.columns.map(c=>`<td>${escDb(typeof row[c]==='object'?JSON.stringify(row[c]):row[c])}</td>`).join('')}
+      <td>${pkCols.length && !pkCols.some(k=>/(token|secret|password|passwd|hash|config|credential|private.?key|api.?key)/i.test(k))?`<button class="btn btn-ghost btn-sm" data-edit='${escDb(JSON.stringify(row))}' data-pk='${escDb(JSON.stringify(Object.fromEntries(pkCols.map(k=>[k,row[k]]))))}'>ویرایش</button> <button class="btn btn-danger btn-sm" data-delete='${escDb(JSON.stringify(Object.fromEntries(pkCols.map(k=>[k,row[k]]))))}'>حذف</button>`:'—'}</td></tr>`).join('');
+    view.innerHTML=`<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;justify-content:space-between"><div><h3>${escDb(selected)}</h3><small>${d.total.toLocaleString()} ردیف</small></div>
+      <div><button class="btn btn-ghost btn-sm" id="db-schema">ساختار و ایندکس‌ها</button>
+      <button class="btn btn-ghost btn-sm" id="db-export-json">JSON</button><button class="btn btn-ghost btn-sm" id="db-export-csv">CSV</button><button class="btn btn-ghost btn-sm" id="db-import-json">ورود JSON</button><input id="db-import-file" type="file" accept=".json,application/json" hidden></div></div>
+      <input id="db-search" placeholder="جستجو در ستون‌های غیرحساس..." value="${escDb(currentSearch)}" style="width:100%;margin:12px 0">
+      <div style="overflow:auto"><table class="data-table"><thead><tr>${headers}<th>عملیات</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:12px"><button class="btn btn-ghost" id="db-prev" ${currentPage<=1?'disabled':''}>قبلی</button><span>صفحه ${d.page} · ${Math.max(1,Math.ceil(d.total/d.page_size))}</span><button class="btn btn-ghost" id="db-next" ${currentPage*d.page_size>=d.total?'disabled':''}>بعدی</button></div>`;
+    $('#db-search').onkeydown=e=>{if(e.key==='Enter'){currentSearch=e.target.value;currentPage=1;loadTable();}};
+    $$('[data-sort]',view).forEach(b=>b.onclick=()=>{if(currentSort===b.dataset.sort)currentDir=currentDir==='asc'?'desc':'asc';else{currentSort=b.dataset.sort;currentDir='asc';}loadTable();});
+    $('#db-prev').onclick=()=>{currentPage--;loadTable();}; $('#db-next').onclick=()=>{currentPage++;loadTable();};
+    $('#db-schema').onclick=()=>openModal('ساختار جدول',`<pre dir="ltr">${escDb(JSON.stringify(schema,null,2))}</pre>`);
+    $('#db-export-json').onclick=()=>window.open(`/api/database/export/${encodeURIComponent(selected)}?format=json&tenant=${encodeURIComponent(selectedTenant)}`,'_blank');
+    $('#db-export-csv').onclick=()=>window.open(`/api/database/export/${encodeURIComponent(selected)}?format=csv&tenant=${encodeURIComponent(selectedTenant)}`,'_blank');
+    $('#db-import-json').onclick=()=>$('#db-import-file').click();
+    $('#db-import-file').onchange=async e=>{const file=e.target.files?.[0];if(!file)return;try{const parsed=JSON.parse(await file.text());const rows=Array.isArray(parsed)?parsed:parsed.rows;if(!Array.isArray(rows))throw new Error('ساختار JSON باید آرایه ردیف‌ها یا دارای فیلد rows باشد');if(!confirm(`ورود ${rows.length} ردیف به جدول ${selected}؟ ابتدا بکاپ گرفته می‌شود.`))return;const result=await api(`/api/database/import/${encodeURIComponent(selected)}`,{method:'POST',body:JSON.stringify({rows,tenant:selectedTenant})});toast(`${result.imported} ردیف وارد شد`);await loadTable();await loadTables();}catch(err){toast(err.message||'ورود ناموفق بود');}finally{e.target.value='';}};
+    $$('[data-edit]',view).forEach(b=>b.onclick=async()=>{const row=JSON.parse(b.dataset.edit), pk=JSON.parse(b.dataset.pk);const editable=d.columns.filter(c=>!pkCols.includes(c)&&!/(token|secret|password|passwd|hash|config|credential|private.?key|api.?key)/i.test(c));const fields=editable.map(c=>`<label class="field"><span>${escDb(c)}</span><textarea data-col="${escDb(c)}" rows="2">${escDb(row[c]??'')}</textarea></label>`).join('');openModal('ویرایش ردیف',`${fields}<p class="muted">قبل از ذخیره، بکاپ کامل دیتابیس گرفته می‌شود.</p><button class="btn btn-primary" id="db-save-row">ذخیره تغییرات</button>`,body=>{$('#db-save-row',body).onclick=async()=>{const values={};$$('[data-col]',body).forEach(x=>{if(x.value!==String(row[x.dataset.col]??''))values[x.dataset.col]=x.value;});if(!Object.keys(values).length)return toast('تغییری انجام نشده');const result=await api('/api/database/row',{method:'POST',body:JSON.stringify({table:selected,pk,values,tenant:selectedTenant})});toast('تغییرات ذخیره شد؛ بکاپ: '+result.backup);await loadTable();};},{wide:true});});
+    $$('[data-delete]',view).forEach(b=>b.onclick=async()=>{if(!confirm('حذف این ردیف؟ قبل از تغییر بکاپ گرفته می‌شود.'))return;await api('/api/database/delete-row',{method:'POST',body:JSON.stringify({table:selected,pk:JSON.parse(b.dataset.delete),tenant:selectedTenant})});toast('ردیف حذف شد؛ بکاپ خودکار ایجاد شد');await loadTable();await loadTables();});
+  }
+  $('#db-backup').onclick=()=>window.location.href='/api/database/backup?tenant='+encodeURIComponent(selectedTenant);
+  $('#db-vacuum').onclick=async()=>{if(!confirm('ابتدا بکاپ کامل گرفته می‌شود. اجرای VACUUM ممکن است چند لحظه طول بکشد. ادامه می‌دهید؟'))return;const d=await api('/api/database/vacuum',{method:'POST',body:JSON.stringify({tenant:selectedTenant})});toast('بهینه‌سازی انجام شد؛ بکاپ: '+d.backup);};
+  $('#db-audit').onclick=async()=>{const d=await api('/api/database/audit?tenant='+encodeURIComponent(selectedTenant));openModal('لاگ تغییرات',`<pre>${escDb(JSON.stringify(d.rows,null,2))}</pre>`,null,{wide:true});};
+  $('#db-run-sql').onclick=async()=>{const box=$('#db-sql-result');box.textContent='در حال اجرا...';try{const d=await api('/api/database/query',{method:'POST',body:JSON.stringify({sql:$('#db-sql').value,tenant:selectedTenant})});box.innerHTML=`<pre dir="ltr" style="overflow:auto">${escDb(JSON.stringify(d,null,2))}</pre>`;}catch(e){box.textContent=e.message;}};
+  $('#db-tenant').onchange=e=>{selectedTenant=e.target.value;selected='';currentPage=1;loadTables();view.innerHTML='<div class="empty-state">یک جدول را انتخاب کنید.</div>';};
+  try{const t=await api('/api/database/tenants');$('#db-tenant').innerHTML=t.tenants.map(x=>`<option value="${escDb(x.id)}">${escDb(x.name)} · ${escDb(x.db)}</option>`).join('');await loadTables();}catch(e){tablesEl.textContent=e.message;}
 }
 
 /* =============================================== reseller self-service === */

@@ -2915,3 +2915,11 @@ html[data-theme="enterprise"] .nav-group-head:hover{ background:rgba(255,255,255
 html:not([data-theme="bento"]):not([data-theme="cyberpunk"]):not([data-theme="streetops"]) .nav-group-head + .nav-item{ margin-top:2px; }
 .nav-tunnel{ padding-bottom:var(--sp-4); mask-image:linear-gradient(to bottom,#000 calc(100% - 20px),transparent); -webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 20px),transparent); }
 /* ==================== /layout.v2 ==================== */
+
+
+/* Database manager responsive layout */
+@media (max-width: 760px) {
+  .db-layout { grid-template-columns: minmax(0, 1fr) !important; }
+  .db-layout .card { min-width: 0; }
+  #db-tenant { max-width: 100%; }
+}
