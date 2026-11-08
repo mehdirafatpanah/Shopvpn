@@ -933,6 +933,7 @@
     "💳 پرداخت و مالی": "💳 Payments & finance",
     "⚙️ سرویس‌های ویژه": "⚙️ Special services",
     "🛒 فروش و سرویس‌ها": "🛒 Sales & services",
+    "محتوای ربات": "Bot content",
     "🎁 رشد و تعامل": "🎁 Growth & engagement",
     "🔗 اشتراک اختصاصی": "🔗 Dedicated subscription",
     "🤖 هوش مصنوعی": "🤖 AI",

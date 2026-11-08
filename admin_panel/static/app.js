@@ -397,31 +397,33 @@ const NAV_GROUPS = [
     { key: 'tickets', label: 'تیکت‌ها', icon: 'tickets', role: 'any',
       subs: [['all', 'همه'], ['open', 'باز'], ['answered', 'پاسخ‌داده‌شده'], ['closed', 'بسته']] },
     { key: 'support', label: 'چت زنده', icon: 'support', role: 'any' },
+    { key: 'broadcast', label: 'پیام همگانی', icon: 'broadcast', role: 'broadcast' },
   ] },
   { id: 'marketing', label: 'محصولات و بازاریابی', items: [
     { key: 'catalog', label: 'محصولات و بانک کانفیگ', icon: 'catalog', role: 'catalog',
       subs: [['products', 'محصولات'], ['categories', 'دسته‌بندی‌ها']] },
-    { key: 'salessettings', label: 'تنظیمات فروش', icon: 'sliders', role: 'settings',
-      subs: [['referral', 'رفرال و جذب'], ['renewal', 'تمدید و نگهداشت'], ['access', 'تست، عضویت و موجودی']] },
-    { key: 'broadcast', label: 'پیام همگانی', icon: 'broadcast', role: 'broadcast' },
     { key: 'banners', label: 'بنرها', icon: 'banners', role: 'settings' },
-  ] },
-  { id: 'infra', label: 'شبکه و زیرساخت', items: [
-    { key: 'panels', label: 'پنل‌های VPN', icon: 'panels', role: 'panels' },
-    { key: 'ssh', label: 'نودها و سهمیه SSH', icon: 'terminal', role: 'panels' },
   ] },
   { id: 'partners', label: 'نمایندگی‌ها', items: [
     { key: 'resellers', label: 'مدیریت نمایندگی‌ها', icon: 'resellers', role: 'resellers',
       subs: [['bots', 'نماینده‌های بات'], ['credit', 'نمایندگی اعتباری'], ['commission', 'نمایندگی کمیسیونی'], ['requests', 'درخواست‌ها']] },
     { key: 'reseller_tiers', label: 'سطوح نمایندگی', icon: 'layers', role: 'resellers' },
   ] },
-  { id: 'botconfig', label: 'ربات و تنظیمات', items: [
-    { key: 'subscription-page', label: 'تنظیمات صفحه اشتراک', icon: 'link', role: 'settings' },
-    { key: 'settings', label: 'تنظیمات و برندینگ', icon: 'settings', role: 'settings',
-      subs: [['content', 'محتوا و متن‌ها'], ['payment', 'پرداخت و مالی'], ['sales', 'فروش و سرویس‌ها'], ['growth', 'رشد و تعامل'], ['sub', 'اشتراک اختصاصی'], ['ai', 'هوش مصنوعی'], ['system', 'سیستم و پایش'], ['mobile_app', 'اپ موبایل']] },
+  { id: 'infra', label: 'شبکه و زیرساخت', items: [
+    { key: 'panels', label: 'پنل‌های VPN', icon: 'panels', role: 'panels' },
+    { key: 'ssh', label: 'نودها و سهمیه SSH', icon: 'terminal', role: 'panels' },
+  ] },
+  { id: 'botcontent', label: 'محتوای ربات', items: [
     { key: 'buttons', label: 'دکمه‌های ربات', icon: 'buttons', role: 'settings' },
     { key: 'bottexts', label: 'متن‌های ربات', icon: 'bottexts', role: 'settings' },
     { key: 'languages', label: 'زبان‌ها', icon: 'globe', role: 'settings' },
+  ] },
+  { id: 'botconfig', label: 'تنظیمات', items: [
+    { key: 'settings', label: 'تنظیمات و برندینگ', icon: 'settings', role: 'settings',
+      subs: [['content', 'محتوا و متن‌ها'], ['payment', 'پرداخت و مالی'], ['sales', 'فروش و سرویس‌ها'], ['growth', 'رشد و تعامل'], ['sub', 'اشتراک اختصاصی'], ['ai', 'هوش مصنوعی'], ['system', 'سیستم و پایش'], ['mobile_app', 'اپ موبایل']] },
+    { key: 'salessettings', label: 'تنظیمات فروش', icon: 'sliders', role: 'settings',
+      subs: [['referral', 'رفرال و جذب'], ['renewal', 'تمدید و نگهداشت'], ['access', 'تست، عضویت و موجودی']] },
+    { key: 'subscription-page', label: 'تنظیمات صفحه اشتراک', icon: 'link', role: 'settings' },
   ] },
   { id: 'admin', label: 'مدیریت و امنیت', items: [
     { key: 'webadmins', label: 'کاربران پنل', icon: 'webadmins', role: 'owner' },
