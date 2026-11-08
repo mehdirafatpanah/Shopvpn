@@ -16,6 +16,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import extra_settings_schema as xs
+import keyboards as kb
 from i18n import tr
 
 SURFACE = "bot"
@@ -96,7 +97,11 @@ def _bounds(field):
 def register(router: Router, db, senior_admin_only, deny_mid, replace_admin_view):
 
     def _groups_view():
-        rows = [[_btn(tr(g["title"]), f"adm_xs_g:{g['id']}")] for g in _groups() if not g.get("bot_hidden_in_list")]
+        rows = [
+            [_btn(tr(g["title"]), f"adm_xs_g:{g['id']}")]
+            for g in _groups()
+            if not g.get("bot_hidden_in_list") and g["id"] not in kb.ADMIN_XS_GROUP_ITEMS
+        ]
         rows.append([_btn(tr("⬅️ بازگشت"), "adm_cat:management")])
         text = tr("🧩 تنظیمات تکمیلی\n\nیک گروه را انتخاب کن. همین گزینه‌ها در مینی‌اپ هم هستند.")
         return text, _kb(rows)
@@ -113,7 +118,10 @@ def register(router: Router, db, senior_admin_only, deny_mid, replace_admin_view
                 rows.append([_btn(("✅ " if on else "⬜ ") + _short(tr(f["label"])), f"adm_xs_t:{group['id']}:{i}")])
             else:
                 rows.append([_btn("✏️ " + _short(tr(f["label"])), f"adm_xs_e:{group['id']}:{i}")])
-        rows.append([_btn(tr("⬅️ بازگشت"), group.get("bot_back") or ENTRY_CB)])
+        mapped_item = kb.ADMIN_XS_GROUP_ITEMS.get(group["id"])
+        hub = kb.admin_hub_of_item(db, mapped_item) if mapped_item else None
+        back = group.get("bot_back") or (f"adm_cat:{hub}" if hub else ENTRY_CB)
+        rows.append([_btn(tr("⬅️ بازگشت"), back)])
         return "\n".join(lines), _kb(rows)
 
     async def _log(user_id, key, detail):

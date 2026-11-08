@@ -670,6 +670,10 @@ class AdminConfigSearch(StatesGroup):
     waiting_query = State()
 
 
+class AdminPanelSearch(StatesGroup):
+    waiting_query = State()
+
+
 class AdminSetPanelTemplate(StatesGroup):
     waiting_username = State()
 

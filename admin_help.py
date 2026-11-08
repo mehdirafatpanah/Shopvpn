@@ -15,15 +15,16 @@ _sections: dict = {}
 _cb_index: dict = {}
 
 CATEGORY_HELP = {
-    "daily": "این دسته برای کارهایی است که هر روز باید بررسی کنی: سفارش‌ها و شارژهای منتظر تایید، تیکت‌ها، نظرسنجی، پرداخت‌های درگاه‌ها و درخواست‌های نمایندگی.",
-    "products": "اینجا فروشگاه را می‌چینی: دسته‌بندی‌ها و محصولات، کانفیگ‌ها، کانفیگ تست، پاکسازی منقضی‌ها و کانال اعلان‌ها.",
-    "resellers": "مدیریت نماینده‌ها و مدل‌های مختلف نمایندگی و عضویت آن‌ها.",
-    "marketing": "ابزارهای فروش و جذب: تخفیف، گردونه، قرعه‌کشی، کش‌بک، هدیه، رفرال، پیام همگانی، عضویت اجباری، قوانین و پیام موقت.",
-    "finance": "تنظیم روش‌های پرداخت: کارت‌به‌کارت، درگاه‌ها، حداقل مبلغ‌ها، روش‌های پرداخت کیف پول و تغییر گروهی موجودی کیف پول.",
-    "alerts": "یادآوری‌ها و هشدارهایی که برای کاربران یا مدیران ارسال می‌شود: تمدید، حجم، اتصال، موجودی انبار و تنظیمات حساب.",
-    "access": "مدیریت ادمین‌ها و دسترسی‌ها، پشتیبانی، دستیارهای هوشمند، تلگرام بیزنس، ترجمه و زبان.",
-    "appearance": "ظاهر بات: متن و چیدمان دکمه‌ها، منوی اصلی، پیام خوش‌آمد، آموزش‌ها و رنگ‌بندی دکمه‌ها.",
-    "management": "گزارش و سیستم: آمار، جستجوی کاربر، بکاپ و بازیابی، گروه گزارش و تنظیمات ضداسپم.",
+    "products": "فروش روزمره: سفارش‌های منتظر تایید، نظرسنجی، دسته‌بندی‌ها و محصولات، کانفیگ‌ها، کانفیگ تست، قیمت‌گذاری تمدید، تخفیف‌ها، موجودی و نحوه‌ی تحویل.",
+    "finance": "همه‌ی چیزهای مربوط به پول: شارژهای منتظر تایید، کارت‌به‌کارت، درگاه‌های آنلاین، حداقل مبلغ و قوانین پرداخت، عملیات گروهی کیف پول، کش‌بک و لیست پرداخت‌های ثبت‌شده‌ی درگاه‌ها.",
+    "alerts": "نگه‌داشتن مشتری: یادآوری تمدید و اتمام حجم، هشدار اتصال، پیش‌بینی ریزش، تخفیف تمدید زودهنگام، پاکسازی منقضی‌ها و کانال اعلان‌ها.",
+    "infra": "زیرساخت سرویس: پنل‌های VPN، نودهای SSH، حجم نماینده، ساب اختصاصی، لینک‌ها و تشخیص نشت کانفیگ.",
+    "resellers": "درخواست‌های نمایندگی، مدیریت نماینده‌ها و مدل‌های مختلف نمایندگی و عضویت آن‌ها.",
+    "marketing": "رشد و جذب: زیرمجموعه‌گیری، هدیه‌ی عضویت، گردونه، قرعه‌کشی، کوییز، صندوق شانس، هدیه‌ی گروهی و کارت هدیه.",
+    "comms": "ارتباط با کاربران: پیام همگانی، پیام موقت، دیپ‌لینک و پست کانال، محتوای کانال با AI، عضویت اجباری، قوانین، پیام خوش‌آمد و آموزش‌ها.",
+    "support": "پشتیبانی و هوش مصنوعی: تیکت‌ها، دپارتمان‌ها، روش‌های ارتباط، متن‌های پشتیبانی، تلگرام بیزنس، یوزربات، دستیار پشتیبانی و AI.",
+    "appearance": "ظاهر ربات: چیدمان و متن دکمه‌ها، منوی اصلی، تنظیمات حساب کاربری، رنگ‌بندی، زبان و ترجمه خودکار.",
+    "management": "آمار فروش، مدیریت کاربران و جستجوی کانفیگ، ادمین‌ها، ضداسپم، بکاپ و بازیابی، آپدیت، سوئیچ سراسری، گروه گزارش و پایش سرورها.",
 }
 
 ITEM_HELP = {
@@ -950,20 +951,41 @@ def _build_index() -> None:
             _cb_index.setdefault(callback_data, (cat_key, item_key))
 
 
+_last_item: dict = {}
+_LAST_ITEM_TTL = 900
+
+
 def track(admin_id: int, callback_data: str) -> None:
     """Remember the top-level section the admin just opened."""
     data = callback_data or ""
     if data in ("adm_back_panel", "adm_exit_panel"):
         _sections.pop(admin_id, None)
+        _last_item.pop(admin_id, None)
+        return
+    if data.startswith("adm_hub:"):
+        _last_item.pop(admin_id, None)
+        cat_key = kb.resolve_admin_category(data.split(":", 1)[1])
+        _sections[admin_id] = ({"cb": data, "cat": cat_key, "item": None}, time.monotonic())
         return
     if data.startswith("adm_cat:"):
-        cat_key = data.split(":", 1)[1]
+        cat_key = kb.resolve_admin_category(data.split(":", 1)[1])
         _sections[admin_id] = ({"cb": data, "cat": cat_key, "item": None}, time.monotonic())
         return
     _build_index()
     hit = _cb_index.get(data)
     if hit:
         _sections[admin_id] = ({"cb": data, "cat": hit[0], "item": hit[1]}, time.monotonic())
+        _last_item[admin_id] = (hit[1], time.monotonic())
+
+
+def hub_for_back(admin_id: int, db, requested: str) -> str:
+    """هاب مقصد دکمه‌ی بازگشت قدیمی: هابِ آخرین آیتم بازشده، وگرنه کلید درخواستی."""
+    entry = _last_item.pop(admin_id, None)
+    if entry and time.monotonic() - entry[1] <= _LAST_ITEM_TTL:
+        hub = kb.admin_hub_of_item(db, entry[0])
+        if hub:
+            return hub
+    return kb.resolve_admin_category(requested)
 
 
 def current(admin_id: int):

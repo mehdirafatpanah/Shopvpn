@@ -97,6 +97,7 @@ from states import (
     AdminUserManage,
     AdminConfigManage,
     AdminConfigSearch,
+    AdminPanelSearch,
     AdminCreateWalletGift,
     AdminAddCategory,
     AdminAddProduct,
@@ -519,15 +520,52 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def cb_noop(call: CallbackQuery):
         await call.answer()
 
+    async def _show_admin_hub(call: CallbackQuery, state: FSMContext, cat_key: str):
+        await state.clear()
+        text = await asyncio.to_thread(kb.admin_hub_text, db, is_main_bot, cat_key)
+        await replace_admin_view(call, text, reply_markup=kb.admin_category_kb(db, is_main_bot, cat_key))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_hub:"))
+    async def cb_admin_hub(call: CallbackQuery, state: FSMContext):
+        if not admin_only(call.from_user.id):
+            return await call.answer()
+        await _show_admin_hub(call, state, kb.resolve_admin_category(call.data.split(":", 1)[1]))
+
     @router.callback_query(F.data.startswith("adm_cat:"))
     async def cb_admin_category(call: CallbackQuery, state: FSMContext):
         if not admin_only(call.from_user.id):
             return await call.answer()
-        await state.clear()
-        cat_key = call.data.split(":", 1)[1]
-        title = kb.admin_category_label(cat_key)
-        await replace_admin_view(call, f"{title}:", reply_markup=kb.admin_category_kb(db, is_main_bot, cat_key))
+        requested = call.data.split(":", 1)[1]
+        cat_key = admin_help.hub_for_back(call.from_user.id, db, requested)
+        admin_help.track(call.from_user.id, f"adm_hub:{cat_key}")
+        await _show_admin_hub(call, state, cat_key)
+
+    @router.callback_query(F.data == "adm_search")
+    async def cb_admin_panel_search(call: CallbackQuery, state: FSMContext):
+        if not admin_only(call.from_user.id):
+            return await call.answer()
+        await state.set_state(AdminPanelSearch.waiting_query)
+        await replace_admin_view(
+            call,
+            tr("🔎 کلمه‌ی مورد نظرت را بنویس (مثلاً: کارت، حجم، زبان، تخفیف):"),
+            reply_markup=kb.admin_back_kb("adm_back_panel"),
+        )
         await call.answer()
+
+    @router.message(AdminPanelSearch.waiting_query)
+    async def msg_admin_panel_search(message: Message, state: FSMContext):
+        if not admin_only(message.from_user.id):
+            return
+        result = await asyncio.to_thread(kb.admin_search_results, db, is_main_bot, message.text or "")
+        if result is None:
+            return await message.answer(
+                tr("چیزی پیدا نشد. کلمه‌ی دیگری امتحان کن:"),
+                reply_markup=kb.admin_back_kb("adm_back_panel"),
+            )
+        await state.clear()
+        text, markup = result
+        await message.answer(text, reply_markup=markup)
 
     # -------------------------------------------------------------------
     # مدیریت دسته‌بندی‌ها
