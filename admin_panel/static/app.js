@@ -1482,6 +1482,7 @@ async function renderDashboard() {
   if (root) root.insertAdjacentHTML('afterbegin', dashRangeBarHtml(s));
   wireDashRangeBar();
   appendExtraStatsPanel(s);
+  await appendCronPanel();
 }
 
 /* ------------------------------------------ dashboard: extra stats panel --- */
@@ -1525,6 +1526,88 @@ function appendExtraStatsPanel(s) {
     </div>
     ${low.length ? `<div class="card-sub" style="margin-top:12px;color:#FB7185">⚠️ ${settingsUiText('\u0645\u0648\u062c\u0648\u062f\u06cc \u06a9\u0645')}: ${low.map(p => esc(p.name)).join(', ')}</div>` : ''}
   `;
+  root.appendChild(el);
+}
+
+/* ------------------------------------------------- dashboard: cron panel --- */
+const CRON_STATUS_META = {
+  ok: { label: 'سالم', color: '#22C55E' },
+  warn: { label: 'هشدار', color: '#F59E0B' },
+  error: { label: 'خطا', color: '#EF4444' },
+  skip: { label: 'غیرفعال', color: '#94A3B8' },
+};
+function cronTime(iso) {
+  const d = iso ? new Date(iso) : null;
+  if (!d || isNaN(d)) return '—';
+  return d.toLocaleString('fa-IR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+}
+function cronPanelBody(st) {
+  const results = st.results || {};
+  const order = (st.order || Object.keys(results)).filter(k => results[k]);
+  const counts = { ok: 0, warn: 0, error: 0, skip: 0 };
+  order.forEach(k => { counts[results[k].status] = (counts[results[k].status] || 0) + 1; });
+  const badges = ['error', 'warn', 'ok', 'skip'].map(k => `
+    <span style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;background:${CRON_STATUS_META[k].color}22;color:${CRON_STATUS_META[k].color};font-size:12px">
+      <span style="width:8px;height:8px;border-radius:50%;background:${CRON_STATUS_META[k].color}"></span>${CRON_STATUS_META[k].label}: ${fmt(counts[k])}
+    </span>`).join('');
+  if (!order.length) {
+    return { badges: '', tiles: '<div class="card-sub" style="padding:12px 0">هنوز هیچ بررسی‌ای اجرا نشده. اجرای خودکار چند دقیقه بعد از بالا آمدن بات انجام می‌شود، یا «اجرای همین الان» را بزنید.</div>' };
+  }
+  const tiles = order.map(k => {
+    const r = results[k];
+    const m = CRON_STATUS_META[r.status] || CRON_STATUS_META.skip;
+    return `
+      <div style="border:1px solid var(--border,rgba(128,128,128,.2));border-inline-start:4px solid ${m.color};border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <strong>${esc(r.title)}</strong>
+          <span style="color:${m.color};font-size:12px;white-space:nowrap">${m.label}</span>
+        </div>
+        <div style="font-size:13px;line-height:1.7;word-break:break-word">${esc(r.message)}</div>
+        <div class="card-sub" style="font-size:11px">${cronTime(r.checked_at)}</div>
+      </div>`;
+  }).join('');
+  return { badges, tiles };
+}
+function renderCronPanel(el, st) {
+  const body = cronPanelBody(st);
+  el.innerHTML = `
+    <div class="card-head" style="flex-wrap:wrap;gap:10px">
+      <h3>کرون‌ها — بررسی ساعتی سیستم‌ها</h3>
+      <span class="card-sub">آخرین اجرا: ${cronTime(st.checked_at)}</span>
+      <button class="btn btn-sm" id="cron-run-btn" ${st.requested ? 'disabled' : ''}>${st.requested ? 'در حال اجرا...' : 'اجرای همین الان'}</button>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 14px">${body.badges}</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px">${body.tiles}</div>`;
+  const btn = $('#cron-run-btn', el);
+  if (btn) btn.onclick = () => runCronNow(el, btn);
+}
+async function runCronNow(el, btn) {
+  btn.disabled = true;
+  btn.textContent = 'در حال اجرا...';
+  const before = (await apiGet('/cron/status').catch(() => ({}))).checked_at || '';
+  try { await apiPost('/cron/run'); } catch (e) { handleErr(e); renderCronPanel(el, await apiGet('/cron/status')); return; }
+  for (let i = 0; i < 40; i++) {
+    await new Promise(r => setTimeout(r, 3000));
+    if (!el.isConnected) return;
+    let st;
+    try { st = await apiGet('/cron/status'); } catch (e) { continue; }
+    if (!st.requested && st.checked_at && st.checked_at !== before) { renderCronPanel(el, st); toast('بررسی‌ها انجام شد.'); return; }
+  }
+  toast('بات پاسخی نداد؛ مطمئن شوید سرویس بات در حال اجراست.', true);
+  try { renderCronPanel(el, await apiGet('/cron/status')); } catch (e) { /* ignore */ }
+}
+async function appendCronPanel() {
+  const root = content();
+  if (!root || !ME || ME.tenant || !hasPerm('system')) return;
+  let st;
+  try { st = await apiGet('/cron/status'); } catch (e) { return; }
+  const old = $('#cron-panel', root);
+  if (old) old.remove();
+  const el = document.createElement('div');
+  el.className = 'card';
+  el.id = 'cron-panel';
+  el.style.marginTop = '16px';
+  renderCronPanel(el, st);
   root.appendChild(el);
 }
 
