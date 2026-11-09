@@ -2384,7 +2384,7 @@ async function renderStore() {
       ${selected ? `<div class="list-row" id="store-back-row"><div class="list-row-main"><span class="list-row-ic">‹</span><div class="list-row-text"><span class="list-row-title">بازگشت ${parentOfSelected ? "به " + parentOfSelected.name : "به دسته‌بندی‌ها"}</span></div></div></div>` : `<div class="eyebrow">${title}</div>${buyGuideRow}${customConfigRow}`}
       ${selected ? `<div class="eyebrow">${title}</div>` : ""}
       ${visibleCategories.map((c) => `
-        <div class="list-row" data-cat="${c.id}">
+        <div class="list-row" data-cat="${c.id}" style="${c.button_color ? `background:${c.button_color};color:#fff;border-color:${c.button_color};` : ""}">
           <div class="list-row-main"><div class="list-row-ic">🏬</div><div class="list-row-text">
             <span class="list-row-title">${c.name}</span>
             <span class="list-row-sub">${c.products.length} محصول · ${categories.filter(x => Number(x.parent_id) === Number(c.id)).length} زیردسته</span>
@@ -5413,6 +5413,8 @@ async function renderAdminCategories(body) {
             <span class="hint-text" style="margin:0">${c.product_count} محصول ${c.is_active ? "" : "· غیرفعال"}</span>
           </div>
           <div class="admin-list-row-actions">
+            <input aria-label="رنگ دسته‌بندی" title="رنگ اختصاصی دسته‌بندی" type="color" data-color-cat="${c.id}" value="${/^#[0-9A-Fa-f]{6}$/.test(c.button_color || "") ? c.button_color : "#64748b"}" style="width:38px;height:34px;padding:2px;border:0;background:transparent;cursor:pointer" />
+            <button class="btn small outline" data-reset-color-cat="${c.id}" title="بازگشت به رنگ پیش‌فرض">↺</button>
             <button class="btn small outline" data-edit-cat="${c.id}">✏️</button>
             <button class="btn small outline" data-toggle-cat="${c.id}">${c.is_active ? "⛔️" : "✅"}</button>
             <button class="btn small outline danger" data-del-cat="${c.id}">🗑️</button>
@@ -5430,6 +5432,31 @@ async function renderAdminCategories(body) {
     el.onclick = () => {
       adminCatalogView = { level: "products", categoryId: Number(el.dataset.openCat), categoryName: el.dataset.catName };
       renderAdmin();
+    };
+  });
+  body.querySelectorAll("[data-color-cat]").forEach((el) => {
+    el.onchange = async () => {
+      try {
+        await api(`/api/admin/categories/${el.dataset.colorCat}`, { method: "PATCH", body: JSON.stringify({ button_color: el.value }) });
+        notify("رنگ دسته‌بندی ذخیره شد.");
+      } catch (e) { notify(e.message); }
+    };
+    el.oncontextmenu = async (event) => {
+      event.preventDefault();
+      try {
+        await api(`/api/admin/categories/${el.dataset.colorCat}`, { method: "PATCH", body: JSON.stringify({ button_color: null }) });
+        notify("رنگ پیش‌فرض فعال شد.");
+        renderAdmin();
+      } catch (e) { notify(e.message); }
+    };
+  });
+  body.querySelectorAll("[data-reset-color-cat]").forEach((el) => {
+    el.onclick = async () => {
+      try {
+        await api(`/api/admin/categories/${el.dataset.resetColorCat}`, { method: "PATCH", body: JSON.stringify({ button_color: null }) });
+        notify("رنگ پیش‌فرض فعال شد.");
+        renderAdmin();
+      } catch (e) { notify(e.message); }
     };
   });
   body.querySelectorAll("[data-edit-cat]").forEach((el) => {
