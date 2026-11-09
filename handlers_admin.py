@@ -11280,47 +11280,40 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await message.answer(tr("✅ ذخیره شد."), reply_markup=kb.admin_emoji_menu_kb(db))
 
     @router.callback_query(F.data.startswith("adm_catcolor:"))
-    async def cb_admin_catcolor(call: CallbackQuery, state: FSMContext):
+    async def cb_admin_catcolor(call: CallbackQuery):
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         cat_id = callback_id(call.data, "adm_catcolor")
-        if cat_id is None or (await asyncio.to_thread(db.get_category, cat_id)) is None:
+        cat = await asyncio.to_thread(db.get_category, cat_id) if cat_id else None
+        if cat is None:
             return await call.answer(tr("⚠️ این دسته‌بندی دیگر وجود ندارد."), show_alert=True)
-        cat = await asyncio.to_thread(db.get_category, cat_id)
-        current = cat["button_color"] if "button_color" in cat.keys() else None
-        await state.set_state(AdminCategoryColor.waiting_color)
-        await state.update_data(category_color_id=cat_id)
-        await safe_edit(
-            call,
-            tr("🎨 رنگ دکمه این دسته‌بندی/زیردسته را به صورت HEX ارسال کنید.\nمثال: #2563EB\nبرای بازگشت به رنگ پیش‌فرض بنویسید: پیش‌فرض")
-            + (f"\n\nرنگ فعلی: {current}" if current else "\n\nرنگ فعلی: پیش‌فرض"),
-            reply_markup=kb.admin_back_kb(f"adm_cat_open:{cat_id}"),
-        )
+        current = (cat["button_color"] if "button_color" in cat.keys() else None) or "default"
+        labels = [("default", "⚪ پیش‌فرض", None), ("primary", "🔵 آبی", "primary"),
+                  ("success", "🟢 سبز", "success"), ("danger", "🔴 قرمز", "danger")]
+        rows = [[InlineKeyboardButton(text=label + (" ✓" if current == value else ""),
+                                      callback_data=f"adm_catcolor_set:{cat_id}:{value}", style=style)]
+                for value, label, style in labels]
+        rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data=f"adm_cat_open:{cat_id}")])
+        await safe_edit(call, tr("🎨 رنگ دکمه این دسته‌بندی/زیردسته را انتخاب کنید.\nفقط رنگ‌های پشتیبانی‌شده تلگرام قابل انتخاب هستند."),
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
         await call.answer()
 
-    @router.message(AdminCategoryColor.waiting_color)
-    async def process_admin_catcolor(message: Message, state: FSMContext):
-        if not senior_admin_only(message.from_user.id):
-            return
-        raw = (message.text or "").strip()
-        cat_id = (await state.get_data()).get("category_color_id")
-        if not cat_id:
-            await state.clear()
-            return await message.answer(tr("⚠️ درخواست منقضی شده است. دوباره وارد مدیریت دسته‌بندی شوید."))
-        if raw.lower() in ("پیش‌فرض", "default", "reset", "-", "0"):
-            color = None
-        else:
-            color = raw.upper()
-            if not re.fullmatch(r"#[0-9A-F]{6}", color):
-                return await message.answer(tr("⚠️ کد رنگ نامعتبر است. یک کد HEX شش‌رقمی مانند #2563EB ارسال کنید یا «پیش‌فرض» بنویسید."))
+    @router.callback_query(F.data.startswith("adm_catcolor_set:"))
+    async def cb_admin_catcolor_set(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        parts = call.data.split(":")
+        if len(parts) != 3 or not parts[1].isdigit() or parts[2] not in ("default", "primary", "success", "danger"):
+            return await call.answer(tr("⚠️ انتخاب رنگ نامعتبر است."), show_alert=True)
+        cat_id, color = int(parts[1]), parts[2]
         try:
-            await asyncio.to_thread(db.set_category_button_color, int(cat_id), color)
-            await asyncio.to_thread(db.log_admin_action, message.from_user.id, "category_button_color", f"دسته‌بندی #{cat_id}: {color or 'default'}")
-            await state.clear()
-            text, markup = await _category_view(int(cat_id))
-            await message.answer(tr("✅ رنگ اختصاصی ذخیره شد.") + "\n" + text, reply_markup=markup)
+            await asyncio.to_thread(db.set_category_button_color, cat_id, None if color == "default" else color)
+            await asyncio.to_thread(db.log_admin_action, call.from_user.id, "category_button_color", f"دسته‌بندی #{cat_id}: {color}")
+            text, markup = await _category_view(cat_id)
+            await safe_edit(call, tr("✅ رنگ دکمه ذخیره شد.") + "\n" + text, reply_markup=markup)
+            await call.answer()
         except Exception:
-            await message.answer(tr("⚠️ ذخیره رنگ ناموفق بود. دوباره تلاش کنید."))
+            await call.answer(tr("⚠️ ذخیره رنگ ناموفق بود."), show_alert=True)
 
     @router.callback_query(F.data.startswith("adm_catemoji:"))
     async def cb_admin_catemoji(call: CallbackQuery, state: FSMContext):

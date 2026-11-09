@@ -366,7 +366,9 @@ def categories_kb(db, categories, is_main_bot: bool = True) -> InlineKeyboardMar
         pass
     for cat in categories:
         label = emoji_prefs.with_emoji(emoji_prefs.category_emoji(db, cat), cat["name"])
-        rows.append([_styled_inline(db, label, f"cat:{cat['id']}", "btn_cat_select_style")])
+        category_style = (cat["button_color"] if "button_color" in cat.keys() else None) or ""
+        category_style = category_style if category_style in ("primary", "success", "danger") else None
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"cat:{cat['id']}", style=category_style)])
     back_text = db.get_setting("btn_buy_back_text", "⬅️ بازگشت")
     rows.append([_styled_inline(db, back_text, "back_main", "btn_buy_back_style")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -419,7 +421,9 @@ def products_kb(db, products, category_id, children=None) -> InlineKeyboardMarku
     rows = []
     for sub in (children or []):
         label = emoji_prefs.with_emoji(emoji_prefs.category_emoji(db, sub), sub["name"])
-        rows.append([_styled_inline(db, label, f"cat:{sub['id']}", "btn_subcat_select_style")])
+        category_style = (sub["button_color"] if "button_color" in sub.keys() else None) or ""
+        category_style = category_style if category_style in ("primary", "success", "danger") else None
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"cat:{sub['id']}", style=category_style)])
     split = db.get_setting("buy_product_layout", "classic") == "split"
     price_first = db.get_setting("buy_product_order", "name_first") == "price_first"
     try:
@@ -598,7 +602,6 @@ def my_orders_menu_kb(items) -> InlineKeyboardMarkup:
         if icon and not label.startswith(("🟢", "🔴")):
             label = f"{icon} {label}"
         rows.append([InlineKeyboardButton(text=label, callback_data=f"mo_v:{it['cb_id']}")])
-    rows.append([InlineKeyboardButton(text=tr("🧾 فاکتور کلی همه‌ی سرویس‌ها"), callback_data="mo_invoice_all")])
     rows.append([InlineKeyboardButton(text=tr("⬅️ حساب کاربری"), callback_data="acct:hub")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -638,7 +641,7 @@ def service_inquiry_card_kb(cb_id: str, fields: list) -> InlineKeyboardMarkup:
 
 def service_detail_kb(db, cb_id: str, kind: str, deletable: bool, show_links: bool = False,
                        enabled: bool = True, auto_renew: bool = False, is_test: bool = False,
-                       can_add_users: bool = False, is_gift: bool = False, is_invoiceable: bool = True) -> InlineKeyboardMarkup:
+                       can_add_users: bool = False) -> InlineKeyboardMarkup:
     """دکمه‌های صفحه‌ی جزئیات یک سرویس.
     kind == 'custom' (کاربر واقعی روی پنل): هر سه نوع تمدید + قطع دسترسی +
     بروزرسانی + کیوآر + فعال/غیرفعال + تغییر نام + تمدید خودکار + انتقال +
@@ -696,8 +699,6 @@ def service_detail_kb(db, cb_id: str, kind: str, deletable: bool, show_links: bo
             add("svc_qr", "⬜ کیوآر کانفیگ", f"svc_qr:{cb_id}")
         if show_links:
             add("svc_links", "📋 کانفیگ‌های تکی", f"mo_links:{cb_id}")
-    if kind in ("custom", "config") and not is_test and not is_gift and is_invoiceable:
-        add("svc_invoice", "🧾 فاکتور این سرویس", f"mo_invoice:{cb_id}")
     if deletable and on("svc_show_delete"):
         add("svc_delete", "🗑 حذف کامل این سرویس", f"mo_del:{cb_id}")
     rows = _layout_group_rows(db, "svc_detail", entries, default_rows=USER_SCREENS["svc_detail"]["default_rows"])
@@ -2894,8 +2895,6 @@ def user_full_stats_kb(tg_id: int, is_blocked: bool = False) -> InlineKeyboardMa
         [InlineKeyboardButton(text=tr("✉️ ارسال پیام مستقیم"), callback_data=f"adm_user_msg:{tg_id}")],
         [InlineKeyboardButton(text=tr("🎁 ارسال کد تخفیف اختصاصی"), callback_data=f"adm_user_disc:{tg_id}")],
         [InlineKeyboardButton(text=tr("💰 ویرایش موجودی کیف‌پول"), callback_data=f"adm_user_wallet:{tg_id}")],
-        [InlineKeyboardButton(text=tr("🧪 تغییر سهمیه کانفیگ تست"), callback_data=f"adm_user_test_limit:{tg_id}")],
-        [InlineKeyboardButton(text=tr("🧾 فاکتور کلی همه‌ی سرویس‌ها"), callback_data=f"adm_user_invoice_all:{tg_id}")],
         [InlineKeyboardButton(
             text=tr("✅ آنبلاک کاربر") if is_blocked else tr("🚫 بلاک کاربر"),
             callback_data=f"adm_user_toggleblock:{tg_id}",
@@ -2960,8 +2959,6 @@ def admin_config_detail_kb(tg_id: int, cc_id: int, enabled: bool, auto_renew: bo
     rows.append([InlineKeyboardButton(text=tr("✏️ تغییر نام"), callback_data=f"adm_cfg_rename:{tg_id}:{cc_id}")])
     rows.append([InlineKeyboardButton(text=tr("👤 انتقال به کاربر دیگر"), callback_data=f"adm_cfg_transfer:{tg_id}:{cc_id}")])
     rows.append([InlineKeyboardButton(text=tr("🕒 تاریخچه"), callback_data=f"adm_cfg_history:{tg_id}:{cc_id}")])
-    if not is_test:
-        rows.append([InlineKeyboardButton(text=tr("🧾 فاکتور این سرویس"), callback_data=f"adm_user_invoice_one:{tg_id}:custom:{cc_id}")])
     if extended:
         rows.append([
             InlineKeyboardButton(text=tr("➕ افزودن حجم"), callback_data=f"adm_cfg_addvol:{tg_id}:{cc_id}"),
@@ -3096,9 +3093,6 @@ def admin_categories_kb(db, parent_id=0) -> InlineKeyboardMarkup:
         prod = emoji_prefs.describe(cur["product_emoji"] if cur is not None and "product_emoji" in cur.keys() else None)
         rows.append([InlineKeyboardButton(text=tr(f"😀 ایموجی این دسته: {own}"), callback_data=f"adm_catemoji:{pid}:emoji")])
         rows.append([InlineKeyboardButton(text=tr(f"🏷 ایموجی محصولات این دسته: {prod}"), callback_data=f"adm_catemoji:{pid}:product_emoji")])
-        color = cur["button_color"] if cur is not None and "button_color" in cur.keys() else None
-        color_label = color or "پیش‌فرض"
-        rows.append([InlineKeyboardButton(text=tr(f"🎨 رنگ دکمه این دسته: {color_label}"), callback_data=f"adm_catcolor:{pid}")])
         rows.append([InlineKeyboardButton(text=tr("➕ افزودن زیردسته"), callback_data=f"adm_cat_add:{pid}")])
         back_cb = _category_parent_cb(db, pid, "adm_cat_open", "adm_categories")
     else:
@@ -4491,26 +4485,14 @@ def welcome_gift_settings_kb(db) -> InlineKeyboardMarkup:
     product_id = int(db.get_setting("welcome_gift_product_id", "0") or 0)
     product = db.get_product(product_id) if product_id > 0 else None
     delay = int(float(db.get_setting("welcome_gift_delay_minutes", "0") or 0))
-    mode = db.get_setting("welcome_gift_product_mode", "existing")
-    mode_label = "محصول اختصاصی و مخفی" if mode == "dedicated" else "انتخاب از محصولات"
     rows = [
-        [InlineKeyboardButton(text=tr("🔴 غیرفعال کردن" if enabled else "🟢 فعال کردن"), callback_data="adm_wgift_toggle")],
-        [InlineKeyboardButton(text=tr(f"🧩 نوع محصول: {mode_label}"), callback_data="adm_wgift_mode")],
-        [InlineKeyboardButton(text=tr(f"📦 محصول هدیه: {product['name'] if product else 'انتخاب نشده'}"), callback_data="adm_wgift_products" if mode == "existing" else "adm_wgift_create")],
+        [InlineKeyboardButton(text=tr("🔴 غیرفعال کردن") if enabled else tr("🟢 فعال کردن"), callback_data="adm_wgift_toggle")],
+        [InlineKeyboardButton(text=tr(f"📦 محصول: {product['name'] if product else 'انتخاب نشده'}"), callback_data="adm_wgift_products")],
         [InlineKeyboardButton(text=tr(f"💾 حجم: {wg.format_amount(db.get_setting('welcome_gift_volume_gb', ''), 'گیگ')}"), callback_data="adm_wgift_volume")],
         [InlineKeyboardButton(text=tr(f"⏳ مدت: {wg.format_amount(db.get_setting('welcome_gift_days', ''), 'روز')}"), callback_data="adm_wgift_days")],
         [InlineKeyboardButton(text=tr(f"⏱ زمان ارسال: {wg.format_delay(delay)}"), callback_data="adm_wgift_delay")],
         [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:marketing")],
     ]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def welcome_gift_templates_kb(products) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(text=f"{p['category_name']} | {p['name']}"[:60], callback_data=f"adm_wgift_template:{p['id']}")]
-        for p in products[:60]
-    ]
-    rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_welcome_gift")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
