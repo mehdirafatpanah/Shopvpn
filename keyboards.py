@@ -4973,6 +4973,7 @@ def panel_type_select_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="MikroTik", callback_data="adm_panel_type:mikrotik")],
         [InlineKeyboardButton(text="IBSng", callback_data="adm_panel_type:ibsng")],
         [InlineKeyboardButton(text="W-UI", callback_data="adm_panel_type:wui")],
+        [InlineKeyboardButton(text="Stealth VLESS", callback_data="adm_panel_type:stealth")],
         [InlineKeyboardButton(text=tr("❌ انصراف"), callback_data="cancel_flow")],
     ])
 

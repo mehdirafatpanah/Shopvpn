@@ -86,7 +86,7 @@ from notification_i18n import send_telegram
 from panel_providers import (
     get_provider, PanelError, PanelUsernameTakenError, PANEL_TYPE_LABELS,
     SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES, parse_xui_inbound_ids,
-    SINGLE_INBOUND_PANEL_TYPES, TOKEN_ONLY_PANEL_TYPES, SECRET_PROMPTS, TEMPLATE_PROMPTS, TEMPLATE_VALUE_LABELS,
+    SINGLE_INBOUND_PANEL_TYPES, TOKEN_ONLY_PANEL_TYPES, NO_SETUP_PANEL_TYPES, SECRET_PROMPTS, TEMPLATE_PROMPTS, TEMPLATE_VALUE_LABELS,
 )
 from reseller_auto_provision import provision_auto_config, get_credit_bot_local_panel_id, ProvisionError
 from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
@@ -7908,6 +7908,28 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await state.set_state(AdminAddPanelServer.waiting_sub_base_url)
             await message.answer(
                 db.get_text('handlers_admin.auto_6381e83b', 'آدرس عمومی Subscription پنل را بفرست (چون معمولاً با آدرس API ادمین فرق دارد؛ همان دامنه/مسیری که پنل برای لینک اشتراک کاربر نشان می\u200cدهد - بدون / انتهایی):')
+            )
+            return
+
+        if data["panel_type"] in NO_SETUP_PANEL_TYPES:
+            # مثل Stealth VLESS: فقط آدرس + توکن؛ اتصال را تست و ذخیره می‌کنیم
+            server_id = (await asyncio.to_thread(db.add_panel_server,
+                name=data["name"], panel_type=data["panel_type"], api_url=data["url"],
+                api_username=data["username"], api_password=data["password"],
+            ))
+            server = (await asyncio.to_thread(db.get_panel_server, server_id))
+            ok, err = await get_provider(server).check_connection()
+            if not ok:
+                (await asyncio.to_thread(db.delete_panel_server, server_id))
+                await state.clear()
+                await message.answer(tr(f"⛔️ اتصال به نود ناموفق بود: {err}\nسرور ذخیره نشد؛ آدرس API و توکن را بررسی و دوباره تلاش کن."))
+                return
+            await state.clear()
+            label = PANEL_TYPE_LABELS.get(data["panel_type"], data["panel_type"])
+            (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "panel_server_add", f"سرور «{data['name']}» ({label}, #{server_id})"))
+            await message.answer(
+                f"{tr('✅ سرور')} «{data['name']}» ({label}) {tr('با موفقیت اضافه شد.')}",
+                reply_markup=kb.panel_servers_list_kb(db),
             )
             return
 
