@@ -3093,6 +3093,13 @@ def admin_categories_kb(db, parent_id=0) -> InlineKeyboardMarkup:
         prod = emoji_prefs.describe(cur["product_emoji"] if cur is not None and "product_emoji" in cur.keys() else None)
         rows.append([InlineKeyboardButton(text=tr(f"😀 ایموجی این دسته: {own}"), callback_data=f"adm_catemoji:{pid}:emoji")])
         rows.append([InlineKeyboardButton(text=tr(f"🏷 ایموجی محصولات این دسته: {prod}"), callback_data=f"adm_catemoji:{pid}:product_emoji")])
+        # رنگ اختصاصی همین دسته/زیردسته؛ callback و ذخیره‌سازی در handlers_admin.py موجود است.
+        current_color = (cur["button_color"] if cur is not None and "button_color" in cur.keys() else None) or "default"
+        color_icon = {"primary": "🔵", "success": "🟢", "danger": "🔴", "default": "⚪"}.get(current_color, "⚪")
+        rows.append([InlineKeyboardButton(
+            text=tr(f"🎨 رنگ دکمه این دسته: {color_icon}"),
+            callback_data=f"adm_catcolor:{pid}",
+        )])
         rows.append([InlineKeyboardButton(text=tr("➕ افزودن زیردسته"), callback_data=f"adm_cat_add:{pid}")])
         back_cb = _category_parent_cb(db, pid, "adm_cat_open", "adm_categories")
     else:
