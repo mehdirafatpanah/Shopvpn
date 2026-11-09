@@ -2895,6 +2895,7 @@ def user_full_stats_kb(tg_id: int, is_blocked: bool = False) -> InlineKeyboardMa
         [InlineKeyboardButton(text=tr("✉️ ارسال پیام مستقیم"), callback_data=f"adm_user_msg:{tg_id}")],
         [InlineKeyboardButton(text=tr("🎁 ارسال کد تخفیف اختصاصی"), callback_data=f"adm_user_disc:{tg_id}")],
         [InlineKeyboardButton(text=tr("💰 ویرایش موجودی کیف‌پول"), callback_data=f"adm_user_wallet:{tg_id}")],
+        [InlineKeyboardButton(text=tr("🧪 تغییر تعداد کانفیگ تست قابل دریافت"), callback_data=f"adm_user_test_limit:{tg_id}")],
         [InlineKeyboardButton(
             text=tr("✅ آنبلاک کاربر") if is_blocked else tr("🚫 بلاک کاربر"),
             callback_data=f"adm_user_toggleblock:{tg_id}",
