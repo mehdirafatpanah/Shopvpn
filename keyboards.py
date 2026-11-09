@@ -931,7 +931,7 @@ def payment_choice_kb(crypto_enabled: bool, abangateway_enabled: bool = False,
                        amount: int = None, db=None, allowed_methods=None,
                        card_auto_enabled: bool = False, noapay_enabled: bool = False,
                        blupal_enabled: bool = False, extra_gateways: list = None,
-                       user_id: int = None) -> InlineKeyboardMarkup:
+                       user_id: int = None, free_callback: str = None) -> InlineKeyboardMarkup:
     """کیبورد مرحله‌ی انتخاب روش پرداخت: کاربر ابتدا این لیست را می‌بیند و روش پرداخت را
     انتخاب می‌کند (به‌جای اینکه مستقیم شماره کارت نمایش داده شود). اگر درگاه کریپتو/آبان
     گیت وی/درگاه‌های سفارشی/کارت‌به‌کارت خودکار فعال باشند، دکمه‌ی مربوطه هم نمایش داده
@@ -994,6 +994,8 @@ def payment_choice_kb(crypto_enabled: bool, abangateway_enabled: bool = False,
             text = db.get_setting(f"paymeth_customgw_{gw['id']}_text", default_text) if db is not None else default_text
             entries.append((key, text, _btn(db, text, f"pay_customgw:{gw['id']}", f"paymeth_customgw_{gw['id']}_style")))
     rows = _layout_group_rows(db, "payment_methods", entries) if db is not None else [[b] for _k, _l, b in entries]
+    if free_callback:
+        rows.append([InlineKeyboardButton(text=tr("🎁 دریافت رایگان (مدیر)"), callback_data=free_callback)])
     rows.append([InlineKeyboardButton(text=tr("❌ انصراف"), callback_data="cancel_flow")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
