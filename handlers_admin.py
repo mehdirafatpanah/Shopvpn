@@ -84,7 +84,7 @@ import tutorial_hub
 from service_alerts import normalize_channel
 from notification_i18n import send_telegram
 from panel_providers import (
-    get_provider, PanelError, PanelUsernameTakenError, PANEL_TYPE_LABELS,
+    get_provider, PROVIDERS, PanelError, PanelUsernameTakenError, PANEL_TYPE_LABELS,
     SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES, parse_xui_inbound_ids,
     SINGLE_INBOUND_PANEL_TYPES, TOKEN_ONLY_PANEL_TYPES, SECRET_PROMPTS, TEMPLATE_PROMPTS, TEMPLATE_VALUE_LABELS,
 )
@@ -8544,6 +8544,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not server:
             await call.answer(db.get_text('handlers_admin.auto_8ee026d7', 'سرور یافت نشد.'), show_alert=True)
             return
+        if not hasattr(PROVIDERS.get(server["panel_type"]), "fetch_template_from_user"):
+            await call.answer(tr("این نوع پنل «کاربر نمونه» ندارد."), show_alert=True)
+            return
         await state.update_data(panel_server_id=server_id)
         await state.set_state(AdminSetPanelTemplate.waiting_username)
         await safe_edit(
@@ -8564,6 +8567,10 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await message.answer(db.get_text('handlers_admin.auto_850d2134', '⏳ در حال دریافت قالب از پنل...'))
         try:
             provider = get_provider(server)
+            if not hasattr(provider, "fetch_template_from_user"):
+                await state.clear()
+                await message.answer(tr("⛔️ این نوع پنل «کاربر نمونه» ندارد و نیازی به تنظیم قالب نیست."))
+                return
             template = await provider.fetch_template_from_user(message.text.strip())
         except PanelError as e:
             await message.answer(f"⛔️ {e}")

@@ -23,7 +23,7 @@ import emoji_prefs
 import extra_gateway_registry
 import tutorial_hub
 from config import MINIAPP_URL
-from panel_providers import PANEL_TYPE_LABELS, INBOUND_SELECT_PANEL_TYPES
+from panel_providers import PANEL_TYPE_LABELS, INBOUND_SELECT_PANEL_TYPES, PROVIDERS
 from database import MENU_BUTTON_META, ACCOUNT_TOGGLE_KEYS
 from i18n import tr
 
@@ -5012,8 +5012,10 @@ def panel_server_view_kb(server) -> InlineKeyboardMarkup:
     reseller_text = "✅ برای نمایندگی: فعال" if server["used_for_reseller"] else "◻️ برای نمایندگی: غیرفعال"
     rows = [
         [InlineKeyboardButton(text=tr("🔌 تست اتصال"), callback_data=f"adm_panel_server_test:{server['id']}")],
-        [InlineKeyboardButton(text=tr("🧩 تغییر کاربر نمونه (قالب)"), callback_data=f"adm_panel_server_template:{server['id']}")],
     ]
+    # دکمه‌ی «کاربر نمونه» فقط برای پنل‌هایی که واقعاً قالب دارند (3X-UI/Alireza/Stealth ندارند)
+    if hasattr(PROVIDERS.get(server["panel_type"]), "fetch_template_from_user"):
+        rows.append([InlineKeyboardButton(text=tr("🧩 تغییر کاربر نمونه (قالب)"), callback_data=f"adm_panel_server_template:{server['id']}")])
     if server["panel_type"] in INBOUND_SELECT_PANEL_TYPES:
         rows.append([InlineKeyboardButton(
             text=tr("🔗 تغییر لینک Subscription"), callback_data=f"adm_panel_server_suburl:{server['id']}",
