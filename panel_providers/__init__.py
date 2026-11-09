@@ -22,6 +22,7 @@ from .wgdashboard_provider import WGDashboardProvider
 from .mikrotik_provider import MikroTikProvider
 from .ibsng_provider import IBSngProvider
 from .wui_provider import WUIProvider
+from .stealth_provider import StealthProvider
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 
 PROVIDERS = {
@@ -37,6 +38,7 @@ PROVIDERS = {
     "mikrotik": MikroTikProvider,
     "ibsng": IBSngProvider,
     "wui": WUIProvider,
+    "stealth": StealthProvider,
 }
 
 PANEL_TYPE_LABELS = {
@@ -52,6 +54,7 @@ PANEL_TYPE_LABELS = {
     "mikrotik": "MikroTik",
     "ibsng": "IBSng",
     "wui": "W-UI",
+    "stealth": "Stealth VLESS",
 }
 
 # پنل‌هایی که مثل PasarGuard با «کاربر نمونه» قالب می‌گیرند (group_ids/proxy_settings)
@@ -63,12 +66,15 @@ SUB_BASE_URL_PANEL_TYPES = {"3xui", "hiddify", "alireza"}
 INBOUND_SELECT_PANEL_TYPES = {"3xui", "alireza"}
 SINGLE_INBOUND_PANEL_TYPES = {"alireza"}
 
-TOKEN_ONLY_PANEL_TYPES = {"3xui": "3xui", "rebecca": "rebecca", "sui": "sui", "wgdashboard": "wgdashboard", "wui": "wui"}
+TOKEN_ONLY_PANEL_TYPES = {"3xui": "3xui", "rebecca": "rebecca", "sui": "sui", "wgdashboard": "wgdashboard", "wui": "wui", "stealth": "stealth"}
+# پنل‌هایی که بعد از آدرس و توکن هیچ تنظیم دیگری (قالب/inbound/ساب) نمی‌خواهند؛ فقط تست اتصال و ذخیره
+NO_SETUP_PANEL_TYPES = {"stealth"}
 
 SECRET_PROMPTS = {
     "rebecca": "توکن (Bearer token) ادمین پنل Rebecca را بفرست:",
     "sui": "API Token پنل S-UI را بفرست (از بخش Admin ← API Token داخل پنل):",
     "wgdashboard": "API Key پنل WGDashboard را بفرست (از Settings ← API Keys داخل پنل):",
+    "stealth": "توکن API نود Stealth را بفرست (نصاب موقع پایان نصب چاپ می‌کند؛ آدرس API هم همان است که نصاب نشان داد):",
     "wui": "API Token پنل W-UI را بفرست (از Settings ← Authentication ← API Token داخل پنل؛ همان توکنی که نصب‌کننده نشان داد):",
 }
 
