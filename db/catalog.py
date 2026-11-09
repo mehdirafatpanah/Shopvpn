@@ -314,11 +314,10 @@ class CatalogMixin:
 
 
     def set_category_button_color(self, cat_id: int, color: str = None) -> None:
-        """رنگ مستقل دکمه‌ی دسته/زیردسته؛ None یعنی استفاده از رنگ پیش‌فرض."""
-        import re
-        value = (color or "").strip().upper() or None
-        if value is not None and not re.fullmatch(r"#[0-9A-F]{6}", value):
-            raise ValueError("invalid category color")
+        """سبک رنگ دکمه دسته/زیردسته مطابق Telegram Bot API؛ None یعنی پیش‌فرض."""
+        value = (color or "").strip().lower() or None
+        if value not in (None, "primary", "success", "danger"):
+            raise ValueError("invalid category button style")
         def op():
             with self._get_conn() as conn:
                 cur = conn.execute("UPDATE categories SET button_color=? WHERE id=?", (value, int(cat_id)))
