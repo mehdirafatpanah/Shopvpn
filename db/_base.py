@@ -1992,6 +1992,7 @@ class DatabaseBase:
             ("categories", "parent_id", "INTEGER"),
             ("categories", "emoji", "TEXT"),
             ("categories", "product_emoji", "TEXT"),
+            ("categories", "button_color", "TEXT"),
             ("panel_servers", "panel_category_id", "INTEGER"),
             ("configs", "expires_at", "TEXT"),
             ("configs", "renewal_reminder_sent", "INTEGER DEFAULT 0"),

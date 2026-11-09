@@ -313,6 +313,19 @@ class CatalogMixin:
         self._sqlite_retry(op)
 
 
+    def set_category_button_color(self, cat_id: int, color: str = None) -> None:
+        """رنگ مستقل دکمه‌ی دسته/زیردسته؛ None یعنی استفاده از رنگ پیش‌فرض."""
+        import re
+        value = (color or "").strip().upper() or None
+        if value is not None and not re.fullmatch(r"#[0-9A-F]{6}", value):
+            raise ValueError("invalid category color")
+        def op():
+            with self._get_conn() as conn:
+                cur = conn.execute("UPDATE categories SET button_color=? WHERE id=?", (value, int(cat_id)))
+                if cur.rowcount == 0:
+                    raise ValueError("category not found")
+        self._sqlite_retry(op)
+
     def toggle_category(self, cat_id: int):
         def op():
             with self._get_conn() as conn:
