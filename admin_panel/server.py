@@ -3855,6 +3855,8 @@ async def api_reseller_self_delete(config_id: int, admin=Depends(get_current_adm
 class CategoryBody(BaseModel):
     name: str
     parent_id: Optional[int] = None  # دسته‌ی والد (تو در تو)؛ خالی = دسته‌ی اصلی
+    emoji: Optional[str] = None  # خالی = پیش‌فرض سراسری، "-" = بدون ایموجی
+    product_emoji: Optional[str] = None
 
 
 def _body_fields_set(body) -> set:
@@ -3899,6 +3901,13 @@ def api_edit_category(cat_id: int, body: CategoryBody, admin=Depends(require_per
             db.edit_category(cat_id, name)
     except ValueError as e:
         raise HTTPException(400, tr(str(e)))
+    fields = _body_fields_set(body)
+    for field in ("emoji", "product_emoji"):
+        if field in fields:
+            value = (getattr(body, field) or "").strip()
+            if len(value) > 16:
+                raise HTTPException(400, tr("ایموجی خیلی بلند است."))
+            db.set_category_emoji(cat_id, field, value)
     db.log_admin_action(admin["id"], "category_edit", body.name, "category", cat_id)
     return {"ok": True}
 
