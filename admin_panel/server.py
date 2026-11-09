@@ -655,6 +655,23 @@ class SSHNodeAutoInstallBody(BaseModel):
     wg_port: int = 51820
 
 
+class StealthNodeAutoInstallBody(BaseModel):
+    name: str
+    host: str
+    ssh_port: int = 22
+    password: Optional[str] = None
+    private_key: Optional[str] = None
+    domain: str
+    decoy: str = "movie"
+    proxy_url: Optional[str] = None
+    cert: str = "letsencrypt"
+    email: str = ""
+    transports: List[str] = ["ws", "httpupgrade", "grpc"]
+    port: int = 443
+    title: str = "Stealth"
+    site_name: str = "CineVault"
+
+
 class SSHNodeAddProtocolsBody(BaseModel):
     password: str
     protocols: List[str]
@@ -6365,6 +6382,36 @@ async def api_ssh_auto_install(body: SSHNodeAutoInstallBody, admin=Depends(requi
         raise HTTPException(getattr(exc, "status", 400), str(exc))
     db.log_admin_action(admin["id"], "ssh_node_auto_install", f"SSH node auto-install started: {name} ({host}) [{','.join(protocols)}]", "ssh")
     return {"ok": True, "job_id": job_id}
+
+
+@app.post("/api/stealth/nodes/auto-install")
+async def api_stealth_auto_install(body: StealthNodeAutoInstallBody, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    """نصب خودکار نود Stealth VLESS: IP + رمز root + دامنه."""
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "نام نود الزامی است.")
+    if not (body.password or body.private_key):
+        raise HTTPException(400, "رمز root یا کلید خصوصی را وارد کنید.")
+    import stealth_auto_install
+    try:
+        job_id = stealth_auto_install.start_install(
+            db, name=name, host=body.host.strip(), ssh_port=body.ssh_port, password=body.password,
+            private_key=body.private_key, domain=body.domain.strip().lower(), decoy=body.decoy,
+            proxy_url=(body.proxy_url or "").strip() or None, cert=body.cert, email=body.email.strip(),
+            transports=body.transports, port=body.port, title=body.title.strip(), site_name=body.site_name.strip())
+    except stealth_auto_install.InstallError as exc:
+        raise HTTPException(400, str(exc))
+    db.log_admin_action(admin["id"], "stealth_node_auto_install", f"Stealth node auto-install started: {name} ({body.host.strip()}) [{body.domain.strip()}]", "panel")
+    return {"ok": True, "job_id": job_id}
+
+
+@app.get("/api/stealth/nodes/install-jobs/{job_id}")
+def api_stealth_install_job(job_id: str, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    import stealth_auto_install
+    job = stealth_auto_install.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "کار نصب پیدا نشد.")
+    return job
 
 
 @app.post("/api/ssh/nodes/{node_id}/add-protocols")
