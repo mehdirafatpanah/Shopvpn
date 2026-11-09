@@ -2332,7 +2332,7 @@ function renderCardAutoPendingState(box, invoice, successText, checkCardAutoStat
 // ---------------------------------------------------------------------------
 // تب فروشگاه
 // ---------------------------------------------------------------------------‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
-let storeCategoryView = null; // null = لیست دسته‌بندی‌ها، وگرنه شناسه دسته‌بندی انتخاب‌شده
+let storeCategoryView = null; // null = دسته‌های اصلی، عدد = دسته‌ی انتخاب‌شده
 
 async function renderStore() {
   content.innerHTML = skeleton(4);
@@ -2346,104 +2346,74 @@ async function renderStore() {
     categories.forEach((c) => c.products.forEach((p) => { window._storeProducts[p.id] = p; }));
     window._storeCategories = categories;
 
+    let customConfigRow = "";
+    let buyGuideRow = "";
     if (storeCategoryView == null) {
-      let customConfigRow = "";
       try {
         const cfgInfo = await api("/api/custom-config/info");
         if (cfgInfo.enabled || cfgInfo.reseller_available) {
-          customConfigRow = `
-            <div class="list-row" id="custom-config-entry-row">
-              <div class="list-row-main">
-                <div class="list-row-ic">🛠</div>
-                <div class="list-row-text">
-                  <span class="list-row-title">ساخت کانفیگ شخصی</span>
-                  <span class="list-row-sub">${cfgInfo.reseller_available ? "با اعتبار نمایندگی یا خرید مستقیم" : "حجم و مدت دلخواه خودت را انتخاب کن"}</span>
-                </div>
-              </div>
-              <span class="list-row-chev">‹</span>
-            </div>`;
+          customConfigRow = `<div class="list-row" id="custom-config-entry-row"><div class="list-row-main"><div class="list-row-ic">🛠</div><div class="list-row-text"><span class="list-row-title">ساخت کانفیگ شخصی</span><span class="list-row-sub">${cfgInfo.reseller_available ? "با اعتبار نمایندگی یا خرید مستقیم" : "حجم و مدت دلخواه خودت را انتخاب کن"}</span></div></div><span class="list-row-chev">‹</span></div>`;
         }
-      } catch (e) { /* اگه این بخش غیرفعال/خطا بود، بی‌صدا رد شو */ }
-      let buyGuideRow = "";
+      } catch (e) {}
       try {
         const bgInfo = await api("/api/buy-guide/config");
         if (bgInfo.enabled) {
           window._buyGuideQuestions = bgInfo.questions;
-          buyGuideRow = `
-            <div class="list-row" id="buy-guide-entry-row">
-              <div class="list-row-main">
-                <div class="list-row-ic">🤖</div>
-                <div class="list-row-text">
-                  <span class="list-row-title">راهنمای خرید هوشمند</span>
-                  <span class="list-row-sub">با چند سوال کوتاه، محصول مناسبت را پیدا کن</span>
-                </div>
-              </div>
-              <span class="list-row-chev">‹</span>
-            </div>`;
+          buyGuideRow = `<div class="list-row" id="buy-guide-entry-row"><div class="list-row-main"><div class="list-row-ic">🤖</div><div class="list-row-text"><span class="list-row-title">راهنمای خرید هوشمند</span><span class="list-row-sub">با چند سوال کوتاه، محصول مناسبت را پیدا کن</span></div></div><span class="list-row-chev">‹</span></div>`;
         }
-      } catch (e) { /* بی‌صدا رد شو */ }
-      content.innerHTML = `
-        <div class="eyebrow">یک دسته را انتخاب کنید</div>
-        ${buyGuideRow}
-        ${customConfigRow}
-        ${categories.map((c) => `
-          <div class="list-row" data-cat="${c.id}">
-            <div class="list-row-main">
-              <div class="list-row-ic">🏬</div>
-              <div class="list-row-text">
-                <span class="list-row-title">${c.name}</span>
-                <span class="list-row-sub">${c.products.length} محصول</span>
-              </div>
-            </div>
-            <span class="list-row-chev">‹</span>
-          </div>
-        `).join("")}
-      `;
-      const ccRow = document.getElementById("custom-config-entry-row");
-      if (ccRow) ccRow.onclick = renderCustomConfigBuilder;
-      const bgRow = document.getElementById("buy-guide-entry-row");
-      if (bgRow) bgRow.onclick = () => renderBuyGuide(0, {});
-      content.querySelectorAll(".list-row[data-cat]").forEach((el) => {
-        el.onclick = () => { storeCategoryView = parseInt(el.dataset.cat, 10); renderStore(); };
-      });
-      return;
+      } catch (e) {}
     }
 
-    const cat = categories.find((c) => c.id === storeCategoryView);
-    if (!cat) { storeCategoryView = null; return renderStore(); }
+    const selected = storeCategoryView == null ? null : categories.find((c) => Number(c.id) === Number(storeCategoryView));
+    if (storeCategoryView != null && !selected) {
+      storeCategoryView = null;
+      return renderStore();
+    }
+    const parentId = selected ? Number(selected.id) : null;
+    const knownCategoryIds = new Set(categories.map((c) => Number(c.id)));
+    const visibleCategories = categories.filter((c) => {
+      const pid = c.parent_id == null ? null : Number(c.parent_id);
+      return parentId == null ? (pid == null || !knownCategoryIds.has(pid)) : pid === parentId;
+    });
+    const products = selected ? selected.products : [];
+    const title = selected ? selected.name : "یک دسته را انتخاب کنید";
+    const parentOfSelected = selected && selected.parent_id != null
+      ? categories.find((c) => Number(c.id) === Number(selected.parent_id)) : null;
+
     content.innerHTML = `
-      <div class="list-row" id="store-back-row">
-        <div class="list-row-main">
-          <span class="list-row-ic">‹</span>
-          <div class="list-row-text"><span class="list-row-title">بازگشت به دسته‌بندی‌ها</span></div>
-        </div>
-      </div>
-      <div class="eyebrow">${cat.name}</div>
-      <div class="card">
-        <h3><span class="ic">▣</span>${cat.name}</h3>
-        ${cat.products.map((p) => `
-          <div class="product">
-            <div>
-              <div class="product-name">${p.name}</div>
-              <div class="price">${priceHtml(p.price, p.original_price)}</div>
-            </div>
-            <button class="btn small" ${(!p.is_auto_provision && p.stock <= 0) ? "disabled" : ""}
-              onclick="openProductPurchase(${p.id})">
-              ${(!p.is_auto_provision && p.stock <= 0) ? "ناموجود" : "خرید"}
-            </button>
-          </div>
-        `).join("")}
-      </div>
+      ${selected ? `<div class="list-row" id="store-back-row"><div class="list-row-main"><span class="list-row-ic">‹</span><div class="list-row-text"><span class="list-row-title">بازگشت ${parentOfSelected ? "به " + parentOfSelected.name : "به دسته‌بندی‌ها"}</span></div></div></div>` : `<div class="eyebrow">${title}</div>${buyGuideRow}${customConfigRow}`}
+      ${selected ? `<div class="eyebrow">${title}</div>` : ""}
+      ${visibleCategories.map((c) => `
+        <div class="list-row" data-cat="${c.id}">
+          <div class="list-row-main"><div class="list-row-ic">🏬</div><div class="list-row-text">
+            <span class="list-row-title">${c.name}</span>
+            <span class="list-row-sub">${c.products.length} محصول · ${categories.filter(x => Number(x.parent_id) === Number(c.id)).length} زیردسته</span>
+          </div></div><span class="list-row-chev">‹</span>
+        </div>`).join("")}
+      ${products.length ? `<div class="card"><h3><span class="ic">▣</span>محصولات ${title}</h3>
+        ${products.map((p) => `<div class="product"><div><div class="product-name">${p.name}</div><div class="price">${priceHtml(p.price, p.original_price)}</div></div>
+          <button class="btn small" ${(!p.is_auto_provision && p.stock <= 0) ? "disabled" : ""} onclick="openProductPurchase(${p.id})">${(!p.is_auto_provision && p.stock <= 0) ? "ناموجود" : "خرید"}</button></div>`).join("")}
+      </div>` : ""}
+      ${selected && !visibleCategories.length && !products.length ? `<div class="state-msg">در این دسته محصولی ثبت نشده است.</div>` : ""}
     `;
-    document.getElementById("store-back-row").onclick = () => { storeCategoryView = null; renderStore(); };
+
+    const ccRow = document.getElementById("custom-config-entry-row");
+    if (ccRow) ccRow.onclick = renderCustomConfigBuilder;
+    const bgRow = document.getElementById("buy-guide-entry-row");
+    if (bgRow) bgRow.onclick = () => renderBuyGuide(0, {});
+    content.querySelectorAll(".list-row[data-cat]").forEach((el) => {
+      el.onclick = () => { storeCategoryView = Number(el.dataset.cat); renderStore(); };
+    });
+    const back = document.getElementById("store-back-row");
+    if (back) back.onclick = () => {
+      storeCategoryView = selected && selected.parent_id != null ? Number(selected.parent_id) : null;
+      renderStore();
+    };
   } catch (e) {
     content.innerHTML = errorState(e.message);
   }
 }
 
-// ---------------------------------------------------------------------------
-// راهنمای خرید هوشمند: سوال‌های ثابت + گفتگوی آزاد با AI
-// ---------------------------------------------------------------------------
 function renderBuyGuide(step, answers) {
   const questions = window._buyGuideQuestions || [];
   if (step >= questions.length) return renderBuyGuideChat(answers);
