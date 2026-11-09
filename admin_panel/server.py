@@ -86,7 +86,7 @@ from panel_capabilities import product_capabilities, normalize_user_limit, USER_
 from panel_providers import (
     get_provider, PanelError, PanelUsernameTakenError, PANEL_TYPE_LABELS,
     PROVIDERS, SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES, TEMPLATE_BASED_PANEL_TYPES,
-    SINGLE_INBOUND_PANEL_TYPES, TOKEN_ONLY_PANEL_TYPES, TEMPLATE_PROMPTS,
+    SINGLE_INBOUND_PANEL_TYPES, TOKEN_ONLY_PANEL_TYPES, NO_SETUP_PANEL_TYPES, TEMPLATE_PROMPTS,
     parse_xui_inbound_ids,
 )
 from renewal_reminders import STATUS_KEY_LAST_RUN, STATUS_KEY_LAST_DATE_SENT, STATUS_KEY_LAST_VOLUME_SENT
@@ -6617,6 +6617,7 @@ def api_panel_server_types(admin=Depends(require_permission("panels")), _fa=Depe
             "needs_inbound_select": k in INBOUND_SELECT_PANEL_TYPES,
             "single_inbound": k in SINGLE_INBOUND_PANEL_TYPES,
             "token_only": k in TOKEN_ONLY_PANEL_TYPES,
+            "no_setup": k in NO_SETUP_PANEL_TYPES,
             "template_prompt": TEMPLATE_PROMPTS.get(k),
         }
         for k, v in PANEL_TYPE_LABELS.items()
@@ -6656,6 +6657,16 @@ async def api_add_panel_server(body: PanelServerBody, admin=Depends(require_perm
         server_id = db.add_panel_server(body.name.strip(), body.panel_type, body.api_url.strip(), username, body.api_password, body.default_group, panel_category_id=body.panel_category_id)
         db.log_admin_action(admin["id"], "panel_add", f"سرور «{body.name}» (#{server_id}) از پنل وب")
         return {"id": server_id, "needs_sub_base_url": True}
+
+    if body.panel_type in NO_SETUP_PANEL_TYPES:
+        # Stealth VLESS: فقط آدرس + توکن؛ اتصال تست و ذخیره می‌شود
+        server_id = db.add_panel_server(body.name.strip(), body.panel_type, body.api_url.strip(), username, body.api_password, body.default_group, panel_category_id=body.panel_category_id)
+        ok, err = await get_provider(db.get_panel_server(server_id)).check_connection()
+        if not ok:
+            db.delete_panel_server(server_id)
+            raise HTTPException(400, tr("اتصال به نود ناموفق بود: ") + str(err))
+        db.log_admin_action(admin["id"], "panel_add", f"سرور «{body.name}» (#{server_id}) از پنل وب")
+        return {"id": server_id}
 
     # خانواده‌ی PasarGuard/Marzban/Marzneshin: با «کاربر نمونه» قالب گرفته می‌شود
     if not body.template_username or not body.template_username.strip():
