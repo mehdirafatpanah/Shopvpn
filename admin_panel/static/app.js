@@ -7414,17 +7414,18 @@ function renderResellerCohortBlock(data) {
 const PANEL_TYPE_OPTIONS_HTML = [
   ['pasarguard', 'PasarGuard'], ['3xui', '3X-UI'], ['marzban', 'Marzban'],
   ['marzneshin', 'Marzneshin'], ['hiddify', 'Hiddify'], ['alireza', 'Alireza X-UI'],
-  ['rebecca', 'Rebecca'], ['sui', 'S-UI'], ['wgdashboard', 'WGDashboard'], ['mikrotik', 'MikroTik'], ['ibsng', 'IBSng'], ['wui', 'W-UI'],
+  ['rebecca', 'Rebecca'], ['sui', 'S-UI'], ['wgdashboard', 'WGDashboard'], ['mikrotik', 'MikroTik'], ['ibsng', 'IBSng'], ['wui', 'W-UI'], ['stealth', 'Stealth VLESS'],
 ].map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
 const PANEL_INBOUND_SELECT_TYPES = ['3xui', 'alireza'];
 const PANEL_SUB_BASE_URL_TYPES = ['3xui', 'hiddify', 'alireza'];
 const PANEL_TEMPLATE_BASED_TYPES = ['pasarguard', 'marzban', 'marzneshin', 'rebecca', 'sui', 'wgdashboard', 'mikrotik', 'ibsng', 'wui'];
-const PANEL_TOKEN_ONLY_TYPES = ['3xui', 'rebecca', 'sui', 'wgdashboard', 'wui'];
+const PANEL_TOKEN_ONLY_TYPES = ['3xui', 'rebecca', 'sui', 'wgdashboard', 'wui', 'stealth'];
 const PANEL_SECRET_PLACEHOLDERS = {
   rebecca: 'توکن ادمین (Bearer token)',
   sui: 'API Token (Admin ← API Token در پنل)',
   wgdashboard: 'API Key (Settings ← API Keys در پنل)',
   wui: 'API Token (Settings ← Authentication ← API Token در پنل)',
+  stealth: 'توکن API نود (نصاب در پایان نصب چاپ می‌کند)',
 };
 const PANEL_TEMPLATE_PLACEHOLDERS = {
   sui: 'نام یک کاربر (client) موجود روی پنل',
