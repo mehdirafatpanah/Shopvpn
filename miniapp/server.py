@@ -1397,6 +1397,7 @@ def api_catalog(auth=Depends(get_verified_user)):
             "id": c["id"],
             "parent_id": c["parent_id"],
             "name": c["name"],
+            "button_color": c["button_color"] if "button_color" in c.keys() else None,
             "products": [
                 {
                     "id": p["id"],
@@ -4999,8 +5000,9 @@ class CategoryCreate(BaseModel):
 
 
 class CategoryUpdate(BaseModel):
-    name: str
+    name: Optional[str] = None
     parent_id: Optional[int] = None
+    button_color: Optional[str] = None
 
 
 class ProductCreate(BaseModel):
@@ -5060,6 +5062,7 @@ def api_admin_list_categories(auth=Depends(require_senior_admin)):
         result.append({
             "id": c["id"], "name": paths.get(c["id"], c["name"]), "is_active": bool(c["is_active"]),
             "parent_id": c["parent_id"], "product_count": len(products),
+            "button_color": c["button_color"] if "button_color" in c.keys() else None,
         })
     return result
 
@@ -5081,13 +5084,17 @@ def api_admin_edit_category(cat_id: int, body: CategoryUpdate, auth=Depends(requ
     _, db, _ = auth
     if not db.get_category(cat_id):
         raise HTTPException(status_code=404, detail=tr("دسته‌بندی یافت نشد."))
-    if not body.name.strip():
-        raise HTTPException(status_code=400, detail=tr("نام دسته‌بندی نمی‌تواند خالی باشد."))
+    fields_set = getattr(body, "model_fields_set", None) or getattr(body, "__fields_set__", set())
     try:
-        if "parent_id" in (getattr(body, "model_fields_set", None) or getattr(body, "__fields_set__", set())):
-            db.edit_category(cat_id, body.name.strip(), parent_id=body.parent_id)
-        else:
-            db.edit_category(cat_id, body.name.strip())
+        if body.name is not None:
+            if not body.name.strip():
+                raise HTTPException(status_code=400, detail=tr("نام دسته‌بندی نمی‌تواند خالی باشد."))
+            if "parent_id" in fields_set:
+                db.edit_category(cat_id, body.name.strip(), parent_id=body.parent_id)
+            else:
+                db.edit_category(cat_id, body.name.strip())
+        if "button_color" in fields_set:
+            db.set_category_button_color(cat_id, body.button_color)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=tr(str(e)))
     return {"status": "ok"}
