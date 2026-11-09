@@ -10,6 +10,8 @@ Router تازه می‌سازد که به همان یک db گره خورده؛ �
 """
 
 import os
+import html
+import time
 import random
 import account_naming
 import re
@@ -46,7 +48,7 @@ import receipt_ai_check
 from service_refund import (
     quote_service_refund, refund_quote_text, wallet_refund_amount, grant_service_refund_credit, refund_result_text,
 )
-from config import MAX_TEST_PER_USER, RESELLER_DBS_DIR, resolve_db_path, DB_PATH, ADMIN_PANEL_URL
+from config import RESELLER_DBS_DIR, resolve_db_path, DB_PATH, ADMIN_PANEL_URL
 from database import Database, DuplicateBotTokenError
 from config_delivery import deliver_config_to_user, send_individual_configs, build_qr_bytes
 import dedicated_sub
@@ -541,6 +543,50 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         else:
             await call.answer(db.get_text('handlers_user.auto_c1e947e8', 'این نظرسنجی معتبر نیست.'), show_alert=True)
 
+    async def _send_welcome_gift_offer(message: Message, user_id: int):
+        if not is_main_bot or await asyncio.to_thread(db.get_setting, "welcome_gift_enabled", "0") != "1":
+            return
+        if not await asyncio.to_thread(db.get_setting, "welcome_gift_product_id", "0"):
+            return
+        status = await asyncio.to_thread(db.get_welcome_gift_status, user_id)
+        if status:
+            return
+        await message.answer(
+            tr("🎁 عضویت شما تکمیل شد! برای دریافت اشتراک هدیه روی دکمه‌ی زیر بزنید."),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=tr("🎁 دریافت اشتراک هدیه"), callback_data="welcome_gift_claim")]
+            ]),
+        )
+
+    @router.callback_query(F.data == "welcome_gift_claim")
+    async def cb_welcome_gift_claim(call: CallbackQuery):
+        if not is_main_bot or await asyncio.to_thread(db.get_setting, "welcome_gift_enabled", "0") != "1":
+            await call.answer(tr("هدیه‌ی عضویت در حال حاضر غیرفعال است."), show_alert=True)
+            return
+        terms = await asyncio.to_thread(db.get_terms_settings)
+        if terms["enabled"] and not await asyncio.to_thread(db.is_terms_accepted, call.from_user.id):
+            await call.answer(tr("ابتدا قوانین و مقررات را تأیید کنید."), show_alert=True)
+            return
+        fj = await asyncio.to_thread(db.get_force_join_settings)
+        if fj["enabled"] and fj["channels"]:
+            missing = await missing_channels(call.bot, fj["channels"], call.from_user.id)
+            if missing:
+                await call.answer(tr("ابتدا در همه‌ی کانال‌های عضویت اجباری عضو شوید."), show_alert=True)
+                return
+        status = await asyncio.to_thread(db.get_welcome_gift_status, call.from_user.id)
+        if status:
+            await call.answer(tr("درخواست هدیه‌ی شما قبلاً ثبت شده است."), show_alert=True)
+            return
+        queued = await asyncio.to_thread(db.enqueue_welcome_gift, call.from_user.id)
+        if queued:
+            await call.answer(tr("🎁 درخواست ثبت شد؛ اشتراک پس از نوبت شما ارسال می‌شود."), show_alert=True)
+            try:
+                await call.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+        else:
+            await call.answer(tr("امکان ثبت درخواست هدیه وجود ندارد؛ تنظیمات را بررسی کنید."), show_alert=True)
+
     async def _send_welcome_after_terms(message: Message, user_id: int, state: FSMContext, bot: Bot):
         welcome = await asyncio.to_thread(db.get_welcome_text)
         reply_enabled = await asyncio.to_thread(db.get_setting, "main_menu_reply_enabled", "1") == "1"
@@ -553,6 +599,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 welcome,
                 reply_markup=inline_kb if inline_kb is not None else kb.menu_for_user(db, user_id, is_main_bot),
             )
+        await _send_welcome_gift_offer(message, user_id)
         data = await state.get_data()
         actions = data.get("pending_post_start_actions") or []
         await state.update_data(pending_terms=False, pending_post_start_actions=[])
@@ -634,6 +681,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             welcome = (await asyncio.to_thread(db.get_welcome_text))
             await call.message.answer(welcome, reply_markup=kb.menu_for_user(db, call.from_user.id, is_main_bot))
             await _send_inline_main_menu(call.message, call.from_user.id)
+            await _send_welcome_gift_offer(call.message, call.from_user.id)
         else:
             await call.answer(db.get_text('handlers_user.auto_34eb72c8', '❌ هنوز عضو کانال نشده\u200cاید.'), show_alert=True)
             if len(settings["channels"]) > 1:
@@ -1118,6 +1166,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 reply_markup=inline_kb if inline_kb is not None else kb.menu_for_user(db, message.from_user.id, is_main_bot),
             )
 
+        await _send_welcome_gift_offer(message, message.from_user.id)
         for action in post_start_actions:
             if action == "__open_test__":
                 await get_test_config(message)
@@ -3444,7 +3493,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
 
         user = (await asyncio.to_thread(db.get_user, message.from_user.id))
-        if user and user["test_used"] >= MAX_TEST_PER_USER:
+        if user and user["test_used"] >= (await asyncio.to_thread(db.get_effective_test_limit, message.from_user.id)):
             await message.answer(db.get_text('handlers_user.auto_6aacb1a2', 'شما قبلاً کانفیگ تست خود را دریافت کرده\u200cاید. هر کاربر فقط یک بار مجاز به دریافت کانفیگ تست است.'))
             return
 
@@ -3454,7 +3503,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 await _deliver_test_plan(message, plans[0])
             else:
                 await message.answer(
-                    db.get_text('handlers_user.auto_c158894a', '🧪 کدام مدل کانفیگ تست را می\u200cخواهید؟'), reply_markup=kb.test_plan_pick_kb(plans)
+                    db.get_text('handlers_user.auto_c158894a', '🧪 کدام مدل کانفیگ تست را می\u200cخواهید؟'), reply_markup=kb.test_plan_pick_kb(plans, db)
                 )
             return
 
@@ -3468,7 +3517,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         # همزمان از یک کاربر می‌توانستند همگی از چک بالای تابع (test_used هنوز
         # صفر) رد شوند و هرکدام یک کانفیگ از بانک لینک بگیرند. حالا سهمیه *قبل*
         # از برداشتن کانفیگ با یک UPDATE اتمیک رزرو می‌شود.
-        if not (await asyncio.to_thread(db.try_reserve_test_slot, message.from_user.id, MAX_TEST_PER_USER)):
+        if not (await asyncio.to_thread(db.try_reserve_test_slot, message.from_user.id, await asyncio.to_thread(db.get_effective_test_limit, message.from_user.id))):
             await message.answer(db.get_text('handlers_user.auto_6aacb1a2', 'شما قبلاً کانفیگ تست خود را دریافت کرده\u200cاید. هر کاربر فقط یک بار مجاز به دریافت کانفیگ تست است.'))
             return
 
@@ -3497,7 +3546,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         # از اعتبار حجمی نماینده کم می‌کردند). حالا سهمیه با یک UPDATE اتمیک
         # *قبل* از تماس با پنل رزرو می‌شود؛ اگر ساخت کانفیگ شکست بخورد، سهمیه
         # با release_test_slot برمی‌گردد تا کاربر واقعاً بتواند دوباره تلاش کند.
-        if not (await asyncio.to_thread(db.try_reserve_test_slot, message.from_user.id, MAX_TEST_PER_USER)):
+        if not (await asyncio.to_thread(db.try_reserve_test_slot, message.from_user.id, await asyncio.to_thread(db.get_effective_test_limit, message.from_user.id))):
             await message.answer(db.get_text('handlers_user.auto_6aacb1a2', 'شما قبلاً کانفیگ تست خود را دریافت کرده\u200cاید. هر کاربر فقط یک بار مجاز به دریافت کانفیگ تست است.'))
             return
 
@@ -4182,12 +4231,15 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
     def _svc_kb_kwargs(item) -> dict:
         if item["kind"] != "custom":
-            return {}
+            order = item.get("order")
+            return {"is_invoiceable": bool(order and order["status"] == "approved")}
         cc = item["custom"]
         return {
             "enabled": (cc["enabled"] if "enabled" in cc.keys() else 1) == 1,
             "auto_renew": (cc["auto_renew"] if "auto_renew" in cc.keys() else 0) == 1,
             "is_test": cc["source"] == "test",
+            "is_gift": cc["source"] in ("welcome_gift", "gift"),
+            "is_invoiceable": bool(cc["order_id"]),
             "can_add_users": ul.service_upgrade_info(db, cc) is not None,
         }
 
@@ -4284,6 +4336,60 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await _safe_edit(target, text, reply_markup=markup)
         else:
             await target.answer(text, reply_markup=markup)
+
+    async def _user_invoice_text(user_tg_id: int, selected_kind=None, selected_id=None):
+        items = await asyncio.to_thread(db.get_user_invoice_items, user_tg_id)
+        if selected_kind and selected_id is not None:
+            items = [x for x in items if x["service_kind"] == selected_kind and int(x["service_id"]) == int(selected_id)]
+        if not items:
+            return None
+        user = await asyncio.to_thread(db.get_user, user_tg_id)
+        total = sum(int(x.get("amount") or 0) for x in items)
+        invoice_code = f"SV-{user_tg_id}-{int(time.time())}"
+        parts = [
+            "🧾 <b>فاکتور خدمات خریداری‌شده</b>",
+            f"شماره فاکتور: <code>{invoice_code}</code>",
+            f"مشتری: {html.escape((user['first_name'] or user['username'] or str(user_tg_id)) if user else str(user_tg_id))}",
+            f"شناسه مشتری: <code>{user_tg_id}</code>",
+            "━━━━━━━━━━━━━━",
+        ]
+        for n, item in enumerate(items, 1):
+            name = html.escape(str(item.get("service_name") or item.get("product_name") or "سرویس"))
+            amount = int(item.get("amount") or 0)
+            parts.append(
+                f"{n}. <b>{name}</b>\nشناسه: <code>{item['service_kind']}:{item['service_id']}</code>\n"
+                f"سفارش #{item.get('order_id') or '—'} | {amount:,} تومان"
+                + (f"\nحجم: {item['volume_gb']} گیگ | مدت: {item['duration_days']} روز" if item.get("volume_gb") is not None else "")
+                + (f"\nتاریخ: {html.escape(str(item.get('created_at') or '—'))}" if item.get("created_at") else "")
+                + (f" | انقضا: {html.escape(str(item.get('expires_at')))}" if item.get("expires_at") else "")
+            )
+        parts.extend(["━━━━━━━━━━━━━━", f"<b>جمع کل: {total:,} تومان</b>", "این فاکتور بر اساس سفارش‌های تأییدشده‌ی ثبت‌شده در سامانه صادر شده است."])
+        return "\n\n".join(parts)
+
+    @router.callback_query(F.data == "mo_invoice_all")
+    async def cb_user_invoice_all(call: CallbackQuery):
+        invoice = await _user_invoice_text(call.from_user.id)
+        if not invoice:
+            await call.answer(tr("سرویس خریداری‌شده‌ای برای صدور فاکتور پیدا نشد."), show_alert=True)
+            return
+        await call.message.answer(invoice, parse_mode="HTML")
+        await call.answer(tr("فاکتور کلی صادر شد."))
+
+    @router.callback_query(F.data.startswith("mo_invoice:"))
+    async def cb_user_invoice_one(call: CallbackQuery):
+        cb_id = call.data.split(":", 1)[1]
+        item = _find_my_orders_item(call.from_user.id, cb_id)
+        if not item or item["kind"] not in ("custom", "config"):
+            await call.answer(tr("سرویس برای صدور فاکتور پیدا نشد."), show_alert=True)
+            return
+        kind = "custom" if item["kind"] == "custom" else "bank"
+        service_id = item["custom"]["id"] if kind == "custom" else item["config"]["id"]
+        invoice = await _user_invoice_text(call.from_user.id, kind, service_id)
+        if not invoice:
+            await call.answer(tr("اطلاعات خرید این سرویس برای صدور فاکتور موجود نیست."), show_alert=True)
+            return
+        await call.message.answer(invoice, parse_mode="HTML")
+        await call.answer(tr("فاکتور سرویس صادر شد."))
 
     @router.callback_query(F.data == "mo_back")
     async def cb_my_orders_back(call: CallbackQuery):

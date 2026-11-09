@@ -1264,7 +1264,7 @@ async def _tool_request_test_config(db, user_tg_id: int) -> dict:
     test_enabled, test_used, plans = await asyncio.to_thread(_read)
     if not test_enabled:
         return {"eligible": False, "reason": "test_disabled"}
-    if test_used >= config.MAX_TEST_PER_USER:
+    if test_used >= db.get_effective_test_limit(user_tg_id):
         return {"eligible": False, "reason": "already_used"}
     if not plans:
         # نصب‌های خیلی قدیمی بدون پلن تعریف‌شده ممکن است هنوز بانک لینک دستی

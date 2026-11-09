@@ -40,6 +40,7 @@ AI_DESC_PROMPT = (
 )
 
 import account_naming
+import emoji_prefs
 import keyboards as kb
 from database import Database, MENU_BUTTON_META
 from config import RESELLER_DBS_DIR, resolve_db_path, ADMIN_PANEL_URL, BOT_TOKEN, DB_PATH as MAIN_DB_PATH
@@ -95,11 +96,13 @@ from states import (
     AdminCreateDiscount,
     AdminBulkDiscount,
     AdminUserManage,
+    AdminUserTestLimit,
     AdminConfigManage,
     AdminConfigSearch,
     AdminPanelSearch,
     AdminCreateWalletGift,
     AdminAddCategory,
+    AdminEmojiEdit,
     AdminAddProduct,
     AdminEditProduct,
     AdminAddConfigs,
@@ -165,6 +168,7 @@ from states import (
     AdminReferralInviteBonusMax,
     AdminSignupGiftAmount,
     AdminSignupGiftDelay,
+    AdminWelcomeGift,
     AdminAddResellerBot,
     AdminSetPanelDomain,
     AdminResellerCredit,
@@ -6209,6 +6213,182 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await message.answer(tr(f"✅ هدیه‌ی عضویت {text} روز بعد از عضویت (بدون خرید) اعطا می‌شود."), reply_markup=kb.signup_gift_settings_kb(db))
 
     # -------------------------------------------------------------------
+    # هدیه‌ی کانفیگ عضویت
+    # -------------------------------------------------------------------
+
+    def _wgift_text() -> str:
+        stats = db.welcome_gift_stats()
+        return tr(
+            "🎁 هدیه‌ی کانفیگ عضویت\n"
+            "به‌محض عضویت کاربر جدید، پس از زمان تعیین‌شده یک سرویس از محصول انتخابی با حجم/مدت دلخواه برایش ساخته و ارسال می‌شود.\n\n"
+            f"در صف: {stats['pending'] + stats['processing'] + stats.get('provisioned', 0)} | ارسال‌شده: {stats['done']} | ناموفق: {stats['failed']}"
+        )
+
+    async def _wgift_show(target):
+        markup = await asyncio.to_thread(kb.welcome_gift_settings_kb, db)
+        if isinstance(target, CallbackQuery):
+            await replace_admin_view(target, _wgift_text(), reply_markup=markup)
+        else:
+            await target.answer(_wgift_text(), reply_markup=markup)
+
+    @router.callback_query(F.data == "adm_welcome_gift")
+    async def cb_wgift_menu(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        await state.clear()
+        await _wgift_show(call)
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_wgift_toggle")
+    async def cb_wgift_toggle(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        current = await asyncio.to_thread(db.get_setting, "welcome_gift_enabled", "0")
+        if current != "1":
+            product_id = int(await asyncio.to_thread(db.get_setting, "welcome_gift_product_id", "0") or 0)
+            if product_id <= 0:
+                await call.answer(tr("ابتدا یک محصول انتخاب کنید."), show_alert=True)
+                return
+        await asyncio.to_thread(db.set_setting, "welcome_gift_enabled", "0" if current == "1" else "1")
+        await _wgift_show(call)
+        await call.answer(tr("وضعیت تغییر کرد."))
+
+    @router.callback_query(F.data == "adm_wgift_mode")
+    async def cb_wgift_mode(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        current = await asyncio.to_thread(db.get_setting, "welcome_gift_product_mode", "existing")
+        new_mode = "dedicated" if current != "dedicated" else "existing"
+        await asyncio.to_thread(db.set_setting, "welcome_gift_product_mode", new_mode)
+        # هر حالت محصول مستقل خودش را دارد؛ با تغییر حالت، محصول قبلی به‌اشتباه
+        # به‌عنوان محصول حالت جدید استفاده نمی‌شود.
+        await asyncio.to_thread(db.set_setting, "welcome_gift_product_id", "0")
+        await _wgift_show(call)
+        await call.answer(tr("نوع محصول هدیه تغییر کرد."))
+
+    @router.callback_query(F.data == "adm_wgift_create")
+    async def cb_wgift_create(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        import welcome_gift as wg
+        products = await asyncio.to_thread(db.get_all_products)
+        giftable = [p for p in products if await asyncio.to_thread(wg.product_is_giftable, db, p)]
+        if not giftable:
+            await call.answer(tr("برای ساخت محصول هدیه، ابتدا حداقل یک محصول متصل به پنل/نود بسازید تا تنظیمات اتصال آن به‌عنوان قالب کپی شود."), show_alert=True)
+            return
+        await safe_edit(call, tr("محصولی را به‌عنوان قالب انتخاب کنید. پنل، اینباند و تنظیمات اتصال آن کپی می‌شود و محصول هدیه‌ی جدید در فروشگاه نمایش داده نخواهد شد:"),
+                        reply_markup=kb.welcome_gift_templates_kb(giftable))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_wgift_template:"))
+    async def cb_wgift_template(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        try:
+            template_id = int(call.data.split(":", 1)[1])
+        except ValueError:
+            await call.answer(tr("محصول نامعتبر است."), show_alert=True)
+            return
+        await state.set_state(AdminWelcomeGift.waiting_product_name)
+        await state.update_data(welcome_gift_template_id=template_id)
+        await safe_edit(call, tr("نام محصول اختصاصی هدیه را ارسال کنید:"))
+        await call.answer()
+
+    @router.message(AdminWelcomeGift.waiting_product_name)
+    async def process_wgift_product_name(message: Message, state: FSMContext):
+        data = await state.get_data()
+        template_id = data.get("welcome_gift_template_id")
+        name = (message.text or "").strip()
+        if not name or len(name) > 100:
+            await message.answer(tr("نام محصول باید بین ۱ تا ۱۰۰ نویسه باشد."))
+            return
+        try:
+            product_id = await asyncio.to_thread(db.clone_product_as_hidden_gift, template_id, name)
+        except Exception as exc:
+            await message.answer(tr(f"ساخت محصول هدیه ناموفق بود: {exc}"))
+            return
+        await asyncio.to_thread(db.set_setting, "welcome_gift_product_id", str(product_id))
+        await asyncio.to_thread(db.set_setting, "welcome_gift_product_mode", "dedicated")
+        await state.clear()
+        await asyncio.to_thread(db.log_admin_action, message.from_user.id, "welcome_gift_product_create", f"product_id={product_id}, template={template_id}")
+        await _wgift_show(message)
+
+    @router.callback_query(F.data == "adm_wgift_products")
+    async def cb_wgift_products(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        import welcome_gift as wg
+        products = await asyncio.to_thread(db.get_all_products)
+        giftable = [p for p in products if await asyncio.to_thread(wg.product_is_giftable, db, p)]
+        if not giftable:
+            await call.answer(tr("هیچ محصول متصل به پنل/نود پیدا نشد."), show_alert=True)
+            return
+        await safe_edit(call, tr("محصولی که به‌عنوان هدیه ساخته می‌شود را انتخاب کنید (فقط محصولات متصل به پنل/نود):"),
+                        reply_markup=kb.welcome_gift_products_kb(giftable))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_wgift_pick:"))
+    async def cb_wgift_pick(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        import welcome_gift as wg
+        product = await asyncio.to_thread(db.get_product, int(call.data.split(":", 1)[1]))
+        if not product or not await asyncio.to_thread(wg.product_is_giftable, db, product):
+            await call.answer(tr("این محصول قابل استفاده نیست."), show_alert=True)
+            return
+        await asyncio.to_thread(db.set_setting, "welcome_gift_product_id", str(product["id"]))
+        await asyncio.to_thread(db.set_setting, "welcome_gift_product_mode", "existing")
+        await _wgift_show(call)
+        await call.answer(tr("محصول انتخاب شد."))
+
+    _WGIFT_PROMPTS = {
+        "adm_wgift_volume": (AdminWelcomeGift.waiting_volume,
+                             "حجم هدیه را به گیگابایت بفرستید (مثلاً 1 یا 0.5).\n0 = نامحدود | - = حجم پیش‌فرض محصول"),
+        "adm_wgift_days": (AdminWelcomeGift.waiting_days,
+                           "مدت هدیه را به روز بفرستید (مثلاً 7 یا 0.5).\n0 = نامحدود | - = مدت پیش‌فرض محصول"),
+        "adm_wgift_delay": (AdminWelcomeGift.waiting_delay,
+                            "چه مدت بعد از عضویت هدیه ارسال شود؟\nمثال: 0 (بلافاصله) | 1 | 30m | 2h | 3d\n(عدد بدون واحد = دقیقه)"),
+    }
+
+    @router.callback_query(F.data.in_(set(_WGIFT_PROMPTS)))
+    async def cb_wgift_edit(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        new_state, prompt = _WGIFT_PROMPTS[call.data]
+        await state.set_state(new_state)
+        await safe_edit(call, tr(prompt), reply_markup=kb.admin_back_kb("adm_welcome_gift"))
+        await call.answer()
+
+    async def _wgift_save_amount(message: Message, state: FSMContext, key: str):
+        import welcome_gift as wg
+        value = wg.parse_amount(message.text or "")
+        if value is None:
+            await message.answer(tr("عدد معتبر ارسال کنید (0 یا بیشتر)، یا - برای پیش‌فرض محصول."))
+            return
+        await asyncio.to_thread(db.set_setting, key, value)
+        await state.clear()
+        await _wgift_show(message)
+
+    @router.message(AdminWelcomeGift.waiting_volume)
+    async def process_wgift_volume(message: Message, state: FSMContext):
+        await _wgift_save_amount(message, state, "welcome_gift_volume_gb")
+
+    @router.message(AdminWelcomeGift.waiting_days)
+    async def process_wgift_days(message: Message, state: FSMContext):
+        await _wgift_save_amount(message, state, "welcome_gift_days")
+
+    @router.message(AdminWelcomeGift.waiting_delay)
+    async def process_wgift_delay(message: Message, state: FSMContext):
+        import welcome_gift as wg
+        minutes = wg.parse_delay_minutes(message.text or "")
+        if minutes is None:
+            await message.answer(tr("فرمت نامعتبر است. مثال: 0 | 30m | 2h | 3d"))
+            return
+        await asyncio.to_thread(db.set_setting, "welcome_gift_delay_minutes", str(minutes))
+        await state.clear()
+        await _wgift_show(message)
+
+    # -------------------------------------------------------------------
     # مدیریت گردونه شانس
     # -------------------------------------------------------------------
 
@@ -11033,6 +11213,131 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await safe_edit(call, tr("🎨 رنگ‌آمیزی دکمه‌های خرید:"), reply_markup=kb.buy_flow_colors_kb(db))
         await call.answer(tr("✅ چیدمان لیست محصولات: باکس جدا") if new_value == "split" else tr("✅ چیدمان لیست محصولات: کلاسیک"))
 
+    @router.callback_query(F.data == "adm_buyflow_order_toggle")
+    async def cb_admin_buyflow_order_toggle(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        current = await asyncio.to_thread(db.get_setting, "buy_product_order", "name_first")
+        new_value = "name_first" if current == "price_first" else "price_first"
+        await asyncio.to_thread(db.set_setting, "buy_product_order", new_value)
+        await safe_edit(call, tr("🎨 رنگ‌آمیزی دکمه‌های خرید:"), reply_markup=kb.buy_flow_colors_kb(db))
+        await call.answer(tr("✅ اول قیمت نمایش داده می‌شود") if new_value == "price_first" else tr("✅ اول نام محصول نمایش داده می‌شود"))
+
+    _EMOJI_HELP = (
+        "ایموجی جدید را ارسال کن.\n"
+        "برای حذف ایموجی: - بفرست\n"
+        "برای برگشت به مقدار پیش‌فرض: پیش‌فرض بفرست"
+    )
+
+    @router.callback_query(F.data == "adm_emoji_menu")
+    async def cb_admin_emoji_menu(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        await state.clear()
+        await safe_edit(
+            call,
+            tr("😀 ایموجی دکمه‌ها\nایموجی هر دسته یا پلن تست را می‌توانی جداگانه هم تغییر بدهی (از صفحه‌ی خود دسته یا پلن)."),
+            reply_markup=kb.admin_emoji_menu_kb(db),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_emoji_edit:"))
+    async def cb_admin_emoji_edit(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        key = call.data.split(":", 1)[1]
+        if key not in emoji_prefs.GLOBAL_KEYS:
+            return await call.answer(tr("⚠️ درخواست نامعتبر است."), show_alert=True)
+        await state.set_state(AdminEmojiEdit.waiting_global)
+        await state.update_data(emoji_key=key)
+        await safe_edit(
+            call,
+            tr(f"{emoji_prefs.GLOBAL_KEYS[key][1]}\n\n{_EMOJI_HELP}"),
+            reply_markup=kb.admin_back_kb("adm_emoji_menu"),
+        )
+        await call.answer()
+
+    @router.message(AdminEmojiEdit.waiting_global)
+    async def process_admin_emoji_global(message: Message, state: FSMContext):
+        if not senior_admin_only(message.from_user.id):
+            return
+        data = await state.get_data()
+        key = data.get("emoji_key")
+        ok, value = emoji_prefs.parse_input(message.text, allow_reset=True)
+        if key not in emoji_prefs.GLOBAL_KEYS or not ok:
+            await message.answer(tr("⚠️ مقدار نامعتبر است؛ فقط یک ایموجی کوتاه بفرست."))
+            return
+        if value == "":
+            stored = emoji_prefs.GLOBAL_KEYS[key][0]
+        elif value == emoji_prefs.NONE_MARK:
+            stored = ""
+        else:
+            stored = value
+        await asyncio.to_thread(db.set_setting, key, stored)
+        await asyncio.to_thread(db.log_admin_action, message.from_user.id, "emoji_setting", f"{key}")
+        await state.clear()
+        await message.answer(tr("✅ ذخیره شد."), reply_markup=kb.admin_emoji_menu_kb(db))
+
+    @router.callback_query(F.data.startswith("adm_catemoji:"))
+    async def cb_admin_catemoji(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        parts = call.data.split(":")
+        if len(parts) != 3 or not parts[1].isdigit() or parts[2] not in ("emoji", "product_emoji"):
+            return await call.answer(tr("⚠️ درخواست نامعتبر است."), show_alert=True)
+        cat_id, field = int(parts[1]), parts[2]
+        if (await asyncio.to_thread(db.get_category, cat_id)) is None:
+            return await call.answer(tr("⚠️ این دسته‌بندی دیگر وجود ندارد."), show_alert=True)
+        await state.set_state(AdminEmojiEdit.waiting_category)
+        await state.update_data(emoji_cat_id=cat_id, emoji_field=field)
+        title = "ایموجی دکمه‌ی این دسته" if field == "emoji" else "ایموجی محصولات داخل این دسته"
+        await safe_edit(
+            call, tr(f"{title}\n\n{_EMOJI_HELP}"),
+            reply_markup=kb.admin_back_kb(f"adm_cat_open:{cat_id}"),
+        )
+        await call.answer()
+
+    @router.message(AdminEmojiEdit.waiting_category)
+    async def process_admin_catemoji(message: Message, state: FSMContext):
+        if not senior_admin_only(message.from_user.id):
+            return
+        data = await state.get_data()
+        cat_id, field = data.get("emoji_cat_id"), data.get("emoji_field")
+        ok, value = emoji_prefs.parse_input(message.text, allow_reset=True)
+        if not cat_id or field not in ("emoji", "product_emoji") or not ok:
+            await message.answer(tr("⚠️ مقدار نامعتبر است؛ فقط یک ایموجی کوتاه بفرست."))
+            return
+        await asyncio.to_thread(db.set_category_emoji, cat_id, field, value)
+        await asyncio.to_thread(db.log_admin_action, message.from_user.id, "category_emoji", f"دسته‌بندی #{cat_id}")
+        await state.clear()
+        text, markup = await _category_view(cat_id)
+        await message.answer(tr("✅ ذخیره شد.") + "\n" + text, reply_markup=markup)
+
+    @router.callback_query(F.data.startswith("adm_tp_edit_emoji:"))
+    async def cb_tp_edit_emoji(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        plan_id = callback_id(call.data, "adm_tp_edit_emoji")
+        if plan_id is None:
+            return await call.answer(tr("⚠️ درخواست نامعتبر است."), show_alert=True)
+        await state.update_data(editing_plan_id=plan_id)
+        await state.set_state(AdminEditTestPlan.waiting_emoji)
+        await safe_edit(call, tr(_EMOJI_HELP), reply_markup=kb.admin_back_kb(f"adm_tp_view:{plan_id}"))
+        await call.answer()
+
+    @router.message(AdminEditTestPlan.waiting_emoji)
+    async def process_tp_edit_emoji(message: Message, state: FSMContext):
+        if not senior_admin_only(message.from_user.id):
+            return
+        ok, value = emoji_prefs.parse_input(message.text, allow_reset=True)
+        if not ok:
+            await message.answer(tr("⚠️ مقدار نامعتبر است؛ فقط یک ایموجی کوتاه بفرست."))
+            return
+        plan_id = (await state.get_data()).get("editing_plan_id")
+        await asyncio.to_thread(db.update_test_config_plan, plan_id, emoji=value)
+        await state.clear()
+        await _tp_show_view(message, plan_id, "✅ ایموجی به‌روزرسانی شد.")
+
     # -------------------------------------------------------------------
     # تنظیم شماره کارت
     # -------------------------------------------------------------------
@@ -11981,6 +12286,41 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             prompt = "متن یا عکس (با یا بدون کپشن) پیام همگانی را ارسال کنید (برای همه کاربران ارسال می‌شود):"
         await replace_admin_view(call, prompt, reply_markup=kb.admin_back_kb("adm_broadcast"))
         await call.answer()
+
+    # پین/آن‌پین پیام در گروه یا کانالی که بات دسترسی مدیریتی دارد.
+    @router.message(Command("pin"))
+    async def admin_pin_replied_message(message: Message, bot: Bot):
+        if not senior_admin_only(message.from_user.id):
+            return
+        if message.chat.type == "private":
+            await message.answer(tr("تلگرام اجازه‌ی پین‌کردن پیام در گفت‌وگوی خصوصی کاربر و بات را نمی‌دهد. این دستور را در گروه/کانال و در پاسخ به پیام موردنظر اجرا کنید."))
+            return
+        if not message.reply_to_message:
+            await message.answer(tr("برای پین‌کردن، روی پیام موردنظر Reply کنید و دستور /pin را بفرستید."))
+            return
+        try:
+            await bot.pin_chat_message(message.chat.id, message.reply_to_message.message_id, disable_notification=True)
+            await message.answer(tr("📌 پیام با موفقیت پین شد."))
+            await asyncio.to_thread(db.log_admin_action, message.from_user.id, "pin_message", f"chat={message.chat.id}, message={message.reply_to_message.message_id}")
+        except Exception as exc:
+            await message.answer(tr(f"⛔️ پین پیام ناموفق بود: {exc}"))
+
+    @router.message(Command("unpin"))
+    async def admin_unpin_replied_message(message: Message, bot: Bot):
+        if not senior_admin_only(message.from_user.id):
+            return
+        if message.chat.type == "private":
+            await message.answer(tr("آن‌پین‌کردن پیام در گفت‌وگوی خصوصی کاربر و بات از طریق Bot API پشتیبانی نمی‌شود."))
+            return
+        if not message.reply_to_message:
+            await message.answer(tr("برای آن‌پین‌کردن، روی پیام پین‌شده Reply کنید و دستور /unpin را بفرستید."))
+            return
+        try:
+            await bot.unpin_chat_message(message.chat.id, message.reply_to_message.message_id)
+            await message.answer(tr("📍 پیام از حالت پین خارج شد."))
+            await asyncio.to_thread(db.log_admin_action, message.from_user.id, "unpin_message", f"chat={message.chat.id}, message={message.reply_to_message.message_id}")
+        except Exception as exc:
+            await message.answer(tr(f"⛔️ آن‌پین پیام ناموفق بود: {exc}"))
 
     @router.callback_query(F.data == "adm_broadcast")
     async def cb_admin_broadcast(call: CallbackQuery, state: FSMContext):
@@ -14319,6 +14659,13 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         text = _fmt_user_configs_report(tg_id, custom_configs, bank_configs)
         for chunk_start in range(0, len(text), 3500):
             await call.message.answer(text[chunk_start:chunk_start + 3500])
+        invoice_rows = [
+            [InlineKeyboardButton(text=tr(f"🧾 فاکتور سرویس بانکی #{row['id']}"), callback_data=f"adm_user_invoice_one:{tg_id}:bank:{row['id']}")]
+            for row in bank_configs[:80]
+        ]
+        if invoice_rows:
+            invoice_rows.append([InlineKeyboardButton(text=tr("🧾 فاکتور کلی همه‌ی سرویس‌ها"), callback_data=f"adm_user_invoice_all:{tg_id}")])
+            await call.message.answer(tr("صدور فاکتور تکی سرویس‌های بانکی:"), reply_markup=InlineKeyboardMarkup(inline_keyboard=invoice_rows))
         is_blocked = (user["is_blocked"] if "is_blocked" in user.keys() else 0) == 1
         _stats_kb = kb.user_group_stats_kb if report_router.is_report_group_message(db, call.message) else kb.user_full_stats_kb
         await call.message.answer(tr(f"🔍 آمار کامل کاربر {tg_id}"), reply_markup=_stats_kb(tg_id, is_blocked))
@@ -14491,6 +14838,112 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.clear()
         await _show_user_menu(call.message, tg_id)
         await call.answer()
+
+    # ---- فاکتور سرویس‌ها (تکی یا تجمیعی) ----
+
+    async def _send_user_invoice(target_message, bot, admin_id: int, tg_id: int, service_kind=None, service_id=None):
+        items = await asyncio.to_thread(db.get_user_invoice_items, tg_id)
+        if service_kind and service_id is not None:
+            items = [x for x in items if x["service_kind"] == service_kind and int(x["service_id"]) == int(service_id)]
+        if not items:
+            await target_message.answer(tr("برای این کاربر سرویس خریداری‌شده‌ای جهت صدور فاکتور پیدا نشد."))
+            return
+        user = await asyncio.to_thread(db.get_user, tg_id)
+        total = sum(int(x.get("amount") or 0) for x in items)
+        invoice_code = f"SV-{tg_id}-{int(time.time())}"
+        lines = [
+            "🧾 <b>فاکتور خدمات</b>",
+            f"شماره فاکتور: <code>{invoice_code}</code>",
+            f"شناسه مشتری: <code>{tg_id}</code>",
+            f"نام مشتری: {html.escape((user['first_name'] or user['username'] or str(tg_id)) if user else str(tg_id))}",
+            "━━━━━━━━━━━━━━",
+        ]
+        for n, item in enumerate(items, 1):
+            name = html.escape(str(item.get("service_name") or item.get("product_name") or "سرویس"))
+            details = []
+            if item.get("volume_gb") is not None:
+                details.append(f"{item['volume_gb']} GB")
+            if item.get("duration_days") is not None:
+                details.append(f"{item['duration_days']} روز")
+            lines.append(
+                f"{n}. <b>{name}</b>\n"
+                f"شناسه سرویس: <code>{item['service_kind']}:{item['service_id']}</code>\n"
+                f"سفارش: #{item.get('order_id') or '—'} | مبلغ: {int(item.get('amount') or 0):,} تومان"
+                + (f" | {' / '.join(details)}" if details else "")
+                + (f"\nتاریخ: {html.escape(str(item.get('created_at') or '—'))}" if item.get("created_at") else "")
+                + (f" | انقضا: {html.escape(str(item.get('expires_at')))}" if item.get("expires_at") else "")
+            )
+        lines.extend(["━━━━━━━━━━━━━━", f"<b>جمع کل: {total:,} تومان</b>", "این فاکتور بر اساس سفارش‌های ثبت‌شده در سامانه صادر شده است."])
+        try:
+            await bot.send_message(tg_id, "\n\n".join(lines), parse_mode="HTML")
+            await target_message.answer(tr(f"✅ فاکتور برای کاربر {tg_id} ارسال شد."))
+            await asyncio.to_thread(db.log_admin_action, admin_id, "user_invoice", f"user={tg_id}, items={len(items)}, total={total}")
+        except Exception as exc:
+            await target_message.answer(tr(f"⛔️ ارسال فاکتور ناموفق بود: {exc}"))
+
+    @router.callback_query(F.data.startswith("adm_user_invoice_all:"))
+    async def cb_user_invoice_all(call: CallbackQuery, bot: Bot):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        tg_id = callback_id(call.data, "adm_user_invoice_all")
+        if tg_id is None:
+            await call.answer(tr("شناسه کاربر نامعتبر است."), show_alert=True)
+            return
+        await _send_user_invoice(call.message, bot, call.from_user.id, tg_id)
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_user_invoice_one:"))
+    async def cb_user_invoice_one(call: CallbackQuery, bot: Bot):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        try:
+            prefix, raw_uid, kind, raw_sid = call.data.split(":")
+            tg_id, service_id = int(raw_uid), int(raw_sid)
+        except Exception:
+            await call.answer(tr("اطلاعات فاکتور نامعتبر است."), show_alert=True)
+            return
+        await _send_user_invoice(call.message, bot, call.from_user.id, tg_id, kind, service_id)
+        await call.answer()
+
+    # ---- سهمیه‌ی اختصاصی کانفیگ تست برای یک کاربر ----
+
+    @router.callback_query(F.data.startswith("adm_user_test_limit:"))
+    async def cb_admin_user_test_limit(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        tg_id = callback_id(call.data, "adm_user_test_limit")
+        if tg_id is None or not await asyncio.to_thread(db.get_user, tg_id):
+            await call.answer(tr("کاربر یافت نشد."), show_alert=True)
+            return
+        user = await asyncio.to_thread(db.get_user, tg_id)
+        current = user["test_limit_override"] if "test_limit_override" in user.keys() else None
+        global_limit = await asyncio.to_thread(db.get_setting, "test_max_per_user", "1")
+        await state.set_state(AdminUserTestLimit.waiting_value)
+        await state.update_data(test_limit_user_id=tg_id)
+        shown = "پیش‌فرض عمومی" if current is None else str(current)
+        await call.message.answer(
+            tr(f"🧪 سهمیه‌ی فعلی کاربر: {shown}\nسهمیه‌ی عمومی: {global_limit}\n\n"
+               "عدد ۰ تا ۱۰۰۰ را بفرستید. برای بازگشت به سهمیه‌ی عمومی، «پیش‌فرض» یا - را ارسال کنید."),
+            reply_markup=kb.admin_back_kb(f"adm_user_view:{tg_id}"),
+        )
+        await call.answer()
+
+    @router.message(AdminUserTestLimit.waiting_value)
+    async def process_admin_user_test_limit(message: Message, state: FSMContext):
+        data = await state.get_data()
+        tg_id = data.get("test_limit_user_id")
+        raw = (message.text or "").strip().replace("۰", "0").replace("۱", "1").replace("۲", "2").replace("۳", "3").replace("۴", "4").replace("۵", "5").replace("۶", "6").replace("۷", "7").replace("۸", "8").replace("۹", "9")
+        if raw.lower() in ("-", "پیش‌فرض", "default"):
+            value = None
+        elif raw.isdigit() and 0 <= int(raw) <= 1000:
+            value = int(raw)
+        else:
+            await message.answer(tr("عدد صحیح بین ۰ تا ۱۰۰۰ یا «پیش‌فرض» را ارسال کنید."))
+            return
+        ok = await asyncio.to_thread(db.set_user_test_limit_override, tg_id, value)
+        await state.clear()
+        await asyncio.to_thread(db.log_admin_action, message.from_user.id, "user_test_limit", f"user={tg_id}, limit={value}")
+        await _show_user_menu(message, tg_id, "✅ سهمیه‌ی تست کاربر به‌روزرسانی شد." if ok else "⛔️ ذخیره‌ی سهمیه ناموفق بود.")
 
     # ---- ارسال پیام مستقیم به کاربر ----
 
@@ -15352,6 +15805,130 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             f"سرویس «{cc['username']}» کاربر {tg_id}: {label} (بات)", "user", tg_id,
         )
         await _show_config_detail(message, tg_id, cc_id, f"✅ {label} به کانفیگ اضافه شد.")
+
+    async def _cfg_sub_ask(call: CallbackQuery, state: FSMContext, kind: str):
+        if not await _cfg_ext_guard(call):
+            return
+        tg_id, cc_id = _parse_cfg_cb(call.data)
+        cc = await _get_cfg_of_user(tg_id, cc_id) if tg_id else None
+        if not cc:
+            await call.answer(tr("این کانفیگ یافت نشد."), show_alert=True)
+            return
+        if kind == "vol" and (cc["volume_gb"] or 0) <= 0:
+            await call.answer(tr("حجم این سرویس نامحدود است."), show_alert=True)
+            return
+        if kind == "day" and ((cc["duration_days"] or 0) <= 0 or not cc["expires_at"]):
+            await call.answer(tr("این سرویس نامحدود است یا هنوز شروع نشده (On-hold)."), show_alert=True)
+            return
+        pool = await asyncio.to_thread(db.quota_pool_for_custom_config, cc_id)
+        if pool:
+            await call.answer(tr("این سرویس ترکیبی VPN+SSH با سهمیه‌ی مشترک است؛ از بخش مربوط به سهمیه‌ی مشترک تغییر بده."), show_alert=True)
+            return
+        await state.set_state(AdminConfigManage.waiting_sub_volume if kind == "vol" else AdminConfigManage.waiting_sub_days)
+        await state.update_data(target_user_id=tg_id, target_cc_id=cc_id)
+        prompt = ("➖ چند گیگ از این کانفیگ کم شود؟ (عدد، مثلاً 5 یا 1.5؛ باید کمتر از حجم باقیمانده باشد)" if kind == "vol"
+                  else "➖ چند روز از انقضای این کانفیگ کم شود؟ (عدد صحیح؛ باید کمتر از روزهای باقیمانده باشد)")
+        await call.message.answer(tr(prompt), reply_markup=kb.admin_back_kb(f"adm_cfg_view:{tg_id}:{cc_id}"))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_cfg_subvol:"))
+    async def cb_admin_cfg_subvol(call: CallbackQuery, state: FSMContext):
+        await _cfg_sub_ask(call, state, "vol")
+
+    @router.callback_query(F.data.startswith("adm_cfg_subday:"))
+    async def cb_admin_cfg_subday(call: CallbackQuery, state: FSMContext):
+        await _cfg_sub_ask(call, state, "day")
+
+    async def _cfg_sub_apply(message: Message, state: FSMContext, kind: str):
+        if not is_main_bot or not senior_admin_only(message.from_user.id):
+            await state.clear()
+            return
+        raw = (message.text or "").strip().replace(",", ".")
+        try:
+            amount = float(raw)
+        except ValueError:
+            amount = 0
+        if kind == "day":
+            amount = int(amount) if amount == int(amount) else 0
+        if amount <= 0:
+            await message.answer(tr("❌ عدد نامعتبر است؛ یک عدد مثبت بفرست."))
+            return
+        data = await state.get_data()
+        tg_id, cc_id = data.get("target_user_id"), data.get("target_cc_id")
+        cc = await _get_cfg_of_user(tg_id, cc_id) if tg_id and cc_id else None
+        if not cc:
+            await state.clear()
+            await message.answer(tr("این کانفیگ دیگر یافت نشد."))
+            return
+        server = (await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])) if cc["panel_server_id"] else None
+        if not server or not server["is_active"]:
+            await state.clear()
+            await message.answer(tr("سرور پنل مربوط به این سرویس یافت نشد یا غیرفعال است."))
+            return
+        try:
+            from product_targets import apply_target_config
+            server = apply_target_config(server, cc["panel_target_config"])
+        except (KeyError, IndexError, TypeError, ImportError):
+            pass
+        provider = get_provider(server)
+        if kind == "vol":
+            try:
+                usage = await asyncio.wait_for(provider.get_user_usage(cc["username"]), timeout=15)
+            except Exception as e:
+                await message.answer(tr(f"⛔️ خواندن مصرف از پنل ناموفق بود: {e}"))
+                return
+            limit = int(usage.get("data_limit_bytes") or 0)
+            used = int(usage.get("used_bytes") or 0)
+            if limit <= 0:
+                await state.clear()
+                await message.answer(tr("حجم این سرویس روی پنل نامحدود است."))
+                return
+            max_reduce = min((limit - used) / (1024 ** 3), float(cc["volume_gb"] or 0))
+            if amount >= max_reduce:
+                await message.answer(tr(f"❌ حداکثر کاهش مجاز کمتر از {max(max_reduce, 0):.2f} گیگ است (حجم باقیمانده کاربر). عدد کوچک‌تری بفرست."))
+                return
+            sub_vol, sub_days = amount, 0
+        else:
+            try:
+                expires = datetime.fromisoformat(cc["expires_at"])
+            except (TypeError, ValueError):
+                await state.clear()
+                await message.answer(tr("تاریخ انقضای این سرویس معتبر نیست."))
+                return
+            remaining_days = (expires - datetime.utcnow()).total_seconds() / 86400
+            max_reduce = min(remaining_days, float(cc["duration_days"] or 0))
+            if amount >= max_reduce:
+                await message.answer(tr(f"❌ حداکثر کاهش مجاز کمتر از {max(max_reduce, 0):.1f} روز است (زمان باقیمانده). عدد کوچک‌تری بفرست."))
+                return
+            sub_vol, sub_days = 0, amount
+        await state.clear()
+        try:
+            await provider.update_user(
+                cc["username"], add_volume_gb=-sub_vol, add_days=-sub_days,
+                reset_usage=False, preserve_remaining=False,
+            )
+        except PanelError as e:
+            await message.answer(tr(f"⛔️ ناموفق بود: {e}"))
+            return
+        await asyncio.to_thread(db.apply_custom_config_reduction, cc_id, sub_vol, sub_days)
+        label = f"-{amount:g} گیگ" if kind == "vol" else f"-{amount} روز"
+        await asyncio.to_thread(
+            db.add_custom_config_history, cc_id, "admin_reduce",
+            f"{label} (توسط ادمین {message.from_user.id} - بات)",
+        )
+        await asyncio.to_thread(
+            db.log_admin_action, message.from_user.id, "custom_config_admin_reduce",
+            f"سرویس «{cc['username']}» کاربر {tg_id}: {label} (بات)", "user", tg_id,
+        )
+        await _show_config_detail(message, tg_id, cc_id, f"✅ {label} از کانفیگ کم شد.")
+
+    @router.message(AdminConfigManage.waiting_sub_volume)
+    async def process_admin_cfg_sub_volume(message: Message, state: FSMContext):
+        await _cfg_sub_apply(message, state, "vol")
+
+    @router.message(AdminConfigManage.waiting_sub_days)
+    async def process_admin_cfg_sub_days(message: Message, state: FSMContext):
+        await _cfg_sub_apply(message, state, "day")
 
     @router.message(AdminConfigManage.waiting_add_volume)
     async def process_admin_cfg_add_volume(message: Message, state: FSMContext):

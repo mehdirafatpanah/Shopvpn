@@ -146,6 +146,11 @@ class AdminAddCategory(StatesGroup):
     waiting_name = State()
 
 
+class AdminEmojiEdit(StatesGroup):
+    waiting_global = State()
+    waiting_category = State()
+
+
 class AdminAddProduct(StatesGroup):
     waiting_category = State()
     waiting_name = State()
@@ -189,6 +194,7 @@ class AdminEditTestPlan(StatesGroup):
     waiting_panel = State()
     waiting_volume_mb = State()
     waiting_duration_hours = State()
+    waiting_emoji = State()
 
 
 class AdminCleanupSettings(StatesGroup):
@@ -434,6 +440,13 @@ class AdminSignupGiftDelay(StatesGroup):
     waiting_value = State()
 
 
+class AdminWelcomeGift(StatesGroup):
+    waiting_product_name = State()
+    waiting_volume = State()
+    waiting_days = State()
+    waiting_delay = State()
+
+
 class AdminResellerCredit(StatesGroup):
     waiting_user_id = State()
     waiting_delta = State()
@@ -664,6 +677,8 @@ class AdminConfigManage(StatesGroup):
     waiting_transfer_target = State()
     waiting_add_volume = State()
     waiting_add_days = State()
+    waiting_sub_volume = State()
+    waiting_sub_days = State()
 
 
 class AdminConfigSearch(StatesGroup):
@@ -851,3 +866,7 @@ class AdminSSH(StatesGroup):
     pool_limit = State()
     pool_days = State()
     attach_config = State()
+
+
+class AdminUserTestLimit(StatesGroup):
+    waiting_value = State()

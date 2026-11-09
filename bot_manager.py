@@ -49,6 +49,7 @@ from daily_report import daily_report_loop
 from cleanup_loop import cleanup_loop
 from lottery_loop import lottery_loop
 from signup_gift import signup_gift_loop
+from welcome_gift import welcome_gift_loop
 import gift_cards
 from gift_card_handlers import create_gift_router
 import daily_quiz
@@ -570,6 +571,7 @@ class BotManager:
         lottery_task = asyncio.create_task(lottery_loop(bot, db))
         reseller_expiry_task = asyncio.create_task(db.reseller_expiry_loop(bot))
         signup_gift_task = asyncio.create_task(signup_gift_loop(bot, db))
+        welcome_gift_task = asyncio.create_task(welcome_gift_loop(bot, db)) if is_main_bot else None
         gift_expiry_task = asyncio.create_task(gift_cards.expiry_loop(db, bot))
         season_task = asyncio.create_task(seasons.season_loop(db, bot)) if is_main_bot else None
         quiz_task = asyncio.create_task(daily_quiz.quiz_loop(db, bot)) if is_main_bot else None
@@ -589,7 +591,7 @@ class BotManager:
             "panel_health_task": panel_health_task, "cron_task": cron_task, "daily_report_task": daily_report_task,
             "scheduled_broadcast_task": scheduled_broadcast_task, "channel_post_task": channel_post_task,
             "cleanup_task": cleanup_task, "lottery_task": lottery_task,
-            "reseller_expiry_task": reseller_expiry_task, "signup_gift_task": signup_gift_task,
+            "reseller_expiry_task": reseller_expiry_task, "signup_gift_task": signup_gift_task, "welcome_gift_task": welcome_gift_task,
             "gift_expiry_task": gift_expiry_task, "audit_task": audit_task,
             "season_task": season_task, "quiz_task": quiz_task, "update_check_task": update_check_task,
             "db_path": db_path,
@@ -601,7 +603,7 @@ class BotManager:
         "reminder_task", "connect_alert_task", "churn_offer_task", "backup_task",
         "scheduled_broadcast_task", "channel_post_task", "cache_refresh_task", "temp_msg_task",
         "extra_gateway_task", "panel_health_task", "cron_task", "daily_report_task",
-        "cleanup_task", "lottery_task", "reseller_expiry_task", "signup_gift_task",
+        "cleanup_task", "lottery_task", "reseller_expiry_task", "signup_gift_task", "welcome_gift_task",
         "gift_expiry_task", "audit_task", "season_task", "quiz_task", "update_check_task",
     )
 

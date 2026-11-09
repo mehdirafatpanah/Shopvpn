@@ -19,6 +19,7 @@ from aiogram.types import (
 )
 
 import account_naming
+import emoji_prefs
 import extra_gateway_registry
 import tutorial_hub
 from config import MINIAPP_URL
@@ -364,7 +365,8 @@ def categories_kb(db, categories, is_main_bot: bool = True) -> InlineKeyboardMar
     except Exception:
         pass
     for cat in categories:
-        rows.append([_styled_inline(db, f"📁 {cat['name']}", f"cat:{cat['id']}", "btn_cat_select_style")])
+        label = emoji_prefs.with_emoji(emoji_prefs.category_emoji(db, cat), cat["name"])
+        rows.append([_styled_inline(db, label, f"cat:{cat['id']}", "btn_cat_select_style")])
     back_text = db.get_setting("btn_buy_back_text", "⬅️ بازگشت")
     rows.append([_styled_inline(db, back_text, "back_main", "btn_buy_back_style")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -415,36 +417,45 @@ def _product_back_cb(db, product_id) -> str:
 
 def products_kb(db, products, category_id, children=None) -> InlineKeyboardMarkup:
     rows = []
-    # زیردسته‌ها اول می‌آیند (دسته‌بندی تو در تو)
     for sub in (children or []):
-        rows.append([_styled_inline(db, f"📁 {sub['name']}", f"cat:{sub['id']}", "btn_cat_select_style")])
+        label = emoji_prefs.with_emoji(emoji_prefs.category_emoji(db, sub), sub["name"])
+        rows.append([_styled_inline(db, label, f"cat:{sub['id']}", "btn_subcat_select_style")])
+    split = db.get_setting("buy_product_layout", "classic") == "split"
+    price_first = db.get_setting("buy_product_order", "name_first") == "price_first"
+    try:
+        current_cat = db.get_category(int(category_id)) if category_id else None
+    except Exception:
+        current_cat = None
     for p in products:
         stock = db.count_available_configs(p["id"])
-        stock_tag = "✅" if (p["is_auto_provision"] or stock > 0) and p["is_active"] else "⛔️"
+        in_stock = bool((p["is_auto_provision"] or stock > 0) and p["is_active"])
+        stock_tag = emoji_prefs.product_stock_emoji(db, current_cat, in_stock)
         inactive_tag = tr(" (غیرفعال)") if not p["is_active"] else ""
-        split = db.get_setting("buy_product_layout", "classic") == "split"
+        name_text = emoji_prefs.with_emoji(stock_tag, f"{p['name']}{inactive_tag}")
         if split:
-            btn = _styled_inline(
-                db, f"{stock_tag} {p['name']}{inactive_tag}", f"prod:{p['id']}", "btn_product_select_style",
-            )
+            btn = _styled_inline(db, name_text, f"prod:{p['id']}", "btn_product_select_style")
             price_btn = _styled_inline(
                 db, price_label_button(p, name=""), f"prod:{p['id']}", "btn_product_select_style",
             )
         else:
-            btn = _styled_inline(
-                db,
-                f"{stock_tag} {p['name']} - {price_label_button(p, name=p['name'])}{inactive_tag}",
-                f"prod:{p['id']}",
-                "btn_product_select_style",
-            )
+            price_text = price_label_button(p, name=p["name"])
+            if price_first:
+                text = emoji_prefs.with_emoji(stock_tag, f"{price_text} - {p['name']}{inactive_tag}")
+            else:
+                text = f"{name_text} - {price_text}"
+            btn = _styled_inline(db, text, f"prod:{p['id']}", "btn_product_select_style")
             price_btn = None
-        # رنگ اختصاصی محصول (از پنل وب) روی رنگ سراسری دکمه‌ی محصولات اولویت دارد.
         own_style = (p["btn_style"] if "btn_style" in p.keys() else "") or ""
         if own_style in ("primary", "success", "danger"):
             btn = InlineKeyboardButton(text=btn.text, callback_data=btn.callback_data, style=own_style)
             if price_btn is not None:
                 price_btn = InlineKeyboardButton(text=price_btn.text, callback_data=price_btn.callback_data, style=own_style)
-        rows.append([btn, price_btn] if price_btn is not None else [btn])
+        if price_btn is None:
+            rows.append([btn])
+        elif price_first:
+            rows.append([btn, price_btn])
+        else:
+            rows.append([price_btn, btn])
     back_text = db.get_setting("btn_buy_back_text", "⬅️ بازگشت به دسته‌بندی‌ها")
     rows.append([_styled_inline(db, back_text, _category_back_cb(db, category_id), "btn_buy_back_style")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -587,6 +598,7 @@ def my_orders_menu_kb(items) -> InlineKeyboardMarkup:
         if icon and not label.startswith(("🟢", "🔴")):
             label = f"{icon} {label}"
         rows.append([InlineKeyboardButton(text=label, callback_data=f"mo_v:{it['cb_id']}")])
+    rows.append([InlineKeyboardButton(text=tr("🧾 فاکتور کلی همه‌ی سرویس‌ها"), callback_data="mo_invoice_all")])
     rows.append([InlineKeyboardButton(text=tr("⬅️ حساب کاربری"), callback_data="acct:hub")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -626,7 +638,7 @@ def service_inquiry_card_kb(cb_id: str, fields: list) -> InlineKeyboardMarkup:
 
 def service_detail_kb(db, cb_id: str, kind: str, deletable: bool, show_links: bool = False,
                        enabled: bool = True, auto_renew: bool = False, is_test: bool = False,
-                       can_add_users: bool = False) -> InlineKeyboardMarkup:
+                       can_add_users: bool = False, is_gift: bool = False, is_invoiceable: bool = True) -> InlineKeyboardMarkup:
     """دکمه‌های صفحه‌ی جزئیات یک سرویس.
     kind == 'custom' (کاربر واقعی روی پنل): هر سه نوع تمدید + قطع دسترسی +
     بروزرسانی + کیوآر + فعال/غیرفعال + تغییر نام + تمدید خودکار + انتقال +
@@ -684,6 +696,8 @@ def service_detail_kb(db, cb_id: str, kind: str, deletable: bool, show_links: bo
             add("svc_qr", "⬜ کیوآر کانفیگ", f"svc_qr:{cb_id}")
         if show_links:
             add("svc_links", "📋 کانفیگ‌های تکی", f"mo_links:{cb_id}")
+    if kind in ("custom", "config") and not is_test and not is_gift and is_invoiceable:
+        add("svc_invoice", "🧾 فاکتور این سرویس", f"mo_invoice:{cb_id}")
     if deletable and on("svc_show_delete"):
         add("svc_delete", "🗑 حذف کامل این سرویس", f"mo_del:{cb_id}")
     rows = _layout_group_rows(db, "svc_detail", entries, default_rows=USER_SCREENS["svc_detail"]["default_rows"])
@@ -1741,6 +1755,7 @@ ADMIN_PANEL_ITEMS = [
     ("adm_delivery_settings", "📤 تنظیمات ارسال کانفیگ", "adm_delivery_settings"),
     ("adm_referral_settings", "🤝 تنظیمات زیرمجموعه‌گیری", "adm_referral_settings"),
     ("adm_signup_gift_settings", "🎁 هدیه‌ی عضویت", "adm_signup_gift_settings"),
+    ("adm_welcome_gift", "🎁 هدیه‌ی کانفیگ عضویت", "adm_welcome_gift"),
     ("adm_resellers_menu", "🏪 مدیریت بات‌های نمایندگی", "adm_resellers_menu"),
     ("adm_credit_resellers_menu", "💳 نمایندگی حجمی (اعتبار)", "adm_credit_resellers_menu"),
     ("adm_commission_resellers_menu", "💼 نمایندگی کمیسیونی", "adm_commission_resellers_menu"),
@@ -1864,7 +1879,7 @@ ADMIN_HUBS = [
         ]),
     ]),
     ("marketing", "🎯 رشد و جذب", [
-        ("جذب کاربر", ["adm_referral_settings", "adm_signup_gift_settings"]),
+        ("جذب کاربر", ["adm_referral_settings", "adm_signup_gift_settings", "adm_welcome_gift"]),
         ("بازی و جایزه", ["adm_wheel_settings", "adm_lottery_settings", "adm_season_quiz", "adm_engage"]),
         ("هدیه", ["adm_bulk_gift", "adm_gift_cards"]),
     ]),
@@ -2787,7 +2802,23 @@ def buy_flow_colors_kb(db) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(
         text=f"{tr('📐 چیدمان لیست محصولات')}: {tr(layout_label)}",
         callback_data="adm_buyflow_layout_toggle")])
+    price_first = db.get_setting("buy_product_order", "name_first") == "price_first"
+    order_label = "اول قیمت" if price_first else "اول نام محصول"
+    rows.append([InlineKeyboardButton(
+        text=f"{tr('🔀 ترتیب نام و قیمت')}: {tr(order_label)}",
+        callback_data="adm_buyflow_order_toggle")])
+    rows.append([InlineKeyboardButton(text=tr("😀 ایموجی دکمه‌ها"), callback_data="adm_emoji_menu")])
     rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:appearance")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_emoji_menu_kb(db) -> InlineKeyboardMarkup:
+    rows = []
+    for key, (_default, label) in emoji_prefs.GLOBAL_KEYS.items():
+        value = db.get_setting(key, emoji_prefs.GLOBAL_KEYS[key][0])
+        shown = value if value else "بدون ایموجی"
+        rows.append([InlineKeyboardButton(text=f"{tr(label)}: {tr(shown)}", callback_data=f"adm_emoji_edit:{key}")])
+    rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_buyflow_colors_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -2863,6 +2894,8 @@ def user_full_stats_kb(tg_id: int, is_blocked: bool = False) -> InlineKeyboardMa
         [InlineKeyboardButton(text=tr("✉️ ارسال پیام مستقیم"), callback_data=f"adm_user_msg:{tg_id}")],
         [InlineKeyboardButton(text=tr("🎁 ارسال کد تخفیف اختصاصی"), callback_data=f"adm_user_disc:{tg_id}")],
         [InlineKeyboardButton(text=tr("💰 ویرایش موجودی کیف‌پول"), callback_data=f"adm_user_wallet:{tg_id}")],
+        [InlineKeyboardButton(text=tr("🧪 تغییر سهمیه کانفیگ تست"), callback_data=f"adm_user_test_limit:{tg_id}")],
+        [InlineKeyboardButton(text=tr("🧾 فاکتور کلی همه‌ی سرویس‌ها"), callback_data=f"adm_user_invoice_all:{tg_id}")],
         [InlineKeyboardButton(
             text=tr("✅ آنبلاک کاربر") if is_blocked else tr("🚫 بلاک کاربر"),
             callback_data=f"adm_user_toggleblock:{tg_id}",
@@ -2927,10 +2960,16 @@ def admin_config_detail_kb(tg_id: int, cc_id: int, enabled: bool, auto_renew: bo
     rows.append([InlineKeyboardButton(text=tr("✏️ تغییر نام"), callback_data=f"adm_cfg_rename:{tg_id}:{cc_id}")])
     rows.append([InlineKeyboardButton(text=tr("👤 انتقال به کاربر دیگر"), callback_data=f"adm_cfg_transfer:{tg_id}:{cc_id}")])
     rows.append([InlineKeyboardButton(text=tr("🕒 تاریخچه"), callback_data=f"adm_cfg_history:{tg_id}:{cc_id}")])
+    if not is_test:
+        rows.append([InlineKeyboardButton(text=tr("🧾 فاکتور این سرویس"), callback_data=f"adm_user_invoice_one:{tg_id}:custom:{cc_id}")])
     if extended:
         rows.append([
             InlineKeyboardButton(text=tr("➕ افزودن حجم"), callback_data=f"adm_cfg_addvol:{tg_id}:{cc_id}"),
             InlineKeyboardButton(text=tr("➕ افزودن روز"), callback_data=f"adm_cfg_addday:{tg_id}:{cc_id}"),
+        ])
+        rows.append([
+            InlineKeyboardButton(text=tr("➖ کاهش حجم"), callback_data=f"adm_cfg_subvol:{tg_id}:{cc_id}"),
+            InlineKeyboardButton(text=tr("➖ کاهش روز"), callback_data=f"adm_cfg_subday:{tg_id}:{cc_id}"),
         ])
         if has_dsub:
             rows.append([InlineKeyboardButton(text=tr("♻️ توکن جدید ساب اختصاصی"), callback_data=f"adm_cfg_dsubnew:{tg_id}:{cc_id}")])
@@ -3043,7 +3082,7 @@ def admin_categories_kb(db, parent_id=0) -> InlineKeyboardMarkup:
     for cat in db.get_child_categories(pid or None, active_only=False):
         state_icon = "🟢" if cat["is_active"] else "🔴"
         kids = len(db.get_child_categories(cat["id"], active_only=False))
-        label = f"{state_icon} 📁 {cat['name']}" + (f" ({kids})" if kids else "")
+        label = f"{state_icon} {emoji_prefs.with_emoji(emoji_prefs.category_emoji(db, cat), cat['name'])}" + (f" ({kids})" if kids else "")
         rows.append(
             [
                 InlineKeyboardButton(text=label, callback_data=f"adm_cat_open:{cat['id']}"),
@@ -3052,6 +3091,11 @@ def admin_categories_kb(db, parent_id=0) -> InlineKeyboardMarkup:
             ]
         )
     if pid:
+        cur = db.get_category(pid)
+        own = emoji_prefs.describe(cur["emoji"] if cur is not None and "emoji" in cur.keys() else None)
+        prod = emoji_prefs.describe(cur["product_emoji"] if cur is not None and "product_emoji" in cur.keys() else None)
+        rows.append([InlineKeyboardButton(text=tr(f"😀 ایموجی این دسته: {own}"), callback_data=f"adm_catemoji:{pid}:emoji")])
+        rows.append([InlineKeyboardButton(text=tr(f"🏷 ایموجی محصولات این دسته: {prod}"), callback_data=f"adm_catemoji:{pid}:product_emoji")])
         rows.append([InlineKeyboardButton(text=tr("➕ افزودن زیردسته"), callback_data=f"adm_cat_add:{pid}")])
         back_cb = _category_parent_cb(db, pid, "adm_cat_open", "adm_categories")
     else:
@@ -3631,6 +3675,9 @@ def test_plan_view_kb(db, plan, credit_bot: bool = False) -> InlineKeyboardMarku
         )],
         [InlineKeyboardButton(text=tr(f"📶 حجم: {vol_text}"), callback_data=f"adm_tp_edit_volume:{pid}")],
         [InlineKeyboardButton(text=tr(f"⏳ مدت: {dur_text}"), callback_data=f"adm_tp_edit_duration:{pid}")],
+        [InlineKeyboardButton(
+            text=tr(f"😀 ایموجی: {emoji_prefs.describe(plan['emoji'] if 'emoji' in plan.keys() else None)}"),
+            callback_data=f"adm_tp_edit_emoji:{pid}")],
         [InlineKeyboardButton(text=toggle_text, callback_data=f"adm_tp_toggle:{pid}")],
         [InlineKeyboardButton(text=tr("🗑 حذف پلن"), callback_data=f"adm_tp_delete:{pid}")],
         [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_test_menu")],
@@ -4435,6 +4482,44 @@ def signup_gift_settings_kb(db) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def welcome_gift_settings_kb(db) -> InlineKeyboardMarkup:
+    import welcome_gift as wg
+    enabled = db.get_setting("welcome_gift_enabled", "0") == "1"
+    product_id = int(db.get_setting("welcome_gift_product_id", "0") or 0)
+    product = db.get_product(product_id) if product_id > 0 else None
+    delay = int(float(db.get_setting("welcome_gift_delay_minutes", "0") or 0))
+    mode = db.get_setting("welcome_gift_product_mode", "existing")
+    mode_label = "محصول اختصاصی و مخفی" if mode == "dedicated" else "انتخاب از محصولات"
+    rows = [
+        [InlineKeyboardButton(text=tr("🔴 غیرفعال کردن" if enabled else "🟢 فعال کردن"), callback_data="adm_wgift_toggle")],
+        [InlineKeyboardButton(text=tr(f"🧩 نوع محصول: {mode_label}"), callback_data="adm_wgift_mode")],
+        [InlineKeyboardButton(text=tr(f"📦 محصول هدیه: {product['name'] if product else 'انتخاب نشده'}"), callback_data="adm_wgift_products" if mode == "existing" else "adm_wgift_create")],
+        [InlineKeyboardButton(text=tr(f"💾 حجم: {wg.format_amount(db.get_setting('welcome_gift_volume_gb', ''), 'گیگ')}"), callback_data="adm_wgift_volume")],
+        [InlineKeyboardButton(text=tr(f"⏳ مدت: {wg.format_amount(db.get_setting('welcome_gift_days', ''), 'روز')}"), callback_data="adm_wgift_days")],
+        [InlineKeyboardButton(text=tr(f"⏱ زمان ارسال: {wg.format_delay(delay)}"), callback_data="adm_wgift_delay")],
+        [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:marketing")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def welcome_gift_templates_kb(products) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=f"{p['category_name']} | {p['name']}"[:60], callback_data=f"adm_wgift_template:{p['id']}")]
+        for p in products[:60]
+    ]
+    rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_welcome_gift")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def welcome_gift_products_kb(products) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=f"{p['category_name']} | {p['name']}"[:60], callback_data=f"adm_wgift_pick:{p['id']}")]
+        for p in products[:60]
+    ]
+    rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_welcome_gift")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 # ---------------------------------------------------------------------------
 # گردونه شانس
 # ---------------------------------------------------------------------------
@@ -4816,15 +4901,18 @@ def custom_config_product_panel_select_kb(db, product_id: int) -> InlineKeyboard
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def test_plan_pick_kb(plans) -> InlineKeyboardMarkup:
+def test_plan_pick_kb(plans, db=None) -> InlineKeyboardMarkup:
     """برای کاربر نهایی: وقتی چند پلن کانفیگ تست فعال باشد، انتخاب یکی از آن‌ها."""
     from test_config_provision import format_plan_amount
-    rows = [
-        [InlineKeyboardButton(
-            text=f"🧪 {p['name']} ({format_plan_amount(p)})", callback_data=f"user_test_plan:{p['id']}",
-        )]
-        for p in plans
-    ]
+    rows = []
+    for p in plans:
+        emoji = emoji_prefs.test_plan_emoji(db, p) if db is not None else "🧪"
+        rows.append([InlineKeyboardButton(
+            text=emoji_prefs.with_emoji(emoji, f"{p['name']} ({format_plan_amount(p)})"),
+            callback_data=f"user_test_plan:{p['id']}",
+        )])
+    back_text = db.get_setting("btn_buy_back_text", "⬅️ بازگشت") if db is not None else tr("⬅️ بازگشت")
+    rows.append([InlineKeyboardButton(text=back_text, callback_data="back_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

@@ -125,6 +125,16 @@ EXTRA_SETTINGS_GROUPS: List[Dict[str, Any]] = [
         ],
     },
     {
+        "id": "welcome_gift", "title": "🎁 هدیه‌ی کانفیگ عضویت (ارسال سرویس به کاربر تازه‌عضو)", "web": True, "mini": True,
+        "fields": [
+            _b("welcome_gift_enabled", "فعال بودن هدیه‌ی کانفیگ عضویت", "0", "فقط کاربرانی که بعد از فعال‌سازی عضو شوند هدیه می‌گیرند."),
+            _n("welcome_gift_product_id", "شناسه‌ی محصول هدیه (متصل به پنل/نود)", "0", min=0),
+            _t("welcome_gift_volume_gb", "حجم هدیه (گیگابایت)", "", "خالی = حجم پیش‌فرض محصول، 0 = نامحدود"),
+            _t("welcome_gift_days", "مدت هدیه (روز)", "", "خالی = مدت پیش‌فرض محصول، 0 = نامحدود"),
+            _n("welcome_gift_delay_minutes", "ارسال چند دقیقه بعد از عضویت", "0", "0 = بلافاصله (مثلاً 60 = یک ساعت، 1440 = یک روز)", min=0, max=525600),
+        ],
+    },
+    {
         "id": "lottery", "title": "🎰 قرعه‌کشی و سکه", "web": True, "mini": True,
         "fields": [
             _b("score_enabled", "سیستم سکه", "1"),
@@ -509,10 +519,11 @@ EXTRA_SETTINGS_GROUPS: List[Dict[str, Any]] = [
         ],
     },
     {
-        "id": "free_test", "title": "🧪 کانفیگ تست رایگان", "web": False, "mini": True,
+        "id": "free_test", "title": "🧪 کانفیگ تست رایگان", "web": False, "mini": True, "bot": True,
         "fields": [
             _b("test_enabled", "فعال بودن کانفیگ تست رایگان", "1",
                "پلن‌های تست از تب «پنل‌های VPN» مدیریت می‌شوند؛ این فقط کلید روشن/خاموش کل قابلیت است."),
+            _n("test_max_per_user", "تعداد مجاز کانفیگ تست برای هر کاربر", "1", "سهمیه‌ی پیش‌فرض کاربران؛ برای کاربر خاص می‌توان مقدار جداگانه تعیین کرد.", min=0, max=1000),
         ],
     },
     # ----- مرحله ۴: تنظیماتی که فقط پنل وب داشت؛ حالا برای مینی‌اپ و ادمین بات هم (surface = bot) -----
@@ -692,6 +703,18 @@ def _cross_check(values: Dict[str, str], db) -> None:
     if "signup_gift_enabled" in values or "signup_gift_amount" in values:
         if cur("signup_gift_enabled") == "1" and float(cur("signup_gift_amount") or 0) <= 0:
             raise SettingsValidationError("برای فعال‌سازی هدیه‌ی ثبت‌نام، مبلغ باید بزرگ‌تر از صفر باشد.")
+    if "welcome_gift_enabled" in values or "welcome_gift_product_id" in values:
+        if cur("welcome_gift_enabled") == "1" and int(float(cur("welcome_gift_product_id") or 0)) <= 0:
+            raise SettingsValidationError("برای فعال‌سازی هدیه‌ی کانفیگ عضویت، شناسه‌ی محصول را وارد کنید.")
+    for _key in ("welcome_gift_volume_gb", "welcome_gift_days"):
+        if _key in values:
+            _val = str(values[_key]).strip()
+            if _val:
+                try:
+                    if float(_val) < 0:
+                        raise ValueError
+                except ValueError:
+                    raise SettingsValidationError("حجم و مدت هدیه باید عدد صفر یا بزرگ‌تر باشند (یا خالی).")
     if "deliver_sub_link_enabled" in values or "deliver_individual_configs_enabled" in values:
         if cur("deliver_sub_link_enabled") == "0" and cur("deliver_individual_configs_enabled") == "0":
             raise SettingsValidationError("حداقل یکی از «لینک اشتراک» یا «کانفیگ تکی» باید فعال بماند.")
