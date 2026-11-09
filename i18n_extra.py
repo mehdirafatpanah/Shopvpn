@@ -766,6 +766,7 @@ EXTRA_PHRASES.update({
     '🟢 فعال کردن': '🟢 Enable',
     '🛠 مدیریت تک\u200cتک کانفیگ\u200cها': '🛠 Manage configurations individually',
     '✉️ ارسال پیام مستقیم': '✉️ Send direct message',
+    '🎁 دریافت رایگان (مدیر)': '🎁 Get for free (admin)',
     '🎁 ارسال کد تخفیف اختصاصی': '🎁 Send dedicated discount code',
     '💰 ویرایش موجودی کیف\u200cپول': '💰 Edit wallet balance',
     '⏸ خاموش کردن تمدید خودکار': '⏸ Turn off auto-renewal',

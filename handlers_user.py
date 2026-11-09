@@ -2202,6 +2202,74 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         _, product_id, quantity = call.data.split(":")
         await _buy_start(call, state, bot, int(product_id), int(quantity))
 
+    async def _fulfill_zero_price_order(call, state: FSMContext, bot: Bot, order_id: int, order, product, product_id: int, quantity: int, covered_text: str = None):
+        """تحویل سفارش محصولی که مبلغ قابل پرداختش صفر است (کیف پول/تخفیف/دریافت رایگان مدیر)."""
+        await state.clear()
+
+        if product["is_auto_provision"]:
+            try:
+                if product["provision_server_id"] or product["provision_ssh_node_id"]:
+                    prov_results = await provision_direct(db, product, quantity, user_id=call.from_user.id, order_id=order_id)
+                else:
+                    prov_results = await provision_auto_config(db, product, quantity, user_id=call.from_user.id, order_id=order_id)
+            except (ProvisionError, DirectProvisionError) as e:
+                (await asyncio.to_thread(db.reject_order, order_id))
+                await _notify_admins_of_order(bot, order_id)
+                await _safe_edit(
+                    call.message,
+                    f"⛔️ {e}\nمبلغ کسرشده از کیف پول شما به‌طور کامل بازگردانده شد."
+                )
+                await call.answer()
+                return
+            (await asyncio.to_thread(db.approve_order_auto, order_id))
+            links = [r["subscription_url"] for r in prov_results]
+        else:
+            results = (await asyncio.to_thread(db.take_unused_configs, product_id, call.from_user.id, quantity))
+            if not results:
+                # موجودی تمام شده: مبلغ کسرشده از کیف پول/کد تخفیف را برگردان و به ادمین اطلاع بده
+                (await asyncio.to_thread(db.reject_order, order_id))
+                await _notify_admins_of_order(bot, order_id)
+                await _safe_edit(
+                    call.message,
+                    db.get_text('handlers_user.auto_30519740', '⛔️ موجودی این محصول در حال حاضر تمام شده است.\nمبلغ کسرشده از کیف پول شما به\u200cطور کامل بازگردانده شد. لطفاً بعداً دوباره تلاش کنید یا با پشتیبانی در تماس باشید.')
+                )
+                await call.answer()
+                return
+            (await asyncio.to_thread(db.approve_order, order_id, [r["id"] for r in results]))
+            links = [r["link"] for r in results]
+            await check_and_notify_low_stock(bot.send_message, db, product_id, bot_token=bot.token)
+        reward_info = (await asyncio.to_thread(db.reward_referrer_if_first_purchase, call.from_user.id, order["base_price"]))
+        if reward_info:
+            reward_amount, referrer_id = reward_info
+            try:
+                await send_telegram(bot, db, referrer_id, f"🤝 تبریک! یکی از زیرمجموعه‌های شما اولین خرید خود را انجام داد.\n"
+                    f"💰 {reward_amount:,} تومان به کیف پول شما اضافه شد.")
+            except Exception:
+                pass
+
+        # اطلاع‌رسانی به ادمین‌ها فقط جهت آگاهی (نیازی به تایید دستی نیست)
+        try:
+            await _notify_admins_of_order(bot, order_id)
+        except Exception:
+            pass
+
+        await _safe_edit(
+            call.message,
+            covered_text or db.get_text('handlers_user.auto_d8da31b4', '✅ مبلغ سفارش شما به\u200cطور کامل از کیف پول/تخفیف پوشش داده شد.\nکانفیگ شما در پیام بعدی ارسال می\u200cشود 👇')
+        )
+        await deliver_config_to_user(
+            bot,
+            call.from_user.id,
+            product["name"],
+            links,
+            final_price=0,
+            order_id=order_id,
+            db=db,
+        )
+        await call.answer()
+        return
+
+
     async def _buy_start(call, state: FSMContext, bot: Bot, product_id: int, quantity: int, config_name: str = None):
         product = (await asyncio.to_thread(db.get_product, product_id))
         if not product:
@@ -2321,69 +2389,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         # بی‌اثر است)، پس فراخوانی آن در حالت خطا همیشه امن است.
         try:
             if order["final_price"] <= 0:
-                await state.clear()
-
-                if product["is_auto_provision"]:
-                    try:
-                        if product["provision_server_id"] or product["provision_ssh_node_id"]:
-                            prov_results = await provision_direct(db, product, quantity, user_id=call.from_user.id, order_id=order_id)
-                        else:
-                            prov_results = await provision_auto_config(db, product, quantity, user_id=call.from_user.id, order_id=order_id)
-                    except (ProvisionError, DirectProvisionError) as e:
-                        (await asyncio.to_thread(db.reject_order, order_id))
-                        await _notify_admins_of_order(bot, order_id)
-                        await _safe_edit(
-                            call.message,
-                            f"⛔️ {e}\nمبلغ کسرشده از کیف پول شما به‌طور کامل بازگردانده شد."
-                        )
-                        await call.answer()
-                        return
-                    (await asyncio.to_thread(db.approve_order_auto, order_id))
-                    links = [r["subscription_url"] for r in prov_results]
-                else:
-                    results = (await asyncio.to_thread(db.take_unused_configs, product_id, call.from_user.id, quantity))
-                    if not results:
-                        # موجودی تمام شده: مبلغ کسرشده از کیف پول/کد تخفیف را برگردان و به ادمین اطلاع بده
-                        (await asyncio.to_thread(db.reject_order, order_id))
-                        await _notify_admins_of_order(bot, order_id)
-                        await _safe_edit(
-                            call.message,
-                            db.get_text('handlers_user.auto_30519740', '⛔️ موجودی این محصول در حال حاضر تمام شده است.\nمبلغ کسرشده از کیف پول شما به\u200cطور کامل بازگردانده شد. لطفاً بعداً دوباره تلاش کنید یا با پشتیبانی در تماس باشید.')
-                        )
-                        await call.answer()
-                        return
-                    (await asyncio.to_thread(db.approve_order, order_id, [r["id"] for r in results]))
-                    links = [r["link"] for r in results]
-                    await check_and_notify_low_stock(bot.send_message, db, product_id, bot_token=bot.token)
-                reward_info = (await asyncio.to_thread(db.reward_referrer_if_first_purchase, call.from_user.id, order["base_price"]))
-                if reward_info:
-                    reward_amount, referrer_id = reward_info
-                    try:
-                        await send_telegram(bot, db, referrer_id, f"🤝 تبریک! یکی از زیرمجموعه‌های شما اولین خرید خود را انجام داد.\n"
-                            f"💰 {reward_amount:,} تومان به کیف پول شما اضافه شد.")
-                    except Exception:
-                        pass
-
-                # اطلاع‌رسانی به ادمین‌ها فقط جهت آگاهی (نیازی به تایید دستی نیست)
-                try:
-                    await _notify_admins_of_order(bot, order_id)
-                except Exception:
-                    pass
-
-                await _safe_edit(
-                    call.message,
-                    db.get_text('handlers_user.auto_d8da31b4', '✅ مبلغ سفارش شما به\u200cطور کامل از کیف پول/تخفیف پوشش داده شد.\nکانفیگ شما در پیام بعدی ارسال می\u200cشود 👇')
-                )
-                await deliver_config_to_user(
-                    bot,
-                    call.from_user.id,
-                    product["name"],
-                    links,
-                    final_price=0,
-                    order_id=order_id,
-                    db=db,
-                )
-                await call.answer()
+                await _fulfill_zero_price_order(call, state, bot, order_id, order, product, product_id, quantity)
                 return
 
             remaining_amount = order["final_price"]
@@ -2407,6 +2413,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 return
 
             await state.set_state(BuyFlow.waiting_receipt)
+            can_free = await asyncio.to_thread(db.is_senior_admin, call.from_user.id)
+            if can_free:
+                await state.update_data(free_order_id=order_id)
 
             after_buy_text = (await asyncio.to_thread(db.get_setting, "after_buy_text"))
 
@@ -2438,6 +2447,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                     blupal_enabled=blupal_payment.blupal_payment_available(db),
                     extra_gateways=extra_gateway_payment.available_keys(db, is_main_bot),
                     user_id=order["user_id"],
+                    free_callback="adm_free_order" if can_free else None,
                 ),
             )
             await call.answer()
@@ -2500,6 +2510,85 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                     return
         progress = await message.answer(db.get_text('handlers_user.auto_86206ade', '⏳ در حال ثبت سفارش...'))
         await _buy_start(_MessageCall(message.from_user, progress), state, bot, int(product_id), quantity, config_name=base)
+
+    async def _admin_free_order_guard(call: CallbackQuery, state: FSMContext):
+        if not await asyncio.to_thread(db.is_senior_admin, call.from_user.id):
+            await call.answer(tr("این گزینه فقط برای مدیر کل و مالک فعال است."), show_alert=True)
+            return None
+        data = await state.get_data()
+        order_id = data.get("order_id")
+        order = (await asyncio.to_thread(db.get_order, order_id)) if order_id else None
+        if (not order or data.get("free_order_id") != order_id
+                or order["user_id"] != call.from_user.id or order["status"] != "pending"):
+            await call.answer(tr("این سفارش دیگر قابل دریافت رایگان نیست."), show_alert=True)
+            return None
+        return order
+
+    @router.callback_query(F.data == "adm_free_order", BuyFlow.waiting_receipt)
+    async def cb_admin_free_product_order(call: CallbackQuery, state: FSMContext, bot: Bot):
+        order = await _admin_free_order_guard(call, state)
+        if not order:
+            return
+        product = await asyncio.to_thread(db.get_product, order["product_id"])
+        if not product or order["is_custom_config"]:
+            await call.answer(tr("این سفارش دیگر قابل دریافت رایگان نیست."), show_alert=True)
+            return
+        if not await asyncio.to_thread(db.reject_order, order["id"], "user_cancel"):
+            await call.answer(tr("این سفارش دیگر قابل دریافت رایگان نیست."), show_alert=True)
+            return
+        new_id = await asyncio.to_thread(
+            db.create_order, call.from_user.id, order["product_id"], base_price=0,
+            quantity=order["quantity"], config_name=order["config_name"], user_limit=order["user_limit"],
+        )
+        new_order = await asyncio.to_thread(db.get_order, new_id)
+        await asyncio.to_thread(
+            db.log_admin_action, call.from_user.id, "admin_free_order",
+            f"دریافت رایگان «{product['name']}» (سفارش #{new_id})", "order", new_id,
+        )
+        try:
+            await _fulfill_zero_price_order(
+                call, state, bot, new_id, new_order, product, order["product_id"], order["quantity"],
+                covered_text=tr("🎁 سفارش به‌صورت رایگان ثبت شد.\nاشتراک شما در پیام بعدی ارسال می‌شود 👇"),
+            )
+        except Exception:
+            logging.getLogger("handlers_user").exception("خطا در دریافت رایگان سفارش #%s توسط مدیر %s", new_id, call.from_user.id)
+            await asyncio.to_thread(db.reject_order, new_id)
+            await state.clear()
+            await _safe_edit(call.message, tr("⛔️ خطای غیرمنتظره‌ای در ساخت اشتراک رخ داد. دوباره تلاش کنید."))
+
+    @router.callback_query(F.data == "adm_free_order", CustomConfigFlow.waiting_receipt)
+    async def cb_admin_free_custom_order(call: CallbackQuery, state: FSMContext):
+        order = await _admin_free_order_guard(call, state)
+        if not order:
+            return
+        server = await asyncio.to_thread(db.get_panel_server, order["custom_panel_server_id"])
+        if not order["is_custom_config"] or not server or not server["is_active"]:
+            await call.answer(tr("این سفارش دیگر قابل دریافت رایگان نیست."), show_alert=True)
+            return
+        if not await asyncio.to_thread(db.reject_order, order["id"], "user_cancel"):
+            await call.answer(tr("این سفارش دیگر قابل دریافت رایگان نیست."), show_alert=True)
+            return
+        new_id = await asyncio.to_thread(
+            db.create_custom_config_order, call.from_user.id, order["custom_volume_gb"], order["custom_username"],
+            order["custom_panel_server_id"], base_price=0, custom_product_id=order["custom_product_id"],
+            custom_duration_days=order["custom_duration_days"],
+        )
+        await asyncio.to_thread(
+            db.log_admin_action, call.from_user.id, "admin_free_order",
+            f"دریافت رایگان کانفیگ شخصی «{order['custom_username']}» (سفارش #{new_id})", "order", new_id,
+        )
+        await call.answer()
+        try:
+            await _fulfill_zero_price_custom_order(
+                call.message, call.from_user.id, state, new_id, server, order["custom_username"],
+                order["custom_volume_gb"], order["custom_duration_days"], order["custom_product_id"],
+                covered_text=tr("🎁 سفارش به‌صورت رایگان ثبت شد.\nاشتراک شما در پیام بعدی ارسال می‌شود 👇"),
+            )
+        except Exception:
+            logging.getLogger("handlers_user").exception("خطا در دریافت رایگان سفارش #%s توسط مدیر %s", new_id, call.from_user.id)
+            await asyncio.to_thread(db.reject_order, new_id)
+            await state.clear()
+            await call.message.answer(tr("⛔️ خطای غیرمنتظره‌ای در ساخت اشتراک رخ داد. دوباره تلاش کنید."))
 
     @router.callback_query(F.data == "pay_card2card", BuyFlow.waiting_receipt)
     async def cb_pay_card2card_order(call: CallbackQuery, state: FSMContext):
@@ -3064,6 +3153,44 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         duration_days = product["duration_days"] if product else (await asyncio.to_thread(db.get_custom_config_settings))["duration_days"]
         await _custom_config_finalize_order(message, state, duration_days)
 
+    async def _fulfill_zero_price_custom_order(message, user_id: int, state: FSMContext, order_id: int, server, username: str, volume_gb: int, duration_days: int, product_id, covered_text: str = None):
+        """ساخت و تحویل کانفیگ شخصی با مبلغ قابل پرداخت صفر (کیف پول/دریافت رایگان مدیر)."""
+        await state.clear()
+        server_row = (await asyncio.to_thread(db.get_panel_server, server["id"]))
+        try:
+            if not db.panel_has_capacity(server_row["id"], 1):
+                raise RuntimeError("ظرفیت پنل در همین لحظه تکمیل شد.")
+            provider = get_provider(server_row)
+            result = await provider.create_user(username, volume_gb, duration_days)
+        except PanelUsernameTakenError:
+            (await asyncio.to_thread(db.reject_order, order_id))
+            await message.answer(db.get_text('handlers_user.auto_2bb7a76d', '❌ این نام کاربری تکراری است، یک نام دیگر انتخاب کنید.\nمبلغ به کیف پول بازگردانده شد.'))
+            return
+        except Exception as e:
+            (await asyncio.to_thread(db.reject_order, order_id))
+            await message.answer(tr(f"⛔️ خطا در ساخت کانفیگ روی پنل: {e}\nمبلغ به کیف پول بازگردانده شد."))
+            return
+        (await asyncio.to_thread(db.approve_custom_config_order, order_id))
+        (await asyncio.to_thread(db.add_custom_config, 
+            user_id, server["id"], result.username, volume_gb,
+            duration_days, result.subscription_url, order_id=order_id, product_id=product_id,
+        ))
+        await message.answer(
+            covered_text or db.get_text('handlers_user.auto_5f36061a', '✅ مبلغ سفارش شما به\u200cطور کامل از کیف پول پوشش داده شد.\nکانفیگ شما در پیام بعدی ارسال می\u200cشود 👇'),
+            reply_markup=kb.menu_for_user(db, user_id, is_main_bot),
+        )
+        await _send_inline_main_menu(message, user_id)
+        await deliver_config_to_user(
+            message.bot, user_id, "کانفیگ شخصی",
+            [result.subscription_url], final_price=0, order_id=order_id, db=db,
+        )
+        try:
+            await _notify_admins_of_order(message.bot, order_id)
+        except Exception:
+            pass
+        return
+
+
     async def _custom_config_finalize_order(message: Message, state: FSMContext, duration_days: int):
         data = await state.get_data()
         volume_gb = data.get("custom_volume_gb")
@@ -3105,43 +3232,14 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         ))
         await asyncio.to_thread(db.gift_register_order, message.from_user.id, order_id)
         order = (await asyncio.to_thread(db.get_order, order_id))
+        can_free = await asyncio.to_thread(db.is_senior_admin, message.from_user.id)
         await state.update_data(order_id=order_id, custom_volume_gb=volume_gb)
+        if can_free:
+            await state.update_data(free_order_id=order_id)
 
         try:
             if order["final_price"] <= 0:
-                await state.clear()
-                server_row = (await asyncio.to_thread(db.get_panel_server, server["id"]))
-                try:
-                    if not db.panel_has_capacity(server_row["id"], 1):
-                        raise RuntimeError("ظرفیت پنل در همین لحظه تکمیل شد.")
-                    provider = get_provider(server_row)
-                    result = await provider.create_user(username, volume_gb, duration_days)
-                except PanelUsernameTakenError:
-                    (await asyncio.to_thread(db.reject_order, order_id))
-                    await message.answer(db.get_text('handlers_user.auto_2bb7a76d', '❌ این نام کاربری تکراری است، یک نام دیگر انتخاب کنید.\nمبلغ به کیف پول بازگردانده شد.'))
-                    return
-                except Exception as e:
-                    (await asyncio.to_thread(db.reject_order, order_id))
-                    await message.answer(tr(f"⛔️ خطا در ساخت کانفیگ روی پنل: {e}\nمبلغ به کیف پول بازگردانده شد."))
-                    return
-                (await asyncio.to_thread(db.approve_custom_config_order, order_id))
-                (await asyncio.to_thread(db.add_custom_config, 
-                    message.from_user.id, server["id"], result.username, volume_gb,
-                    duration_days, result.subscription_url, order_id=order_id, product_id=product_id,
-                ))
-                await message.answer(
-                    db.get_text('handlers_user.auto_5f36061a', '✅ مبلغ سفارش شما به\u200cطور کامل از کیف پول پوشش داده شد.\nکانفیگ شما در پیام بعدی ارسال می\u200cشود 👇'),
-                    reply_markup=kb.menu_for_user(db, message.from_user.id, is_main_bot),
-                )
-                await _send_inline_main_menu(message, message.from_user.id)
-                await deliver_config_to_user(
-                    message.bot, message.from_user.id, "کانفیگ شخصی",
-                    [result.subscription_url], final_price=0, order_id=order_id, db=db,
-                )
-                try:
-                    await _notify_admins_of_order(message.bot, order_id)
-                except Exception:
-                    pass
+                await _fulfill_zero_price_custom_order(message, message.from_user.id, state, order_id, server, username, volume_gb, duration_days, product_id)
                 return
 
             remaining_amount = order["final_price"]
@@ -3186,6 +3284,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                     blupal_enabled=blupal_payment.blupal_payment_available(db),
                     extra_gateways=extra_gateway_payment.available_keys(db, is_main_bot),
                     user_id=order["user_id"],
+                    free_callback="adm_free_order" if can_free else None,
                 ),
             )
         except Exception:
