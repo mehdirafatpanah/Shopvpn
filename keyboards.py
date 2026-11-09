@@ -930,7 +930,7 @@ def payment_choice_kb(crypto_enabled: bool, abangateway_enabled: bool = False,
                        amount: int = None, db=None, allowed_methods=None,
                        card_auto_enabled: bool = False, noapay_enabled: bool = False,
                        blupal_enabled: bool = False, extra_gateways: list = None,
-                       user_id: int = None, free_callback: str = None) -> InlineKeyboardMarkup:
+                       user_id: int = None) -> InlineKeyboardMarkup:
     """کیبورد مرحله‌ی انتخاب روش پرداخت: کاربر ابتدا این لیست را می‌بیند و روش پرداخت را
     انتخاب می‌کند (به‌جای اینکه مستقیم شماره کارت نمایش داده شود). اگر درگاه کریپتو/آبان
     گیت وی/درگاه‌های سفارشی/کارت‌به‌کارت خودکار فعال باشند، دکمه‌ی مربوطه هم نمایش داده
@@ -993,8 +993,6 @@ def payment_choice_kb(crypto_enabled: bool, abangateway_enabled: bool = False,
             text = db.get_setting(f"paymeth_customgw_{gw['id']}_text", default_text) if db is not None else default_text
             entries.append((key, text, _btn(db, text, f"pay_customgw:{gw['id']}", f"paymeth_customgw_{gw['id']}_style")))
     rows = _layout_group_rows(db, "payment_methods", entries) if db is not None else [[b] for _k, _l, b in entries]
-    if free_callback:
-        rows.insert(0, [InlineKeyboardButton(text=tr("🎁 دریافت رایگان (مدیر)"), callback_data=free_callback)])
     rows.append([InlineKeyboardButton(text=tr("❌ انصراف"), callback_data="cancel_flow")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -2978,7 +2976,6 @@ def admin_config_detail_kb(tg_id: int, cc_id: int, enabled: bool, auto_renew: bo
         if not is_test:
             rows.append([InlineKeyboardButton(text=tr("✂️ قطع دسترسی و لینک جدید"), callback_data=f"adm_cfg_cut:{tg_id}:{cc_id}")])
             rows.append([InlineKeyboardButton(text=tr("🗑 حذف کامل کانفیگ"), callback_data=f"adm_cfg_del:{tg_id}:{cc_id}")])
-        rows.append([InlineKeyboardButton(text=tr("✉️ ارسال پیام مستقیم"), callback_data=f"adm_cfg_msg:{tg_id}:{cc_id}")])
         rows.append([InlineKeyboardButton(text=tr("👤 پروفایل کاربر"), callback_data=f"adm_user_view:{tg_id}")])
         rows.append([InlineKeyboardButton(text=tr("🔎 جستجوی کانفیگ دیگر"), callback_data="adm_cfg_search")])
     rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت به لیست کانفیگ‌ها"), callback_data=f"adm_user_cfglist:{tg_id}")])
@@ -3099,6 +3096,9 @@ def admin_categories_kb(db, parent_id=0) -> InlineKeyboardMarkup:
         prod = emoji_prefs.describe(cur["product_emoji"] if cur is not None and "product_emoji" in cur.keys() else None)
         rows.append([InlineKeyboardButton(text=tr(f"😀 ایموجی این دسته: {own}"), callback_data=f"adm_catemoji:{pid}:emoji")])
         rows.append([InlineKeyboardButton(text=tr(f"🏷 ایموجی محصولات این دسته: {prod}"), callback_data=f"adm_catemoji:{pid}:product_emoji")])
+        color = cur["button_color"] if cur is not None and "button_color" in cur.keys() else None
+        color_label = color or "پیش‌فرض"
+        rows.append([InlineKeyboardButton(text=tr(f"🎨 رنگ دکمه این دسته: {color_label}"), callback_data=f"adm_catcolor:{pid}")])
         rows.append([InlineKeyboardButton(text=tr("➕ افزودن زیردسته"), callback_data=f"adm_cat_add:{pid}")])
         back_cb = _category_parent_cb(db, pid, "adm_cat_open", "adm_categories")
     else:
@@ -4973,7 +4973,6 @@ def panel_type_select_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="MikroTik", callback_data="adm_panel_type:mikrotik")],
         [InlineKeyboardButton(text="IBSng", callback_data="adm_panel_type:ibsng")],
         [InlineKeyboardButton(text="W-UI", callback_data="adm_panel_type:wui")],
-        [InlineKeyboardButton(text="Stealth VLESS", callback_data="adm_panel_type:stealth")],
         [InlineKeyboardButton(text=tr("❌ انصراف"), callback_data="cancel_flow")],
     ])
 

@@ -86,7 +86,7 @@ from notification_i18n import send_telegram
 from panel_providers import (
     get_provider, PanelError, PanelUsernameTakenError, PANEL_TYPE_LABELS,
     SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES, parse_xui_inbound_ids,
-    SINGLE_INBOUND_PANEL_TYPES, TOKEN_ONLY_PANEL_TYPES, NO_SETUP_PANEL_TYPES, SECRET_PROMPTS, TEMPLATE_PROMPTS, TEMPLATE_VALUE_LABELS,
+    SINGLE_INBOUND_PANEL_TYPES, TOKEN_ONLY_PANEL_TYPES, SECRET_PROMPTS, TEMPLATE_PROMPTS, TEMPLATE_VALUE_LABELS,
 )
 from reseller_auto_provision import provision_auto_config, get_credit_bot_local_panel_id, ProvisionError
 from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
@@ -103,6 +103,7 @@ from states import (
     AdminCreateWalletGift,
     AdminAddCategory,
     AdminEmojiEdit,
+    AdminCategoryColor,
     AdminAddProduct,
     AdminEditProduct,
     AdminAddConfigs,
@@ -7911,28 +7912,6 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             )
             return
 
-        if data["panel_type"] in NO_SETUP_PANEL_TYPES:
-            # مثل Stealth VLESS: فقط آدرس + توکن؛ اتصال را تست و ذخیره می‌کنیم
-            server_id = (await asyncio.to_thread(db.add_panel_server,
-                name=data["name"], panel_type=data["panel_type"], api_url=data["url"],
-                api_username=data["username"], api_password=data["password"],
-            ))
-            server = (await asyncio.to_thread(db.get_panel_server, server_id))
-            ok, err = await get_provider(server).check_connection()
-            if not ok:
-                (await asyncio.to_thread(db.delete_panel_server, server_id))
-                await state.clear()
-                await message.answer(tr(f"⛔️ اتصال به نود ناموفق بود: {err}\nسرور ذخیره نشد؛ آدرس API و توکن را بررسی و دوباره تلاش کن."))
-                return
-            await state.clear()
-            label = PANEL_TYPE_LABELS.get(data["panel_type"], data["panel_type"])
-            (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "panel_server_add", f"سرور «{data['name']}» ({label}, #{server_id})"))
-            await message.answer(
-                f"{tr('✅ سرور')} «{data['name']}» ({label}) {tr('با موفقیت اضافه شد.')}",
-                reply_markup=kb.panel_servers_list_kb(db),
-            )
-            return
-
         # پنل‌های خانواده‌ی PasarGuard/Marzban/Marzneshin: قالب از کاربر نمونه
         await state.set_state(AdminAddPanelServer.waiting_template_user)
         await message.answer(
@@ -11299,6 +11278,49 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await asyncio.to_thread(db.log_admin_action, message.from_user.id, "emoji_setting", f"{key}")
         await state.clear()
         await message.answer(tr("✅ ذخیره شد."), reply_markup=kb.admin_emoji_menu_kb(db))
+
+    @router.callback_query(F.data.startswith("adm_catcolor:"))
+    async def cb_admin_catcolor(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        cat_id = callback_id(call.data, "adm_catcolor")
+        if cat_id is None or (await asyncio.to_thread(db.get_category, cat_id)) is None:
+            return await call.answer(tr("⚠️ این دسته‌بندی دیگر وجود ندارد."), show_alert=True)
+        cat = await asyncio.to_thread(db.get_category, cat_id)
+        current = cat["button_color"] if "button_color" in cat.keys() else None
+        await state.set_state(AdminCategoryColor.waiting_color)
+        await state.update_data(category_color_id=cat_id)
+        await safe_edit(
+            call,
+            tr("🎨 رنگ دکمه این دسته‌بندی/زیردسته را به صورت HEX ارسال کنید.\nمثال: #2563EB\nبرای بازگشت به رنگ پیش‌فرض بنویسید: پیش‌فرض")
+            + (f"\n\nرنگ فعلی: {current}" if current else "\n\nرنگ فعلی: پیش‌فرض"),
+            reply_markup=kb.admin_back_kb(f"adm_cat_open:{cat_id}"),
+        )
+        await call.answer()
+
+    @router.message(AdminCategoryColor.waiting_color)
+    async def process_admin_catcolor(message: Message, state: FSMContext):
+        if not senior_admin_only(message.from_user.id):
+            return
+        raw = (message.text or "").strip()
+        cat_id = (await state.get_data()).get("category_color_id")
+        if not cat_id:
+            await state.clear()
+            return await message.answer(tr("⚠️ درخواست منقضی شده است. دوباره وارد مدیریت دسته‌بندی شوید."))
+        if raw.lower() in ("پیش‌فرض", "default", "reset", "-", "0"):
+            color = None
+        else:
+            color = raw.upper()
+            if not re.fullmatch(r"#[0-9A-F]{6}", color):
+                return await message.answer(tr("⚠️ کد رنگ نامعتبر است. یک کد HEX شش‌رقمی مانند #2563EB ارسال کنید یا «پیش‌فرض» بنویسید."))
+        try:
+            await asyncio.to_thread(db.set_category_button_color, int(cat_id), color)
+            await asyncio.to_thread(db.log_admin_action, message.from_user.id, "category_button_color", f"دسته‌بندی #{cat_id}: {color or 'default'}")
+            await state.clear()
+            text, markup = await _category_view(int(cat_id))
+            await message.answer(tr("✅ رنگ اختصاصی ذخیره شد.") + "\n" + text, reply_markup=markup)
+        except Exception:
+            await message.answer(tr("⚠️ ذخیره رنگ ناموفق بود. دوباره تلاش کنید."))
 
     @router.callback_query(F.data.startswith("adm_catemoji:"))
     async def cb_admin_catemoji(call: CallbackQuery, state: FSMContext):
@@ -14989,25 +15011,17 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def process_admin_user_msg(message: Message, state: FSMContext, bot: Bot):
         data = await state.get_data()
         tg_id = data.get("target_user_id")
-        return_cfg_id = data.get("return_cfg_id")
         await state.clear()
         if not tg_id:
             return
         html_text = message.html_text if message.text else ""
-
-        async def _back(note: str):
-            if return_cfg_id:
-                await _show_config_detail(message, tg_id, return_cfg_id, note)
-            else:
-                await _show_user_menu(message, tg_id, note)
-
         try:
             await send_telegram(bot, db, tg_id, f"📩 پیام از پشتیبانی:\n\n{html_text}")
             await _notify_user_inline_menu(bot, tg_id)
             (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "user_direct_message", f"کاربر {tg_id}"))
-            await _back("✅ پیام ارسال شد.")
+            await _show_user_menu(message, tg_id, "✅ پیام ارسال شد.")
         except Exception:
-            await _back("⛔️ ارسال پیام ناموفق بود.")
+            await _show_user_menu(message, tg_id, "⛔️ ارسال پیام ناموفق بود.")
 
     # ---- بلاک/آنبلاک کاربر ----
 
@@ -15604,27 +15618,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             )
             rows = []
             if owner_id:
-                rows.append([InlineKeyboardButton(text=tr("✉️ ارسال پیام مستقیم"), callback_data=f"adm_user_msg:{owner_id}")])
                 rows.append([InlineKeyboardButton(text=tr("👤 پروفایل کاربر"), callback_data=f"adm_user_view:{owner_id}")])
             rows.append([InlineKeyboardButton(text=tr("🔎 جستجوی جدید"), callback_data="adm_cfg_search")])
             await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
-
-    @router.callback_query(F.data.startswith("adm_cfg_msg:"))
-    async def cb_admin_cfg_msg_ask(call: CallbackQuery, state: FSMContext):
-        if not await _cfg_ext_guard(call):
-            return
-        tg_id, cc_id = _parse_cfg_cb(call.data)
-        cc = await _get_cfg_of_user(tg_id, cc_id) if tg_id else None
-        if not cc:
-            await call.answer(tr("این کانفیگ یافت نشد."), show_alert=True)
-            return
-        await state.set_state(AdminUserManage.waiting_message_text)
-        await state.update_data(target_user_id=tg_id, return_cfg_id=cc_id)
-        await call.message.answer(
-            tr(f"✉️ متن پیام برای کاربر {tg_id} را ارسال کنید (فرمت‌بندی حفظ می‌شود):"),
-            reply_markup=kb.admin_back_kb(f"adm_cfg_view:{tg_id}:{cc_id}"),
-        )
-        await call.answer()
 
     # ----- قطع دسترسی و صدور لینک جدید -----
     @router.callback_query(F.data.startswith("adm_cfg_cut:"))

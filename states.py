@@ -151,6 +151,10 @@ class AdminEmojiEdit(StatesGroup):
     waiting_category = State()
 
 
+class AdminCategoryColor(StatesGroup):
+    waiting_color = State()
+
+
 class AdminAddProduct(StatesGroup):
     waiting_category = State()
     waiting_name = State()
