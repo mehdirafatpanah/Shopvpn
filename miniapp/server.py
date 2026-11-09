@@ -64,7 +64,7 @@ import ipaddress
 
 logging.basicConfig(level=logging.INFO)
 
-from config import BOT_TOKEN, DB_PATH, OWNER_ID, MAX_TEST_PER_USER, resolve_db_path, RESELLER_DBS_DIR, MINIAPP_URL, API_BASE_URL, PLISIO_API_KEY
+from config import BOT_TOKEN, DB_PATH, OWNER_ID, resolve_db_path, RESELLER_DBS_DIR, MINIAPP_URL, API_BASE_URL, PLISIO_API_KEY
 import plisio_client
 import exchange_rate
 import crypto_payment
@@ -1390,17 +1390,13 @@ async def api_create_custom_config(body: CustomConfigPurchase, auth=Depends(requ
 def api_catalog(auth=Depends(get_verified_user)):
     tg_id, db, _ = auth
     categories = db.get_categories(active_only=True)
-    paths = db.get_category_path_names()
-    parents = {int(c["parent_id"]) for c in categories if c["parent_id"]}
     result = []
     for c in categories:
         products = db.get_products(c["id"], active_only=True)
-        if not products and int(c["id"]) in parents:
-            continue  # دسته‌ی والدِ خالی؛ زیردسته‌هایش جدا نمایش داده می‌شوند
         result.append({
             "id": c["id"],
             "parent_id": c["parent_id"],
-            "name": paths.get(c["id"], c["name"]),
+            "name": c["name"],
             "products": [
                 {
                     "id": p["id"],
@@ -1429,7 +1425,8 @@ class TestConfigClaim(BaseModel):
 def api_test_config_status(auth=Depends(get_verified_user)):
     tg_id, db, _ = auth
     user = db.get_user(tg_id)
-    used = bool(user and user["test_used"] >= MAX_TEST_PER_USER)
+    test_limit = db.get_effective_test_limit(tg_id)
+    used = bool(user and user["test_used"] >= test_limit)
     link = None
     if used:
         row = db.get_test_custom_config_for_user(tg_id)
@@ -1490,7 +1487,7 @@ async def api_test_config_claim(payload: TestConfigClaim, auth=Depends(require_j
     if db.get_setting("test_enabled", "1") != "1":
         raise HTTPException(status_code=400, detail=tr("در حال حاضر امکان دریافت کانفیگ تست غیرفعال است."))
     user = db.get_user(tg_id)
-    if user and user["test_used"] >= MAX_TEST_PER_USER:
+    if user and user["test_used"] >= db.get_effective_test_limit(tg_id):
         raise HTTPException(status_code=400, detail=tr("شما قبلاً کانفیگ تست خود را دریافت کرده‌اید."))
 
     is_full_access = db.is_full_access_bot(not bool(tenant.tenant_id))
@@ -1514,7 +1511,7 @@ async def api_test_config_claim(payload: TestConfigClaim, auth=Depends(require_j
         # کانفیگ تست می‌ساخت (و در بات‌های نمایندگی، هرکدام از اعتبار حجمی
         # نماینده کم می‌کرد). سهمیه حالا با یک UPDATE اتمیک *قبل* از تماس با
         # پنل رزرو می‌شود؛ اگر ساخت کانفیگ شکست بخورد، سهمیه برمی‌گردد.
-        if not db.try_reserve_test_slot(tg_id, MAX_TEST_PER_USER):
+        if not db.try_reserve_test_slot(tg_id, db.get_effective_test_limit(tg_id)):
             raise HTTPException(status_code=400, detail=tr("شما قبلاً کانفیگ تست خود را دریافت کرده‌اید."))
 
         use_credit = (not is_full_access) or (await asyncio.to_thread(is_volume_credit_bot, db, not bool(tenant.tenant_id)))
@@ -1544,7 +1541,7 @@ async def api_test_config_claim(payload: TestConfigClaim, auth=Depends(require_j
     # take_unused_test_config قبل از mark_test_used صدا زده می‌شد، پس چند‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
     # ریکوئست همزمان می‌توانستند چند لینک از بانک بردارند. حالا سهمیه اول رزرو
     # می‌شود؛ اگر لینکی برای برداشتن نبود، سهمیه بلافاصله برمی‌گردد.
-    if not db.try_reserve_test_slot(tg_id, MAX_TEST_PER_USER):
+    if not db.try_reserve_test_slot(tg_id, db.get_effective_test_limit(tg_id)):
         raise HTTPException(status_code=400, detail=tr("شما قبلاً کانفیگ تست خود را دریافت کرده‌اید."))
     result = db.take_unused_test_config(tg_id)
     if not result:
