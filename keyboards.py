@@ -2976,6 +2976,7 @@ def admin_config_detail_kb(tg_id: int, cc_id: int, enabled: bool, auto_renew: bo
         if not is_test:
             rows.append([InlineKeyboardButton(text=tr("✂️ قطع دسترسی و لینک جدید"), callback_data=f"adm_cfg_cut:{tg_id}:{cc_id}")])
             rows.append([InlineKeyboardButton(text=tr("🗑 حذف کامل کانفیگ"), callback_data=f"adm_cfg_del:{tg_id}:{cc_id}")])
+        rows.append([InlineKeyboardButton(text=tr("✉️ ارسال پیام مستقیم"), callback_data=f"adm_cfg_msg:{tg_id}:{cc_id}")])
         rows.append([InlineKeyboardButton(text=tr("👤 پروفایل کاربر"), callback_data=f"adm_user_view:{tg_id}")])
         rows.append([InlineKeyboardButton(text=tr("🔎 جستجوی کانفیگ دیگر"), callback_data="adm_cfg_search")])
     rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت به لیست کانفیگ‌ها"), callback_data=f"adm_user_cfglist:{tg_id}")])

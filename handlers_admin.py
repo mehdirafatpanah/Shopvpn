@@ -14967,17 +14967,25 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def process_admin_user_msg(message: Message, state: FSMContext, bot: Bot):
         data = await state.get_data()
         tg_id = data.get("target_user_id")
+        return_cfg_id = data.get("return_cfg_id")
         await state.clear()
         if not tg_id:
             return
         html_text = message.html_text if message.text else ""
+
+        async def _back(note: str):
+            if return_cfg_id:
+                await _show_config_detail(message, tg_id, return_cfg_id, note)
+            else:
+                await _show_user_menu(message, tg_id, note)
+
         try:
             await send_telegram(bot, db, tg_id, f"📩 پیام از پشتیبانی:\n\n{html_text}")
             await _notify_user_inline_menu(bot, tg_id)
             (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "user_direct_message", f"کاربر {tg_id}"))
-            await _show_user_menu(message, tg_id, "✅ پیام ارسال شد.")
+            await _back("✅ پیام ارسال شد.")
         except Exception:
-            await _show_user_menu(message, tg_id, "⛔️ ارسال پیام ناموفق بود.")
+            await _back("⛔️ ارسال پیام ناموفق بود.")
 
     # ---- بلاک/آنبلاک کاربر ----
 
@@ -15574,9 +15582,27 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             )
             rows = []
             if owner_id:
+                rows.append([InlineKeyboardButton(text=tr("✉️ ارسال پیام مستقیم"), callback_data=f"adm_user_msg:{owner_id}")])
                 rows.append([InlineKeyboardButton(text=tr("👤 پروفایل کاربر"), callback_data=f"adm_user_view:{owner_id}")])
             rows.append([InlineKeyboardButton(text=tr("🔎 جستجوی جدید"), callback_data="adm_cfg_search")])
             await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+    @router.callback_query(F.data.startswith("adm_cfg_msg:"))
+    async def cb_admin_cfg_msg_ask(call: CallbackQuery, state: FSMContext):
+        if not await _cfg_ext_guard(call):
+            return
+        tg_id, cc_id = _parse_cfg_cb(call.data)
+        cc = await _get_cfg_of_user(tg_id, cc_id) if tg_id else None
+        if not cc:
+            await call.answer(tr("این کانفیگ یافت نشد."), show_alert=True)
+            return
+        await state.set_state(AdminUserManage.waiting_message_text)
+        await state.update_data(target_user_id=tg_id, return_cfg_id=cc_id)
+        await call.message.answer(
+            tr(f"✉️ متن پیام برای کاربر {tg_id} را ارسال کنید (فرمت‌بندی حفظ می‌شود):"),
+            reply_markup=kb.admin_back_kb(f"adm_cfg_view:{tg_id}:{cc_id}"),
+        )
+        await call.answer()
 
     # ----- قطع دسترسی و صدور لینک جدید -----
     @router.callback_query(F.data.startswith("adm_cfg_cut:"))
