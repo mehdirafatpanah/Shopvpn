@@ -194,6 +194,7 @@ class DatabaseBase:
                     first_name TEXT,
                     is_blocked INTEGER DEFAULT 0,
                     test_used INTEGER DEFAULT 0,
+                    test_limit_override INTEGER,
                     referred_by INTEGER,
                     referral_credit INTEGER DEFAULT 0,
                     referral_first_purchase_rewarded INTEGER DEFAULT 0,
@@ -243,6 +244,7 @@ class DatabaseBase:
                     price INTEGER NOT NULL,
                     description TEXT DEFAULT '',
                     is_active INTEGER DEFAULT 1,
+                    is_hidden INTEGER DEFAULT 0,
                     payment_methods TEXT,
                     FOREIGN KEY(category_id) REFERENCES categories(id) ON DELETE CASCADE
                 );
@@ -1377,6 +1379,18 @@ class DatabaseBase:
                 );
                 CREATE INDEX IF NOT EXISTS idx_reseller_credit_log_user ON reseller_credit_log(user_id);
 
+                CREATE TABLE IF NOT EXISTS welcome_gift_queue (
+                    user_id INTEGER PRIMARY KEY,
+                    due_at INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    error TEXT,
+                    result_json TEXT,
+                    updated_at INTEGER,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_welcome_gift_queue_due ON welcome_gift_queue(status, due_at);
+
                 CREATE TABLE IF NOT EXISTS product_waitlist (
                     product_id INTEGER NOT NULL,
                     user_id INTEGER NOT NULL,
@@ -1741,7 +1755,7 @@ class DatabaseBase:
     FACTORY_RESET_TABLES = (
         "users", "categories", "products", "configs", "config_activity", "test_configs",
         "test_config_plans", "wheel_prizes", "orders", "discount_codes", "discount_redemptions", "wallet_topups",
-        "crypto_invoices", "support_messages", "support_conversations",
+        "crypto_invoices", "support_messages", "support_conversations", "welcome_gift_queue",
         "admin_presence", "tickets", "ticket_messages", "ticket_departments", "ticket_department_admins", "admin_logs",
         "abangateway_invoices", "blupal_invoices", "noapay_invoices", "extra_gateway_invoices", "custom_gateways", "custom_gateway_invoices",
         "card_to_card_cards", "card_to_card_invoices", "payment_cards", "payment_card_assignments", "quota_enforcement_state", "quota_pool_members", "quota_pool_adjustments",
@@ -1809,6 +1823,7 @@ class DatabaseBase:
         ("base_users", "INTEGER DEFAULT 0"),
         ("extra_user_price", "INTEGER DEFAULT 0"),
         ("max_users", "INTEGER DEFAULT 0"),
+        ("emoji", "TEXT"),
     )
 
     def _migrate_test_config_plans(self, conn):
@@ -1829,7 +1844,7 @@ class DatabaseBase:
                 "created_at TEXT DEFAULT CURRENT_TIMESTAMP, "
                 "provision_ssh_node_id INTEGER, provision_ssh_protocol TEXT DEFAULT 'ssh', "
                 "provision_target_config TEXT, base_users INTEGER DEFAULT 0, "
-                "extra_user_price INTEGER DEFAULT 0, max_users INTEGER DEFAULT 0)"
+                "extra_user_price INTEGER DEFAULT 0, max_users INTEGER DEFAULT 0, emoji TEXT)"
             )
             cols = ", ".join(old_cols)
             conn.execute(f"INSERT INTO test_config_plans_new ({cols}) SELECT {cols} FROM test_config_plans")
@@ -1970,8 +1985,13 @@ class DatabaseBase:
             ("discount_codes", "max_discount_amount", "INTEGER"),
             ("discount_codes", "product_ids", "TEXT"),
             ("products", "duration_days", "INTEGER DEFAULT 30"),
+            ("users", "test_limit_override", "INTEGER"),
+            ("welcome_gift_queue", "result_json", "TEXT"),
+            ("products", "is_hidden", "INTEGER DEFAULT 0"),
             ("products", "btn_style", "TEXT DEFAULT ''"),
             ("categories", "parent_id", "INTEGER"),
+            ("categories", "emoji", "TEXT"),
+            ("categories", "product_emoji", "TEXT"),
             ("panel_servers", "panel_category_id", "INTEGER"),
             ("configs", "expires_at", "TEXT"),
             ("configs", "renewal_reminder_sent", "INTEGER DEFAULT 0"),

@@ -124,6 +124,7 @@ DEFAULT_SETTINGS = {
     "btn_tutorial": "📚 آموزش",
     "tutorial_menu_enabled": "1",
     "test_enabled": "1",
+    "test_max_per_user": "1",
     # F14: پاکسازی خودکار سرویس‌های منقضی. صفر یعنی خاموش.
     "expired_delete_days": "0",
     "test_delete_days": "0",
@@ -245,6 +246,14 @@ DEFAULT_SETTINGS = {
     "signup_gift_enabled": "0",
     "signup_gift_amount": "0",  # مبلغ هدیه (تومان)
     "signup_gift_delay_days": "3",  # چند روز بعد از عضویت بدون خرید
+    # هدیه‌ی کانفیگ عضویت: به‌محض ثبت‌نام جدید در بات، پس از تأخیر دلخواه (دقیقه)
+    # یک سرویس از محصول انتخاب‌شده با حجم/مدت دلخواه ساخته و ارسال می‌شود.
+    "welcome_gift_enabled": "0",
+    "welcome_gift_product_id": "0",
+    "welcome_gift_product_mode": "existing",
+    "welcome_gift_volume_gb": "",  # خالی = حجم پیش‌فرض محصول، 0 = نامحدود
+    "welcome_gift_days": "",  # خالی = مدت پیش‌فرض محصول، 0 = نامحدود
+    "welcome_gift_delay_minutes": "0",  # 0 = بلافاصله بعد از عضویت
     # رنگ دکمه‌های شیشه‌ای داخل پنل مدیریت
     "adm_categories_style": "",
     "adm_products_style": "",
@@ -264,8 +273,14 @@ DEFAULT_SETTINGS = {
     "adm_wheel_settings_style": "success",
     # رنگ دکمه‌های شیشه‌ای مسیر خرید (دسته‌بندی/محصول/تایید و ...)
     "btn_cat_select_style": "primary",
+    "btn_subcat_select_style": "success",
     "btn_product_select_style": "primary",
     "buy_product_layout": "classic",
+    "buy_product_order": "name_first",
+    "emoji_product_in_stock": "✅",
+    "emoji_product_out_of_stock": "⛔️",
+    "emoji_category": "📁",
+    "emoji_test_plan": "🧪",
     "btn_buy_continue_style": "success",
     "btn_enter_code_style": "",
     "btn_buy_back_style": "",
@@ -543,7 +558,8 @@ DEFAULT_BUYFLOW_CONFIRM_ORDER = ["btn_buy_continue", "btn_enter_code"]
 # و بنابراین متن ثابتی برای ویرایش ندارند - فقط رنگشان از تب «دکمه‌های ربات»
 # قابل تغییر است (قبلاً در تب «تنظیمات و برندینگ» بودند، اینجا یکپارچه شدند).
 BUYFLOW_STYLE_ONLY_META = {
-    "btn_cat_select": {"label": "انتخاب دسته‌بندی"},
+    "btn_cat_select": {"label": "دکمه‌ی دسته‌بندی اصلی"},
+    "btn_subcat_select": {"label": "دکمه‌ی زیردسته‌بندی"},
     "btn_product_select": {"label": "انتخاب محصول"},
 }
 DEFAULT_SETTINGS.update({key: default for key, _label, default in ACCOUNT_TOGGLE_KEYS})

@@ -70,12 +70,16 @@ class UsersMixin:
         # می‌شود و هم به‌طور کلی سریع‌تر است - بدون تغییر در رفتار (فیلدهای
         # دیگر همچنان مقدار پیش‌فرض جدول را در حالت INSERT می‌گیرند).
         with self._get_conn() as conn:
-            conn.execute(
-                "INSERT INTO users (telegram_id, username, first_name) VALUES (?, ?, ?) "
-                "ON CONFLICT(telegram_id) DO UPDATE SET username=excluded.username, first_name=excluded.first_name",
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO users (telegram_id, username, first_name) VALUES (?, ?, ?)",
                 (tg_id, username, first_name),
             )
-
+            is_new = cur.rowcount == 1
+            if not is_new:
+                conn.execute(
+                    "UPDATE users SET username=?, first_name=? WHERE telegram_id=?",
+                    (username, first_name, tg_id),
+                )
 
     def get_user(self, tg_id: int):
         with self._get_conn() as conn:

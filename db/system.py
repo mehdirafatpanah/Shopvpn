@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
+import json
+import time
+
 from .constants import *
 from .constants import _wallet_tag
 
@@ -320,6 +323,31 @@ class SystemMixin:
     # -----------------------------------------------------------------------
     # کاربران
     # -----------------------------------------------------------------------
+
+
+    def get_effective_test_limit(self, tg_id: int) -> int:
+        """سهمیه‌ی تست کاربر؛ override اختصاصی بر تنظیم عمومی اولویت دارد."""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT test_limit_override FROM users WHERE telegram_id=?", (int(tg_id),)
+            ).fetchone()
+        override = row["test_limit_override"] if row else None
+        raw = override if override is not None else self.get_setting("test_max_per_user", "1")
+        try:
+            return max(0, min(1000, int(float(raw))))
+        except (TypeError, ValueError):
+            return 1
+
+    def set_user_test_limit_override(self, tg_id: int, value):
+        """عدد = سهمیه‌ی اختصاصی؛ None = پیروی از تنظیم عمومی."""
+        if value is not None:
+            value = max(0, min(1000, int(value)))
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "UPDATE users SET test_limit_override=? WHERE telegram_id=?",
+                (value, int(tg_id)),
+            )
+            return cur.rowcount > 0
 
 
     def mark_test_used(self, tg_id: int):
@@ -1136,6 +1164,101 @@ class SystemMixin:
             return reward, referrer_id
         return None
 
+
+    def get_welcome_gift_status(self, user_id: int):
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT status, due_at, error FROM welcome_gift_queue WHERE user_id=?",
+                (int(user_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def enqueue_welcome_gift(self, user_id: int) -> bool:
+        """کاربر تازه‌عضو را (در صورت فعال بودن هدیه‌ی کانفیگ عضویت) با زمان سررسید در صف می‌گذارد."""
+        if self.get_setting("welcome_gift_enabled", "0") != "1":
+            return False
+        if int(self.get_setting("welcome_gift_product_id", "0") or 0) <= 0:
+            return False
+        try:
+            delay = max(0, int(float(self.get_setting("welcome_gift_delay_minutes", "0") or 0)))
+        except ValueError:
+            delay = 0
+        now = int(time.time())
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO welcome_gift_queue (user_id, due_at, status, updated_at) VALUES (?, ?, 'pending', ?)",
+                (int(user_id), now + delay * 60, now),
+            )
+            return cur.rowcount == 1
+
+    def claim_due_welcome_gifts(self, limit: int = 5) -> list:
+        now = int(time.time())
+        claimed = []
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE welcome_gift_queue SET status=CASE WHEN result_json IS NOT NULL THEN 'provisioned' ELSE 'pending' END, updated_at=? "
+                "WHERE status='processing' AND updated_at<?", (now, now - 900),
+            )
+            rows = conn.execute(
+                "SELECT user_id, result_json FROM welcome_gift_queue "
+                "WHERE status IN ('pending','provisioned') AND due_at<=? ORDER BY due_at LIMIT ?",
+                (now, int(limit)),
+            ).fetchall()
+            for row in rows:
+                old_status = "provisioned" if row["result_json"] else "pending"
+                cur = conn.execute(
+                    "UPDATE welcome_gift_queue SET status='processing', attempts=attempts+1, updated_at=? "
+                    "WHERE user_id=? AND status=?", (now, row["user_id"], old_status),
+                )
+                if cur.rowcount == 1:
+                    claimed.append({"user_id": int(row["user_id"]), "result_json": row["result_json"]})
+        return claimed
+
+    def save_welcome_gift_result(self, user_id: int, result: dict) -> None:
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE welcome_gift_queue SET status='provisioned', result_json=?, due_at=?, error='', updated_at=? WHERE user_id=?",
+                (json.dumps(result, ensure_ascii=False), int(time.time()), int(time.time()), int(user_id)),
+            )
+
+    def retry_welcome_gift_delivery(self, user_id: int, error: str, retry_after: int = 300) -> None:
+        now = int(time.time())
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE welcome_gift_queue SET status='provisioned', due_at=?, error=?, updated_at=? WHERE user_id=?",
+                (now + max(30, int(retry_after)), (error or "")[:500], now, int(user_id)),
+            )
+
+    def finish_welcome_gift(self, user_id: int, status: str = "done", error: str = "") -> None:
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE welcome_gift_queue SET status=?, error=?, updated_at=? WHERE user_id=?",
+                (status, (error or "")[:500], int(time.time()), int(user_id)),
+            )
+
+    def retry_or_fail_welcome_gift(self, user_id: int, error: str, max_attempts: int = 3, retry_after: int = 300) -> str:
+        now = int(time.time())
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT attempts, result_json FROM welcome_gift_queue WHERE user_id=?", (int(user_id),)).fetchone()
+            if row and int(row["attempts"]) < max_attempts:
+                conn.execute(
+                    "UPDATE welcome_gift_queue SET status='pending', due_at=?, error=?, updated_at=? WHERE user_id=?",
+                    (now + retry_after, (error or "")[:500], now, int(user_id)),
+                )
+                return "pending"
+            conn.execute(
+                "UPDATE welcome_gift_queue SET status='failed', error=?, updated_at=? WHERE user_id=?",
+                ((error or "")[:500], now, int(user_id)),
+            )
+        return "failed"
+
+    def welcome_gift_stats(self) -> dict:
+        with self._get_conn() as conn:
+            rows = conn.execute("SELECT status, COUNT(*) AS n FROM welcome_gift_queue GROUP BY status").fetchall()
+        stats = {"pending": 0, "processing": 0, "provisioned": 0, "done": 0, "failed": 0, "skipped": 0}
+        for row in rows:
+            stats[row["status"]] = int(row["n"])
+        return stats
 
     def grant_pending_signup_gifts(self) -> list:
         """کاربران واجد شرایط (عضو از حداقل signup_gift_delay_days روز پیش،
