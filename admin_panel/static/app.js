@@ -3900,12 +3900,20 @@ function wireCategoryActions(body, categories, basePath = '/categories') {
     openModal('ویرایش دسته‌بندی', `
       <div class="form-grid"><input class="input" id="cat-edit-name" placeholder="نام دسته‌بندی" value="${esc(cat.name)}">
       <label class="field"><span>📂 دسته‌ی والد</span><select class="input" id="cat-edit-parent">${catParentOptionsHtml(categories, cat.parent_id, cat.id)}</select></label>
+      ${basePath === '/categories' ? `
+      <label class="field"><span>😀 ایموجی دکمه‌ی دسته در بات (خالی = پیش‌فرض، - = بدون ایموجی)</span><input class="input" id="cat-edit-emoji" maxlength="16" value="${esc(cat.emoji || '')}"></label>
+      <label class="field"><span>🏷 ایموجی محصولات این دسته در بات (خالی = پیش‌فرض، - = بدون ایموجی)</span><input class="input" id="cat-edit-prod-emoji" maxlength="16" value="${esc(cat.product_emoji || '')}"></label>` : ''}
       <button class="btn btn-primary" id="cat-edit-save">ذخیره</button></div>`, (b, close) => {
       $('#cat-edit-save', b).addEventListener('click', async () => {
         const name = $('#cat-edit-name', b).value.trim();
         if (!name) return toast('نام دسته‌بندی را وارد کنید.', true);
         const parent = Number($('#cat-edit-parent', b).value) || null;
-        try { await apiPut(`${basePath}/${cat.id}`, { name, parent_id: parent }); toast('ویرایش شد.'); close(); reload(); } catch (e) { handleErr(e); }
+        const payload = { name, parent_id: parent };
+        if (basePath === '/categories') {
+          payload.emoji = $('#cat-edit-emoji', b).value.trim();
+          payload.product_emoji = $('#cat-edit-prod-emoji', b).value.trim();
+        }
+        try { await apiPut(`${basePath}/${cat.id}`, payload); toast('ویرایش شد.'); close(); reload(); } catch (e) { handleErr(e); }
       });
     });
   }));
