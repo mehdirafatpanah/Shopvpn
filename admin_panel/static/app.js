@@ -7444,6 +7444,50 @@ const PANEL_TEMPLATE_HINTS = {
   ibsng: 'حجم و مدت را گروه تعیین می‌کند و مقدار حجم/مدت محصول اعمال نمی‌شود. یوزر/پس ادمین IBSng لازم است.',
 };
 
+// ---- نصب خودکار نود Stealth VLESS (مشترک بین «پنل‌ها» و «نودها و سهمیه SSH») ----
+function stealthAutoBoxHtml(withName) {
+  return `
+    ${withName ? '<input class="input" id="sa-name" placeholder="نام نود (مثلاً Stealth-1)" maxlength="80">' : ''}
+    <div class="form-grid">
+      <input class="input" id="sa-host" placeholder="آی‌پی سرور" dir="ltr">
+      <input class="input" id="sa-port" type="number" min="1" max="65535" value="22" placeholder="پورت SSH">
+      <input class="input" id="sa-pass" type="password" autocomplete="off" placeholder="رمز root" dir="ltr">
+      <input class="input" id="sa-domain" placeholder="دامنه نود (cdn.example.com)" dir="ltr">
+      <select class="input" id="sa-decoy"><option value="movie">سایت جعلی: تماشای فیلم (ساختگی)</option><option value="proxy">سایت جعلی: آینه‌ی یک سایت واقعی</option></select>
+      <input class="input" id="sa-proxy" placeholder="آدرس سایت واقعی (https://...)" dir="ltr" style="display:none">
+      <select class="input" id="sa-cert"><option value="letsencrypt">گواهی Let's Encrypt (دامنه باید به سرور اشاره کند)</option><option value="self">گواهی خودامضا (کلادفلر باید روی Full باشد)</option></select>
+      <input class="input" id="sa-email" type="email" placeholder="ایمیل (برای Let's Encrypt)" dir="ltr">
+      <input class="input" id="sa-pubport" type="number" value="443" placeholder="پورت عمومی (443)">
+      <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:13px">
+        <label><input type="checkbox" class="sa-tr" value="ws" checked> WebSocket</label>
+        <label><input type="checkbox" class="sa-tr" value="httpupgrade" checked> HTTPUpgrade</label>
+        <label><input type="checkbox" class="sa-tr" value="grpc" checked> gRPC</label>
+        <label><input type="checkbox" class="sa-tr" value="xhttp"> xhttp (stream-one)</label>
+      </div>
+      <button class="btn btn-primary" id="sa-install" type="button">نصب و راه‌اندازی خودکار</button>
+    </div>
+    <pre id="sa-log" class="mono" style="display:none;white-space:pre-wrap;margin-top:8px"></pre>
+    <p class="card-sub">سرور باید Ubuntu/Debian تازه باشد. xray (فقط VLESS)، nginx، سایت جعلی، گواهی TLS و ثبت در پنل خودکار انجام می‌شود. رمز root فقط برای همین نصب استفاده می‌شود و ذخیره نمی‌شود. بعد از نصب، نود در بخش «پنل‌های VPN» با نوع Stealth VLESS دیده می‌شود.</p>`;
+}
+
+function wireStealthAutoBox(root, getName, onDone) {
+  const saDecoy = $('#sa-decoy', root);
+  saDecoy.addEventListener('change', () => { $('#sa-proxy', root).style.display = saDecoy.value === 'proxy' ? '' : 'none'; });
+  $('#sa-install', root).addEventListener('click', e => {
+    const btn = e.currentTarget, logEl = $('#sa-log', root);
+    const v = id => $(id, root).value.trim();
+    const name = getName();
+    const transports = [...root.querySelectorAll('.sa-tr:checked')].map(i => i.value);
+    if (!name || !v('#sa-host') || !$('#sa-pass', root).value || !v('#sa-domain')) return toast('نام، آی‌پی، رمز root و دامنه را وارد کنید.', true);
+    if (!transports.length) return toast('حداقل یک ترنسپورت را تیک بزنید.', true);
+    sshRunInstallJob(root, btn, logEl, () => apiPost('/stealth/nodes/auto-install', {
+      name, host: v('#sa-host'), ssh_port: Number(v('#sa-port')) || 22, password: $('#sa-pass', root).value,
+      domain: v('#sa-domain'), decoy: saDecoy.value, proxy_url: v('#sa-proxy') || null, cert: v('#sa-cert'),
+      email: v('#sa-email'), transports, port: Number(v('#sa-pubport')) || 443,
+    }), onDone, '/stealth/nodes/install-jobs');
+  });
+}
+
 function panelAddFormHtml() {
   return `
     <div class="form-grid">
@@ -7455,6 +7499,11 @@ function panelAddFormHtml() {
       <p id="p-hint" style="display:none;font-size:12px;color:var(--muted,#8892a6);margin:0"></p>
       <select class="input" id="p-cat"><option value="">🗂 بدون دسته‌بندی</option>${(window.__panelCats || []).map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
       <button class="btn btn-primary" id="p-save">ثبت</button>
+    </div>
+    <div id="p-stealth-auto" class="card" style="display:none;padding:12px;margin-top:6px">
+      <b>⚡ نصب خودکار نود Stealth روی سرور جدید</b>
+      <p class="card-sub">نام را در فیلد بالای فرم بنویسید؛ فیلدهای آدرس/توکن بالا برای نصب خودکار لازم نیست.</p>
+      ${stealthAutoBoxHtml(false)}
     </div>`;
 }
 
@@ -7463,7 +7512,14 @@ function wirePanelAddForm(body, close) {
   function syncTypeUI() {
     const t = typeSel.value;
     templateInp.style.display = 'none';
-    if (t === '3xui') {
+    const autoBox = $('#p-stealth-auto', body);
+    if (autoBox) autoBox.style.display = t === 'stealth' ? '' : 'none';
+    if (t === 'stealth') {
+      userInp.style.display = 'none'; userInp.value = '';
+      passInp.placeholder = PANEL_SECRET_PLACEHOLDERS.stealth;
+      hint.style.display = 'block';
+      hint.textContent = 'اگر نود را قبلاً با نصاب نصب کرده‌اید، آدرس API و توکن را وارد و «ثبت» بزنید؛ در غیر این صورت از بخش «نصب خودکار» پایین استفاده کنید.';
+    } else if (t === '3xui') {
       userInp.style.display = 'none'; userInp.value = '';
       passInp.placeholder = 'API Token (Settings ← Security در پنل)';
       hint.style.display = 'block';
@@ -7491,6 +7547,7 @@ function wirePanelAddForm(body, close) {
   }
   typeSel.addEventListener('change', syncTypeUI);
   syncTypeUI();
+  if ($('#sa-install', body)) wireStealthAutoBox(body, () => $('#p-name', body).value.trim(), () => { close(); renderPanels(); });
 
   $('#p-save', body).addEventListener('click', async () => {
     const name = $('#p-name', body).value.trim(), api_url = $('#p-url', body).value.trim();
@@ -7648,14 +7705,14 @@ function sshReadProtoFields(el) {
   const protocols = [...el.querySelectorAll('[data-ssh-proto]:not(:disabled)')].filter(c => c.checked).map(c => c.dataset.sshProto);
   return { protocols, ovpn_port: Number(el.querySelector('[data-ssh-ovpn-port]')?.value) || 1194, ovpn_proto: el.querySelector('[data-ssh-ovpn-proto]')?.value || 'udp', wg_port: Number(el.querySelector('[data-ssh-wg-port]')?.value) || 51820 };
 }
-async function sshRunInstallJob(el, btn, logEl, startRequest, onDone) {
+async function sshRunInstallJob(el, btn, logEl, startRequest, onDone, jobBase = '/ssh/nodes/install-jobs') {
   btn.disabled = true; logEl.style.display = ''; logEl.textContent = 'شروع نصب...';
   try {
     const r = await startRequest();
     el.querySelectorAll('input[type=password]').forEach(i => { i.value = ''; });
     for (let i = 0; i < 400; i++) {
       await new Promise(res => setTimeout(res, 2000));
-      const j = await apiGet(`/ssh/nodes/install-jobs/${r.job_id}`);
+      const j = await apiGet(`${jobBase}/${r.job_id}`);
       logEl.textContent = (j.log || []).join('\n');
       if (j.status === 'done') { toast(j.warning ? ('نصب شد؛ ' + j.warning) : 'نصب با موفقیت انجام شد.', !!j.warning); onDone(); return; }
       if (j.status === 'error') { logEl.textContent += '\n❌ ' + (j.error || 'خطا'); toast(j.error || 'نصب ناموفق بود.', true); btn.disabled = false; return; }
@@ -7747,7 +7804,7 @@ async function renderSSHManagement() {
   const statusFa = s => ({active:'فعال',pending:'در انتظار',error:'خطا',degraded:'ناپایدار',disabled:'غیرفعال',stale:'داده قدیمی',exceeded:'سهمیه تمام‌شده',quota_exceeded:'سهمیه تمام‌شده',expired:'منقضی',deleted:'حذف‌شده'}[s] || s || 'نامشخص');
   const tabs = [['nodes','نودها',nodes.length],['accounts','حساب‌ها',accounts.length],['pools','استخرها',pools.length]];
   const tabBar = `<div class="toolbar" style="gap:8px;flex-wrap:wrap">${tabs.map(([k,l,c])=>`<button class="btn btn-sm ${sshTab===k?'btn-primary':''}" data-ssh-tab="${k}">${l} (${c})</button>`).join('')}<span style="flex:1"></span>${
-    sshTab==='nodes' ? '<button class="btn btn-primary btn-sm" id="ssh-add-node">+ افزودن نود</button>' :
+    sshTab==='nodes' ? '<button class="btn btn-primary btn-sm" id="ssh-add-node">+ افزودن نود</button> <button class="btn btn-sm" id="ssh-add-stealth">+ نود Stealth VLESS</button>' :
     sshTab==='accounts' ? '<button class="btn btn-primary btn-sm" id="ssh-add-account">+ ساخت حساب</button>' :
     '<button class="btn btn-sm" id="ssh-reconcile">پایش و اعمال سهمیه</button><button class="btn btn-sm" id="ssh-attach-open">اتصال VPN به استخر</button><button class="btn btn-primary btn-sm" id="ssh-add-pool">+ ساخت استخر</button>'}</div>`;
 
@@ -7786,6 +7843,9 @@ async function renderSSHManagement() {
   $$('[data-ssh-tab]',content()).forEach(b=>b.addEventListener('click',()=>{sshTab=b.dataset.sshTab;renderSSHManagement();}));
 
   // ---- افزودن نود (نصب خودکار) ----
+  $('#ssh-add-stealth')?.addEventListener('click',()=>openModal('افزودن نود Stealth VLESS',stealthAutoBoxHtml(true),(el,close)=>{
+    wireStealthAutoBox(el,()=>el.querySelector('#sa-name').value.trim(),()=>{close();renderSSHManagement();});
+  }));
   $('#ssh-add-node')?.addEventListener('click',()=>openModal('افزودن نود',`
     <div class="form-grid">
       <label class="field"><span>نام نود</span><input class="input" id="ssh-auto-name" placeholder="Germany-1" maxlength="80"></label>
