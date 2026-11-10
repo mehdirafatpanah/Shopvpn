@@ -672,6 +672,13 @@ class StealthNodeAutoInstallBody(BaseModel):
     site_name: str = "CineVault"
 
 
+class StealthNodeSettingsBody(BaseModel):
+    title: Optional[str] = None
+    fingerprint: Optional[str] = None
+    sni: Optional[str] = None
+    host: Optional[str] = None
+
+
 class SSHNodeAddProtocolsBody(BaseModel):
     password: str
     protocols: List[str]
@@ -4223,6 +4230,11 @@ def api_products(admin=Depends(require_permission("catalog"))):
         p["extra_ssh_node_ids"] = extra["ssh"]
         p["extra_panel_target_configs"] = extra.get("panel_target_configs", {})
         p["capabilities"] = product_capabilities(db, p)
+        if p.get("provision_server_id"):
+            _provision_panel = db.get_panel_server(p["provision_server_id"])
+            p["provision_panel_type"] = _provision_panel["panel_type"] if _provision_panel else None
+        else:
+            p["provision_panel_type"] = None
     return products
 
 
@@ -6638,6 +6650,32 @@ def api_stealth_install_job(job_id: str, admin=Depends(require_permission("panel
     if not job:
         raise HTTPException(404, "کار نصب پیدا نشد.")
     return job
+
+
+@app.get("/api/panel-servers/{server_id}/stealth-settings")
+async def api_get_stealth_settings(server_id: int, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    server = db.get_panel_server(server_id)
+    if not server or server["panel_type"] != "stealth":
+        raise HTTPException(404, "نود VLESS پیدا نشد.")
+    try:
+        settings = await get_provider(server).get_settings()
+        return settings
+    except PanelError as exc:
+        raise HTTPException(502, str(exc))
+
+
+@app.put("/api/panel-servers/{server_id}/stealth-settings")
+async def api_update_stealth_settings(server_id: int, body: StealthNodeSettingsBody, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    server = db.get_panel_server(server_id)
+    if not server or server["panel_type"] != "stealth":
+        raise HTTPException(404, "نود VLESS پیدا نشد.")
+    payload = {k: v for k, v in body.dict(exclude_unset=True).items() if v is not None}
+    try:
+        settings = await get_provider(server).update_settings(payload)
+    except PanelError as exc:
+        raise HTTPException(400, str(exc))
+    db.log_admin_action(admin["id"], "stealth_node_settings", f"VLESS node #{server_id} settings updated", "panel", server_id)
+    return {"ok": True, "settings": settings}
 
 
 @app.post("/api/ssh/nodes/{node_id}/add-protocols")
