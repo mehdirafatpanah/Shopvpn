@@ -65,6 +65,42 @@ class AgentTest(unittest.TestCase):
         self.assertFalse(any("packet-up" in l for l in links))
         self.assertTrue(any("adu" in c for c in self.fake.calls))
 
+    def test_failed_sync_is_persisted_and_retried(self):
+        class Failing(FakeRunner):
+            def run(self, args, stdin=None, timeout=15):
+                if "adu" in args or "-test" in args:
+                    self.calls.append(list(args))
+                    return 1, "", "boom"
+                return super().run(args, stdin, timeout)
+        self.agent.runner = Failing()
+        self.agent.op_create({"username": "r1", "volume_gb": 1, "duration_days": 5})
+        self.assertFalse(self.agent._load_users()["r1"]["_in_xray"])  # شکست روی دیسک ذخیره شده
+        self.agent.runner = self.fake
+        self.agent.poll_usage_once()
+        self.assertTrue(self.agent._load_users()["r1"]["_in_xray"])
+        self.assertTrue(any("adu" in c for c in self.fake.calls))
+
+    def test_resync_after_external_xray_restart(self):
+        class Stamped(FakeRunner):
+            stamp = "100"
+            def run(self, args, stdin=None, timeout=15):
+                if "show" in args:
+                    self.calls.append(list(args))
+                    return 0, self.stamp + "\n", ""
+                return super().run(args, stdin, timeout)
+        fr = Stamped()
+        self.agent.runner = fr
+        self.agent._xray_stamp["v"] = None
+        self.agent.op_create({"username": "r2", "volume_gb": 1, "duration_days": 5})
+        self.agent.poll_usage_once()  # stamp اولیه ثبت می‌شود
+        fr.calls.clear()
+        fr.stamp = "999"  # xray بیرون از ایجنت ریستارت شد
+        self.agent.poll_usage_once()
+        self.assertTrue(any("restart" in c for c in fr.calls))  # config دوباره از users.json ساخته شد
+        cfg = json.loads(Path(self.tmp, "xray.json").read_text())
+        uid = self.agent._load_users()["r2"]["uuid"]
+        self.assertIn(uid, json.dumps(cfg))
+
     def test_quota_expiry_first_use(self):
         self.agent.op_create({"username": "u2", "volume_gb": 1, "duration_days": 10, "start_on_first_use": True})
         self.assertEqual(self.agent._load_users()["u2"]["expire_ts"], 0)
