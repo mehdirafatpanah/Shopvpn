@@ -301,20 +301,50 @@ class SystemMixin:
 
 
     def get_banners(self) -> list:
-        """لیست بنرهای سفارشی کاروسل خانه را برمی‌گرداند. اولین بار که خوانده
-        می‌شود، با بنرهای پیش‌فرض (خرید سرویس / پشتیبانی) مقداردهی می‌شود تا
-        رفتار مینی‌اپ برای نصب‌های قبلی بدون تغییر بماند."""
+        """لیست بنرهای کاروسل خانه (شامل اسلایدهای خودکار دعوت/انقضا) را برمی‌گرداند.
+        اولین بار با بنرهای پیش‌فرض مقداردهی می‌شود. اگر اسلاید خودکاری در لیست ذخیره‌شده
+        نباشد (نصب‌های قدیمی)، به‌صورت پیش‌فرض اضافه می‌شود: انقضا اول، دعوت آخر."""
         raw = self.get_setting("miniapp_banners", "")
         if not raw:
             self.set_banners(DEFAULT_BANNERS)
-            return [dict(b) for b in DEFAULT_BANNERS]
-        try:
-            banners = json.loads(raw)
-            if not isinstance(banners, list):
-                raise ValueError
-        except (ValueError, TypeError):
-            return [dict(b) for b in DEFAULT_BANNERS]
+            banners = [dict(b) for b in DEFAULT_BANNERS]
+        else:
+            try:
+                banners = json.loads(raw)
+                if not isinstance(banners, list):
+                    raise ValueError
+            except (ValueError, TypeError):
+                banners = [dict(b) for b in DEFAULT_BANNERS]
+        banners = [self._normalize_banner(b, i) for i, b in enumerate(banners) if isinstance(b, dict)]
+        kinds = {b.get("kind") for b in banners}
+        if "expiry" not in kinds:
+            banners.insert(0, dict(DEFAULT_AUTO_BANNERS["expiry"]))
+        if "referral" not in kinds:
+            banners.append(dict(DEFAULT_AUTO_BANNERS["referral"]))
         return banners
+
+    @staticmethod
+    def _normalize_banner(b: dict, idx: int = 0) -> dict:
+        """بنرهایی که قبلاً با ساختار قدیمیِ پنل وب (text / image_url) ذخیره شده‌اند را
+        به ساختار کامل مینی‌اپ تبدیل می‌کند تا هر دو بخش یک داده‌ی واحد را ببینند."""
+        image = str(b.get("image") or "")
+        if image and not image.startswith("data:image/"):
+            image = ""
+        title = str(b.get("title") or b.get("text") or "").strip() or f"بنر {idx + 1}"
+        kind = b.get("kind") if b.get("kind") in ("expiry", "referral") else None
+        return {
+            "kind": kind,
+            "id": b.get("id") or f"b_legacy_{idx}",
+            "icon": str(b.get("icon") or "✨")[:8],
+            "title": title,
+            "sub": str(b.get("sub") or ""),
+            "cta": str(b.get("cta") or "مشاهده"),
+            "nav": b.get("nav") or "store",
+            "bg": str(b.get("bg") or "linear-gradient(120deg, #0d1420, #142845 55%, #1c3f6e)"),
+            "image": image,
+            "image_only": bool(b.get("image_only")) and bool(image),
+            "enabled": b.get("enabled", True) is not False,
+        }
 
 
     def set_banners(self, banners: list):

@@ -549,6 +549,8 @@ class OrdersMixin:
         """فیلتر سفارشات پنل مدیریت بر اساس وضعیت، کاربر/شناسه سفارش، محصول و بازه تاریخ."""
         where = ["o.status=?"]
         params = [status]
+        if status == "pending":
+            where.append("(" + self._AWAITING_REVIEW_SQL + ")")
         if query:
             q = str(query).strip()
             if q.isdigit():
@@ -599,6 +601,30 @@ class OrdersMixin:
                 "AND NOT EXISTS (SELECT 1 FROM custom_gateway_invoices gi WHERE gi.kind='order' AND gi.ref_id=o.id AND gi.status IN ('new','pending')) "
                 "AND NOT EXISTS (SELECT 1 FROM card_to_card_invoices gi WHERE gi.kind='order' AND gi.ref_id=o.id AND gi.status='pending') "
                 "ORDER BY o.id"
+            ).fetchall()
+
+
+    # سفارشی «در انتظار بررسی ادمین» است که کاربر خرید را تا انتها پیش برده و رسیدش را فرستاده باشد.
+    # سفارش pending بدون رسید یعنی کاربر هنوز وسط خرید است (روش پرداخت را انتخاب نکرده، منتظر درگاه است،
+    # یا بخشی از مبلغ را با کیف پول پرداخته و باقی را هنوز نپرداخته) و نباید برای ادمین تایید/رد بیاید.
+    _AWAITING_REVIEW_SQL = (
+        "o.status='pending' AND o.receipt_file_id IS NOT NULL AND o.receipt_file_id != '' "
+        "AND COALESCE(o.final_price, 1) > 0 "
+        "AND NOT EXISTS (SELECT 1 FROM crypto_invoices ci WHERE ci.kind='order' AND ci.ref_id=o.id) "
+        "AND NOT EXISTS (SELECT 1 FROM abangateway_invoices gi WHERE gi.kind='order' AND gi.ref_id=o.id AND gi.status IN ('new','pending')) "
+        "AND NOT EXISTS (SELECT 1 FROM blupal_invoices gi WHERE gi.kind='order' AND gi.ref_id=o.id AND gi.status IN ('new','pending')) "
+        "AND NOT EXISTS (SELECT 1 FROM noapay_invoices gi WHERE gi.kind='order' AND gi.ref_id=o.id AND gi.status IN ('new','pending')) "
+        "AND NOT EXISTS (SELECT 1 FROM extra_gateway_invoices gi WHERE gi.kind='order' AND gi.ref_id=o.id AND gi.status IN ('new','pending')) "
+        "AND NOT EXISTS (SELECT 1 FROM custom_gateway_invoices gi WHERE gi.kind='order' AND gi.ref_id=o.id AND gi.status IN ('new','pending')) "
+        "AND NOT EXISTS (SELECT 1 FROM card_to_card_invoices gi WHERE gi.kind='order' AND gi.ref_id=o.id AND gi.status='pending')"
+    )
+
+    def get_orders_awaiting_review(self):
+        """سفارش‌هایی که واقعاً منتظر تایید/رد دستی ادمین هستند: رسید ثبت شده و مبلغ باقی‌مانده مثبت است.
+        سفارش‌های نیمه‌کاره (بدون رسید)، سفارش‌های پرداخت‌شده با کیف پول و سفارش‌های منتظر درگاه اینجا نمی‌آیند."""
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT o.* FROM orders o WHERE " + self._AWAITING_REVIEW_SQL + " ORDER BY o.id"
             ).fetchall()
 
 

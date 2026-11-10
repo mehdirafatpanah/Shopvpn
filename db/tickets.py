@@ -512,6 +512,33 @@ class TicketsMixin:
             return conn.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,)).fetchone()
 
 
+    def _ensure_ticket_group_table(self, conn):
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS ticket_group_messages ("
+            "chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL, ticket_id INTEGER NOT NULL, "
+            "created_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (chat_id, message_id))"
+        )
+
+
+    def link_ticket_group_message(self, chat_id: int, message_id: int, ticket_id: int):
+        with self._get_conn() as conn:
+            self._ensure_ticket_group_table(conn)
+            conn.execute(
+                "INSERT OR REPLACE INTO ticket_group_messages (chat_id, message_id, ticket_id) VALUES (?, ?, ?)",
+                (chat_id, message_id, ticket_id),
+            )
+
+
+    def get_ticket_id_by_group_message(self, chat_id: int, message_id: int):
+        with self._get_conn() as conn:
+            self._ensure_ticket_group_table(conn)
+            row = conn.execute(
+                "SELECT ticket_id FROM ticket_group_messages WHERE chat_id=? AND message_id=?",
+                (chat_id, message_id),
+            ).fetchone()
+            return row[0] if row else None
+
+
     def claim_ticket_if_open(self, ticket_id: int, admin_id: int):
         """اولین ادمین یا مالکی که به تیکت پاسخ می‌دهد، مالک آن پاسخ‌گویی می‌شود؛
         تا وقتی claimed_by خالی است این تابع آن را قفل می‌کند و از این پس فقط

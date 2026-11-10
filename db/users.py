@@ -56,6 +56,22 @@ class UsersMixin:
         return True
 
 
+    def set_user_phone_status(self, tg_id: int, phone: str, verified: bool) -> None:
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE users SET phone_number=?, phone_verified=? WHERE telegram_id=?",
+                ((phone or "").strip(), 1 if verified else 0, tg_id),
+            )
+
+
+    def get_user_phone_info(self, tg_id: int):
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT phone_number, phone_verified FROM users WHERE telegram_id=?", (tg_id,)
+            ).fetchone()
+        return (row["phone_number"], bool(row["phone_verified"])) if row else (None, False)
+
+
     def is_phone_verified(self, tg_id: int) -> bool:
         with self._get_conn() as conn:
             row = conn.execute("SELECT phone_verified FROM users WHERE telegram_id=?", (tg_id,)).fetchone()

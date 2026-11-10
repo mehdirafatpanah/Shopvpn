@@ -22,6 +22,8 @@ from .constants import (
 )
 from ._base import DatabaseBase
 from .users import UsersMixin
+from .user_groups import UserGroupsMixin
+from .subscriptions import SubscriptionsMixin
 from .catalog import CatalogMixin
 from .orders import OrdersMixin
 from .payments import PaymentsMixin
@@ -44,6 +46,8 @@ from .panel_migration import PanelMigrationMixin
 class Database(
     DatabaseBase,
     UsersMixin,
+    UserGroupsMixin,
+    SubscriptionsMixin,
     CatalogMixin,
     OrdersMixin,
     PaymentsMixin,
