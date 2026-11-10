@@ -1608,6 +1608,14 @@ class DatabaseBase:
                     delete_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_temp_messages_delete_at ON temp_messages(delete_at);
+
+                CREATE TABLE IF NOT EXISTS broadcast_pins (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    batch INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_broadcast_pins_batch ON broadcast_pins(batch);
                 """
             )
 
@@ -1766,7 +1774,7 @@ class DatabaseBase:
         "custom_config_history", "location_change_log", "bulk_gift_jobs", "bulk_gift_items", "price_change_log", "lottery_log", "reseller_credit_log", "wallet_transactions", "wallet_tx_label", "coin_batches", "coin_wallet_credits", "reseller_requests",
         "reseller_product_credit", "reseller_inline_commission_log", "reseller_tiers",
         "reseller_tier_qty_discounts", "reseller_tier_requests",
-        "payment_webhook_logs", "web_push_subscriptions", "temp_messages", "order_surveys", "channel_posts", "channel_post_clicks",
+        "payment_webhook_logs", "web_push_subscriptions", "temp_messages", "broadcast_pins", "order_surveys", "channel_posts", "channel_post_clicks",
         "referral_fraud_flags",
         "settings",
     )

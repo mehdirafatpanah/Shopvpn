@@ -297,6 +297,27 @@ class TicketsMixin:
             )
 
 
+    def add_broadcast_pin(self, batch: int, chat_id: int, message_id: int):
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO broadcast_pins (batch, chat_id, message_id) VALUES (?, ?, ?)",
+                (batch, chat_id, message_id),
+            )
+
+
+    def pop_latest_broadcast_pins(self) -> list:
+        """پین‌های آخرین ارسال همگانی را برمی‌گرداند و از جدول حذف می‌کند."""
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT MAX(batch) AS b FROM broadcast_pins").fetchone()
+            if not row or row["b"] is None:
+                return []
+            rows = conn.execute(
+                "SELECT chat_id, message_id FROM broadcast_pins WHERE batch=?", (row["b"],)
+            ).fetchall()
+            conn.execute("DELETE FROM broadcast_pins WHERE batch=?", (row["b"],))
+            return [{"chat_id": r["chat_id"], "message_id": r["message_id"]} for r in rows]
+
+
     def pop_due_temp_messages(self) -> list:
         """پیام‌های سررسیدشده را برمی‌گرداند و همزمان از جدول حذف می‌کند."""
         now = datetime.utcnow().isoformat()
