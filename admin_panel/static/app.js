@@ -8500,15 +8500,13 @@ async function renderPanels() {
           ${panelHealthHtml(s)}
         </td>
         <td>
-          <label style="display:flex;gap:4px;align-items:center;font-size:12px"><input type="checkbox" data-usage="custom" data-usage-id="${s.id}" ${s.used_for_custom_config ? 'checked' : ''}> کانفیگ شخصی</label>
-          <label style="display:flex;gap:4px;align-items:center;font-size:12px"><input type="checkbox" data-usage="test" data-usage-id="${s.id}" ${s.used_for_test_config ? 'checked' : ''}> کانفیگ تست</label>
+          <label style="display:flex;gap:4px;align-items:center;font-size:12px;white-space:nowrap"><input type="checkbox" data-usage="custom" data-usage-id="${s.id}" ${s.used_for_custom_config ? 'checked' : ''}> کانفیگ شخصی</label>
+          <label style="display:flex;gap:4px;align-items:center;font-size:12px;white-space:nowrap"><input type="checkbox" data-usage="test" data-usage-id="${s.id}" ${s.used_for_test_config ? 'checked' : ''}> کانفیگ تست</label>
         </td>
         <td style="white-space:nowrap">
           <button class="btn btn-sm" data-move-up="${s.id}" title="یک پله بالا">↑</button>
           <button class="btn btn-sm" data-move-down="${s.id}" title="یک پله پایین">↓</button>
-          <button class="btn btn-sm" data-move-up="${s.id}">↑</button>
-            <button class="btn btn-sm" data-move-down="${s.id}">↓</button>
-            <button class="btn btn-sm" data-test="${s.id}">تست اتصال</button>
+          <button class="btn btn-sm" data-test="${s.id}">تست اتصال</button>
           <button class="btn btn-sm" data-edit="${s.id}">ویرایش</button>
           ${PANEL_INBOUND_SELECT_TYPES.includes(s.panel_type) ? `<button class="btn btn-sm" data-edit-inbounds="${s.id}">Inbound ها</button>` : ''}
           ${PANEL_TEMPLATE_BASED_TYPES.includes(s.panel_type) ? `<button class="btn btn-sm" data-retemplate="${s.id}">قالب جدید</button>` : ''}
