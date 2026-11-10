@@ -41,6 +41,7 @@ from temp_messages import temp_message_cleanup_loop
 import extra_gateway_payment
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 from force_join import ForceJoinMiddleware
+from phone_gate import PhoneGateMiddleware
 from blocked_user import BlockedUserMiddleware
 from spam_guard import ThrottleMiddleware
 from panel_health import panel_health_loop
@@ -498,6 +499,9 @@ class BotManager:
         force_join_mw = ForceJoinMiddleware(db)
         dp.message.outer_middleware(force_join_mw)
         dp.callback_query.outer_middleware(force_join_mw)
+
+        phone_gate_mw = PhoneGateMiddleware(db)
+        dp.callback_query.outer_middleware(phone_gate_mw)
 
         tutorial_hub.install(bot, dp, db)
 

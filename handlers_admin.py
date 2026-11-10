@@ -3576,7 +3576,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     async def cb_admin_pending_orders(call: CallbackQuery):
         if not admin_only(call.from_user.id):
             return await call.answer()
-        orders = (await asyncio.to_thread(db.get_pending_orders))
+        orders = (await asyncio.to_thread(db.get_orders_awaiting_review))
         if not orders:
             await call.answer(db.get_text('handlers_admin.auto_8045a61a', 'سفارش در انتظاری وجود ندارد.'), show_alert=True)
             return
@@ -16060,10 +16060,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
 
     async def _apply_report_group(bot: Bot, chat_id: int) -> str:
         try:
-            created = await report_router.setup_group(bot, db, chat_id)
+            rep = await report_router.setup_group(bot, db, chat_id)
         except report_router.SetupError as e:
             return f"❌ {e}"
-        return f"✅ گروه گزارش فعال شد ({created} تاپیک جدید ساخته شد)."
+        text = f"✅ گروه گزارش فعال شد ({rep.created + rep.recreated} تاپیک جدید ساخته شد)."
+        if rep.pending:
+            text += (f"\n⏳ {rep.pending} تاپیک دیگر به‌خاطر محدودیت سرعت تلگرام در پس‌زمینه و با فاصله ساخته می‌شود؛ "
+                     "همه‌ی تاپیک‌ها ساخته خواهند شد و تا آن موقع گزارش‌هایشان در «سایر» می‌نشیند.")
+        return text
 
     @router.message(AdminReportGroup.waiting_chat_id)
     async def process_report_group_id(message: Message, state: FSMContext, bot: Bot):

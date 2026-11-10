@@ -2225,7 +2225,7 @@ def _hub_counts(db) -> dict:
     if hit and now - hit[0] < 15.0:
         return hit[1]
     counts = {}
-    for hub, method in (("products", "get_pending_orders"), ("finance", "get_pending_topups")):
+    for hub, method in (("products", "get_orders_awaiting_review"), ("finance", "get_pending_topups")):
         try:
             counts[hub] = len(getattr(db, method)() or [])
         except Exception:

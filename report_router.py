@@ -7,7 +7,8 @@ import asyncio
 import html
 import json
 import logging
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import aiohttp
@@ -68,7 +69,7 @@ TOPIC_SPECS = (
     # ---- مشتریان و پشتیبانی ----
     TopicSpec("signup", "🆕 ثبت‌نام", "کاربران جدید و منبع ورودشان (رفرال، مینی‌اپ، کانال).", "customers", COLOR_BLUE, True),
     TopicSpec("referral", "🤝 رفرال", "دعوت‌های موفق و پاداش‌های زیرمجموعه‌گیری.", "customers", COLOR_BLUE, True, profiles=("standard",)),
-    TopicSpec("support", "🎧 پشتیبانی", "تیکت‌های جدید، پیام‌های کاربران به پشتیبانی و ارجاع از هوش مصنوعی به انسان.", "customers", COLOR_PURPLE),
+    TopicSpec("support", "🎧 پشتیبانی", "تیکت‌های جدید، پیام‌های کاربران به پشتیبانی و ارجاع از هوش مصنوعی به انسان. با ریپلای روی پیام هر تیکت، مستقیم از همین تاپیک پاسخ بدهید.", "customers", COLOR_PURPLE),
     TopicSpec("test", "🧪 تست", "کانفیگ‌های تست تحویل‌داده‌شده؛ فرصت پیگیری برای تبدیل به خرید.", "customers", COLOR_PURPLE, True, profiles=("standard",)),
     TopicSpec("reseller", "🏪 نمایندگی", "درخواست نمایندگی/ارتقای سطح، فعال‌سازی و خرید اعتبار نمایندگان.", "customers", COLOR_PURPLE),
     TopicSpec("prize", "🎁 جوایز", "گردونه‌ی شانس، قرعه‌کشی و هدیه‌ی ثبت‌نام.", "customers", COLOR_PINK, True, profiles=("standard",)),
@@ -112,6 +113,27 @@ GROUP_CALLBACK_PREFIXES = (
     "adm_user_configs:",
 )
 RETRY_AFTER_CAP = 30
+
+# --- مدیریت محدودیت تلگرام در ساخت تاپیک ---------------------------------------------------
+# هر تاپیک = createForumTopic + پیام راهنما + پین (سه پیام در گروه)؛ تلگرام حدود ۲۰ پیام در دقیقه برای هر گروه
+# و محدودیت جداگانه برای createForumTopic دارد. ساخت پشت‌سرهم همه‌ی تاپیک‌ها 429 (Flood) می‌داد و
+# راه‌اندازی گروه شکست می‌خورد. حالا: ساخت با فاصله، رعایت دقیق retry_after، و ادامه‌ی ساخت در پس‌زمینه.
+TOPIC_CREATE_GAP = 4.0        # فاصله‌ی بین ساخت دو تاپیک (ثانیه)
+FOREGROUND_BUDGET = 25.0      # حداکثر زمانی که دکمه‌ی مدیر منتظر می‌ماند؛ باقی در پس‌زمینه ساخته می‌شود
+FOREGROUND_MAX_WAIT = 8       # در مسیر ارسال گزارش، بیشتر از این منتظر flood نمی‌مانیم (می‌رود «سایر»/پیام مدیران)
+BG_MAX_WAIT = 3600            # سقف انتظار یک flood در کار پس‌زمینه
+BG_MAX_RETRIES = 6
+
+_flood_until: dict = {}       # chat_id -> زمان (monotonic) پایان محدودیت ساخت تاپیک
+_bg_tasks: dict = {}          # chat_id -> کار پس‌زمینه‌ی در حال اجرا
+
+
+def _flood_remaining(chat_id: int) -> float:
+    return max(0.0, _flood_until.get(chat_id, 0.0) - time.monotonic())
+
+
+def _note_flood(chat_id: int, seconds: float) -> None:
+    _flood_until[chat_id] = max(_flood_until.get(chat_id, 0.0), time.monotonic() + float(seconds) + 1)
 
 _topic_lock = asyncio.Lock()
 
@@ -254,37 +276,64 @@ def _bump_stat(db, chat_id: int, topic_key: str) -> None:
         logger.debug("ثبت آمار تاپیک %s ناموفق بود.", topic_key, exc_info=True)
 
 
-async def _post_intro(bot, db, chat_id: int, topic_key: str, thread_id: int) -> None:
-    """پیام راهنمای تاپیک را می‌فرستد و (در صورت داشتن دسترسی) پین می‌کند؛ best-effort."""
+async def _post_intro(bot, db, chat_id: int, topic_key: str, thread_id: int, patient: bool = False) -> None:
+    """پیام راهنمای تاپیک را می‌فرستد و (در صورت داشتن دسترسی) پین می‌کند؛ best-effort.
+    در حالت patient اگر تلگرام Flood بدهد صبر می‌کند و یک بار دیگر تلاش می‌کند."""
+    async def _go(fn):
+        try:
+            return await fn()
+        except TelegramRetryAfter as e:
+            _note_flood(chat_id, e.retry_after)
+            if not patient:
+                raise
+            await asyncio.sleep(min(e.retry_after, BG_MAX_WAIT) + 1)
+            return await fn()
+
     try:
         text = await _db(intro_text, db, chat_id, topic_key)
-        msg = await bot.send_message(chat_id, text, message_thread_id=thread_id, disable_notification=True)
+        msg = await _go(lambda: bot.send_message(chat_id, text, message_thread_id=thread_id, disable_notification=True))
     except Exception:
         logger.debug("ارسال پیام راهنمای تاپیک %s ناموفق بود.", topic_key, exc_info=True)
         return
     try:
-        await bot.pin_chat_message(chat_id, msg.message_id, disable_notification=True)
+        await _go(lambda: bot.pin_chat_message(chat_id, msg.message_id, disable_notification=True))
     except Exception:
         logger.debug("پین پیام راهنمای تاپیک %s ناموفق بود (دسترسی Pin لازم است).", topic_key, exc_info=True)
 
 
-async def _create_topic(bot, db, chat_id: int, topic_key: str) -> int:
+async def _create_topic(bot, db, chat_id: int, topic_key: str, patient: bool = False) -> int:
+    """یک تاپیک می‌سازد. در Flood تلگرام:
+    patient=True  → دقیقاً به اندازه‌ی retry_after صبر و دوباره تلاش می‌کند (کار پس‌زمینه)؛
+    patient=False → اگر انتظار بیشتر از FOREGROUND_MAX_WAIT ثانیه باشد، TelegramRetryAfter را بالا می‌دهد."""
     name = await _db(topic_display_name, db, chat_id, topic_key)
     spec = SPECS.get(topic_key)
     kwargs = {"icon_color": spec.color} if spec else {}
-    try:
-        created = await bot.create_forum_topic(chat_id, name, **kwargs)
-    except TelegramBadRequest as e:
-        if kwargs and "icon" in str(e).lower():
-            created = await bot.create_forum_topic(chat_id, name)
-        else:
-            raise
+    created = None
+    for attempt in range(BG_MAX_RETRIES if patient else 2):
+        wait = _flood_remaining(chat_id)
+        if wait > 0:
+            if not patient and wait > FOREGROUND_MAX_WAIT:
+                raise TelegramRetryAfter(method=None, message="flood", retry_after=int(wait))
+            await asyncio.sleep(min(wait, BG_MAX_WAIT))
+        try:
+            try:
+                created = await bot.create_forum_topic(chat_id, name, **kwargs)
+            except TelegramBadRequest as e:
+                if kwargs and "icon" in str(e).lower():
+                    created = await bot.create_forum_topic(chat_id, name)
+                else:
+                    raise
+            break
+        except TelegramRetryAfter as e:
+            _note_flood(chat_id, e.retry_after)
+            logger.warning("تلگرام ساخت تاپیک %s را %ss محدود کرد (Flood).", topic_key, e.retry_after)
+            if not patient and e.retry_after > FOREGROUND_MAX_WAIT:
+                raise
+    if created is None:
+        raise TelegramRetryAfter(method=None, message="flood", retry_after=int(_flood_remaining(chat_id)) or 1)
     await _db(db.set_report_topic, chat_id, topic_key, created.message_thread_id)
-    await _post_intro(bot, db, chat_id, topic_key, created.message_thread_id)
+    await _post_intro(bot, db, chat_id, topic_key, created.message_thread_id, patient=patient)
     return created.message_thread_id
-#‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
-
-
 async def rename_topic(bot, db, chat_id: int, topic_key: str, new_name: str) -> None:
     """نام تاپیک را هم در دیتابیس (برای ساخت‌های بعدی) و هم - در صورت وجود -
     روی خودِ تاپیک واقعی تلگرام (با edit_forum_topic) تغییر می‌دهد."""
@@ -310,6 +359,11 @@ async def _thread_for(bot, db, chat_id: int, topic_key: str, refresh: bool = Fal
             thread_id = (await _db(db.get_report_topics, chat_id)).get(topic_key)
             if thread_id:
                 return thread_id
+        if topic_key != DEFAULT_TOPIC and _flood_remaining(chat_id) > FOREGROUND_MAX_WAIT:
+            # تلگرام موقتاً ساخت تاپیک را محدود کرده؛ گزارش گم نمی‌شود و فعلاً در «سایر» می‌نشیند.
+            other = (await _db(db.get_report_topics, chat_id)).get(DEFAULT_TOPIC)
+            if other:
+                return other
         return await _create_topic(bot, db, chat_id, topic_key)
 
 
@@ -521,6 +575,73 @@ async def notify(bot, db, topic_key: str, text: str, reply_markup=None) -> bool:
         return False
 
 
+async def notify_ticket(bot, db, ticket_id: int, text: str, reply_markup=None) -> bool:
+    """ارسال اعلان تیکت به تاپیک «پشتیبانی» و ثبت شناسه‌ی پیام برای پاسخ با ریپلای مدیران."""
+    try:
+        sent = await send_text(bot, db, "support", text, reply_markup)
+        if sent is None:
+            return False
+        try:
+            await _db(db.link_ticket_group_message, sent.chat.id, sent.message_id, ticket_id)
+        except Exception:
+            logger.warning("ثبت پیام گروه برای تیکت #%s ناموفق بود.", ticket_id, exc_info=True)
+        return True
+    except Exception:
+        logger.warning("notify_ticket(#%s) ناموفق بود.", ticket_id, exc_info=True)
+        return False
+
+
+async def handle_group_ticket_reply(bot, db, message) -> bool:
+    """ریپلای یک مدیر روی اعلان تیکت داخل تاپیک پشتیبانی را به‌عنوان پاسخ تیکت برای کاربر می‌فرستد.
+    True یعنی پیام مربوط به یک تیکت بود و مصرف شد."""
+    reply = message.reply_to_message
+    user = message.from_user
+    if reply is None or user is None or not message.text:
+        return False
+    ticket_id = await _db(db.get_ticket_id_by_group_message, message.chat.id, reply.message_id)
+    if not ticket_id:
+        return False
+    ticket = await _db(db.get_ticket, ticket_id)
+    if not ticket:
+        return False
+
+    async def _say(text: str):
+        try:
+            await bot.send_message(
+                message.chat.id, text, message_thread_id=message.message_thread_id,
+                reply_to_message_id=message.message_id,
+            )
+        except Exception:
+            logger.warning("ارسال وضعیت پاسخ تیکت #%s به گروه ناموفق بود.", ticket_id, exc_info=True)
+
+    if not await _db(db.is_admin, user.id):
+        return True
+    allowed = await _db(db.list_ticket_admin_ids_for_department, ticket["department_id"])
+    if user.id not in set(allowed) and not await _db(db.is_owner, user.id):
+        await _say(tr("⛔️ شما به این بخش از تیکت‌ها دسترسی ندارید."))
+        return True
+    if ticket["status"] == "closed":
+        await _say(tr("⛔️ این تیکت بسته شده است."))
+        return True
+    if ticket["claimed_by"] and ticket["claimed_by"] != user.id and not await _db(db.is_owner, user.id):
+        await _say(tr("⛔️ این تیکت توسط ادمین دیگری در حال پاسخ است."))
+        return True
+    try:
+        from notification_i18n import send_telegram
+        await send_telegram(
+            bot, db, ticket["user_id"],
+            f"🎫 پاسخ پشتیبانی به تیکت «{ticket['subject']}» (#{ticket_id}):\n\n{message.html_text}",
+        )
+        await _db(db.claim_ticket_if_open, ticket_id, user.id)
+        await _db(db.add_ticket_message, ticket_id, "admin", message.text)
+    except Exception:
+        logger.warning("ارسال پاسخ تیکت #%s از گروه ناموفق بود.", ticket_id, exc_info=True)
+        await _say(tr("⛔️ ارسال پاسخ با خطا مواجه شد."))
+        return True
+    await _say(tr(f"✅ پاسخ به تیکت #{ticket_id} ارسال شد."))
+    return True
+
+
 async def notify_raw(bot_token: str, db, topic_key: str, text: str, parse_mode: str = "HTML") -> bool:
     try:
         return bool(await send_raw_to_group(bot_token, db, topic_key, text, parse_mode))
@@ -597,15 +718,25 @@ class SyncReport:
     recreated: int = 0
     skipped_disabled: int = 0
     failed: int = 0
+    pending: int = 0
+    pending_keys: list = field(default_factory=list)
 
     def summary(self) -> str:
         parts = [f"{self.created} تاپیک جدید", f"{self.recreated} بازسازی", f"{self.reopened} بازبازشده"]
         text = "، ".join(parts)
         if self.skipped_disabled:
             text += f" ({self.skipped_disabled} تاپیک غیرفعال ساخته نشد)"
+        if self.pending:
+            text += (f" — ⏳ {self.pending} تاپیک به‌خاطر محدودیت سرعت تلگرام در پس‌زمینه و با فاصله ساخته می‌شود "
+                     "(نیازی به کار دیگری نیست)")
         if self.failed:
             text += f" — ⚠️ {self.failed} مورد ناموفق"
         return text
+
+
+def _ordered_specs():
+    """ضروری‌ها (قفل‌شده: «خطا» و «سایر») اول ساخته می‌شوند تا گزارش‌ها همیشه جایی برای نشستن داشته باشند."""
+    return sorted(TOPIC_SPECS, key=lambda sp: 0 if sp.locked else 1)
 
 
 async def _validate_group(bot, chat_id: int) -> None:
@@ -619,39 +750,64 @@ async def _validate_group(bot, chat_id: int) -> None:
         raise SetupError("حالت «تاپیک‌ها» (Topics) در تنظیمات گروه روشن نیست.")
 
 
-async def sync_topics(bot, db, chat_id: int, rebuild_missing: bool = True) -> SyncReport:
+async def sync_topics(bot, db, chat_id: int, rebuild_missing: bool = True,
+                      budget: float = None, patient: bool = False) -> SyncReport:
     """تاپیک‌های فعال را کامل می‌کند: ناموجود می‌سازد، بسته‌شده را دوباره باز می‌کند و
-    تاپیکی را که در تلگرام پاک شده از نو می‌سازد. تاپیک غیرفعال ساخته نمی‌شود."""
+    تاپیکی را که در تلگرام پاک شده از نو می‌سازد. تاپیک غیرفعال ساخته نمی‌شود.
+
+    ساخت‌ها با فاصله‌ی TOPIC_CREATE_GAP انجام می‌شود. اگر budget (ثانیه) تمام شود یا تلگرام Flood بدهد
+    (و patient=False باشد)، بقیه‌ی تاپیک‌ها حذف نمی‌شوند؛ در report_.pending_keys ثبت می‌شوند تا کار
+    پس‌زمینه (schedule_background_sync) آن‌ها را کامل کند. patient=True یعنی منتظر Flood می‌ماند."""
     report_ = SyncReport()
     existing = await _db(db.get_report_topics, chat_id)
     prefs = await _db(load_prefs, db)
-    for spec in TOPIC_SPECS:
+    deadline = (time.monotonic() + budget) if budget else None
+    out_of_time = False
+    for spec in _ordered_specs():
         key = spec.key
         if not is_enabled(db, key, prefs):
             report_.skipped_disabled += 1
             continue
+        thread_id = existing.get(key)
+        needs_create = not thread_id
+        if out_of_time or (not patient and needs_create and _flood_remaining(chat_id) > FOREGROUND_MAX_WAIT) \
+                or (deadline and time.monotonic() > deadline and needs_create):
+            if needs_create:
+                out_of_time = True
+                report_.pending += 1
+                report_.pending_keys.append(key)
+                continue
         try:
-            thread_id = existing.get(key)
-            if not thread_id:
+            if needs_create:
                 async with _topic_lock:
-                    await _create_topic(bot, db, chat_id, key)
+                    await _create_topic(bot, db, chat_id, key, patient=patient)
                 report_.created += 1
-                await asyncio.sleep(0.4)
+                await asyncio.sleep(TOPIC_CREATE_GAP)
                 continue
             try:
                 await bot.reopen_forum_topic(chat_id, thread_id)
                 report_.reopened += 1
+            except TelegramRetryAfter as e:
+                _note_flood(chat_id, e.retry_after)
+                if patient:
+                    await asyncio.sleep(min(e.retry_after, BG_MAX_WAIT) + 1)
             except TelegramBadRequest as e:
                 msg = str(e).lower()
                 if "not_modified" in msg or "not modified" in msg:
                     pass
                 elif rebuild_missing and any(m in msg for m in MISSING_THREAD_MARKERS):
                     async with _topic_lock:
-                        await _create_topic(bot, db, chat_id, key)
+                        await _create_topic(bot, db, chat_id, key, patient=patient)
                     report_.recreated += 1
+                    await asyncio.sleep(TOPIC_CREATE_GAP)
                 else:
                     raise
             await asyncio.sleep(0.2)
+        except TelegramRetryAfter as e:
+            _note_flood(chat_id, e.retry_after)
+            out_of_time = True
+            report_.pending += 1
+            report_.pending_keys.append(key)
         except TelegramBadRequest as e:
             if "rights" in str(e).lower():
                 raise SetupError("بات دسترسی ساخت تاپیک ندارد. بات را ادمین گروه کن و گزینه‌ی Manage Topics را روشن کن.")
@@ -663,31 +819,63 @@ async def sync_topics(bot, db, chat_id: int, rebuild_missing: bool = True) -> Sy
     return report_
 
 
-async def setup_group(bot, db, chat_id: int) -> int:
-    """گروه را اعتبارسنجی می‌کند، تاپیک‌های فعال ناموجود را می‌سازد و ذخیره می‌کند؛ تعداد تاپیک‌های جدید را برمی‌گرداند."""
+async def _background_sync(bot, db, chat_id: int) -> None:
+    """ساخت صبورانه‌ی تاپیک‌های باقی‌مانده؛ بین هر دو تاپیک فاصله می‌گذارد و Flood را به‌طور کامل صبر می‌کند."""
+    try:
+        for _round in range(3):
+            rep = await sync_topics(bot, db, chat_id, patient=True)
+            if not rep.pending and not rep.failed:
+                break
+            await asyncio.sleep(30)
+        logger.info("ساخت پس‌زمینه‌ی تاپیک‌های گروه %s تمام شد.", chat_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("ساخت پس‌زمینه‌ی تاپیک‌های گروه %s ناموفق بود.", chat_id, exc_info=True)
+    finally:
+        _bg_tasks.pop(chat_id, None)
+
+
+def schedule_background_sync(bot, db, chat_id: int) -> bool:
+    """کار پس‌زمینه را (اگر در حال اجرا نیست) شروع می‌کند؛ True یعنی تازه شروع شد."""
+    task = _bg_tasks.get(chat_id)
+    if task and not task.done():
+        return False
+    _bg_tasks[chat_id] = asyncio.create_task(_background_sync(bot, db, chat_id))
+    return True
+
+
+async def setup_group(bot, db, chat_id: int) -> SyncReport:
+    """گروه را اعتبارسنجی می‌کند و تاپیک‌های فعال ناموجود را می‌سازد (همه‌ی تاپیک‌ها؛ بخشی که به‌خاطر
+    محدودیت تلگرام در همین لحظه ممکن نیست در پس‌زمینه کامل می‌شود). گزارش همگام‌سازی را برمی‌گرداند."""
     await _validate_group(bot, chat_id)
     try:
-        rep = await sync_topics(bot, db, chat_id)
+        rep = await sync_topics(bot, db, chat_id, budget=FOREGROUND_BUDGET)
     except TelegramBadRequest as e:
         raise SetupError(f"ساخت تاپیک ناموفق بود: {e}")
-    created = rep.created + rep.recreated
 
     previous = db.get_setting(SETTING_CHAT_ID, "") or ""
     await _db(db.set_setting, SETTING_CHAT_ID, str(chat_id))
+    if rep.pending:
+        schedule_background_sync(bot, db, chat_id)
     sent = await send_text(bot, db, DEFAULT_TOPIC, "✅ گروه گزارش فعال شد. از این پس گزارش‌ها در تاپیک مربوط به خودشان ارسال می‌شوند.")
-    if sent is None:
+    if sent is None and not rep.pending:
         await _db(db.set_setting, SETTING_CHAT_ID, previous)
         raise SetupError("ارسال پیام در گروه ناموفق بود. مطمئن شو بات ادمین گروه است و اجازه‌ی ارسال پیام دارد.")
-    return created
+    return rep
 
 
 async def full_sync(bot, db, chat_id: int) -> SyncReport:
-    """همگام‌سازی کامل برای دکمه‌ی «بررسی و ترمیم»؛ گزارش تفصیلی برمی‌گرداند."""
+    """همگام‌سازی کامل برای دکمه‌ی «بررسی و ترمیم»؛ گزارش تفصیلی برمی‌گرداند. تاپیک‌هایی که در همین لحظه
+    به‌خاطر محدودیت تلگرام ساخته نشدند در پس‌زمینه کامل می‌شوند."""
     await _validate_group(bot, chat_id)
     try:
-        return await sync_topics(bot, db, chat_id)
+        rep = await sync_topics(bot, db, chat_id, budget=FOREGROUND_BUDGET)
     except TelegramBadRequest as e:
         raise SetupError(f"همگام‌سازی ناموفق بود: {e}")
+    if rep.pending:
+        schedule_background_sync(bot, db, chat_id)
+    return rep
 
 
 async def send_test(bot, db, topic_key: str) -> bool:
@@ -718,6 +906,8 @@ async def rebuild_topic(bot, db, chat_id: int, topic_key: str) -> int:
     try:
         async with _topic_lock:
             return await _create_topic(bot, db, chat_id, topic_key)
+    except TelegramRetryAfter as e:
+        raise SetupError(f"تلگرام موقتاً ساخت تاپیک را محدود کرده؛ {e.retry_after} ثانیه‌ی دیگر دوباره امتحان کن.")
     except TelegramAPIError as e:
         raise SetupError(f"ساخت دوباره‌ی تاپیک ناموفق بود: {e}")
 
@@ -739,8 +929,20 @@ async def _raw_api(bot_token: str, method: str, payload: dict, timeout: int = 10
         return None
 
 
+def _raw_retry_after(data) -> int:
+    """اگر پاسخ خام تلگرام 429 بود، retry_after را برمی‌گرداند؛ وگرنه 0."""
+    if isinstance(data, dict) and not data.get("ok") and data.get("error_code") == 429:
+        try:
+            return int((data.get("parameters") or {}).get("retry_after") or 5)
+        except (TypeError, ValueError):
+            return 5
+    return 0
+
+
 async def _raw_create_topic(bot_token: str, chat_id: int, topic_key: str, name: str = None, db=None):
     spec = SPECS.get(topic_key)
+    if _flood_remaining(chat_id) > FOREGROUND_MAX_WAIT:
+        return None
     payload = {"chat_id": chat_id, "name": name or (spec.name if spec else TOPICS[topic_key])}
     if spec:
         payload["icon_color"] = spec.color
@@ -748,10 +950,17 @@ async def _raw_create_topic(bot_token: str, chat_id: int, topic_key: str, name: 
     if data and not data.get("ok") and "icon" in str(data.get("description", "")).lower():
         payload.pop("icon_color", None)
         data = await _raw_api(bot_token, "createForumTopic", payload)
+    ra = _raw_retry_after(data)
+    if ra:
+        _note_flood(chat_id, ra)
+        if ra > FOREGROUND_MAX_WAIT:
+            return None
+        await asyncio.sleep(ra + 1)
+        data = await _raw_api(bot_token, "createForumTopic", payload)
     if not data or not data.get("ok"):
         return None
     thread_id = data["result"]["message_thread_id"]
-    if db is not None and spec:
+    if db is not None and spec and _flood_remaining(chat_id) <= 0:
         try:
             text = await _db(intro_text, db, chat_id, topic_key)
             sent = await _raw_api(bot_token, "sendMessage", {
@@ -761,6 +970,8 @@ async def _raw_create_topic(bot_token: str, chat_id: int, topic_key: str, name: 
                 await _raw_api(bot_token, "pinChatMessage", {
                     "chat_id": chat_id, "message_id": sent["result"]["message_id"], "disable_notification": True,
                 })
+            elif _raw_retry_after(sent):
+                _note_flood(chat_id, _raw_retry_after(sent))
         except Exception:
             logger.debug("ارسال/پین پیام راهنمای تاپیک %s (raw) ناموفق بود.", topic_key, exc_info=True)
     return thread_id
@@ -789,6 +1000,13 @@ async def _raw_send_message(bot_token: str, chat_id: int, text: str, thread_id: 
         return False
 
 
+async def _raw_fallback_thread(db, chat_id: int, key: str):
+    """وقتی تلگرام ساخت تاپیک را محدود کرده، گزارش موقتاً به تاپیک «سایر» (اگر ساخته شده) می‌رود."""
+    if key == DEFAULT_TOPIC:
+        return None
+    return (await _db(db.get_report_topics, chat_id)).get(DEFAULT_TOPIC)
+
+
 async def send_raw_to_group(bot_token: str, db, topic_key: str, text: str, parse_mode: str = None) -> bool:
     """فقط تلاش برای ارسال به تاپیک گروه گزارش با HTTP خام؛ اگر گروه تنظیم
     نباشد یا ارسال ناموفق باشد False برمی‌گرداند (بدون فالبک به پیام خصوصی -
@@ -810,7 +1028,7 @@ async def send_raw_to_group(bot_token: str, db, topic_key: str, text: str, parse
         return new_id
 
     if not thread_id:
-        thread_id = await _create()
+        thread_id = await _create() or await _raw_fallback_thread(db, chat_id, key)
     if not thread_id:
         return False
     result = await _raw_send_message(bot_token, chat_id, text, thread_id, parse_mode, silent)
@@ -868,7 +1086,7 @@ async def send_raw_photo_to_group(bot_token: str, db, topic_key: str, caption: s
         return new_id
 
     if not thread_id:
-        thread_id = await _create()
+        thread_id = await _create() or await _raw_fallback_thread(db, chat_id, key)
     if not thread_id:
         return None
     msg, thread_missing = await _raw_send_photo(bot_token, chat_id, thread_id, caption, reply_markup, photo_bytes, filename, content_type)
@@ -917,6 +1135,12 @@ class ReportGroupGuardMiddleware(BaseMiddleware):
             return await handler(event, data)
         if isinstance(event, Message):
             if event.chat.id == chat_id:
+                bot = data.get("bot")
+                if bot is not None:
+                    try:
+                        await handle_group_ticket_reply(bot, self.db, event)
+                    except Exception:
+                        logger.warning("پردازش ریپلای تیکت در گروه گزارش ناموفق بود.", exc_info=True)
                 return None
         elif isinstance(event, CallbackQuery):
             message = event.message

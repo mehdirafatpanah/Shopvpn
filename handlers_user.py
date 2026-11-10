@@ -22,7 +22,7 @@ import math
 from datetime import datetime, timezone, timedelta
 
 from aiogram import Router, F, Bot, Dispatcher
-from aiogram.filters import CommandStart, Command, CommandObject
+from aiogram.filters import CommandStart, Command, CommandObject, StateFilter
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile, ReplyKeyboardRemove, CopyTextButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
@@ -40,6 +40,7 @@ import seasons as season_logic
 from states import BuyFlow, ContactFlow, TicketFlow, TicketReplyFlow, AIChatFlow, BuyGuideFlow, DiscountEntry, RenewalDiscountEntry, WalletTopup, WalletGiftCode, WalletTransfer, CoinConvert, CustomConfigFlow, AddServiceFlow, MergeFlow, RenewalFlow, ResellerFlow, ResellerRequestFlow, ServiceRenameFlow, ServiceTransferFlow, CommissionResellerRequestFlow
 import ai_support
 import buy_guide
+import phone_gate
 import ai_media
 from draft_stream import DraftStreamer
 import account_link
@@ -641,6 +642,33 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     # -----------------------------------------------------------------------
     # عضویت اجباری در کانال
     # -----------------------------------------------------------------------
+
+    @router.message(F.contact, StateFilter(None))
+    async def phone_gate_contact(message: Message):
+        if not await asyncio.to_thread(phone_gate.is_enabled, db):
+            return
+        user = message.from_user
+        contact = message.contact
+        if contact.user_id != user.id:
+            await message.answer(
+                tr("⛔️ فقط شماره‌ی حساب تلگرام خودتان پذیرفته می‌شود. با دکمه‌ی «اشتراک‌گذاری شماره موبایل» ارسال کنید."),
+                reply_markup=kb.share_phone_kb(),
+            )
+            return
+        country = await asyncio.to_thread(phone_gate.match_country, db, contact.phone_number)
+        await asyncio.to_thread(db.set_user_phone_status, user.id, contact.phone_number, bool(country))
+        if not country:
+            allowed = await asyncio.to_thread(phone_gate.describe_allowed, db)
+            await message.answer(
+                tr(f"⛔️ پیش‌شماره‌ی این شماره مجاز نیست. شماره‌های مجاز: {allowed or '—'}"),
+                reply_markup=kb.menu_for_user(db, user.id, is_main_bot),
+            )
+            return
+        await message.answer(
+            tr("✅ شماره‌ی شما تایید شد؛ حالا می‌توانید خرید کنید."),
+            reply_markup=kb.menu_for_user(db, user.id, is_main_bot),
+        )
+        await _send_inline_main_menu(message, user.id)
 
     @router.callback_query(F.data == TERMS_ACCEPT_CALLBACK)
     async def cb_accept_terms(call: CallbackQuery, state: FSMContext, bot: Bot):
@@ -1404,7 +1432,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     @router.callback_query(F.data.startswith("cat:"))
     async def cb_category(call: CallbackQuery):
         cat_id = int(call.data.split(":")[1])
-        products = (await asyncio.to_thread(db.get_products, cat_id, active_only=False))
+        products = (await asyncio.to_thread(db.get_products, cat_id, active_only=True))
         children = (await asyncio.to_thread(db.get_child_categories, cat_id, True))
         if not products and not children:
             await call.answer(
@@ -1644,6 +1672,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         product = (await asyncio.to_thread(db.get_product, product_id))
         if not product:
             await call.answer(db.get_text("handlers_user.product.not_found_short", "محصول یافت نشد."), show_alert=True)
+            return
+        if not product["is_active"]:
+            await call.answer(db.get_text("handlers_user.product.currently_unavailable", "این محصول در حال حاضر موجود نیست."), show_alert=True)
             return
         stock = (await asyncio.to_thread(db.count_available_configs, product_id))
         if product["is_auto_provision"]:
@@ -2272,7 +2303,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
     async def _buy_start(call, state: FSMContext, bot: Bot, product_id: int, quantity: int, config_name: str = None):
         product = (await asyncio.to_thread(db.get_product, product_id))
-        if not product:
+        if not product or not product["is_active"]:
             await call.answer(db.get_text("handlers_user.product.currently_unavailable", "این محصول در حال حاضر موجود نیست."), show_alert=True)
             return
         stock = (await asyncio.to_thread(db.count_available_configs, product_id))
@@ -8956,13 +8987,13 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                        f"شناسه سرویس: {cc['id']}\nپنل: {cc['panel_server_id'] or '-'}")
         ticket_id = await asyncio.to_thread(db.create_ticket, call.from_user.id, subject, ticket_text, dep["id"] if dep else None)
         await call.message.answer(tr(f"✅ گزارش اختلال ثبت شد. شماره تیکت: #{ticket_id}\nبخش فنی در حال بررسی است."))
-        await report_router.notify(bot, db, "support", report_router.format_event(
+        await report_router.notify_ticket(bot, db, ticket_id, report_router.format_event(
             "گزارش اختلال سرویس", [
                 ("تیکت", report_router.code(f"#{ticket_id}")),
                 ("کاربر", report_router.user_link(call.from_user.id, call.from_user.first_name or "", call.from_user.username or "")),
                 ("سرویس", cc["display_name"] or cc["username"]),
                 ("بخش", dep["name"] if dep else "عمومی"),
-            ], icon="⚠️"))
+            ], icon="⚠️", note="↩️ برای پاسخ، روی همین پیام ریپلای کنید."))
         for admin_id in await asyncio.to_thread(db.list_ticket_admin_ids_for_department, dep["id"] if dep else None):
             try:
                 await bot.send_message(admin_id, tr(f"⚠️ گزارش اختلال جدید #{ticket_id}\n👤 {call.from_user.id}\n📌 {subject}\n\n{ticket_text}"), reply_markup=kb.ticket_admin_notify_kb(ticket_id))
@@ -9067,14 +9098,14 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             f"🧩 بخش: {(department['name'] if department else 'عمومی')}\n\n"
             f"✉️ {message.text}"
         )
-        await report_router.notify(bot, db, "support", report_router.format_event(
+        await report_router.notify_ticket(bot, db, ticket_id, report_router.format_event(
             "تیکت جدید", [
                 ("شماره", report_router.code(f"#{ticket_id}")),
                 ("کاربر", report_router.user_link(user.id, user.first_name or "", user.username or "")),
                 ("بخش", department["name"] if department else "عمومی"),
                 ("موضوع", subject),
                 ("متن", (message.text or "")[:300]),
-            ], icon="🎫"))
+            ], icon="🎫", note="↩️ برای پاسخ، روی همین پیام ریپلای کنید."))
         for admin_id in (await asyncio.to_thread(db.list_ticket_admin_ids_for_department, department_id)):
             try:
                 await bot.send_message(admin_id, text, reply_markup=kb.ticket_admin_notify_kb(ticket_id))
@@ -9175,13 +9206,13 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             f"🆔 {user.id}\n\n"
             f"✉️ {message.text}"
         )
-        await report_router.notify(bot, db, "support", report_router.format_event(
+        await report_router.notify_ticket(bot, db, ticket_id, report_router.format_event(
             "پیام جدید در تیکت", [
                 ("شماره", report_router.code(f"#{ticket_id}")),
                 ("کاربر", report_router.user_link(user.id, user.first_name or "", user.username or "")),
                 ("موضوع", ticket["subject"]),
                 ("متن", (message.text or "")[:300]),
-            ], icon="💬"))
+            ], icon="💬", note="↩️ برای پاسخ، روی همین پیام ریپلای کنید."))
         admin_ids = [ticket["claimed_by"]] if ticket["claimed_by"] else (await asyncio.to_thread(db.list_ticket_admin_ids_for_department, ticket["department_id"]))
         for admin_id in admin_ids:
             try:
