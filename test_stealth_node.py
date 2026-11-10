@@ -161,6 +161,16 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(len(lines), 4)
         self.assertIn("subscription-userinfo", resp.headers)
         self.assertTrue(json.load(urlopen(Request(api + "/users/h1/online", headers=tok)))["online"])
+        settings = json.load(urlopen(Request(api + "/settings", headers=tok)))
+        self.assertEqual(settings["domain"], "cdn.example.com")
+        patch = Request(api + "/settings", data=json.dumps({
+            "title": "NewTitle", "fingerprint": "firefox", "sni": "sni.example.com", "host": "host.example.com"
+        }).encode(), headers={**tok, "Content-Type": "application/json"}, method="PATCH")
+        updated = json.load(urlopen(patch))
+        self.assertEqual(updated["settings"]["title"], "NewTitle")
+        persisted = json.loads(Path(self.tmp, "node.json").read_text())
+        self.assertEqual(persisted["fingerprint"], "firefox")
+        self.assertEqual(self.agent.build_links(persisted, self.agent.op_create({"username": "settings-user"}) and self.agent._load_users()["settings-user"], "settings-user")[0].split("?")[1].split("&")[2], "sni=sni.example.com")
         srv.shutdown()
 
 
@@ -182,8 +192,16 @@ class InstallerTest(unittest.TestCase):
     def test_decoy_site_and_paths_unique(self):
         d = Path(tempfile.mkdtemp())
         installer.render_decoy(d, "CineVault")
-        for f in ("index.html", "browse.html", "watch.html", "404.html", "style.css", "robots.txt"):
+        for f in ("index.html", "browse.html", "watch.html", "about.html", "contact.html", "404.html", "style.css", "app.js", "favicon.svg", "robots.txt"):
             self.assertTrue((d / f).exists(), f)
+        home = (d / "index.html").read_text("utf-8")
+        app = (d / "app.js").read_text("utf-8")
+        self.assertIn("Trending this week", home)
+        self.assertIn("globalSearch", home)
+        self.assertIn("genreFilters", (d / "browse.html").read_text("utf-8"))
+        self.assertIn("watchlist", app)
+        self.assertIn("sortTitles", app)
+        self.assertIn("@media(max-width:760px)", (d / "style.css").read_text("utf-8"))
         a = installer.build_node("x.com", 443, ["ws"], "T")
         b = installer.build_node("x.com", 443, ["ws"], "T")
         self.assertNotEqual(a["api_token"], b["api_token"])
@@ -211,6 +229,10 @@ class ProviderTest(unittest.TestCase):
             calls.append((method, path, body))
             if method == "DELETE":
                 return {"deleted": True}
+            if path == "/settings" and method == "GET":
+                return {"domain": "cdn.example.com", "port": 443, "title": "Node", "transports": ["ws"]}
+            if path == "/settings" and method == "PATCH":
+                return {"settings": body}
             if path.endswith("/online"):
                 return {"online": True}
             return {"username": "a b", "subscription_url": "https://x/sub/tok", "used_bytes": 5,
@@ -222,8 +244,12 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(r.subscription_url, "https://x/sub/tok")
         self.assertEqual(asyncio.run(p.get_user_usage("a b"))["used_bytes"], 5)
         self.assertTrue(asyncio.run(p.is_client_online("a b")))
+        self.assertEqual(asyncio.run(p.get_settings())["domain"], "cdn.example.com")
+        changed = asyncio.run(p.update_settings({"title": "Updated"}))
+        self.assertEqual(changed["title"], "Updated")
         self.assertTrue(asyncio.run(p.delete_user("a b")))
-        self.assertEqual(calls[3][1], "/users/a%20b")
+        self.assertEqual(calls[1][1], "/users/a%20b")
+        self.assertIn(("PATCH", "/settings", {"title": "Updated"}), calls)
 
 
 if __name__ == "__main__":
