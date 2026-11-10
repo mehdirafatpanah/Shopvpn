@@ -29,7 +29,7 @@ import uuid as uuidlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import quote, urlsplit
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 CONF_DIR = os.environ.get("STEALTH_CONF_DIR", "/etc/shopvpn-stealth")
 NODE_FILE = os.path.join(CONF_DIR, "node.json")
 USERS_FILE = os.path.join(CONF_DIR, "users.json")
@@ -558,6 +558,36 @@ class Handler(BaseHTTPRequestHandler):
         if parts == ["health"] and method == "GET":
             return self._send(200, {"ok": True, "version": VERSION,
                                     "transports": [t["name"] for t in active_transports(node)]})
+        if parts == ["settings"] and method == "GET":
+            return self._send(200, {
+                "domain": node.get("domain", ""), "port": int(node.get("port", 443)),
+                "title": node.get("title", "Stealth"), "fingerprint": node.get("fingerprint", "chrome"),
+                "sni": node.get("sni") or node.get("domain", ""), "host": node.get("host") or node.get("domain", ""),
+                "transports": [t["name"] for t in active_transports(node)],
+            })
+        if parts == ["settings"] and method == "PATCH":
+            title = str(body.get("title", node.get("title", "Stealth"))).strip()[:40]
+            fingerprint = str(body.get("fingerprint", node.get("fingerprint", "chrome"))).strip().lower()
+            sni = str(body.get("sni", node.get("sni") or node.get("domain", ""))).strip()
+            host = str(body.get("host", node.get("host") or node.get("domain", ""))).strip()
+            if not re.fullmatch(r"[A-Za-z0-9 _.-]{1,40}", title):
+                raise ApiError(400, "invalid title")
+            if fingerprint not in {"chrome", "firefox", "safari", "random", "randomized"}:
+                raise ApiError(400, "invalid fingerprint")
+            if not re.fullmatch(r"[A-Za-z0-9.-]{1,253}", sni) or not re.fullmatch(r"[A-Za-z0-9.-]{1,253}", host):
+                raise ApiError(400, "invalid host or SNI")
+            with _lock:
+                node["title"], node["fingerprint"], node["sni"], node["host"] = title, fingerprint, sni, host
+                tmp = NODE_FILE + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(node, f, ensure_ascii=False, indent=1)
+                os.chmod(tmp, 0o600)
+                os.replace(tmp, NODE_FILE)
+            return self._send(200, {"ok": True, "settings": {
+                "title": title, "fingerprint": fingerprint, "sni": sni, "host": host,
+                "domain": node.get("domain", ""), "port": int(node.get("port", 443)),
+                "transports": [t["name"] for t in active_transports(node)],
+            }})
         if parts == ["users"] and method == "POST":
             return self._send(200, op_create(body))
         if len(parts) >= 2 and parts[0] == "users":
