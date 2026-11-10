@@ -2675,6 +2675,7 @@ def admin_broadcast_target_kb() -> InlineKeyboardMarkup:
         [b("🧪 ارسال به کاربران فقط دارای اکانت تست", "adm_broadcast_target:test_only")],
         [b("📣 ارسال به کانال", "adm_broadcast_channel")],
         [b("❌ لغو ارسال", "adm_broadcast_stop"), b("⏳ وضعیت ارسال", "adm_broadcast_status")],
+        [b("📍 آن‌پین آخرین ارسال", "adm_broadcast_unpin")],
         [b("🎯 هدف‌گیری‌های دیگر", "adm_broadcast_adv")],
         [b("⬅️ بازگشت", "adm_cat:marketing")],
     ])
