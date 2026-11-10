@@ -153,7 +153,7 @@ def register(router: Router, db, *, full_access_bot, senior_admin_only, deny_mid
                         reply_markup=_cancel_kb(f"adm_ssh_node:{node_id}"))
         await call.answer()
 
-    @router.message(AdminSSH.node_rename)
+    @router.message(AdminSSH.node_rename, ~F.text.startswith("/"))
     async def msg_ssh_node_rename(message: Message, state: FSMContext):
         if not _msg_ok(message):
             return
@@ -207,7 +207,7 @@ def register(router: Router, db, *, full_access_bot, senior_admin_only, deny_mid
         await safe_edit(call, tr("نام نود را بفرست (مثلاً Germany-SSH-1):"), reply_markup=_cancel_kb("adm_ssh_nodes"))
         await call.answer()
 
-    @router.message(AdminSSH.node_name)
+    @router.message(AdminSSH.node_name, ~F.text.startswith("/"))
     async def msg_ssh_node_name(message: Message, state: FSMContext):
         if not _msg_ok(message):
             return
@@ -218,7 +218,7 @@ def register(router: Router, db, *, full_access_bot, senior_admin_only, deny_mid
         await state.set_state(AdminSSH.node_host)
         await message.answer(tr("آی‌پی یا دامنه سرور را بفرست (Ubuntu/Debian تازه):"), reply_markup=_cancel_kb("adm_ssh_nodes"))
 
-    @router.message(AdminSSH.node_host)
+    @router.message(AdminSSH.node_host, ~F.text.startswith("/"))
     async def msg_ssh_node_host(message: Message, state: FSMContext):
         if not _msg_ok(message):
             return
@@ -226,7 +226,7 @@ def register(router: Router, db, *, full_access_bot, senior_admin_only, deny_mid
         await state.set_state(AdminSSH.node_port)
         await message.answer(tr("پورت SSH سرور را بفرست (پیش‌فرض 22):"), reply_markup=_cancel_kb("adm_ssh_nodes"))
 
-    @router.message(AdminSSH.node_port)
+    @router.message(AdminSSH.node_port, ~F.text.startswith("/"))
     async def msg_ssh_node_port(message: Message, state: FSMContext):
         if not _msg_ok(message):
             return
@@ -238,7 +238,7 @@ def register(router: Router, db, *, full_access_bot, senior_admin_only, deny_mid
         await message.answer(tr("رمز root سرور را بفرست. فقط برای همین نصب استفاده می‌شود، ذخیره نمی‌شود و پیامت بلافاصله پاک می‌شود."),
                              reply_markup=_cancel_kb("adm_ssh_nodes"))
 
-    @router.message(AdminSSH.node_pass)
+    @router.message(AdminSSH.node_pass, ~F.text.startswith("/"))
     async def msg_ssh_node_pass(message: Message, state: FSMContext):
         if not _msg_ok(message):
             return
@@ -396,7 +396,7 @@ def register(router: Router, db, *, full_access_bot, senior_admin_only, deny_mid
         await safe_edit(call, tr("شناسه عددی تلگرام کاربر را بفرست:"), reply_markup=_cancel_kb("adm_ssh_accounts"))
         await call.answer()
 
-    @router.message(AdminSSH.acc_user)
+    @router.message(AdminSSH.acc_user, ~F.text.startswith("/"))
     async def msg_ssh_acc_user(message: Message, state: FSMContext):
         if not _msg_ok(message):
             return
@@ -409,7 +409,7 @@ def register(router: Router, db, *, full_access_bot, senior_admin_only, deny_mid
         await state.set_state(AdminSSH.acc_username)
         await message.answer(tr("نام کاربری SSH را بفرست (حروف کوچک انگلیسی، عدد، _ و -):"), reply_markup=_cancel_kb("adm_ssh_accounts"))
 
-    @router.message(AdminSSH.acc_username)
+    @router.message(AdminSSH.acc_username, ~F.text.startswith("/"))
     async def msg_ssh_acc_username(message: Message, state: FSMContext):
         if not _msg_ok(message):
             return
@@ -443,7 +443,7 @@ def register(router: Router, db, *, full_access_bot, senior_admin_only, deny_mid
         await safe_edit(call, tr("سقف حجم مستقل (GB) را بفرست؛ 0 یعنی بدون محدودیت حجم:"), reply_markup=_cancel_kb("adm_ssh_accounts"))
         await call.answer()
 
-    @router.message(AdminSSH.acc_limit)
+    @router.message(AdminSSH.acc_limit, ~F.text.startswith("/"))
     async def msg_ssh_acc_limit(message: Message, state: FSMContext):
         if not _msg_ok(message):
             return
@@ -457,7 +457,7 @@ def register(router: Router, db, *, full_access_bot, senior_admin_only, deny_mid
         await state.set_state(AdminSSH.acc_days)
         await message.answer(tr("مدت اعتبار (روز) را بفرست؛ 0 یعنی بدون انقضا:"), reply_markup=_cancel_kb("adm_ssh_accounts"))
 
-    @router.message(AdminSSH.acc_days)
+    @router.message(AdminSSH.acc_days, ~F.text.startswith("/"))
     async def msg_ssh_acc_days(message: Message, state: FSMContext):
         if not _msg_ok(message):
             return
@@ -543,7 +543,7 @@ def register(router: Router, db, *, full_access_bot, senior_admin_only, deny_mid
         await safe_edit(call, tr("شناسه عددی تلگرام صاحب استخر را بفرست:"), reply_markup=_cancel_kb("adm_ssh_pools"))
         await call.answer()
 
-    @router.message(AdminSSH.pool_user)
+    @router.message(AdminSSH.pool_user, ~F.text.startswith("/"))
     async def msg_ssh_pool_user(message: Message, state: FSMContext):
         if not _msg_ok(message):
             return
@@ -556,7 +556,7 @@ def register(router: Router, db, *, full_access_bot, senior_admin_only, deny_mid
         await state.set_state(AdminSSH.pool_limit)
         await message.answer(tr("سقف کل حجم (GB) را بفرست؛ 0 یعنی نامحدود:"), reply_markup=_cancel_kb("adm_ssh_pools"))
 
-    @router.message(AdminSSH.pool_limit)
+    @router.message(AdminSSH.pool_limit, ~F.text.startswith("/"))
     async def msg_ssh_pool_limit(message: Message, state: FSMContext):
         if not _msg_ok(message):
             return
@@ -570,7 +570,7 @@ def register(router: Router, db, *, full_access_bot, senior_admin_only, deny_mid
         await state.set_state(AdminSSH.pool_days)
         await message.answer(tr("مدت اعتبار (روز) را بفرست؛ 0 یعنی بدون انقضا:"), reply_markup=_cancel_kb("adm_ssh_pools"))
 
-    @router.message(AdminSSH.pool_days)
+    @router.message(AdminSSH.pool_days, ~F.text.startswith("/"))
     async def msg_ssh_pool_days(message: Message, state: FSMContext):
         if not _msg_ok(message):
             return
@@ -613,7 +613,7 @@ def register(router: Router, db, *, full_access_bot, senior_admin_only, deny_mid
         await safe_edit(call, tr("شناسه کانفیگ VPN (custom config) را بفرست:"), reply_markup=_cancel_kb("adm_ssh_pools"))
         await call.answer()
 
-    @router.message(AdminSSH.attach_config)
+    @router.message(AdminSSH.attach_config, ~F.text.startswith("/"))
     async def msg_ssh_attach_config(message: Message, state: FSMContext):
         if not _msg_ok(message):
             return
