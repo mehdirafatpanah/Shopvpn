@@ -8391,7 +8391,7 @@ async function renderSSHManagement() {
       <td class="mono" style="direction:ltr;text-align:right">${esc(n.host)}:${Number(n.port)}${(n.hosts||[]).filter(h=>h.enabled!==false).map(h=>`<div style="font-size:11px;opacity:.8">↪ ${esc(SSH_PROTO_LABELS[h.protocol]||h.protocol)}: ${esc(h.address)}${h.port?':'+Number(h.port):''}</div>`).join('')}</td>
       <td>${(n.protocols||['ssh']).map(p=>`<span class="chip">${esc(SSH_PROTO_LABELS[p]||p)}${p==='openvpn'&&n.ovpn_port?` · ${Number(n.ovpn_port)}/${esc(n.ovpn_proto||'udp')}`:''}${p==='wireguard'&&n.wg_port?` · ${Number(n.wg_port)}/udp`:''}${p==='ssh'&&n.ssh_port_custom?` · ${Number(n.ssh_port_min)}-${Number(n.ssh_port_max)}`:''}</span>`).join(' ')}</td>
       <td>${esc(statusFa(n.status))}${n.last_error ? `<div style="font-size:11px;color:#FB7185;margin-top:4px">${esc(n.last_error)}</div>` : ''}</td>
-      <td style="white-space:nowrap"><button class="btn btn-sm" data-ssh-test-node="${Number(n.id)}">تست اتصال</button> ${(n.protocols||['ssh']).length<3&&n.node_type==='linux'?`<button class="btn btn-sm" data-ssh-add-proto="${Number(n.id)}">+ پروتکل</button> `:''}<button class="btn btn-sm" data-ssh-hosts-node="${Number(n.id)}">هاست‌ها</button> <button class="btn btn-sm" data-ssh-rename-node="${Number(n.id)}" data-ssh-node-name="${esc(n.name)}">تغییر نام</button> <button class="btn btn-danger btn-sm" data-ssh-del-node="${Number(n.id)}">حذف</button></td>
+      <td><button class="btn btn-sm" data-ssh-test-node="${Number(n.id)}">تست اتصال</button> ${(n.protocols||['ssh']).length<3&&n.node_type==='linux'?`<button class="btn btn-sm" data-ssh-add-proto="${Number(n.id)}">+ پروتکل</button> `:''}<button class="btn btn-sm" data-ssh-hosts-node="${Number(n.id)}">هاست‌ها</button> <button class="btn btn-sm" data-ssh-rename-node="${Number(n.id)}" data-ssh-node-name="${esc(n.name)}">تغییر نام</button> <button class="btn btn-danger btn-sm" data-ssh-del-node="${Number(n.id)}">حذف</button></td>
     </tr>`).join('') || '<tr><td colspan="5" class="empty-state">هنوز نودی ثبت نشده است.</td></tr>'}</tbody></table></div></div>`;
 
   const vlessNodesHtml = `<div class="card" style="margin-top:12px"><div style="padding:12px 14px 0"><b>نودهای VLESS</b><p class="card-sub">نصب، اتصال، تنظیمات API و وضعیت استفاده از نودهای VLESS از همین بخش مدیریت می‌شود.</p></div><div class="table-wrap"><table>
@@ -8401,7 +8401,7 @@ async function renderSSHManagement() {
       <td class="mono" dir="ltr">${esc(n.api_url || '')}</td>
       <td>${n.is_active ? (n.health_status === 'error' ? 'خطا' : 'فعال') : 'غیرفعال'}${n.health_error ? `<div class="card-sub" style="color:#FB7185">${esc(n.health_error)}</div>` : ''}</td>
       <td><span class="chip">${n.used_for_custom_config ? 'کانفیگ شخصی' : 'بدون کانفیگ شخصی'}</span> <span class="chip">${n.used_for_test_config ? 'کانفیگ تست' : 'بدون تست'}</span></td>
-      <td style="white-space:nowrap">
+      <td>
         <button class="btn btn-sm" data-vless-test="${Number(n.id)}">تست اتصال</button>
         <button class="btn btn-sm" data-vless-edit="${Number(n.id)}">تنظیمات</button>
         <button class="btn btn-sm" data-vless-toggle="${Number(n.id)}">${n.is_active ? 'غیرفعال‌سازی' : 'فعال‌سازی'}</button>
@@ -8420,7 +8420,7 @@ async function renderSSHManagement() {
       <td>${Number(a.user_id)}</td>
       <td>${a.quota_pool_id ? '#'+Number(a.quota_pool_id) : '—'}</td>
       <td>${esc(statusFa(a.status))}</td>
-      <td style="white-space:nowrap"><button class="btn btn-sm" data-ssh-account-action="enable" data-ssh-account-id="${esc(a.account_id)}">فعال</button> <button class="btn btn-sm" data-ssh-account-action="disable" data-ssh-account-id="${esc(a.account_id)}">غیرفعال</button> <button class="btn btn-danger btn-sm" data-ssh-account-action="delete" data-ssh-account-id="${esc(a.account_id)}">حذف</button></td>
+      <td><button class="btn btn-sm" data-ssh-account-action="enable" data-ssh-account-id="${esc(a.account_id)}">فعال</button> <button class="btn btn-sm" data-ssh-account-action="disable" data-ssh-account-id="${esc(a.account_id)}">غیرفعال</button> <button class="btn btn-danger btn-sm" data-ssh-account-action="delete" data-ssh-account-id="${esc(a.account_id)}">حذف</button></td>
     </tr>`).join('') || '<tr><td colspan="7" class="empty-state">هنوز حسابی ثبت نشده است.</td></tr>'}</tbody></table></div></div>`;
 
   const poolsHtml = `<div class="card"><div class="table-wrap"><table>
@@ -8575,7 +8575,7 @@ async function renderPanels() {
     <div class="card"><div class="table-wrap"><table>
       <thead><tr><th>نام</th><th>نوع</th><th>آدرس</th><th>وضعیت</th><th>مصرف</th><th>عملیات</th></tr></thead>
       <tbody>${servers.map(s => `<tr>
-        <td style="white-space:nowrap">${esc(s.name)}</td><td style="white-space:nowrap">${esc(s.type_label)}</td><td class="mono" style="direction:ltr;text-align:right">${esc(s.api_url)}</td>
+        <td>${esc(s.name)}</td><td>${esc(s.type_label)}</td><td class="mono" style="direction:ltr;text-align:right">${esc(s.api_url)}</td>
         <td>
           <button class="btn btn-sm ${s.is_active ? '' : 'btn-danger'}" data-toggle-active="${s.id}">${s.is_active ? '✅ فعال' : '⛔️ غیرفعال'}</button>
           ${s.is_configured ? '' : '<div style="font-size:11px;color:#FB7185;margin-top:4px">⚠️ تکمیل‌نشده</div>'}
@@ -8585,7 +8585,7 @@ async function renderPanels() {
           <label style="display:flex;gap:4px;align-items:center;font-size:12px;white-space:nowrap"><input type="checkbox" data-usage="custom" data-usage-id="${s.id}" ${s.used_for_custom_config ? 'checked' : ''}> کانفیگ شخصی</label>
           <label style="display:flex;gap:4px;align-items:center;font-size:12px;white-space:nowrap"><input type="checkbox" data-usage="test" data-usage-id="${s.id}" ${s.used_for_test_config ? 'checked' : ''}> کانفیگ تست</label>
         </td>
-        <td style="white-space:nowrap">
+        <td>
           <button class="btn btn-sm" data-move-up="${s.id}" title="یک پله بالا">↑</button>
           <button class="btn btn-sm" data-move-down="${s.id}" title="یک پله پایین">↓</button>
           <button class="btn btn-sm" data-test="${s.id}">تست اتصال</button>

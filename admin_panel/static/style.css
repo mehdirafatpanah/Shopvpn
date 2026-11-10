@@ -526,7 +526,7 @@ body{ transition: background .2s ease, color .2s ease; }
   thead th, tbody td{ padding:9px 8px; white-space:nowrap; }
   tbody td:has(.btn){ white-space:normal; }
   tbody td .btn + .btn{ margin-inline-start:6px; }
-  tbody td:has(.btn + .btn){ display:flex; flex-wrap:wrap; gap:6px; }
+  tbody td .btn{ margin-block:2px; }
   .toolbar{ gap:8px; }
   .toolbar .input, .toolbar select.input{ flex:1 1 140px; min-width:0; }
   .tabs{ gap:6px; }
@@ -2825,10 +2825,13 @@ td .btn, th .btn, .card-head .btn-sm{ min-height:var(--ctl-h-sm); }
 table{ table-layout:auto; }
 thead th, tbody td{ padding:var(--sp-3) var(--sp-3); vertical-align:middle; }
 thead th{ text-align:start; white-space:nowrap; line-height:1.4; }
-tbody td{ line-height:1.6; word-break:break-word; }
+tbody td{ line-height:1.6; word-break:normal; overflow-wrap:break-word; }
+tbody td .chip{ white-space:nowrap; display:inline-block; margin:2px 0; }
+tbody td .card-sub{ overflow-wrap:break-word; word-break:normal; }
 tbody td.mono, tbody td .mono{ white-space:nowrap; }
 tbody tr:last-child td{ border-bottom:0; }
-tbody td:last-child:has(.btn){ white-space:nowrap; }
+tbody td:last-child:has(.btn){ white-space:normal; min-width:200px; }
+tbody td:last-child .btn{ white-space:nowrap; margin-block:2px; }
 tbody td:last-child .btn + .btn{ margin-inline-start:var(--sp-2); }
 td .btn + .btn, td .btn + .badge, td .badge + .btn{ margin-inline-start:var(--sp-2); }
 .table-wrap > table{ min-width:640px; }
