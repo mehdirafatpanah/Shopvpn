@@ -281,6 +281,25 @@ def obtain_cert(args):
     return str(cert), str(key)
 
 
+def verify_agent(node):
+    """بعد از نصب مطمئن می‌شود ایجنت واقعاً جواب می‌دهد؛ وگرنه علت را چاپ می‌کند و خارج می‌شود."""
+    import time
+    import urllib.request
+    url = f"http://127.0.0.1:{node['agent_port']}/{node['api_path']}/health"
+    req = urllib.request.Request(url, headers={"Authorization": "Bearer " + node["api_token"]})
+    for _ in range(20):
+        try:
+            with urllib.request.urlopen(req, timeout=3) as r:
+                if r.status == 200:
+                    return
+        except Exception:
+            pass
+        time.sleep(1.5)
+    print("❌ ایجنت ShopVPN بالا نیامد؛ لاگ سرویس:")
+    subprocess.run("journalctl -u shopvpn-stealth-agent -n 25 --no-pager", shell=True)
+    sys.exit("نصب ناقص ماند: ایجنت جواب نمی‌دهد (nginx خطای 502 می‌دهد).")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--domain")
@@ -349,6 +368,8 @@ def main():
     sh("systemctl restart xray shopvpn-stealth-agent nginx")
     if shutil.which("ufw") and "active" in subprocess.run(["ufw", "status"], capture_output=True, text=True).stdout:
         sh(f"ufw allow 80/tcp && ufw allow {args.port}/tcp", check=False)
+
+    verify_agent(node)
 
     api_url = f"https://{args.domain}{'' if args.port == 443 else ':%d' % args.port}/{node['api_path']}"
     print("\n" + "=" * 60)

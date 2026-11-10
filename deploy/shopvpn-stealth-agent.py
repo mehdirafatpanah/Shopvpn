@@ -176,7 +176,9 @@ def render_xray_config(node: dict, users: dict) -> dict:
 
 def rewrite_xray(node: dict, users: dict) -> None:
     cfg = render_xray_config(node, users)
-    tmp = XRAY_CONFIG + ".new"
+    # پسوند باید .json باشد وگرنه xray فرمت فایل را تشخیص نمی‌دهد (Failed to get format)
+    base, ext = os.path.splitext(XRAY_CONFIG)
+    tmp = base + ".new" + (ext or ".json")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=1)
     rc, out, err = runner.run([XRAY_BIN, "run", "-test", "-config", tmp])
@@ -553,8 +555,12 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     node = load_node()
     # در شروع، config xray را با کاربران فعلی هم‌گام کن
-    with _lock:
-        rewrite_xray(node, _load_users())
+    # اگر هم‌گام‌سازی شکست بخورد، API نباید بمیرد (وگرنه nginx خطای 502 می‌دهد)
+    try:
+        with _lock:
+            rewrite_xray(node, _load_users())
+    except Exception as exc:  # noqa: BLE001
+        print("startup xray sync failed:", exc, file=sys.stderr, flush=True)
     threading.Thread(target=poller_loop, daemon=True).start()
     port = int(node.get("agent_port", 10086))
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
