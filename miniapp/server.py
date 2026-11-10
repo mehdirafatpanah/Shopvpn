@@ -103,7 +103,7 @@ import leak_index
 from panel_providers import (
     get_provider, PanelError, PanelUsernameTakenError, PROVIDERS,
     SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES, parse_xui_inbound_ids,
-    SINGLE_INBOUND_PANEL_TYPES, TOKEN_ONLY_PANEL_TYPES,
+    SINGLE_INBOUND_PANEL_TYPES, TOKEN_ONLY_PANEL_TYPES, NO_SETUP_PANEL_TYPES,
 )
 from reseller_auto_provision import provision_auto_config, provision_test_config, is_volume_credit_bot, ProvisionError
 from test_config_provision import provision_test_plan, format_plan_amount, ProvisionError as TestPlanProvisionError
@@ -5218,6 +5218,8 @@ def _panel_server_public(s, db) -> dict:
     if is_sub_base_type:
         needs_inbound = s["panel_type"] in INBOUND_SELECT_PANEL_TYPES
         configured = bool(s["xui_sub_base_url"]) and (bool(xui_inbound_ids) if needs_inbound else True)
+    elif s["panel_type"] in NO_SETUP_PANEL_TYPES:
+        configured = True
     else:
         configured = bool(s["group_ids"] and s["proxy_settings"])
     cap = None
