@@ -182,11 +182,62 @@ async function api(path, options = {}) {
       showTermsGate(err.detail.text || "ابتدا قوانین و مقررات را تأیید کنید.");
       throw new Error(err.detail.message || "ابتدا قوانین و مقررات را تأیید کنید.");
     }
+    if (res.status === 403 && err.detail && err.detail.code === "phone_required") {
+      showPhoneGate(err.detail);
+      throw new Error(err.detail.message || "برای خرید باید شماره موبایل خود را تایید کنید.");
+    }
     const msg = typeof err.detail === "string" ? err.detail : (err.detail && err.detail.message) || "خطای ناشناخته";
     const apiErr = new Error(msg); apiErr.status = res.status;
     throw apiErr;
   }
   return res.json();
+}
+
+function showPhoneGate(info) {
+  document.querySelectorAll(".force-join-overlay").forEach((x) => x.remove());
+  const overlay = document.createElement("div");
+  overlay.className = "force-join-overlay";
+  overlay.innerHTML = `
+    <div class="card" style="max-width:320px;text-align:center">
+      <h3><span class="ic">📱</span>تایید شماره موبایل</h3>
+      <p style="margin:10px 0">برای خرید، شماره موبایل خود را فقط با دکمه‌ی اشتراک‌گذاری تلگرام تایید کنید.</p>
+      <p style="margin:6px 0 12px;opacity:.8">شماره‌های مجاز: ${escHtml(info.allowed || "")}</p>
+      <button class="btn" id="phone-share-btn">📱 اشتراک‌گذاری شماره</button>
+      <button class="btn outline" id="phone-chat-btn" style="margin-top:8px">ارسال دکمه در چت بات</button>
+      <button class="btn outline" id="phone-recheck-btn" style="margin-top:8px">✅ بررسی مجدد</button>
+      <button class="btn outline small" id="phone-close-btn" style="margin-top:8px">بستن</button>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  const recheck = async (silent) => {
+    try {
+      const st = await api("/api/phone/status");
+      if (st.ok) { overlay.remove(); notify("✅ شماره‌ی شما تایید شد."); return true; }
+      if (!silent) notify("هنوز شماره‌ی مجازی تایید نشده است.");
+    } catch (e) { if (!silent) notify(e.message); }
+    return false;
+  };
+  const sendToChat = async () => {
+    try {
+      await api("/api/phone/request", { method: "POST" });
+      notify("دکمه‌ی اشتراک‌گذاری شماره در چت بات ارسال شد؛ به بات برگردید و آن را بزنید.");
+    } catch (e) { notify(e.message); }
+  };
+  document.getElementById("phone-close-btn").onclick = () => overlay.remove();
+  document.getElementById("phone-recheck-btn").onclick = () => recheck(false);
+  document.getElementById("phone-chat-btn").onclick = sendToChat;
+  document.getElementById("phone-share-btn").onclick = () => {
+    const native = typeof tg.requestContact === "function" && tg.isVersionAtLeast && tg.isVersionAtLeast("8.0");
+    if (!native) { sendToChat(); return; }
+    tg.requestContact(async (shared) => {
+      if (!shared) return;
+      for (let i = 0; i < 6; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        if (await recheck(true)) return;
+      }
+      notify("شماره دریافت شد ولی پیش‌شماره‌ی آن مجاز نیست یا هنوز پردازش نشده است.");
+    });
+  };
 }
 
 // بنر/صفحه‌ی عضویت اجباری در کانال - هم‌تراز با force_join.py در ربات اصلی
@@ -726,32 +777,21 @@ function setHeaderWallet(amount) {
 }
 
 function promoSlides({ me, expiring, referralLink, customBanners }) {
-  // بنرهای اول کاروسل، از پنل ادمین > ظاهر > بنرها قابل مدیریت هستند (متن،
-  // آیکون، رنگ و مقصد هر بنر). دو بنرِ زیر که به‌صورت خودکار و پویا اضافه
-  // می‌شوند (انقضای سرویس / دعوت دوستان) شخصی‌سازی‌شده‌اند و از تنظیمات
-  // بنرها مستقل‌اند.
+  // همه‌ی اسلایدها (از جمله «انقضای سرویس» و «دعوت دوستان») از پنل ادمین > ظاهر > بنرها
+  // قابل ویرایش‌اند. دو اسلاید خودکار (kind = expiry / referral) فقط وقتی شرطشان برقرار
+  // باشد نمایش داده می‌شوند؛ در متن توضیحِ انقضا، {n} با تعداد سرویس‌ها جایگزین می‌شود.
   const slides = [];
-  if (expiring && expiring.length > 0) {
-    slides.push({
-      bg: "linear-gradient(120deg, #2b1608, #4d2510 55%, #7a3a14)",
-      icon: "⏰",
-      title: "سرویس شما رو به اتمام است",
-      sub: `${expiring.length} سرویس نزدیک به تاریخ انقضا. برای تمدید ضربه بزن.`,
-      cta: "تمدید سرویس",
-      nav: "services",
-    });
-  }
-  (customBanners || []).forEach((b) => slides.push(b));
-  if (referralLink) {
-    slides.push({
-      bg: "linear-gradient(120deg, #0d1420, #142845 55%, #1c3f6e)",
-      icon: "🤝",
-      title: "دوستاتو دعوت کن",
-      sub: "با دعوت از دوستان، اعتبار رایگان به کیف پولت اضافه کن.",
-      cta: "مشاهده لینک دعوت",
-      nav: "referral",
-    });
-  }
+  (customBanners || []).forEach((b) => {
+    if (b.kind === "expiry") {
+      if (!(expiring && expiring.length > 0)) return;
+      slides.push({ ...b, sub: String(b.sub || "").replace("{n}", expiring.length) });
+    } else if (b.kind === "referral") {
+      if (!referralLink) return;
+      slides.push(b);
+    } else {
+      slides.push(b);
+    }
+  });
   if (slides.length === 0) {
     slides.push({
       bg: "linear-gradient(120deg, #0d1a12, #123a20 55%, #17532c)",
@@ -845,14 +885,19 @@ async function renderResellerHome() {
 async function renderHome() {
   content.innerHTML = skeleton(3);
   try {
-    const [me, orders, customConfigs, expiring, referral, customBanners] = await Promise.all([
+    const [me, orders, customConfigs, expiring, referral, customBanners, testStatus] = await Promise.all([
       api("/api/me"),
       api("/api/orders"),
       api("/api/custom-configs").catch(() => []),
       api("/api/expiring").catch(() => []),
       api("/api/referral").catch(() => null),
       api("/api/banners").catch(() => []),
+      api("/api/test-config").catch(() => null),
     ]);
+    // دکمه‌ی دریافت اشتراک تست فقط وقتی نمایش داده می‌شود که قابل دریافت باشد
+    // (فعال، هنوز دریافت نشده، و پلن یا موجودی تست وجود دارد).
+    const canClaimTest = !!(testStatus && testStatus.enabled && !testStatus.used &&
+      ((testStatus.plans && testStatus.plans.length) || testStatus.available > 0));
     setHeaderWallet(me.wallet_credit);
     const active = orders.filter((o) => o.status === "approved" && !o.is_custom_config);
     const customCards = customConfigs.map((c) => ({
@@ -893,6 +938,7 @@ async function renderHome() {
         <div class="quick-item" data-nav="services"><span class="q-label">سرویس‌های من</span><span class="q-ic">${ICON_SHIELD}</span></div>
         <div class="quick-item" data-nav="wallet"><span class="q-label">کیف پول</span><span class="q-ic">${ICON_WALLET}</span></div>
         <div class="quick-item" data-nav="profile"><span class="q-label">حساب کاربری</span><span class="q-ic">${ICON_PROFILE}</span></div>
+        ${canClaimTest ? `<div class="quick-item full" data-nav="test"><span class="q-label">🧪 دریافت اشتراک تست رایگان</span><span class="q-ic" style="font-size:20px;display:flex;align-items:center;justify-content:center">🎁</span></div>` : ""}
         <div class="quick-item full" data-nav="support"><span class="q-label">پشتیبانی</span><span class="q-ic">${ICON_SUPPORT}</span></div>
         ${me.is_reseller_owner ? `<div class="quick-item full" data-nav="reseller"><span class="q-label">${me.reseller?.icon || '🥇'} مرکز نمایندگی ${escHtml(me.reseller?.title || 'نمایندگی')}</span><span class="q-ic">🛡️</span></div>` : ''}
       </div>
@@ -4244,14 +4290,15 @@ function adminBannerRow(item, idx) {
   return `
     <div class="menu-row" data-idx="${idx}">
       <div class="menu-row-top">
-        <span class="menu-row-label">بنر ${idx + 1}${item.enabled === false ? " (غیرفعال)" : ""}</span>
+        <span class="menu-row-label">بنر ${idx + 1}${item.kind === "expiry" ? " ⏰ (خودکار: انقضای سرویس)" : item.kind === "referral" ? " 🤝 (خودکار: دعوت دوستان)" : ""}${item.enabled === false ? " (غیرفعال)" : ""}</span>
         <div class="menu-row-arrows">
           <button type="button" class="btn small outline" id="banner-up-${idx}" ${idx === 0 ? "disabled" : ""}>▲</button>
           <button type="button" class="btn small outline" id="banner-down-${idx}" ${idx === adminBannerItems.length - 1 ? "disabled" : ""}>▼</button>
-          <button type="button" class="btn small outline danger" id="banner-del-${idx}">🗑</button>
+          <button type="button" class="btn small outline danger" id="banner-del-${idx}" ${item.kind ? "disabled title=\"این بنر خودکار است؛ برای مخفی‌کردن، آن را غیرفعال کن\"" : ""}>🗑</button>
         </div>
       </div>
       <div class="menu-row-body">
+        ${item.kind ? `<p class="hint-text" style="margin-top:0">این بنر فقط وقتی شرطش برقرار باشد نمایش داده می‌شود (${item.kind === "expiry" ? "کاربر سرویس نزدیک به انقضا دارد؛ در توضیح، {n} = تعداد سرویس‌ها" : "لینک دعوت دوستان فعال است"}). متن، رنگ، عکس، ترتیب و فعال/غیرفعال‌بودنش قابل تغییر است.</p>` : ""}
         <div class="banner-preview" data-idx="${idx}" style="background:${previewBg}">
           ${item.image && item.image_only ? "" : `
           <span class="banner-preview-icon banner-icon-input-wrap"><input class="banner-icon-input" data-idx="${idx}" type="text" value="${escHtml(item.icon || "")}" maxlength="4" /></span>
@@ -4355,6 +4402,7 @@ function moveBannerItem(idx, dir) {
 
 function removeBannerItem(idx) {
   collectBannerEdits();
+  if (adminBannerItems[idx] && adminBannerItems[idx].kind) return;
   adminBannerItems.splice(idx, 1);
   renderAdminBannerList();
 }
