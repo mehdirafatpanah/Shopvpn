@@ -641,7 +641,8 @@ def service_inquiry_card_kb(cb_id: str, fields: list) -> InlineKeyboardMarkup:
 
 def service_detail_kb(db, cb_id: str, kind: str, deletable: bool, show_links: bool = False,
                        enabled: bool = True, auto_renew: bool = False, is_test: bool = False,
-                       can_add_users: bool = False) -> InlineKeyboardMarkup:
+                       can_add_users: bool = False, is_invoiceable: bool = False,
+                       is_gift: bool = False) -> InlineKeyboardMarkup:
     """دکمه‌های صفحه‌ی جزئیات یک سرویس.
     kind == 'custom' (کاربر واقعی روی پنل): هر سه نوع تمدید + قطع دسترسی +
     بروزرسانی + کیوآر + فعال/غیرفعال + تغییر نام + تمدید خودکار + انتقال +
