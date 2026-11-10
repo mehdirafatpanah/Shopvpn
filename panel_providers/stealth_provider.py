@@ -94,6 +94,13 @@ class StealthProvider(BasePanelProvider):
         data = await self._call("GET", self._path(username, "/online"), "وضعیت آنلاین")
         return bool(data.get("online"))
 
+    async def get_settings(self) -> dict:
+        return await self._call("GET", "/settings", "دریافت تنظیمات نود")
+
+    async def update_settings(self, settings: dict) -> dict:
+        data = await self._call("PATCH", "/settings", "ذخیره تنظیمات نود", settings or {})
+        return data.get("settings") or data
+
     async def test_connection(self) -> bool:
         try:
             await self._call("GET", "/health", "بررسی اتصال")
