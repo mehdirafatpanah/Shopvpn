@@ -80,6 +80,7 @@ import extra_gateway_payment
 import extra_gateway_registry
 import payment_engine
 import web_auth
+import phone_gate
 import ai_support
 import buy_guide
 import receipt_ai_check
@@ -434,7 +435,59 @@ async def require_joined(auth=Depends(get_verified_user)):
                     "text": terms["text"],
                 },
             )
+    if (
+        not db.is_admin(tg_id)
+        and not (not tenant.tenant_id and web_auth.is_email_account(db, tg_id))
+        and phone_gate.is_enabled(db)
+        and not phone_gate.user_ok(db, tg_id)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "phone_required",
+                "message": tr("برای خرید باید شماره موبایل خود را تایید کنید."),
+                "allowed": phone_gate.describe_allowed(db),
+            },
+        )
     return auth
+
+
+@app.get("/api/phone/status")
+async def api_phone_status(auth=Depends(get_verified_user)):
+    tg_id, db, tenant = auth
+    required = (
+        phone_gate.is_enabled(db)
+        and not db.is_admin(tg_id)
+        and not (not tenant.tenant_id and web_auth.is_email_account(db, tg_id))
+    )
+    return {
+        "required": required,
+        "ok": (not required) or phone_gate.user_ok(db, tg_id),
+        "allowed": phone_gate.describe_allowed(db),
+    }
+
+
+@app.post("/api/phone/request")
+async def api_phone_request(auth=Depends(get_verified_user)):
+    """دکمه‌ی اشتراک‌گذاری شماره (request_contact) را در چت بات برای کاربر می‌فرستد."""
+    tg_id, db, tenant = auth
+    payload = {
+        "chat_id": tg_id,
+        "text": phone_gate.prompt_text(db),
+        "reply_markup": {
+            "keyboard": [[{"text": tr("📱 اشتراک‌گذاری شماره موبایل"), "request_contact": True}]],
+            "resize_keyboard": True,
+            "one_time_keyboard": True,
+        },
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+            json=payload, timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status != 200:
+                raise HTTPException(status_code=502, detail=tr("ارسال پیام به چت بات ناموفق بود؛ ابتدا بات را استارت کنید."))
+    return {"ok": True}
 
 
 @app.get("/api/terms")
@@ -2325,7 +2378,7 @@ class TopupCreate(BaseModel):
 def api_tier_quote(product_id: int, quantity: int = 1, auth=Depends(get_verified_user)):
     tg_id, db, tenant = auth
     product = db.get_product(product_id)
-    if not product:
+    if not product or not product["is_active"]:
         raise HTTPException(status_code=404, detail=tr("محصول یافت نشد."))
     return db.get_tier_price_info(tg_id, product["price"], max(1, quantity))
 
@@ -2343,7 +2396,7 @@ async def api_create_order(body: OrderCreate, request: Request, auth=Depends(req
         raise HTTPException(status_code=403, detail=tr("حساب شما مسدود شده است."))
     quantity = max(1, body.quantity)
     product = db.get_product(body.product_id)
-    if not product:
+    if not product or not product["is_active"]:
         raise HTTPException(status_code=400, detail=tr("این محصول موجود نیست."))
     if product["is_auto_provision"]:
         pass  # سقفی برای تعداد نیست؛ کافی بودن اعتبار حجمی لحظه‌ی ساخت واقعی چک می‌شود
@@ -4906,6 +4959,7 @@ BANNER_NAV_TARGETS = {
 
 class BannerItem(BaseModel):
     id: Optional[str] = None
+    kind: Optional[str] = None  # None | "expiry" | "referral" (اسلایدهای خودکار)
     icon: str = ""
     title: str
     sub: str = ""
@@ -4951,8 +5005,8 @@ async def api_admin_upload_banner_image(photo: UploadFile = File(...), auth=Depe
 @app.post("/api/admin/banners")
 def api_admin_save_banners(body: BannersUpdate, auth=Depends(require_senior_admin)):
     _, db, _ = auth
-    if len(body.banners) > 20:
-        raise HTTPException(status_code=400, detail=tr("حداکثر ۲۰ بنر مجاز است."))
+    if len(body.banners) > 50:
+        raise HTTPException(status_code=400, detail=tr("حداکثر ۵۰ بنر مجاز است."))
     clean = []
     for idx, b in enumerate(body.banners):
         title = b.title.strip()
@@ -4974,7 +5028,9 @@ def api_admin_save_banners(body: BannersUpdate, auth=Depends(require_senior_admi
         if len(image) > 2_900_000:  # ~2MB فایل اصلی بعد از base64 حدوداً همین اندازه می‌شود
             raise HTTPException(status_code=400, detail=tr(f"حجم تصویر بنر شماره {idx + 1} بیش از حد مجاز است."))
         bg = b.bg.strip() or "linear-gradient(120deg, #0d1420, #142845 55%, #1c3f6e)"
+        kind = b.kind if b.kind in ("expiry", "referral") else None
         clean.append({
+            "kind": kind,
             "id": b.id or f"b_{secrets.token_hex(4)}",
             "icon": (b.icon or "✨").strip()[:8],
             "title": title,
@@ -4987,7 +5043,7 @@ def api_admin_save_banners(body: BannersUpdate, auth=Depends(require_senior_admi
             "enabled": bool(b.enabled),
         })
     db.set_banners(clean)
-    return {"status": "ok", "banners": clean}
+    return {"status": "ok", "banners": db.get_banners()}
 
 
 # ---------------------------------------------------------------------------
