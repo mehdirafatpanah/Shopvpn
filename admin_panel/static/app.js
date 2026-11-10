@@ -8493,7 +8493,7 @@ async function renderPanels() {
     <div class="card"><div class="table-wrap"><table>
       <thead><tr><th>نام</th><th>نوع</th><th>آدرس</th><th>وضعیت</th><th>مصرف</th><th>عملیات</th></tr></thead>
       <tbody>${servers.map(s => `<tr>
-        <td>${esc(s.name)}</td><td>${esc(s.type_label)}</td><td class="mono" style="direction:ltr;text-align:right">${esc(s.api_url)}</td>
+        <td style="white-space:nowrap">${esc(s.name)}</td><td style="white-space:nowrap">${esc(s.type_label)}</td><td class="mono" style="direction:ltr;text-align:right">${esc(s.api_url)}</td>
         <td>
           <button class="btn btn-sm ${s.is_active ? '' : 'btn-danger'}" data-toggle-active="${s.id}">${s.is_active ? '✅ فعال' : '⛔️ غیرفعال'}</button>
           ${s.is_configured ? '' : '<div style="font-size:11px;color:#FB7185;margin-top:4px">⚠️ تکمیل‌نشده</div>'}
