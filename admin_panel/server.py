@@ -6555,6 +6555,8 @@ def _panel_server_public(s, health=None) -> dict:
     if is_sub_base_type:
         needs_inbound = s["panel_type"] in INBOUND_SELECT_PANEL_TYPES
         configured = bool(s["xui_sub_base_url"]) and (bool(xui_inbound_ids) if needs_inbound else True)
+    elif s["panel_type"] in NO_SETUP_PANEL_TYPES:
+        configured = True
     else:
         configured = bool(s["group_ids"] and s["proxy_settings"])
     return {
