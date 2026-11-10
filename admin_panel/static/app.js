@@ -4500,7 +4500,8 @@ function productProvisionFieldsHtml(panelServers, sshNodes = [], prefill = null)
   const isMulti = extraPanels.length + extraNodes.length > 0;
   const selPanels = isMulti ? [Number(prefill.provision_server_id || 0), ...extraPanels].filter(Boolean) : [];
   const selNodes = isMulti ? [Number(prefill.provision_ssh_node_id || 0), ...extraNodes].filter(Boolean) : [];
-  const target = isMulti ? 'multi' : (prefill && prefill.provision_ssh_node_id ? (prefill.provision_server_id ? 'both' : 'ssh') : 'vpn');
+  const selectedProvisionPanel = panelServers.find(s => Number(s.id) === Number(prefill && prefill.provision_server_id));
+  const target = isMulti ? 'multi' : (prefill && prefill.provision_ssh_node_id ? (prefill.provision_server_id ? 'both' : 'ssh') : (selectedProvisionPanel && selectedProvisionPanel.panel_type === 'stealth' ? 'vless' : 'vpn'));
   const comboLocked = !catalogDsubEnabled;
   const durUnlimited = !!(prefill && prefill.duration_days === 0);
   const volUnlimited = !!(prefill && prefill.auto_provision_volume_gb === 0);
@@ -4510,7 +4511,7 @@ function productProvisionFieldsHtml(panelServers, sshNodes = [], prefill = null)
       <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="prod-source" value="direct" ${isDirect ? 'checked' : ''}> ساخت خودکار</label>
     </div>
     <div id="prod-direct-fields" class="form-grid" style="display:${isDirect ? '' : 'none'}">
-      <label class="field"><span>نوع مقصد</span><select class="input" id="prod-target-type"><option value="vpn" ${target === 'vpn' ? 'selected' : ''}>پنل VPN</option>${sshNodes.length || (prefill && prefill.provision_ssh_node_id) ? `<option value="ssh" ${target === 'ssh' ? 'selected' : ''}>نود SSH (Linux Agent)</option><option value="both" ${target === 'both' ? 'selected' : ''} ${comboLocked && target !== 'both' ? 'disabled' : ''}>ترکیبی VPN + SSH (حجم و زمان مشترک)${comboLocked ? ' — نیازمند ساب اختصاصی فعال' : ''}</option>` : ''}<option value="multi" ${target === 'multi' ? 'selected' : ''} ${comboLocked && target !== 'multi' ? 'disabled' : ''}>چند پنل / چند نود (حجم و زمان مشترک)${comboLocked ? ' — نیازمند ساب اختصاصی فعال' : ''}</option></select><span class="card-sub" id="prod-multi-hint" style="display:${comboLocked ? '' : 'none'}">ترکیب و چند مقصدی فقط وقتی ساب اختصاصی فعال باشد کار می‌کند.</span></label>
+      <label class="field"><span>نوع مقصد</span><select class="input" id="prod-target-type"><option value="vpn" ${target === 'vpn' ? 'selected' : ''}>پنل VPN</option>${panelServers.some(s => s.panel_type === 'stealth') ? `<option value="vless" ${target === 'vless' ? 'selected' : ''}>نود VLESS</option>` : ''}${sshNodes.length || (prefill && prefill.provision_ssh_node_id) ? `<option value="ssh" ${target === 'ssh' ? 'selected' : ''}>نود SSH (Linux Agent)</option><option value="both" ${target === 'both' ? 'selected' : ''} ${comboLocked && target !== 'both' ? 'disabled' : ''}>ترکیبی VPN + SSH (حجم و زمان مشترک)${comboLocked ? ' — نیازمند ساب اختصاصی فعال' : ''}</option>` : ''}<option value="multi" ${target === 'multi' ? 'selected' : ''} ${comboLocked && target !== 'multi' ? 'disabled' : ''}>چند پنل / چند نود (حجم و زمان مشترک)${comboLocked ? ' — نیازمند ساب اختصاصی فعال' : ''}</option></select><span class="card-sub" id="prod-multi-hint" style="display:${comboLocked ? '' : 'none'}">ترکیب و چند مقصدی فقط وقتی ساب اختصاصی فعال باشد کار می‌کند.</span></label>
       <div id="prod-multi-fields" style="display:${target === 'multi' ? '' : 'none'}">
         <div class="card-sub">پنل‌های VPN (هر تعداد)</div>
         ${panelServers.map(s2 => `<label class="field field-row"><span>${esc(s2.name)}</span><input type="checkbox" class="prod-multi-panel" value="${s2.id}" ${selPanels.includes(Number(s2.id)) ? 'checked' : ''}></label>`).join('') || '<div class="card-sub">پنلی نیست</div>'}
@@ -4519,7 +4520,7 @@ function productProvisionFieldsHtml(panelServers, sshNodes = [], prefill = null)
         ${sshNodes.map(n2 => `<label class="field field-row"><span>${esc(n2.name)} · ${esc(n2.host || '')}</span><input type="checkbox" class="prod-multi-node" value="${n2.id}" data-protocols="${esc((n2.protocols || ['ssh']).join(','))}" ${selNodes.includes(Number(n2.id)) ? 'checked' : ''}></label>`).join('') || '<div class="card-sub">نودی نیست</div>'}
         <span class="card-sub">حجم و زمان بین همه‌ی مقصدها مشترک است و خروجی همه در یک لینک ساب اختصاصی ادغام می‌شود.</span>
       </div>
-      <div id="prod-vpn-fields" style="display:${(target === 'ssh' || target === 'multi') ? 'none' : ''}"><label class="field"><span>پنل VPN</span><select class="input" id="prod-server">${panelServers.map(s => `<option value="${s.id}" ${prefill && Number(prefill.provision_server_id) === Number(s.id) ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label><div id="prod-target-picker"></div></div>
+      <div id="prod-vpn-fields" style="display:${(target === 'ssh' || target === 'multi') ? 'none' : ''}"><label class="field"><span id="prod-server-label">${target === 'vless' ? 'نود VLESS' : 'پنل VPN'}</span><select class="input" id="prod-server">${panelServers.map(s => `<option value="${s.id}" data-panel-type="${esc(s.panel_type || '')}" ${prefill && Number(prefill.provision_server_id) === Number(s.id) ? 'selected' : ''}>${s.panel_type === 'stealth' ? 'VLESS · ' : ''}${esc(s.name)}</option>`).join('')}</select></label><div id="prod-target-picker"></div></div>
       <div id="prod-ssh-fields" style="display:${(target === 'ssh' || target === 'both' || target === 'multi') ? '' : 'none'}"><label class="field" id="prod-ssh-node-field" style="display:${target === 'multi' ? 'none' : ''}"><span>نود SSH</span><select class="input" id="prod-ssh-node">${sshNodes.map(n => `<option value="${n.id}" data-protocols="${esc((n.protocols || ['ssh']).join(','))}" ${prefill && Number(prefill.provision_ssh_node_id) === Number(n.id) ? 'selected' : ''}>${esc(n.name)} · ${esc(n.host || '')}</option>`).join('')}</select><span class="card-sub">فقط Linux Agent فعال با حسابداری معتبر پشتیبانی می‌شود.</span></label>
       <div id="prod-proto-wrap" style="display:${(target === 'multi' || target === 'both') ? '' : 'none'}">
         <div class="card-sub">پروتکل‌های حساب SSH (هر تعداد)</div>
@@ -4588,6 +4589,24 @@ function wireProductProvisionToggle(b) {
     if (df) df.style.display = $('input[name="prod-source"]:checked', b).value === 'direct' ? '' : 'none';
   }));
   const targetType = $('#prod-target-type', b);
+  const syncPanelOptions = () => {
+    const sel = $('#prod-server', b);
+    if (!sel) return;
+    const tt = targetType ? targetType.value : 'vpn';
+    const allowed = tt === 'vless' ? 'stealth-only' : (tt === 'vpn' ? 'non-stealth' : null);
+    const current = sel.value;
+    let first = '';
+    [...sel.options].forEach(opt => {
+      const typ = opt.dataset.panelType || '';
+      const show = !allowed || (allowed === 'stealth-only' ? typ === 'stealth' : typ !== 'stealth');
+      opt.hidden = !show;
+      opt.disabled = !show;
+      if (show && !first) first = opt.value;
+    });
+    if (sel.selectedOptions[0]?.disabled) sel.value = first;
+    const label = $('#prod-server-label', b);
+    if (label) label.textContent = tt === 'vless' ? 'نود VLESS' : (tt === 'vpn' ? 'پنل VPN' : 'پنل VPN / VLESS');
+  };
   const syncUserLimit = () => {
     const wrap = $('#prod-user-limit-fields', b);
     if (!wrap) return;
@@ -4595,7 +4614,7 @@ function wireProductProvisionToggle(b) {
     const serverData = (window.__productPanelServers || []);
     let ids = [];
     if (tt === 'multi') ids = $$('.prod-multi-panel:checked', b).map(c => Number(c.value));
-    else if (tt === 'both' || tt === 'vpn') { const v = Number($('#prod-server', b)?.value || 0); if (v) ids=[v]; }
+    else if (tt === 'both' || tt === 'vpn' || tt === 'vless') { const v = Number($('#prod-server', b)?.value || 0); if (v) ids=[v]; }
     const rows = ids.map(id => serverData.find(s => Number(s.id) === id)).filter(Boolean);
     const supported = rows.length > 0 && rows.every(s => !!s.supports_user_limit);
     wrap.style.display = supported ? '' : 'none';
@@ -4645,6 +4664,8 @@ function wireProductProvisionToggle(b) {
   }
   if (targetType) targetType.addEventListener('change', () => {
     const t = targetType.value;
+    syncPanelOptions();
+    if ($('#prod-server', b)) loadProductPanelTargetPicker(b, $('#prod-server', b).value, []).catch(() => {});
     if ($('#prod-vpn-fields', b)) $('#prod-vpn-fields', b).style.display = (t === 'ssh' || t === 'multi') ? 'none' : '';
     if ($('#prod-ssh-fields', b)) $('#prod-ssh-fields', b).style.display = (t === 'ssh' || t === 'both' || t === 'multi') ? '' : 'none';
     if ($('#prod-ssh-node-field', b)) $('#prod-ssh-node-field', b).style.display = t === 'multi' ? 'none' : '';
@@ -4675,6 +4696,7 @@ function wireProductProvisionToggle(b) {
     });
     loadProductPanelTargetPicker(b, prodServer.value, productTargetValuesFromConfig(window.__productPrefillTargetConfig, prodServer.value)).catch(() => {});
   }
+  syncPanelOptions();
   syncUserLimit();
   const volUnlimitedCb = $('#prod-volume-unlimited', b);
   if (volUnlimitedCb) volUnlimitedCb.addEventListener('change', () => {
@@ -4973,7 +4995,7 @@ async function renderCatalog() {
         </div>
         ${esc(p.name)}
       </td><td>${esc(p.category_name)}</td><td class="mono">${fmt(p.price)}</td>
-      <td class="mono">${p.is_auto_provision ? `<span class="chip">${((p.extra_panel_ids || []).length + (p.extra_ssh_node_ids || []).length) ? 'چندمقصدی' : (p.provision_ssh_node_id ? 'SSH خودکار' : (p.provision_server_id ? 'VPN مستقیم' : 'خودکار'))}</span>` : fmt(p.stock)}</td>
+      <td class="mono">${p.is_auto_provision ? `<span class="chip">${((p.extra_panel_ids || []).length + (p.extra_ssh_node_ids || []).length) ? 'چندمقصدی' : (p.provision_ssh_node_id ? 'SSH خودکار' : (p.provision_server_id ? (p.provision_panel_type === 'stealth' ? 'VLESS خودکار' : 'VPN مستقیم') : 'خودکار'))}</span>` : fmt(p.stock)}</td>
       <td>${p.is_active ? '<span class="badge badge-approved">فعال</span>' : '<span class="badge badge-rejected">غیرفعال</span>'}</td>
       <td>
         ${!p.is_auto_provision ? `<button class="btn btn-sm" data-configs="${p.id}">بانک کانفیگ</button>` : ''}
@@ -5107,7 +5129,7 @@ function renderCatalogBento(categories, products, panelServers, sshNodes, paymen
             <span class="bw-value mono" style="font-size:18px">${fmt(p.price)} ت</span>
           </div>
           <div class="bn-row-title" style="font-size:14px">${esc(p.name)}</div>
-          <div class="bn-row-sub">${esc(p.category_name)} · ${p.provision_ssh_node_id ? 'SSH خودکار' : (p.provision_server_id ? 'VPN مستقیم' : (p.is_auto_provision ? 'خودکار' : 'موجودی: '+fmt(p.stock)))}</div>
+          <div class="bn-row-sub">${esc(p.category_name)} · ${p.provision_ssh_node_id ? 'SSH خودکار' : (p.provision_server_id ? (p.provision_panel_type === 'stealth' ? 'VLESS خودکار' : 'VPN مستقیم') : (p.is_auto_provision ? 'خودکار' : 'موجودی: '+fmt(p.stock)))}</div>
           ${bnPill(p.is_active ? 'فعال' : 'غیرفعال', p.is_active ? 'ok' : 'no')}
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
             ${!p.is_auto_provision ? `<button class="bn-btn bn-btn-ghost" data-configs="${p.id}">بانک کانفیگ</button>` : ''}
@@ -7983,7 +8005,7 @@ function stealthAutoBoxHtml(withName) {
       <button class="btn btn-primary" id="sa-install" type="button">نصب و راه‌اندازی خودکار</button>
     </div>
     <pre id="sa-log" class="mono" style="display:none;white-space:pre-wrap;margin-top:8px"></pre>
-    <p class="card-sub">سرور باید Ubuntu/Debian تازه باشد. xray (فقط VLESS)، nginx، سایت جعلی، گواهی TLS و ثبت در پنل خودکار انجام می‌شود. رمز root فقط برای همین نصب استفاده می‌شود و ذخیره نمی‌شود. بعد از نصب، نود در بخش «پنل‌های VPN» با نوع Stealth VLESS دیده می‌شود.</p>`;
+    <p class="card-sub">سرور باید Ubuntu/Debian تازه باشد. xray (فقط VLESS)، nginx، سایت جعلی، گواهی TLS و ثبت در پنل خودکار انجام می‌شود. رمز root فقط برای همین نصب استفاده می‌شود و ذخیره نمی‌شود. بعد از نصب، نود در همین بخش «نودها و سهمیه SSH» و همچنین «پنل‌های VPN» با نوع Stealth VLESS قابل مدیریت و انتخاب برای ساخت محصول است.</p>`;
 }
 
 function wireStealthAutoBox(root, getName, onDone) {
@@ -8309,9 +8331,47 @@ function sshHostsModal(node, reload) {
     el.querySelector('#ssh-range-reset')?.addEventListener('click', e => saveRange(null, null, e.currentTarget));
   }, { wide: true });
 }
+async function stealthNodeSettingsModal(node, reload) {
+  let settings;
+  try { settings = await apiGet(`/panel-servers/${Number(node.id)}/stealth-settings`); }
+  catch (err) { handleErr(err); return; }
+  openModal(`تنظیمات نود VLESS «${esc(node.name)}»`, `
+    <div class="form-grid">
+      <div class="card-sub" style="grid-column:1/-1">مشخصات نصب‌شده: <b dir="ltr">${esc(settings.domain || '—')}:${Number(settings.port || 443)}</b> · ترنسپورت‌ها: ${(settings.transports || []).map(esc).join('، ') || '—'}</div>
+      <label class="field"><span>نام نود در پنل</span><input class="input" id="vless-set-name" maxlength="80" value="${esc(node.name || '')}"></label>
+      <label class="field"><span>آدرس API</span><input class="input" id="vless-set-url" dir="ltr" value="${esc(node.api_url || '')}"></label>
+      <label class="field"><span>نام کاربری API</span><input class="input" id="vless-set-user" dir="ltr" value="stealth"></label>
+      <label class="field"><span>توکن API جدید (اختیاری)</span><input class="input" id="vless-set-token" type="password" autocomplete="new-password" placeholder="برای حفظ توکن فعلی خالی بگذارید" dir="ltr"></label>
+      <button class="btn" id="vless-set-connection">ذخیره اتصال پنل</button>
+      <div class="divider" style="grid-column:1/-1"></div>
+      <label class="field"><span>عنوان نمایشی لینک‌ها</span><input class="input" id="vless-set-title" maxlength="40" value="${esc(settings.title || 'Stealth')}"></label>
+      <label class="field"><span>Fingerprint</span><select class="input" id="vless-set-fp">${['chrome','firefox','safari','random','randomized'].map(x=>`<option value="${x}" ${settings.fingerprint===x?'selected':''}>${x}</option>`).join('')}</select></label>
+      <label class="field"><span>SNI</span><input class="input" id="vless-set-sni" dir="ltr" value="${esc(settings.sni || settings.domain || '')}"></label>
+      <label class="field"><span>Host / Authority</span><input class="input" id="vless-set-host" dir="ltr" value="${esc(settings.host || settings.domain || '')}"></label>
+      <p class="card-sub" style="grid-column:1/-1">تغییر عنوان، Fingerprint، SNI و Host روی لینک‌های جدید اشتراک اعمال می‌شود. دامنه، پورت، گواهی TLS و ترنسپورت‌ها در حال حاضر از طریق نصب/بازپیکربندی سرور تغییر می‌کنند.</p>
+      <button class="btn btn-primary" id="vless-set-save">ذخیره تنظیمات نود</button>
+    </div>`, (el, close) => {
+      el.querySelector('#vless-set-connection').addEventListener('click', async e => {
+        const btn=e.currentTarget; btn.disabled=true;
+        const body={name:el.querySelector('#vless-set-name').value.trim(),api_url:el.querySelector('#vless-set-url').value.trim(),api_username:el.querySelector('#vless-set-user').value.trim()||'stealth'};
+        const token=el.querySelector('#vless-set-token').value;
+        if(token) body.api_password=token;
+        if(!body.name||!/^https?:\/\//i.test(body.api_url)){toast('نام و آدرس معتبر API را وارد کنید.',true);btn.disabled=false;return;}
+        try { await apiPut(`/panel-servers/${Number(node.id)}`,body); toast('اتصال پنل ذخیره شد.'); await reload(); }
+        catch(err){handleErr(err);btn.disabled=false;}
+      });
+      el.querySelector('#vless-set-save').addEventListener('click', async e => {
+        const btn=e.currentTarget; btn.disabled=true;
+        const body={title:el.querySelector('#vless-set-title').value.trim(),fingerprint:el.querySelector('#vless-set-fp').value,sni:el.querySelector('#vless-set-sni').value.trim(),host:el.querySelector('#vless-set-host').value.trim()};
+        try { await apiPut(`/panel-servers/${Number(node.id)}/stealth-settings`,body); toast('تنظیمات نود VLESS ذخیره شد.'); close(); await reload(); }
+        catch(err){handleErr(err);btn.disabled=false;}
+      });
+    }, { wide: true });
+}
 async function renderSSHManagement() {
-  const d = await apiGet('/ssh/overview');
+  const [d, panelServers] = await Promise.all([apiGet('/ssh/overview'), apiGet('/panel-servers').catch(() => [])]);
   const nodes = d.nodes || [], pools = d.pools || [], accounts = d.accounts || [];
+  const vlessNodes = (panelServers || []).filter(s => s.panel_type === 'stealth');
   const fmtBytes = n => {
     n = Number(n || 0);
     if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
@@ -8334,6 +8394,23 @@ async function renderSSHManagement() {
       <td style="white-space:nowrap"><button class="btn btn-sm" data-ssh-test-node="${Number(n.id)}">تست اتصال</button> ${(n.protocols||['ssh']).length<3&&n.node_type==='linux'?`<button class="btn btn-sm" data-ssh-add-proto="${Number(n.id)}">+ پروتکل</button> `:''}<button class="btn btn-sm" data-ssh-hosts-node="${Number(n.id)}">هاست‌ها</button> <button class="btn btn-sm" data-ssh-rename-node="${Number(n.id)}" data-ssh-node-name="${esc(n.name)}">تغییر نام</button> <button class="btn btn-danger btn-sm" data-ssh-del-node="${Number(n.id)}">حذف</button></td>
     </tr>`).join('') || '<tr><td colspan="5" class="empty-state">هنوز نودی ثبت نشده است.</td></tr>'}</tbody></table></div></div>`;
 
+  const vlessNodesHtml = `<div class="card" style="margin-top:12px"><div style="padding:12px 14px 0"><b>نودهای VLESS</b><p class="card-sub">نصب، اتصال، تنظیمات API و وضعیت استفاده از نودهای VLESS از همین بخش مدیریت می‌شود.</p></div><div class="table-wrap"><table>
+    <thead><tr><th>نام</th><th>آدرس API</th><th>وضعیت</th><th>مصرف</th><th>عملیات</th></tr></thead>
+    <tbody>${vlessNodes.map(n=>`<tr>
+      <td><b>${esc(n.name)}</b><div class="card-sub">Stealth VLESS · #${Number(n.id)}</div></td>
+      <td class="mono" dir="ltr">${esc(n.api_url || '')}</td>
+      <td>${n.is_active ? (n.health_status === 'error' ? 'خطا' : 'فعال') : 'غیرفعال'}${n.health_error ? `<div class="card-sub" style="color:#FB7185">${esc(n.health_error)}</div>` : ''}</td>
+      <td><span class="chip">${n.used_for_custom_config ? 'کانفیگ شخصی' : 'بدون کانفیگ شخصی'}</span> <span class="chip">${n.used_for_test_config ? 'کانفیگ تست' : 'بدون تست'}</span></td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-sm" data-vless-test="${Number(n.id)}">تست اتصال</button>
+        <button class="btn btn-sm" data-vless-edit="${Number(n.id)}">تنظیمات</button>
+        <button class="btn btn-sm" data-vless-toggle="${Number(n.id)}">${n.is_active ? 'غیرفعال‌سازی' : 'فعال‌سازی'}</button>
+        <button class="btn btn-sm" data-vless-usage="custom" data-vless-id="${Number(n.id)}">${n.used_for_custom_config ? 'قطع کانفیگ شخصی' : 'کانفیگ شخصی'}</button>
+        <button class="btn btn-sm" data-vless-usage="test" data-vless-id="${Number(n.id)}">${n.used_for_test_config ? 'قطع تست' : 'کانفیگ تست'}</button>
+        <button class="btn btn-danger btn-sm" data-vless-delete="${Number(n.id)}">حذف</button>
+      </td>
+    </tr>`).join('') || '<tr><td colspan="5" class="empty-state">هنوز نود VLESS ثبت نشده است.</td></tr>'}</tbody></table></div></div>`;
+
   const accountsHtml = `<div class="card"><div class="table-wrap"><table>
     <thead><tr><th>نام کاربری</th><th>پروتکل</th><th>سرور</th><th>کاربر</th><th>استخر</th><th>وضعیت</th><th>عملیات</th></tr></thead>
     <tbody>${accounts.map(a=>`<tr>
@@ -8354,7 +8431,7 @@ async function renderSSHManagement() {
       <td>${esc(statusFa(p.status))}</td><td>${(p.members||[]).length}</td>
     </tr>`}).join('') || '<tr><td colspan="6" class="empty-state">استخر سهمیه‌ای وجود ندارد.</td></tr>'}</tbody></table></div></div>`;
 
-  setContent(tabBar + (sshTab==='nodes' ? nodesHtml : sshTab==='accounts' ? accountsHtml : poolsHtml));
+  setContent(tabBar + (sshTab==='nodes' ? nodesHtml + vlessNodesHtml : sshTab==='accounts' ? accountsHtml : poolsHtml));
 
   $$('[data-ssh-tab]',content()).forEach(b=>b.addEventListener('click',()=>{sshTab=b.dataset.sshTab;renderSSHManagement();}));
 
@@ -8476,6 +8553,11 @@ async function renderSSHManagement() {
   $$('[data-ssh-hosts-node]',content()).forEach(btn=>btn.addEventListener('click',()=>{const node=nodes.find(n=>Number(n.id)===Number(btn.dataset.sshHostsNode));if(node)sshHostsModal(node,renderSSHManagement);}));
   $$('[data-ssh-del-node]',content()).forEach(btn=>btn.addEventListener('click',async()=>{if(!confirm('این نود حذف شود؟'))return;btn.disabled=true;const nid=Number(btn.dataset.sshDelNode);try{await apiDelete(`/ssh/nodes/${nid}`);toast('نود حذف شد.');await renderSSHManagement();}catch(err){if(/حساب SSH فعال/.test(err.message||'')&&confirm(err.message+'\n\nاگر سرور این نود حذف شده یا از دسترس خارج است، نود و همه‌ی حساب‌هایش فقط از پنل پاک می‌شوند (روی سرور تغییری داده نمی‌شود). ادامه می‌دهید؟')){try{await apiDelete(`/ssh/nodes/${nid}?force=true`);toast('نود و حساب‌هایش از پنل حذف شد.');await renderSSHManagement();return;}catch(err2){handleErr(err2);}}else{handleErr(err);}btn.disabled=false;}}));
   $$('[data-ssh-test-node]',content()).forEach(btn=>btn.addEventListener('click',async()=>{btn.disabled=true;try{const r=await apiPost(`/ssh/nodes/${Number(btn.dataset.sshTestNode)}/test`,{});toast(r.ok?'اتصال Agent موفق بود.':'پاسخ Agent معتبر نیست.');await renderSSHManagement();}catch(err){handleErr(err);btn.disabled=false;}}));
+  $$('[data-vless-test]',content()).forEach(btn=>btn.addEventListener('click',async()=>{btn.disabled=true;try{const r=await apiPost(`/panel-servers/${Number(btn.dataset.vlessTest)}/test`,{});toast(r.ok?'اتصال نود VLESS موفق بود.':'اتصال نود VLESS ناموفق بود.');await renderSSHManagement();}catch(err){handleErr(err);btn.disabled=false;}}));
+  $$('[data-vless-edit]',content()).forEach(btn=>btn.addEventListener('click',()=>{const node=vlessNodes.find(n=>Number(n.id)===Number(btn.dataset.vlessEdit));if(node)stealthNodeSettingsModal(node,renderSSHManagement);}));
+  $$('[data-vless-toggle]',content()).forEach(btn=>btn.addEventListener('click',async()=>{btn.disabled=true;try{await apiPost(`/panel-servers/${Number(btn.dataset.vlessToggle)}/toggle`,{});toast('وضعیت نود تغییر کرد.');await renderSSHManagement();}catch(err){handleErr(err);btn.disabled=false;}}));
+  $$('[data-vless-usage]',content()).forEach(btn=>btn.addEventListener('click',async()=>{btn.disabled=true;try{await apiPost(`/panel-servers/${Number(btn.dataset.vlessId)}/usage/${btn.dataset.vlessUsage}`,{});toast('تنظیم مصرف نود ذخیره شد.');await renderSSHManagement();}catch(err){handleErr(err);btn.disabled=false;}}));
+  $$('[data-vless-delete]',content()).forEach(btn=>btn.addEventListener('click',async()=>{if(!confirm('نود VLESS حذف شود؟ سرویس‌ها و محصولات متصل را بررسی کنید.'))return;btn.disabled=true;try{await apiDelete(`/panel-servers/${Number(btn.dataset.vlessDelete)}`);toast('نود VLESS حذف شد.');await renderSSHManagement();}catch(err){handleErr(err);btn.disabled=false;}}));
   $$('[data-ssh-account-action]',content()).forEach(btn=>btn.addEventListener('click',async()=>{const action=btn.dataset.sshAccountAction;if(action==='delete'&&!confirm('حساب SSH حذف شود؟'))return;btn.disabled=true;const url=`/ssh/accounts/${encodeURIComponent(btn.dataset.sshAccountId)}/action`;try{await apiPost(url,{action});toast('عملیات انجام شد.');await renderSSHManagement();}catch(err){if(action==='delete'&&err.status===502&&confirm(err.message+'\n\nحذف اجباری فقط از پنل انجام شود؟ (روی سرور نود تغییری داده نمی‌شود)')){try{await apiPost(url,{action,force:true});toast('حساب فقط از پنل حذف شد.');await renderSSHManagement();return;}catch(err2){handleErr(err2);}}else{handleErr(err);}btn.disabled=false;}}));
   $('#ssh-reconcile')?.addEventListener('click',async e=>{const btn=e.currentTarget;btn.disabled=true;try{const r=await apiPost('/ssh/reconcile-once',{});const results=r.results||[];const failed=results.filter(x=>!x.enforcement_complete).length;const stale=results.filter(x=>x.state==='stale').length;toast(failed?`پایش انجام شد؛ ${failed} استخر نیازمند بررسی است.`:(stale?`${stale} استخر به‌علت گزارش مصرف قدیمی در حالت امن باقی ماند.`:'پایش سهمیه انجام شد.'));await renderSSHManagement();}catch(err){handleErr(err);btn.disabled=false;}});
 }
