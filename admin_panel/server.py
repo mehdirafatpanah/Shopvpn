@@ -2133,7 +2133,7 @@ def api_notifications_summary(admin=Depends(get_current_admin)):
     داده می‌شود، چون خودِ endpointهای /api/support هم به مجوز خاصی گیر نخورده‌اند."""
     out = {}
     if admin["role"] == "owner" or "orders" in admin["permissions"]:
-        out["orders"] = len(db.get_pending_orders())
+        out["orders"] = len(db.get_orders_awaiting_review())
         out["topups"] = len(db.get_pending_topups())
     if admin["role"] == "owner" or "tickets" in admin["permissions"]:
         out["tickets"] = len(db.get_all_tickets("open"))
@@ -2788,7 +2788,7 @@ def api_orders(status: str = "pending", q: str = "", product_id: Optional[int] =
     if any((q.strip(), product_id is not None, date_from.strip(), date_to.strip())):
         rows = db.search_orders(status=status, query=q, product_id=product_id, date_from=date_from, date_to=date_to)
     else:
-        rows = db.get_pending_orders() if status == "pending" else db.get_orders_by_status(status)
+        rows = db.get_orders_awaiting_review() if status == "pending" else db.get_orders_by_status(status)
     out = []
     for o in rows:
         o = dict(o)
@@ -2903,8 +2903,47 @@ async def api_order_receipt_base64(order_id: int, admin=Depends(get_current_admi
     return {"content_type": content_type, "data_base64": base64.b64encode(content).decode("ascii")}
 
 
+async def _sync_review_message_in_group(kind: str, row, outcome: str, admin) -> None:
+    """وقتی رسید از «پنل وب» تایید/رد می‌شود، پیام همان رسید در گروه مدیریت هم به‌روز می‌شود:
+    دکمه‌های تایید/رد برداشته می‌شوند (مثل تایید از داخل ربات) و زیر پیام نتیجه و نام مدیر درج می‌شود.
+    best-effort است؛ خطای تلگرام هرگز نتیجه‌ی تایید/رد را خراب نمی‌کند.
+    kind: order | topup؛ outcome: approved | rejected | fake"""
+    try:
+        chat_id = row["admin_chat_id"] if "admin_chat_id" in row.keys() else None
+        message_id = row["admin_message_id"] if "admin_message_id" in row.keys() else None
+        if not chat_id or not message_id:
+            return
+        token = _bot_token()
+        label = {"approved": "✅ تایید شد", "rejected": "❌ رد شد", "fake": "🚫 فیش فیک؛ رد شد و کاربر بلاک شد"}[outcome]
+        what = "سفارش" if kind == "order" else "شارژ"
+        user_id = row["user_id"]
+        quick = [[
+            {"text": "👤 پروفایل", "callback_data": f"qa_profile:{user_id}"},
+            {"text": "🚫 بلاک", "callback_data": f"qa_block:{user_id}"},
+            {"text": "✉️ پیام", "callback_data": f"qa_msg:{user_id}"},
+        ]]
+        await report_router._raw_api(token, "editMessageReplyMarkup", {
+            "chat_id": chat_id, "message_id": message_id, "reply_markup": {"inline_keyboard": quick},
+        })
+        await report_router._raw_api(token, "sendMessage", {
+            "chat_id": chat_id, "reply_to_message_id": message_id, "allow_sending_without_reply": True,
+            "disable_notification": True,
+            "text": f"{label} — {what} #{row['id']}\n👤 توسط {admin['username']} (پنل وب)",
+        })
+    except Exception:
+        logger.warning("به‌روزرسانی پیام %s #%s در گروه مدیریت ناموفق بود.", kind, row["id"] if row else "?", exc_info=True)
+
+
 @app.post("/api/orders/{order_id}/approve")
 async def api_approve_order(order_id: int, admin=Depends(require_permission("orders"))):
+    result = await _approve_order_core(order_id, admin)
+    order = await asyncio.to_thread(db.get_order, order_id)
+    if order:
+        await _sync_review_message_in_group("order", order, "approved", admin)
+    return result
+
+
+async def _approve_order_core(order_id: int, admin):
     order = (await asyncio.to_thread(db.get_order, order_id))
     if not order or order["status"] != "pending":
         raise HTTPException(400, tr("سفارش یافت نشد یا قبلاً بررسی شده."))
@@ -3043,6 +3082,7 @@ async def api_fake_receipt_order(order_id: int, admin=Depends(require_permission
         "⛔️ سفارش شما رد شد و حساب کاربری‌تان بلاک شد.\n"
         "در صورت اشتباه، برای بررسی موضوع با پشتیبانی تماس بگیرید.",
     )
+    await _sync_review_message_in_group("order", order, "fake", admin)
     return {"ok": True, "deleted_configs": result["deleted_configs"], "blocked": True}
 
 
@@ -3055,6 +3095,7 @@ async def api_reject_order(order_id: int, admin=Depends(require_permission("orde
         raise HTTPException(400, tr("سفارش یافت نشد یا قبلاً بررسی شده."))
     (await asyncio.to_thread(db.log_admin_action, admin["id"], "order_reject", f"سفارش #{order_id} رد شد (پنل وب - {admin['username']})", "order", order_id))
     await notify_user(order["user_id"], "⛔️ سفارش شما رد شد. در صورت کسر از کیف پول، مبلغ برگشت داده شد.")
+    await _sync_review_message_in_group("order", order, "rejected", admin)
     return {"ok": True}
 
 
@@ -3127,6 +3168,7 @@ async def api_approve_topup(topup_id: int, admin=Depends(require_permission("ord
         raise HTTPException(400, tr("قبلاً بررسی شده است."))
     (await asyncio.to_thread(db.log_admin_action, admin["id"], "topup_approve", f"شارژ #{topup_id} تایید شد (پنل وب - {admin['username']})", "topup", topup_id))
     await notify_user(topup["user_id"], f"✅ شارژ کیف پول شما به مبلغ {topup['amount']:,} تومان تایید شد.")
+    await _sync_review_message_in_group("topup", topup, "approved", admin)
     return {"ok": True}
 
 
@@ -3139,6 +3181,7 @@ async def api_reject_topup(topup_id: int, admin=Depends(require_permission("orde
         raise HTTPException(400, tr("یافت نشد یا قبلاً بررسی شده."))
     (await asyncio.to_thread(db.log_admin_action, admin["id"], "topup_reject", f"شارژ #{topup_id} رد شد (پنل وب - {admin['username']})", "topup", topup_id))
     await notify_user(topup["user_id"], "⛔️ درخواست شارژ کیف پول شما رد شد.")
+    await _sync_review_message_in_group("topup", topup, "rejected", admin)
     return {"ok": True}
 
 
@@ -3166,6 +3209,176 @@ def api_users(q: str = "", status: str = "all", page: int = 1, sort: str = "newe
         row["is_blocked"] = bool(row.get("is_blocked"))
         items.append(row)
     return {"items": items, "total": total, "page": page, "limit": limit}
+
+
+@app.get("/api/subscriptions")
+def api_subscriptions(q: str = "", kind: str = "all", status: str = "active", sort: str = "newest",
+                      page: int = 1, admin=Depends(get_current_admin)):
+    """لیست سراسری اشتراک‌ها (شخصی/پنل مستقیم، بانک کانفیگ و SSH) با جستجو بر اساس
+    نام اشتراک، آی‌دی عددی کاربر یا یوزرنیم تلگرام. شمارنده‌ی وضعیت‌ها هم برگردانده می‌شود."""
+    limit = 25
+    page = max(1, int(page or 1))
+    rows, total, counts = db.search_subscriptions(q, kind, status, sort, limit=limit, offset=(page - 1) * limit)
+    items = []
+    for r in rows:
+        d = dict(r)
+        items.append({
+            "kind": d["kind"],
+            "id": d["rid"],
+            "sid": d["sid"],
+            "user_id": d["user_id"],
+            "user_username": d.get("user_username"),
+            "user_first_name": d.get("user_first_name"),
+            "user_blocked": bool(d.get("user_blocked")),
+            "user_wallet": d.get("user_wallet") or 0,
+            "name": d.get("name") or "",
+            "raw_name": d.get("raw_name") or "",
+            "volume_gb": d.get("volume_gb"),
+            "duration_days": d.get("duration_days"),
+            "link": d.get("link"),
+            "created_at": d.get("created_at"),
+            "expires_at": d.get("expires_at"),
+            "state": d["state"],
+            "auto_renew": bool(d.get("auto_renew")),
+            "is_test": bool(d.get("is_test")),
+            "extra": d.get("extra") or "",
+        })
+    return {"items": items, "total": total, "page": page, "limit": limit, "counts": counts}
+
+
+class SubscriptionSshActionBody(BaseModel):
+    action: str
+    force: bool = False
+
+
+@app.post("/api/subscriptions/ssh/{account_id}/action")
+async def api_subscription_ssh_action(account_id: str, body: SubscriptionSshActionBody,
+                                      admin=Depends(require_permission("users")),
+                                      _fa=Depends(require_full_access_tenant)):
+    """فعال/غیرفعال/حذف حساب SSH از صفحه‌ی اشتراک‌ها (با دسترسی «کاربران»)."""
+    import ssh_service
+    try:
+        status = await ssh_service.account_action(db, account_id, body.action, force=bool(body.force))
+    except ssh_service.SSHServiceError as exc:
+        raise HTTPException(exc.status, str(exc))
+    db.log_admin_action(
+        admin["id"], f"ssh_account_{body.action.strip().lower()}",
+        f"SSH account {account_id}" + (" (force, node unreachable)" if body.force else "") + f" (پنل وب - {admin['username']})",
+        "ssh",
+    )
+    return {"ok": True, "account_id": account_id, "status": status}
+
+
+class UserGroupBody(BaseModel):
+    name: str
+    description: str = ""
+    rules: dict = {}
+
+
+class UserGroupActionBody(BaseModel):
+    action: str
+    user_ids: List[int] = []
+    message: str = ""
+    amount: int = 0
+
+
+@app.get("/api/user-groups")
+def api_user_groups(admin=Depends(get_current_admin)):
+    return rows_to_list(db.list_user_groups())
+
+
+@app.post("/api/user-groups")
+def api_create_user_group(body: UserGroupBody, admin=Depends(require_permission("users"))):
+    try:
+        group_id = db.create_user_group(body.name, body.description, body.rules, admin["id"])
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(409, tr("گروهی با این نام از قبل وجود دارد.")) from exc
+    db.log_admin_action(admin["id"], "user_group_create", f"گروه کاربران «{body.name.strip()}» ساخته شد", "user_group", group_id)
+    return db.get_user_group(group_id)
+
+
+@app.put("/api/user-groups/{group_id}")
+def api_update_user_group(group_id: int, body: UserGroupBody, admin=Depends(require_permission("users"))):
+    try:
+        ok = db.update_user_group(group_id, body.name, body.description, body.rules)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(409, tr("گروهی با این نام از قبل وجود دارد.")) from exc
+    if not ok:
+        raise HTTPException(404, tr("گروه کاربران پیدا نشد."))
+    db.log_admin_action(admin["id"], "user_group_update", f"گروه کاربران #{group_id} ویرایش شد", "user_group", group_id)
+    return db.get_user_group(group_id)
+
+
+@app.delete("/api/user-groups/{group_id}")
+def api_delete_user_group(group_id: int, admin=Depends(require_permission("users"))):
+    group = db.get_user_group(group_id)
+    if not group:
+        raise HTTPException(404, tr("گروه کاربران پیدا نشد."))
+    db.delete_user_group(group_id)
+    db.log_admin_action(admin["id"], "user_group_delete", f"گروه کاربران «{group['name']}» حذف شد", "user_group", group_id)
+    return {"ok": True}
+
+
+@app.get("/api/user-groups/{group_id}/members")
+def api_user_group_members(group_id: int, q: str = "", page: int = 1, admin=Depends(get_current_admin)):
+    limit = 25
+    rows, total = db.search_user_group_members(group_id, q, limit=limit, offset=(max(1, page) - 1) * limit)
+    if rows is None:
+        raise HTTPException(404, tr("گروه کاربران پیدا نشد."))
+    return {"items": rows_to_list(rows), "total": total, "page": max(1, page), "limit": limit}
+
+
+@app.post("/api/user-groups/{group_id}/actions")
+async def api_user_group_action(group_id: int, body: UserGroupActionBody, admin=Depends(require_permission("users"))):
+    group = db.get_user_group(group_id)
+    if not group:
+        raise HTTPException(404, tr("گروه کاربران پیدا نشد."))
+    ids = list(dict.fromkeys(int(x) for x in body.user_ids if int(x) > 0))
+    if not ids or len(ids) > 500:
+        raise HTTPException(400, tr("حداقل یک کاربر و حداکثر ۵۰۰ کاربر را انتخاب کن."))
+    members = set(db.filter_user_group_member_ids(group_id, ids) or [])
+    if members != set(ids):
+        raise HTTPException(400, tr("همه‌ی کاربران انتخاب‌شده عضو فعلی این گروه نیستند؛ فهرست را تازه‌سازی کن."))
+
+    action = (body.action or "").strip().lower()
+    succeeded = failed = 0
+    if action in ("block", "unblock"):
+        blocked = action == "block"
+        for uid in ids:
+            try:
+                db.set_user_blocked(uid, blocked)
+                succeeded += 1
+            except Exception:
+                failed += 1
+        db.log_admin_action(admin["id"], "user_group_" + action, f"{succeeded} کاربر در گروه «{group['name']}» {'مسدود' if blocked else 'رفع مسدودی'} شدند", "user_group", group_id)
+    elif action == "wallet":
+        amount = int(body.amount)
+        if amount == 0 or abs(amount) > 100_000_000:
+            raise HTTPException(400, tr("مبلغ باید غیرصفر و حداکثر ۱۰۰ میلیون تومان باشد."))
+        for uid in ids:
+            try:
+                db.add_wallet_credit(uid, amount, "admin_group_adjust", f"تنظیم گروهی توسط ادمین ({admin['username']})")
+                succeeded += 1
+            except Exception:
+                failed += 1
+        db.log_admin_action(admin["id"], "user_group_wallet", f"تغییر کیف پول {succeeded} کاربر به میزان {amount:,} تومان برای هر نفر؛ گروه «{group['name']}»", "user_group", group_id)
+    elif action == "message":
+        message = (body.message or "").strip()
+        if not message or len(message) > 4000:
+            raise HTTPException(400, tr("متن پیام باید بین ۱ تا ۴۰۰۰ کاراکتر باشد."))
+        for uid in ids:
+            if await tg_send(_bot_token(), uid, f"📩 پیام از پشتیبانی:\n\n{message}"):
+                succeeded += 1
+            else:
+                failed += 1
+        db.log_admin_action(admin["id"], "user_group_message", f"پیام گروهی به {succeeded} نفر از گروه «{group['name']}» ارسال شد؛ ناموفق: {failed}", "user_group", group_id)
+    else:
+        raise HTTPException(400, tr("عملیات گروهی نامعتبر است."))
+    return {"ok": True, "selected": len(ids), "succeeded": succeeded, "failed": failed}
 
 
 @app.get("/api/users/{tg_id}")
@@ -3874,6 +4087,7 @@ class CategoryBody(BaseModel):
     parent_id: Optional[int] = None  # دسته‌ی والد (تو در تو)؛ خالی = دسته‌ی اصلی
     emoji: Optional[str] = None  # خالی = پیش‌فرض سراسری، "-" = بدون ایموجی
     product_emoji: Optional[str] = None
+    button_color: Optional[str] = None  # خالی/default = پیش‌فرض، primary (آبی)، success (سبز)، danger (قرمز)
 
 
 def _body_fields_set(body) -> set:
@@ -3925,6 +4139,16 @@ def api_edit_category(cat_id: int, body: CategoryBody, admin=Depends(require_per
             if len(value) > 16:
                 raise HTTPException(400, tr("ایموجی خیلی بلند است."))
             db.set_category_emoji(cat_id, field, value)
+    if "button_color" in fields:
+        color = (body.button_color or "").strip().lower()
+        if color in ("", "default"):
+            color = None
+        if color not in (None, "primary", "success", "danger"):
+            raise HTTPException(400, tr("رنگ دکمه نامعتبر است."))
+        try:
+            db.set_category_button_color(cat_id, color)
+        except ValueError as e:
+            raise HTTPException(400, tr(str(e)))
     db.log_admin_action(admin["id"], "category_edit", body.name, "category", cat_id)
     return {"ok": True}
 
@@ -6989,6 +7213,15 @@ def api_set_setting(body: SettingBody, admin=Depends(require_permission("setting
                     raise ValueError("product_ids")
         except Exception:
             raise HTTPException(400, "فرمت JSON نامعتبر است: لیستی از آبجکت‌ها با lat و lon و (product_ids یا match) لازم است")
+    if body.key == "phone_verify_countries" and (body.value or "").strip():
+        import json as _json
+        try:
+            _data = _json.loads(body.value)
+            assert isinstance(_data, list)
+            for _o in _data:
+                assert isinstance(_o, dict) and str(_o.get("p", "")).isdigit() and str(_o.get("n", "")).strip()
+        except Exception:
+            raise HTTPException(400, "فرمت نامعتبر است: هر کشور باید پیش‌شماره‌ی عددی و نام داشته باشد")
     db.set_setting(body.key, body.value)
     _logged = f"<{len(body.value)} chars>" if body.key == "dsub_custom_template" else body.value
     db.log_admin_action(admin["id"], "setting_change", f"{body.key}={_logged} (پنل وب - {admin['username']})", "setting", body.key)
@@ -8029,9 +8262,23 @@ def api_set_stock_alert_settings(body: StockAlertSettingsBody, admin=Depends(req
 # ------------------------------------------------------------------ بنرها --
 
 
+BANNER_NAV_TARGETS = {
+    "home", "store", "services", "profile", "wallet", "support", "referral", "test", "wheel",
+}
+MAX_BANNERS = 50
+
+
 class BannerItemBody(BaseModel):
-    text: str
-    image_url: Optional[str] = None
+    id: Optional[str] = None
+    kind: Optional[str] = None
+    icon: str = ""
+    title: str
+    sub: str = ""
+    cta: str = ""
+    nav: str = "store"
+    bg: str = ""
+    image: Optional[str] = ""
+    image_only: bool = False
     enabled: bool = True
 
 
@@ -8046,35 +8293,58 @@ def api_get_banners(admin=Depends(require_permission("settings"))):
 
 @app.post("/api/banners/upload-image")
 async def api_upload_banner_image(photo: UploadFile = File(...), admin=Depends(require_permission("settings"))):
+    """عکس را به‌صورت data URI برمی‌گرداند (همان قالبی که مینی‌اپ برای بنر می‌پذیرد)،
+    تا بنر در مینی‌اپ هم بدون وابستگی به سرور پنل نمایش داده شود."""
     if not photo.content_type or not photo.content_type.startswith("image/"):
         raise HTTPException(400, tr("فقط فایل تصویری مجاز است."))
     content = await photo.read()
     if len(content) > 2 * 1024 * 1024:
         raise HTTPException(400, tr("حجم تصویر نباید بیشتر از ۲ مگابایت باشد."))
-    ext = os.path.splitext(photo.filename or "")[1].lower() or ".jpg"
-    if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
-        ext = ".jpg"
-    fname = f"banner_{int(time.time()*1000)}{ext}"
-    dest_dir = os.path.join(BASE_DIR, "static", "uploads", "banners")
-    os.makedirs(dest_dir, exist_ok=True)
-    with open(os.path.join(dest_dir, fname), "wb") as f:
-        f.write(content)
-    return {"url": f"/static/uploads/banners/{fname}"}
+    data_uri = f"data:{photo.content_type};base64,{base64.b64encode(content).decode('ascii')}"
+    return {"ok": True, "image": data_uri}
 
 
 @app.post("/api/banners")
 def api_save_banners(body: BannersUpdateBody, admin=Depends(require_permission("settings"))):
-    if len(body.banners) > 20:
-        raise HTTPException(400, tr("حداکثر ۲۰ بنر مجاز است."))
+    if len(body.banners) > MAX_BANNERS:
+        raise HTTPException(400, tr(f"حداکثر {MAX_BANNERS} بنر مجاز است."))
     clean = []
-    for b in body.banners:
-        text = (b.text or "").strip()
-        if not text:
-            continue
-        clean.append({"text": text, "image_url": b.image_url, "enabled": bool(b.enabled)})
+    for idx, b in enumerate(body.banners):
+        n = idx + 1
+        title = (b.title or "").strip()
+        if not title:
+            raise HTTPException(400, tr(f"عنوان بنر شماره {n} نمی‌تواند خالی باشد."))
+        if len(title) > 40:
+            raise HTTPException(400, tr(f"عنوان بنر شماره {n} بیش از حد طولانی است."))
+        sub = (b.sub or "").strip()
+        if len(sub) > 120:
+            raise HTTPException(400, tr(f"توضیح بنر شماره {n} بیش از حد طولانی است."))
+        cta = (b.cta or "").strip() or "مشاهده"
+        if len(cta) > 30:
+            raise HTTPException(400, tr(f"متن دکمه‌ی بنر شماره {n} بیش از حد طولانی است."))
+        if b.nav not in BANNER_NAV_TARGETS:
+            raise HTTPException(400, tr(f"مقصد بنر شماره {n} نامعتبر است."))
+        image = (b.image or "").strip()
+        if image and not image.startswith("data:image/"):
+            raise HTTPException(400, tr(f"تصویر بنر شماره {n} نامعتبر است."))
+        if len(image) > 2_900_000:
+            raise HTTPException(400, tr(f"حجم تصویر بنر شماره {n} بیش از حد مجاز است."))
+        clean.append({
+            "kind": b.kind if b.kind in ("expiry", "referral") else None,
+            "id": b.id or f"b_{secrets.token_hex(4)}",
+            "icon": (b.icon or "✨").strip()[:8],
+            "title": title,
+            "sub": sub,
+            "cta": cta,
+            "nav": b.nav,
+            "bg": (b.bg or "").strip() or "linear-gradient(120deg, #0d1420, #142845 55%, #1c3f6e)",
+            "image": image,
+            "image_only": bool(b.image_only) and bool(image),
+            "enabled": bool(b.enabled),
+        })
     db.set_banners(clean)
     db.log_admin_action(admin["id"], "setting_change", f"{len(clean)} بنر ذخیره شد (پنل وب - {admin['username']})", "setting", "banners")
-    return {"ok": True, "banners": clean}
+    return {"ok": True, "banners": db.get_banners()}
 
 
 # --------------------------------------------- نمایندگان اعتباری (Credit) --
