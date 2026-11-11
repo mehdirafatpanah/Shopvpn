@@ -2914,7 +2914,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         auto_provision_volume_gb = data.get("auto_provision_volume_gb")
         payment_methods = data.get("payment_methods")
 
-        (await asyncio.to_thread(db.add_product, 
+        new_product_id = (await asyncio.to_thread(db.add_product, 
             data["category_id"], data["name"], data["price"], data["description"], data["duration_days"],
             is_auto_provision=(auto_provision_volume_gb is not None), auto_provision_volume_gb=auto_provision_volume_gb,
             provision_server_id=provision_server_id, payment_methods=payment_methods,
@@ -2945,9 +2945,16 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await state.clear()
 
         if data.get("product_kind") == "panel_account":
+            # ادامه‌ی همان فرآیند ساخت: اطلاعات ورود پنل‌ها همین‌جا گرفته می‌شود
+            await state.update_data(product_id=int(new_product_id))
+            await state.set_state(AdminAddConfigs.waiting_links)
             await safe_edit(call,
-                tr("✅ محصول «فروش پنل» اضافه شد.\nحالا از «🔗 افزودن کانفیگ به محصول» اطلاعات ورود پنل‌ها (آدرس | یوزر | پسورد | توضیحات) را برایش اضافه کن."),
-                reply_markup=kb.admin_category_kb(db, is_main_bot, "products"),
+                tr("✅ محصول «فروش پنل» ساخته شد.\n\n"
+                   "🔑 حالا اطلاعات ورود پنل‌ها را بفرستید؛ هر پنل در یک خط، با جداکننده | به این شکل:\n\n"
+                   "آدرس پنل | یوزر | پسورد | توضیحات (اختیاری)\n\n"
+                   "مثال:\nhttps://panel.example.com:2053 | admin | pass123 | پنل ۳x-ui، ظرفیت ۱۰۰ کاربر\n\n"
+                   "می‌توانید چند پنل را با هم در یک پیام بفرستید. (اگر الان نمی‌خواهید، برگردید؛ بعداً از «افزودن کانفیگ به محصول» هم می‌شود.)"),
+                reply_markup=kb.admin_back_kb("adm_products"),
             )
         elif not auto_provision_volume_gb:
             await safe_edit(call, db.get_text('handlers_admin.auto_3e4422b8', '✅ محصول با موفقیت اضافه شد.\nحالا از «بانک کانفیگ» می\u200cتونی لینک\u200cها رو براش اضافه کنی.'))
