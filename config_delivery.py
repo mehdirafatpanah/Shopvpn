@@ -548,7 +548,7 @@ async def notify_delivered_subscription(bot_token: str, db, user_tg_id: int, pro
             order_id=order_id, amount=final_price,
             subscription_details=svc.get("sub_url") or ", ".join(svc.get("configs") or []),
         )
-        await report_router.notify_raw(bot_token, db, "delivered_stock", event, senior_only=False, parse_mode="HTML")
+        await report_router.notify_raw(bot_token, db, "delivered_stock", event, parse_mode="HTML")
     except Exception:
         logger.exception("ثبت گزارش اشتراک تحویل‌شده ناموفق بود (user=%s, order=%s)", user_tg_id, order_id)
 
