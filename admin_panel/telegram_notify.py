@@ -31,6 +31,23 @@ async def get_me(bot_token: str):
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 
 
+async def copy_message(bot_token: str, chat_id: int, from_chat_id: int, message_id: int) -> bool:
+    """کپی پیام ذخیره‌شده (متن، عکس، استیکر و سایر رسانه‌ها) بین گفت‌وگوها."""
+    if not bot_token:
+        return False
+    url = f"https://api.telegram.org/bot{bot_token}/copyMessage"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json={"chat_id": chat_id, "from_chat_id": from_chat_id,
+                                               "message_id": message_id},
+                                    timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                data = await resp.json()
+                return resp.status == 200 and bool(data.get("ok"))
+    except Exception:
+        logger.exception("کپی پیام تلگرام به %s ناموفق بود", chat_id)
+        return False
+
+
 async def send_message(bot_token: str, chat_id: int, text: str, parse_mode: str = None, reply_markup: dict = None) -> bool:
     if not bot_token:
         return False

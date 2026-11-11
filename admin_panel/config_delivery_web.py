@@ -7,8 +7,8 @@
 (از طریق admin_panel.telegram_notify) کار می‌کند.
 """
 
-from config_delivery import build_qr_bytes, build_summary_text, get_post_delivery_text, prepare_delivery, strip_html
-from admin_panel.telegram_notify import send_message as tg_send, send_photo as tg_send_photo
+from config_delivery import build_qr_bytes, build_summary_text, get_post_delivery_media, get_post_delivery_text, prepare_delivery, strip_html
+from admin_panel.telegram_notify import send_message as tg_send, send_photo as tg_send_photo, copy_message as tg_copy_message
 from config import BOT_TOKEN
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 
@@ -88,6 +88,16 @@ async def deliver_config_to_user_web(
     if isinstance(links, str):
         links = [links]
     total = len(links)
+    delivery_panel_type = ""
+    if db is not None and order_id:
+        try:
+            order_row = db.get_order(int(order_id))
+            product_row = db.get_product(int(order_row["product_id"])) if order_row else None
+            server_id = product_row["provision_server_id"] if product_row and "provision_server_id" in product_row.keys() else None
+            server_row = db.get_panel_server(int(server_id)) if server_id else None
+            delivery_panel_type = server_row["panel_type"] if server_row else ""
+        except Exception:
+            delivery_panel_type = ""
 
     async def _send_html(text: str) -> None:
         ok = await tg_send(bot_token, user_tg_id, text, parse_mode="HTML")
@@ -95,7 +105,7 @@ async def deliver_config_to_user_web(
             await tg_send(bot_token, user_tg_id, strip_html(text))
 
     for idx, link in enumerate(links, start=1):
-        caption, extras = await prepare_delivery(link, product_name, idx, total, db=db, user_tg_id=user_tg_id)
+        caption, extras = await prepare_delivery(link, product_name, idx, total, db=db, user_tg_id=user_tg_id, panel_type=delivery_panel_type)
 
         sent = False
         try:
@@ -113,12 +123,27 @@ async def deliver_config_to_user_web(
     if final_price is not None:
         await tg_send(bot_token, user_tg_id, build_summary_text(final_price, total))
 
-    post_text = get_post_delivery_text(db)
-    if post_text:
+    if db is not None:
         try:
-            await tg_send(bot_token, user_tg_id, post_text)
+            from config_delivery import notify_delivered_subscription
+            await notify_delivered_subscription(bot_token, db, user_tg_id, product_name, links, final_price, order_id)
         except Exception:
             pass
+
+    post_media = get_post_delivery_media(db)
+    if post_media:
+        copied = await tg_copy_message(bot_token, user_tg_id, post_media[0], post_media[1])
+        if not copied:
+            post_text = get_post_delivery_text(db)
+            if post_text:
+                await tg_send(bot_token, user_tg_id, post_text)
+    else:
+        post_text = get_post_delivery_text(db)
+        if post_text:
+            try:
+                await tg_send(bot_token, user_tg_id, post_text)
+            except Exception:
+                pass
 
     await _send_tutorial_picker_web(bot_token, user_tg_id, db)
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
