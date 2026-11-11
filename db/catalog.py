@@ -486,7 +486,7 @@ class CatalogMixin:
                      compare_price: int = 0, provision_ssh_node_id: int = None,
                      provision_ssh_protocol: str = "ssh",
                      extra_panel_ids=(), extra_ssh_node_ids=(), provision_target_config=None, extra_panel_target_configs=None, renew_rules=None, ai_description: str = "",
-                     btn_style: str = "") -> int:
+                     btn_style: str = "", product_kind: str = "config") -> int:
         """payment_methods: None/[] یعنی «همه‌ی روش‌های پرداخت مجازند» (پیش‌فرض)،
         در غیر این صورت لیستی از کلیدهای مجاز - همان قراردادِ set_product_payment_methods.
 
@@ -514,6 +514,8 @@ class CatalogMixin:
                  btn_style if btn_style in ("primary", "success", "danger") else ""),
             )
             product_id = cur.lastrowid
+            if product_kind == "panel_account":
+                conn.execute("UPDATE products SET product_kind='panel_account' WHERE id=?", (product_id,))
             if ai_description:
                 conn.execute("UPDATE products SET ai_description=? WHERE id=?", (str(ai_description).strip()[:2000], product_id))
             if renew_rules:
@@ -876,6 +878,43 @@ class CatalogMixin:
                 )
                 seen.add(link)
                 existing.add(link)
+                added += 1
+        return added, duplicates
+
+
+    def is_panel_account_product(self, product_id: int) -> bool:
+        """True اگر محصول از نوع «فروش پنل» (تحویل آدرس/یوزر/پسورد پنل) باشد."""
+        try:
+            with self._get_conn() as conn:
+                row = conn.execute("SELECT product_kind FROM products WHERE id=?", (int(product_id),)).fetchone()
+        except Exception:
+            return False
+        return bool(row and (row["product_kind"] or "") == "panel_account")
+
+
+    def add_panel_accounts(self, product_id: int, items: list):
+        """افزودن اطلاعات ورود پنل‌ها به موجودی محصول «فروش پنل».
+        هر آیتم: {url, user, password, info}. تکراری بر اساس (آدرس|یوزر|پسورد).
+        خروجی: (added_count, duplicate_count)."""
+        added = duplicates = 0
+        with self._get_conn() as conn:
+            existing = {(r["link"] or "").strip() for r in conn.execute("SELECT link FROM configs").fetchall()}
+            for it in items:
+                url = (it.get("url") or "").strip()
+                user = (it.get("user") or "").strip()
+                pw = (it.get("password") or "").strip()
+                if not (url and user and pw):
+                    continue
+                key = f"{url} | {user} | {pw}"
+                if key in existing:
+                    duplicates += 1
+                    continue
+                conn.execute(
+                    "INSERT INTO configs (product_id, link, panel_url, panel_user, panel_pass, panel_info) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (product_id, key, url, user, pw, (it.get("info") or "").strip()),
+                )
+                existing.add(key)
                 added += 1
         return added, duplicates
 
