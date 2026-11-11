@@ -9,6 +9,7 @@
 """
 
 import asyncio
+import bot_profile
 import hashlib
 import logging
 import os
@@ -558,6 +559,10 @@ class BotManager:
                 )
             task = asyncio.create_task(dp.start_polling(bot, allowed_updates=widgets.allowed_updates(dp)))
         await self._sync_menu_button(bot, db)
+        try:
+            await bot_profile.apply_profile(token, db)
+        except Exception:
+            logger.warning("اعمال پروفایل ربات هنگام استارت ناموفق بود.", exc_info=True)
         reminder_task = asyncio.create_task(renewal_reminder_loop(bot, db))
         connect_alert_task = asyncio.create_task(connect_alert_loop(bot, db))
         churn_offer_task = asyncio.create_task(churn_offer_loop(bot, db))

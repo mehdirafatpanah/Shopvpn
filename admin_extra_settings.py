@@ -15,6 +15,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+import bot_profile
 import extra_settings_schema as xs
 import keyboards as kb
 from i18n import tr
@@ -130,9 +131,13 @@ def register(router: Router, db, senior_admin_only, deny_mid, replace_admin_view
         except Exception:
             pass
 
-    async def _save(user_id, key, value, detail):
-        await asyncio.to_thread(xs.save_values, db, SURFACE, {key: value})
+    async def _save(user_id, key, value, detail, bot=None):
+        changed = await asyncio.to_thread(xs.save_values, db, SURFACE, {key: value})
         await _log(user_id, key, detail)
+        if bot is not None and bot_profile.has_profile_keys(changed):
+            res = await bot_profile.apply_profile(bot.token, db)
+            return res
+        return None
 
     @router.callback_query(F.data == ENTRY_CB)
     async def cb_xs_menu(call: CallbackQuery, state: FSMContext):
@@ -264,7 +269,8 @@ def register(router: Router, db, senior_admin_only, deny_mid, replace_admin_view
             value = (message.text or "").strip()
         secret = field["type"] == "password"
         try:
-            await _save(message.from_user.id, field["key"], value, "••••" if secret else f"{len(value)} کاراکتر")
+            prof = await _save(message.from_user.id, field["key"], value,
+                               "••••" if secret else f"{len(value)} کاراکتر", bot=message.bot)
         except xs.SettingsValidationError as e:
             return await message.answer(str(e))
         if secret:
@@ -273,5 +279,9 @@ def register(router: Router, db, senior_admin_only, deny_mid, replace_admin_view
             except Exception:
                 pass
         await state.clear()
-        text, markup = await asyncio.to_thread(_group_view, group, tr("✅ ذخیره شد."))
+        note = tr("✅ ذخیره شد.")
+        if prof is not None:
+            note += "\n" + (tr("✅ روی تلگرام اعمال شد.") if prof["ok"]
+                            else tr("⚠️ ذخیره شد ولی اعمال روی تلگرام ناموفق بود:") + " " + html.escape("; ".join(prof["errors"].values())))
+        text, markup = await asyncio.to_thread(_group_view, group, note)
         await message.answer(text, reply_markup=markup)

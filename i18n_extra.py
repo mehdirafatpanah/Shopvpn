@@ -2336,3 +2336,17 @@ EXTRA_PHRASES.update({
     '✅ چیدمان لیست محصولات: باکس جدا': '✅ Product list layout: Split boxes',
     '✅ چیدمان لیست محصولات: کلاسیک': '✅ Product list layout: Classic',
 })
+
+EXTRA_PHRASES.update({
+    '🪪 پروفایل ربات (توضیحات قبل از استارت)': '🪪 Bot profile (description shown before Start)',
+    'توضیحات ربات - فارسی (حداکثر ۵۱۲ کاراکتر)': 'Bot description - Persian (max 512 characters)',
+    'توضیحات ربات - انگلیسی (حداکثر ۵۱۲ کاراکتر)': 'Bot description - English (max 512 characters)',
+    'توضیح کوتاه ربات - فارسی (حداکثر ۱۲۰ کاراکتر)': 'Bot short description - Persian (max 120 characters)',
+    'توضیح کوتاه ربات - انگلیسی (حداکثر ۱۲۰ کاراکتر)': 'Bot short description - English (max 120 characters)',
+    'متنی که کاربر جدید قبل از زدن Start زیر «What can this bot do?» می‌بیند. بعد از ذخیره خودکار روی تلگرام اعمال می‌شود. عکس/گیف بالای آن فقط از BotFather (Edit Description Picture) قابل تنظیم است.': 'Text a new user sees under "What can this bot do?" before pressing Start. Applied to Telegram automatically after saving. The picture/GIF above it can only be set from BotFather (Edit Description Picture).',
+    'برای کاربرانی که زبان تلگرامشان انگلیسی است. خالی = از متن فارسی استفاده می‌شود.': 'For users whose Telegram language is English. Empty = the Persian text is used.',
+    'در صفحه‌ی پروفایل ربات و هنگام اشتراک‌گذاری نمایش داده می‌شود.': 'Shown on the bot profile page and when the bot is shared.',
+    'خالی = از متن فارسی استفاده می‌شود.': 'Empty = the Persian text is used.',
+    '✅ روی تلگرام اعمال شد.': '✅ Applied on Telegram.',
+    '⚠️ ذخیره شد ولی اعمال روی تلگرام ناموفق بود:': '⚠️ Saved, but applying on Telegram failed:',
+})
