@@ -108,3 +108,26 @@ body { overflow-x: clip; }
 @media (prefers-reduced-motion: reduce) {
   .scene-hint { animation: none; opacity: .7; }
 }
+/* حالت‌های سه‌بعدی سبک: بدون اسکرول‌انیمیشن، ارتفاع ثابت */
+.scene.flat { height: auto; }
+.scene.flat .scene-stick {
+  position: relative;
+  top: auto;
+  height: min(84vh, 740px);
+  height: min(84svh, 740px);
+  min-height: 480px;
+}
+.scene.flat .scene-hint { display: none; }
+.scene.flat .scene-gl { cursor: grab; }
+.scene[data-mode="globe"] .scene-gl:active { cursor: grabbing; }
+.scene.flat.is-off .scene-stick {
+  height: auto;
+  min-height: 0;
+  padding-block-start: clamp(56px, 13vh, 130px);
+}
+.scene.flat.is-off .scene-stick::after { display: none; }
+@media (max-width: 879px) {
+  .scene.flat { height: auto; }
+  .scene.flat .scene-stick { height: min(80svh, 640px); min-height: 440px; }
+  .scene.flat.is-off .scene-stick { height: auto; min-height: 0; }
+}
