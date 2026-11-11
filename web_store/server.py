@@ -69,6 +69,34 @@ PAGE_META = {
     },
 }
 
+# حالت‌های سه‌بعدی صفحه‌ی اصلی و فایل‌هایی که هر حالت لازم دارد (حالت خاموش هیچ اسکریپتی نمی‌گیرد).
+SCENE_MODES = {
+    "off": ([], []),
+    "cinema": (["cinema.css"], ["hero-scene.js", "cinema.js"]),
+    "particles": ([], ["hero-scene.js"]),
+    "globe": ([], ["scene-extra.js"]),
+    "network": ([], ["scene-extra.js"]),
+    "tunnel": ([], ["scene-extra.js"]),
+    "waves": ([], ["scene-extra.js"]),
+}
+DEFAULT_SCENE_MODE = "cinema"
+
+
+def _scene_settings(request: Request) -> dict:
+    db = core.main_db
+    mode = (db.get_setting("web_3d_mode", DEFAULT_SCENE_MODE) or DEFAULT_SCENE_MODE).strip().lower()
+    # پیش‌نمایش ادمین: ?preview=1&scene=globe فقط برای دیدن، چیزی ذخیره نمی‌کند.
+    if request.query_params.get("preview") == "1":
+        mode = (request.query_params.get("scene") or mode).strip().lower()
+    if mode not in SCENE_MODES:
+        mode = DEFAULT_SCENE_MODE
+    return {
+        "mode": mode,
+        "mobile": "0" if db.get_setting("web_3d_mobile", "1") == "0" else "1",
+        "lite": "0" if db.get_setting("web_3d_auto_lite", "1") == "0" else "1",
+    }
+
+
 LEGACY_HASH = {
     "faq.html": "#/faq",
     "connection-guide.html": "#/guide",
@@ -181,6 +209,18 @@ def _render_index(lang: str, request: Request) -> HTMLResponse:
         "OG_IMAGE": html_lib.escape(base + "/assets/og-image.png"),
         "ASSET_VERSION": html_lib.escape(asset_ver),
     }
+    try:
+        scene = _scene_settings(request)
+    except Exception:
+        log.exception("خواندن تنظیم سه‌بعدی ناموفق بود؛ حالت پیش‌فرض")
+        scene = {"mode": DEFAULT_SCENE_MODE, "mobile": "1", "lite": "1"}
+    css_files, js_files = SCENE_MODES[scene["mode"]]
+    ver = values["ASSET_VERSION"]
+    values["SCENE_MODE"] = scene["mode"]
+    values["SCENE_MOBILE"] = scene["mobile"]
+    values["SCENE_LITE"] = scene["lite"]
+    values["SCENE_STYLES"] = "\n".join(f'<link rel="stylesheet" href="/assets/{f}?v={ver}">' for f in css_files)
+    values["SCENE_SCRIPTS"] = "\n".join(f'<script src="/assets/{f}?v={ver}" defer></script>' for f in js_files)
     for key, value in values.items():
         page = page.replace("{{" + key + "}}", value)
     return HTMLResponse(page, headers={"Cache-Control": "no-cache"})
