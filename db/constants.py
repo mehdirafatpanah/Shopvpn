@@ -223,6 +223,10 @@ DEFAULT_SETTINGS = {
     "store_name": "⚡ SHOP VPN",
     "miniapp_banner_text": "اتصال امن و پایدار برقرار است",
     "miniapp_theme": "clean-light",
+    # فروشگاه وب: حالت سه‌بعدی صفحه‌ی اصلی (off/cinema/particles/globe/network/tunnel/waves)
+    "web_3d_mode": "cinema",
+    "web_3d_mobile": "1",
+    "web_3d_auto_lite": "1",
     # سیستم زیرمجموعه‌گیری
     # کلید مستر: مستقل از سه مدل زیر - غیرفعال کردنش کل سیستم رفرال (دکمه/تب و
     # هر سه مدل پاداش) را کاملاً خاموش می‌کند، صرف‌نظر از اینکه کدام مدل روشن باشد.
