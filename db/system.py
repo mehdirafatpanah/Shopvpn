@@ -67,9 +67,16 @@ class SystemMixin:
         return []
 
 
-    def create_scheduled_broadcast(self, admin_id: int, message_text: str, scheduled_at: str) -> int:
+    def create_scheduled_broadcast(self, admin_id: int, message_text: str, scheduled_at: str,
+                                   source_chat_id=None, source_message_id=None, target="all", source_message_ids=None) -> int:
+        import json
+        ids_json = json.dumps([int(x) for x in (source_message_ids or ([source_message_id] if source_message_id else []))])
         with self._get_conn() as conn:
-            cur=conn.execute("INSERT INTO scheduled_broadcasts(admin_id,message_text,scheduled_at) VALUES(?,?,?)", (admin_id,message_text,scheduled_at))
+            cur = conn.execute(
+                "INSERT INTO scheduled_broadcasts(admin_id,message_text,source_chat_id,source_message_id,source_message_ids,target,scheduled_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (admin_id, message_text or "", source_chat_id, source_message_id, ids_json, target or "all", scheduled_at),
+            )
             return cur.lastrowid
 
 

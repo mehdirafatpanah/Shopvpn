@@ -344,7 +344,11 @@ class DatabaseBase:
                 CREATE TABLE IF NOT EXISTS scheduled_broadcasts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     admin_id INTEGER NOT NULL,
-                    message_text TEXT NOT NULL,
+                    message_text TEXT NOT NULL DEFAULT '',
+                    source_chat_id INTEGER,
+                    source_message_id INTEGER,
+                    source_message_ids TEXT NOT NULL DEFAULT '',
+                    target TEXT NOT NULL DEFAULT 'all',
                     scheduled_at TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'pending',
                     sent_count INTEGER DEFAULT 0,
@@ -1866,6 +1870,20 @@ class DatabaseBase:
 
     def _migrate_columns(self, conn):
         self._migrate_test_config_plans(conn)
+        if self._column_exists(conn, "scheduled_broadcasts", "id"):
+            for _col, _ddl in (("source_chat_id", "INTEGER"), ("source_message_id", "INTEGER"), ("source_message_ids", "TEXT NOT NULL DEFAULT ''"), ("target", "TEXT NOT NULL DEFAULT 'all'")):
+                if not self._column_exists(conn, "scheduled_broadcasts", _col):
+                    conn.execute(f"ALTER TABLE scheduled_broadcasts ADD COLUMN {_col} {_ddl}")
+        # Optional descriptive/media fields; additive so existing customer databases remain intact.
+        for _table, _column, _ddl in (
+            ("categories", "description", "TEXT NOT NULL DEFAULT ''"),
+            ("payment_cards", "photo_file_id", "TEXT"),
+            ("payment_cards", "description_template", "TEXT NOT NULL DEFAULT ''"),
+            ("card_to_card_cards", "photo_file_id", "TEXT"),
+            ("card_to_card_cards", "description_template", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if self._column_exists(conn, _table, "id") and not self._column_exists(conn, _table, _column):
+                conn.execute(f"ALTER TABLE {_table} ADD COLUMN {_column} {_ddl}")
         if self._column_exists(conn, "product_extra_targets", "id") and not self._column_exists(conn, "product_extra_targets", "target_config"):
             conn.execute("ALTER TABLE product_extra_targets ADD COLUMN target_config TEXT")
 

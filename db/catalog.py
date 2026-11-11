@@ -301,6 +301,16 @@ class CatalogMixin:
         with self._get_conn() as conn:
             return conn.execute("SELECT * FROM categories WHERE id=?", (cat_id,)).fetchone()
 
+    def set_category_description(self, cat_id: int, description: str) -> None:
+        """ذخیره توضیح دسته یا زیردسته؛ متن خالی توضیح را پاک می‌کند."""
+        value = str(description or "").strip()
+        if len(value) > 2000:
+            raise ValueError("category description is too long")
+        with self._get_conn() as conn:
+            cur = conn.execute("UPDATE categories SET description=? WHERE id=?", (value, int(cat_id)))
+            if not cur.rowcount:
+                raise ValueError("category not found")
+
 
     def set_category_emoji(self, cat_id: int, field: str, value) -> None:
         """field: emoji (دکمه‌ی خود دسته) یا product_emoji (علامت موجودی محصولات آن دسته). مقدار خالی = پیش‌فرض سراسری، '-' = بدون ایموجی."""

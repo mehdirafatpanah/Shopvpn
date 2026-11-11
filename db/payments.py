@@ -1117,7 +1117,7 @@ class PaymentsMixin:
 
 
     def update_payment_card(self, card_id: int, **fields):
-        allowed = {"card_number", "holder_name", "bank_name", "weight", "is_active"}
+        allowed = {"card_number", "holder_name", "bank_name", "weight", "is_active", "photo_file_id", "description_template"}
         cols = {k: v for k, v in fields.items() if k in allowed}
         if not cols:
             return
@@ -1177,7 +1177,7 @@ class PaymentsMixin:
                 try:
                     if datetime.utcnow() - datetime.fromisoformat(a["assigned_at"]) < timedelta(minutes=ttl):
                         r = by_id[a["card_id"]]
-                        return {"id": r["id"], "card_number": r["card_number"], "card_holder": r["holder_name"], "bank_name": r["bank_name"]}
+                        return {"id": r["id"], "card_number": r["card_number"], "card_holder": r["holder_name"], "bank_name": r["bank_name"], "photo_file_id": r["photo_file_id"] if "photo_file_id" in r.keys() else None, "description_template": r["description_template"] if "description_template" in r.keys() else ""}
                 except ValueError:
                     pass
         r = random.choices(rows, weights=[max(1, int(x["weight"] or 0)) for x in rows], k=1)[0]
@@ -1188,7 +1188,7 @@ class PaymentsMixin:
                     "ON CONFLICT(user_id) DO UPDATE SET card_id=excluded.card_id, assigned_at=excluded.assigned_at",
                     (user_id, r["id"], datetime.utcnow().isoformat()),
                 )
-        return {"id": r["id"], "card_number": r["card_number"], "card_holder": r["holder_name"], "bank_name": r["bank_name"]}
+        return {"id": r["id"], "card_number": r["card_number"], "card_holder": r["holder_name"], "bank_name": r["bank_name"], "photo_file_id": r["photo_file_id"] if "photo_file_id" in r.keys() else None, "description_template": r["description_template"] if "description_template" in r.keys() else ""}
 
 
     def create_card_to_card_card(self, card_number: str, holder_name: str = "",
@@ -1217,7 +1217,7 @@ class PaymentsMixin:
 
 
     def update_card_to_card_card(self, card_id: int, **fields):
-        allowed = {"card_number", "holder_name", "bank_name", "sort_order", "is_active"}
+        allowed = {"card_number", "holder_name", "bank_name", "sort_order", "is_active", "photo_file_id", "description_template"}
         cols = {k: v for k, v in fields.items() if k in allowed}
         if not cols:
             return

@@ -310,6 +310,23 @@ class UsersMixin:
             return [r["telegram_id"] for r in rows]
 
 
+    def get_user_ids_with_purchases(self):
+        """تمام کاربرانی که حداقل یک سفارش تاییدشده/خرید موفق داشته‌اند."""
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT o.user_id AS uid FROM orders o JOIN users u ON u.telegram_id=o.user_id "
+                "WHERE o.status='approved' AND u.is_blocked=0"
+            ).fetchall()
+            return [r["uid"] for r in rows]
+
+    def get_user_ids_with_test_configs(self):
+        """کاربرانی که حداقل یک کانفیگ تست دریافت کرده‌اند؛ حتی اگر بعداً خرید کرده باشند."""
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                f"SELECT DISTINCT u.telegram_id AS uid FROM users u WHERE u.is_blocked=0 AND {self._USER_HAS_TEST_SQL}"
+            ).fetchall()
+            return [r["uid"] for r in rows]
+
     def get_user_ids_without_recent_purchase(self, days: int):
         """قابلیت ۱۶۱: آیدی کاربرانی که حداقل یک سفارش تاییدشده دارند ولی در N
         روز اخیر هیچ سفارش تاییدشده‌ی جدیدی ثبت نکرده‌اند؛ برای پیام همگانی
