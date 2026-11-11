@@ -1569,6 +1569,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             "📦 {name}\n💰 قیمت واحد: {price} تومان\n📝 توضیحات: {description}\n",
         ).format(name=product["name"], price=price_label_plain(product, unit_price, suffix=""), description=product["description"] or "---")
         text += stock_line
+        if "product_kind" in product.keys() and product["product_kind"] == "panel_account":
+            text += db.get_text("handlers_user.product.panel_account_line", "🔑 تحویل: اطلاعات ورود پنل (آدرس، یوزر و پسورد)\n")
         if product["is_auto_provision"] and (product["auto_provision_volume_gb"] or product["duration_days"]):
             volume_gb = product["auto_provision_volume_gb"]
             duration_days = product["duration_days"]

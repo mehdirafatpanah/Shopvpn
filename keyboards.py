@@ -3582,8 +3582,8 @@ def admin_new_product_source_kb(show_credit: bool = False) -> InlineKeyboardMark
         rows.append([InlineKeyboardButton(text=tr("📦 بانک کانفیگ (لینک‌های آماده)"), callback_data="adm_newprod_src:bank")])
     rows += [
         [InlineKeyboardButton(text=tr("🔌 اتصال مستقیم به پنل"), callback_data="adm_newprod_src:direct")],
-        [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:products")],
     ]
+    rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:products")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

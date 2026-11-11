@@ -2541,9 +2541,23 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         ai_desc = "" if (message.text or "").strip() == "-" else (message.text or "").strip()[:2000]
         await state.update_data(ai_description=ai_desc)
         await state.set_state(AdminAddProduct.waiting_duration)
+        show_panel_btn = bool(full_access_bot) and (await asyncio.to_thread(_volume_credit_info)) is None
         await message.answer(
-            db.get_text('handlers_admin.auto_0d1c2cc3', 'مدت اعتبار این سرویس چند روز است؟ فقط عدد وارد کنید (مثال: 30).\nاین عدد برای محاسبه\u200cی تاریخ یادآوری اتمام سرویس به کاربر استفاده می\u200cشود.')
+            db.get_text('handlers_admin.auto_0d1c2cc3', 'مدت اعتبار این سرویس چند روز است؟ فقط عدد وارد کنید (مثال: 30).\nاین عدد برای محاسبه\u200cی تاریخ یادآوری اتمام سرویس به کاربر استفاده می\u200cشود.'),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=tr("🔑 فروش پنل (بدون مدت)"), callback_data="adm_newprod_panelkind")]]) if show_panel_btn else None
         )
+
+    @router.callback_query(AdminAddProduct.waiting_duration, F.data == "adm_newprod_panelkind")
+    async def cb_newprod_panelkind(call: CallbackQuery, state: FSMContext):
+        if not full_access_bot or (await asyncio.to_thread(_volume_credit_info)) is not None:
+            return await call.answer(tr("این گزینه برای این ربات فعال نیست."), show_alert=True)
+        await state.update_data(duration_days=0, payment_methods=None, product_kind="panel_account")
+        await state.set_state(AdminAddProduct.waiting_payment_methods)
+        await safe_edit(call,
+            db.get_text('handlers_admin.auto_0677173c', '💳 این محصول با کدام روش(های) پرداخت قابل خرید باشد؟\n\nبا لمس هر گزینه، فعال/غیرفعال می\u200cشود. اگر «همه\u200cی روش\u200cها» تیک بخورد، این محصول از هر روش پرداخت فعالی قابل خرید است (با اضافه\u200cشدن هر درگاه جدید در آینده هم خودکار برایش فعال می\u200cشود).'),
+            reply_markup=kb.admin_new_product_payment_methods_kb(db, None),
+        )
+        await call.answer()
 
     @router.message(AdminAddProduct.waiting_duration)
     async def process_product_duration(message: Message, state: FSMContext):
@@ -2585,6 +2599,18 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 call,
                 tr(f"📊 حجم باقی‌مانده شما: {info['credit_gb']:,} گیگ (پنل: {info['panel_name']})\n\n"
                    "این محصول چند گیگابایت باشد؟ فقط عدد وارد کنید (مثال: 30):"),
+            )
+            await call.answer()
+            return
+        if source == "panel":
+            if (await asyncio.to_thread(_volume_credit_info)) is not None:
+                await call.answer(tr("نمایندگی VIP فروش پنل ندارد."), show_alert=True)
+                return
+            await state.update_data(payment_methods=None, product_kind="panel_account")
+            await state.set_state(AdminAddProduct.waiting_payment_methods)
+            await safe_edit(call,
+                db.get_text('handlers_admin.auto_0677173c', '💳 این محصول با کدام روش(های) پرداخت قابل خرید باشد؟\n\nبا لمس هر گزینه، فعال/غیرفعال می\u200cشود. اگر «همه\u200cی روش\u200cها» تیک بخورد، این محصول از هر روش پرداخت فعالی قابل خرید است (با اضافه\u200cشدن هر درگاه جدید در آینده هم خودکار برایش فعال می\u200cشود).'),
+                reply_markup=kb.admin_new_product_payment_methods_kb(db, None),
             )
             await call.answer()
             return
@@ -2898,6 +2924,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             provision_target_config=data.get("provision_target_config"),
             renew_rules=data.get("renew_rules"),
             ai_description=data.get("ai_description") or "",
+            product_kind=data.get("product_kind") or "config",
         ))
         pm_log = "همه" if payment_methods is None else "، ".join(payment_methods)
         if auto_provision_volume_gb is not None:
@@ -2917,7 +2944,12 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "product_add", log_text))
         await state.clear()
 
-        if not auto_provision_volume_gb:
+        if data.get("product_kind") == "panel_account":
+            await safe_edit(call,
+                tr("✅ محصول «فروش پنل» اضافه شد.\nحالا از «🔗 افزودن کانفیگ به محصول» اطلاعات ورود پنل‌ها (آدرس | یوزر | پسورد | توضیحات) را برایش اضافه کن."),
+                reply_markup=kb.admin_category_kb(db, is_main_bot, "products"),
+            )
+        elif not auto_provision_volume_gb:
             await safe_edit(call, db.get_text('handlers_admin.auto_3e4422b8', '✅ محصول با موفقیت اضافه شد.\nحالا از «بانک کانفیگ» می\u200cتونی لینک\u200cها رو براش اضافه کنی.'))
         elif provision_server_id:
             await safe_edit(call, 
@@ -2963,6 +2995,16 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         await state.update_data(product_id=product_id)
         await state.set_state(AdminAddConfigs.waiting_links)
+        if await asyncio.to_thread(db.is_panel_account_product, product_id):
+            await safe_edit(call,
+                tr("🔑 اطلاعات ورود پنل‌ها را بفرستید؛ هر پنل در یک خط، با جداکننده | به این شکل:\n\n"
+                   "آدرس پنل | یوزر | پسورد | توضیحات (اختیاری)\n\n"
+                   "مثال:\nhttps://panel.example.com:2053 | admin | pass123 | پنل ۳x-ui، ظرفیت ۱۰۰ کاربر\n\n"
+                   "می‌توانید چند پنل را با هم در یک پیام بفرستید."),
+                reply_markup=kb.admin_back_kb("adm_add_configs"),
+            )
+            await call.answer()
+            return
         await safe_edit(call, 
             db.get_text('handlers_admin.auto_1346987b', 'لینک\u200cهای کانفیگ را ارسال کنید (هر لینک در یک خط جداگانه). می\u200cتوانید چند لینک را با هم در یک پیام بفرستید:'),
             reply_markup=kb.admin_back_kb("adm_add_configs"),
@@ -2974,6 +3016,28 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         data = await state.get_data()
         product_id = data["product_id"]
         links = [line for line in (message.text or "").splitlines() if line.strip()]
+        if await asyncio.to_thread(db.is_panel_account_product, product_id):
+            items, bad_lines = [], 0
+            for line in links:
+                parts = [x.strip() for x in line.split("|")]
+                if len(parts) < 3 or not all(parts[:3]):
+                    bad_lines += 1
+                    continue
+                items.append({"url": parts[0], "user": parts[1], "password": parts[2], "info": " | ".join(parts[3:])})
+            if not items:
+                await message.answer(tr("⚠️ هیچ خط معتبری پیدا نشد. فرمت: آدرس | یوزر | پسورد | توضیحات"))
+                return
+            added_count, duplicate_count = await asyncio.to_thread(db.add_panel_accounts, product_id, items)
+            await state.clear()
+            stock = await asyncio.to_thread(db.count_available_configs, product_id)
+            text = f"✅ {added_count} پنل با موفقیت اضافه شد."
+            if duplicate_count:
+                text += f"\n⚠️ تعداد {duplicate_count} پنل تکراری بود و اضافه نشد."
+            if bad_lines:
+                text += f"\n⚠️ {bad_lines} خط فرمت نامعتبر داشت و نادیده گرفته شد."
+            text += f"\n📊 موجودی فعلی این محصول: {stock} عدد"
+            await message.answer(text, reply_markup=kb.admin_category_kb(db, is_main_bot, "products"))
+            return
         added_count, duplicate_count = (await asyncio.to_thread(db.add_configs, product_id, links))
         await state.clear()
         stock = (await asyncio.to_thread(db.count_available_configs, product_id))

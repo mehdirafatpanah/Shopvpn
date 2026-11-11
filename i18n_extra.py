@@ -2350,3 +2350,22 @@ EXTRA_PHRASES.update({
     '✅ روی تلگرام اعمال شد.': '✅ Applied on Telegram.',
     '⚠️ ذخیره شد ولی اعمال روی تلگرام ناموفق بود:': '⚠️ Saved, but applying on Telegram failed:',
 })
+
+EXTRA_PHRASES.update({
+    'منبع کانفیگ این محصول چیست؟\n\n📦 بانک کانفیگ: از لینک\u200cهای از پیش آماده\u200cشده تحویل داده می\u200cشود.\n🔌 اتصال مستقیم به پنل: هر بار خرید، همان لحظه یک کاربر واقعی روی پنل انتخابی ساخته می\u200cشود (نیازی به پر کردن بانک کانفیگ نیست).\n🔑 فروش پنل: اطلاعات ورود یک پنل (آدرس، یوزر، پسورد، توضیحات) از موجودی آماده تحویل داده می\u200cشود.': 'What is the config source of this product?\n\n📦 Config bank: delivered from pre-prepared links.\n🔌 Direct panel connection: on every purchase a real user is created on the chosen panel instantly (no need to fill the config bank).\n🔑 Panel sale: the login details of a panel (address, username, password, notes) are delivered from ready stock.',
+    '✅ محصول «فروش پنل» اضافه شد.\nحالا از «🔗 افزودن کانفیگ به محصول» اطلاعات ورود پنل\u200cها (آدرس | یوزر | پسورد | توضیحات) را برایش اضافه کن.': '✅ The «panel sale» product was added.\nNow add the panel login details (address | username | password | notes) to it from «🔗 Add config to product».',
+    'نمایندگی VIP فروش پنل ندارد.': 'VIP resellers cannot sell panels.',
+    '⚠️ هیچ خط معتبری پیدا نشد. فرمت: آدرس | یوزر | پسورد | توضیحات': '⚠️ No valid line found. Format: address | username | password | notes',
+    '🔑 فروش پنل (آدرس، یوزر و پسورد)': '🔑 Sell panel (address, username, password)',
+    '🔑 اطلاعات ورود پنل\u200cها را بفرستید؛ هر پنل در یک خط، با جداکننده | به این شکل:\n\nآدرس پنل | یوزر | پسورد | توضیحات (اختیاری)\n\nمثال:\nhttps://panel.example.com:2053 | admin | pass123 | پنل ۳x-ui، ظرفیت ۱۰۰ کاربر\n\nمی\u200cتوانید چند پنل را با هم در یک پیام بفرستید.': '🔑 Send the panel login details, one panel per line, separated by | like this:\n\nPanel address | username | password | notes (optional)\n\nExample:\nhttps://panel.example.com:2053 | admin | pass123 | 3x-ui panel, 100-user capacity\n\nYou can send several panels in one message.',
+    '🔑 تحویل: اطلاعات ورود پنل (آدرس، یوزر و پسورد)\n': '🔑 Delivery: panel login details (address, username and password)\n',
+})
+
+EXTRA_PHRASES.update({
+    '🔑 فروش پنل (بدون مدت)': '🔑 Panel sale (no duration)',
+    'این گزینه برای این ربات فعال نیست.': 'This option is not available for this bot.',
+    'فروش پنل فقط برای بات اصلی مجاز است.': 'Panel sale is only allowed on the main bot.',
+    'محصول فروش پنل نمی\u200cتواند خودکار یا مستقیم باشد.': 'A panel-sale product cannot be automatic or direct.',
+    'فروش پنل فقط برای بات اصلی و به\u200cصورت بانک موجودی مجاز است.': 'Panel sale is only allowed on the main bot as a stock bank.',
+    'هیچ خط معتبری پیدا نشد. فرمت: آدرس | یوزر | پسورد | توضیحات': 'No valid line found. Format: address | username | password | notes',
+})

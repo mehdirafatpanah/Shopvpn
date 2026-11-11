@@ -637,6 +637,46 @@ async def _send_product_extras(bot: Bot, user_tg_id: int, db, order_id, product_
             logger.warning("ارسال استیکر اختصاصی محصول ناموفق بود.", exc_info=True)
 
 
+def panel_account_messages(db, order_id, product_name):
+    """پیام‌های HTML تحویل «فروش پنل» برای یک سفارش؛ None اگر محصول از نوع پنل نیست."""
+    try:
+        order_row = db.get_order(int(order_id))
+        if not order_row or not db.is_panel_account_product(int(order_row["product_id"])):
+            return None
+        rows = db.get_order_configs(int(order_id))
+    except Exception:
+        logger.debug("تشخیص محصول پنل برای تحویل ناموفق بود.", exc_info=True)
+        return None
+    import html as _html
+    total = len(rows)
+    messages = []
+    for idx, row in enumerate(rows, start=1):
+        title = f"🔑 {_html.escape(str(product_name or ''))}" + (f" ({idx}/{total})" if total > 1 else "")
+        lines = [
+            f"<b>{title}</b>",
+            "",
+            f"🌐 آدرس پنل:\n<code>{_html.escape(row['panel_url'] or '')}</code>",
+            f"👤 یوزرنیم:\n<code>{_html.escape(row['panel_user'] or '')}</code>",
+            f"🔒 پسورد:\n<code>{_html.escape(row['panel_pass'] or '')}</code>",
+        ]
+        info = (row["panel_info"] or "").strip()
+        if info:
+            lines += ["", f"📝 اطلاعات تکمیلی:\n<blockquote>{_html.escape(info)}</blockquote>"]
+        messages.append("\n".join(lines))
+    return messages
+
+
+async def _deliver_panel_accounts(bot, user_tg_id, product_name, order_id, final_price, db) -> bool:
+    messages = await asyncio.to_thread(panel_account_messages, db, order_id, product_name)
+    if messages is None:
+        return False
+    for text in messages:
+        await _send_html(bot, user_tg_id, localized(text, db, user_tg_id))
+    if final_price is not None:
+        await bot.send_message(user_tg_id, localized(build_summary_text(final_price, len(messages)), db, user_tg_id))
+    return True
+
+
 async def deliver_config_to_user(
     bot: Bot,
     user_tg_id: int,
@@ -663,6 +703,9 @@ async def deliver_config_to_user(
     if db is not None and order_id is not None:
         from gift_card_handlers import deliver_gift_order
         if await deliver_gift_order(bot, db, order_id):
+            return
+    if db is not None and order_id is not None and not is_test:
+        if await _deliver_panel_accounts(bot, user_tg_id, product_name, order_id, final_price, db):
             return
     if isinstance(links, str):
         links = [links]
