@@ -1,5 +1,5 @@
-const CACHE = "shopvpn-shell-v5";
-const SHELL = ["/", "/assets/app.css", "/assets/app.js", "/assets/i18n.js", "/assets/boot.js", "/assets/og-image.png"];
+const CACHE = "shopvpn-shell-v6";
+const SHELL = ["/", "/assets/app.css", "/assets/app.js", "/assets/hero-scene.js", "/assets/hero-scene.css", "/assets/i18n.js", "/assets/boot.js", "/assets/og-image.png"];
 
 self.addEventListener("install", event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));
