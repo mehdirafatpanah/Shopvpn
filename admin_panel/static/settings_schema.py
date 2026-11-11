@@ -159,6 +159,14 @@ SETTINGS_FORM_SECTIONS = [
                 ],
             },
             {
+                "title": "🧊 جلوه سه‌بعدی فروشگاه وب (صفحه اصلی)",
+                "fields": [
+                    {"key": "web_3d_mode", "label": "حالت سه‌بعدی", "type": "select", "options": [["off", "خاموش (سبک‌ترین)"], ["cinema", "سینمایی"], ["particles", "ذرات و سپر"], ["globe", "کره زمین"], ["network", "شبکه گره‌ها"], ["tunnel", "تونل سرعت"], ["waves", "موج‌های سه‌بعدی"]]},
+                    {"key": "web_3d_mobile", "label": "نمایش سه‌بعدی روی موبایل", "type": "bool"},
+                    {"key": "web_3d_auto_lite", "label": "خاموش شدن خودکار روی دستگاه ضعیف", "type": "bool"},
+                ],
+            },
+            {
                 "title": "🗺 نقشه زنده شبکه (فروشگاه وب)",
                 "fields": [
                     {"key": "netmap_locations", "label": "اصلاح دستی مکان سرورها (JSON: product_ids یا match + cc, city, city_fa, lat, lon)", "type": "textarea"},

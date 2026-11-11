@@ -9015,6 +9015,11 @@ const SETTINGS_GROUPS = [
     { key: 'delivery_message_template_wui', label: 'قالب تحویل — WUI', type: 'textarea' },
     { key: 'delivery_message_template_stealth', label: 'قالب تحویل — Stealth', type: 'textarea' },
   ]},
+  { tab: 'content', title: '🧊 جلوه سه‌بعدی فروشگاه وب (صفحه اصلی)', fields: [
+    { key: 'web_3d_mode', label: 'حالت سه‌بعدی (برای سبک‌ترین سایت «خاموش» را بزن)', type: 'select', options: [['off', '⛔ خاموش — بدون هیچ جلوه سه‌بعدی (سبک‌ترین)'], ['cinema', '🎬 سینمایی (حالت فعلی)'], ['particles', '✨ ذرات و سپر'], ['globe', '🌍 کره زمین با مسیرهای اتصال'], ['network', '🕸 شبکه گره‌ها'], ['tunnel', '🚀 تونل سرعت'], ['waves', '🌊 موج‌های سه‌بعدی']] },
+    { key: 'web_3d_mobile', label: 'نمایش جلوه سه‌بعدی روی موبایل (خاموش = در موبایل همیشه ساده)', type: 'bool' },
+    { key: 'web_3d_auto_lite', label: 'خاموش شدن خودکار روی گوشی/سیستم ضعیف و «حالت صرفه‌جویی داده»', type: 'bool' },
+  ]},
   { tab: 'content', title: '🗺 نقشه زنده شبکه — مکان سرورها (دستی)', fields: [
     { key: 'netmap_locations', label: 'مکان سرورها', type: 'netmap_simple' },
   ]},
