@@ -368,6 +368,19 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if inline_kb is not None:
             await target.answer(db.get_text('handlers_user.auto_f368dac9', '📋 منو:'), reply_markup=inline_kb)
 
+    async def _clear_old_reply_keyboard(target):
+        """وقتی منوی پایین خاموش است، کیبورد قدیمی روی گوشی کاربر خودبه‌خود جمع نمی‌شود
+        (تلگرام فقط با پیامِ حاوی ReplyKeyboardRemove آن را برمی‌دارد و پیامِ منوی شیشه‌ای
+        نمی‌تواند هر دو را داشته باشد). یک پیام کوتاه با ReplyKeyboardRemove می‌فرستیم و فوراً حذفش می‌کنیم."""
+        try:
+            tmp = await target.answer("🔄", reply_markup=ReplyKeyboardRemove())
+            try:
+                await tmp.delete()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     async def _show_main_menu_after_exit(target, user_tg_id: int, text: str = ""):
         """بعد از لغو/بازگشت، منوی اصلی را دوباره نشان می‌دهد تا کاربر مجبور به /start نشود.
         اگر منوی پایین فعال باشد همان برگردانده می‌شود (حتی اگر قبلاً ReplyKeyboardRemove شده بود) و
@@ -380,6 +393,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await _send_inline_main_menu(target, user_tg_id)
             return
         inline_kb = await asyncio.to_thread(kb.inline_menu_for_user, db, user_tg_id, is_main_bot)
+        if inline_kb is not None:
+            await _clear_old_reply_keyboard(target)
         await target.answer(
             text,
             reply_markup=inline_kb if inline_kb is not None else kb.menu_for_user(db, user_tg_id, is_main_bot),
@@ -627,6 +642,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await _send_inline_main_menu(message, user_id)
         else:
             inline_kb = await asyncio.to_thread(kb.inline_menu_for_user, db, user_id, is_main_bot)
+            if inline_kb is not None:
+                await _clear_old_reply_keyboard(message)
             await message.answer(
                 welcome,
                 reply_markup=inline_kb if inline_kb is not None else kb.menu_for_user(db, user_id, is_main_bot),
@@ -1262,6 +1279,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             # منوی پایین غیرفعال است: اگر منوی شیشه‌ای فعال باشد، دکمه‌ها مستقیم
             # زیر همین پیام خوش‌آمد می‌آیند و پیام جدای «📋 منو:» حذف می‌شود.
             inline_kb = (await asyncio.to_thread(kb.inline_menu_for_user, db, message.from_user.id, is_main_bot))
+            if inline_kb is not None:
+                await _clear_old_reply_keyboard(message)
             await message.answer(
                 welcome,
                 reply_markup=inline_kb if inline_kb is not None else kb.menu_for_user(db, message.from_user.id, is_main_bot),
