@@ -18,6 +18,8 @@ from aiogram.types import (
     WebAppInfo,
 )
 
+import os
+
 import account_naming
 import emoji_prefs
 import extra_gateway_registry
@@ -564,7 +566,7 @@ def custom_config_username_kb() -> InlineKeyboardMarkup:
 # سفارش‌های من (منوی کانفیگ‌ها با قابلیت حذف)
 # ---------------------------------------------------------------------------
 
-def my_orders_menu_kb(items) -> InlineKeyboardMarkup:
+def my_orders_menu_kb(items, db=None) -> InlineKeyboardMarkup:
     """لیست سرویس‌های کاربر با نمایش بصری وضعیت فعال/منقضی.
 
     برای سازگاری با callerهای قدیمی، ``items`` همچنان حداقل به ``cb_id`` و
@@ -602,6 +604,8 @@ def my_orders_menu_kb(items) -> InlineKeyboardMarkup:
         if icon and not label.startswith(("🟢", "🔴")):
             label = f"{icon} {label}"
         rows.append([InlineKeyboardButton(text=label, callback_data=f"mo_v:{it['cb_id']}")])
+    if db is not None and _widgets_on(db):
+        rows.append([InlineKeyboardButton(text=tr("📶 داشبورد سرویس‌ها (ویجت)"), callback_data="u_wsvc")])
     rows.append([InlineKeyboardButton(text=tr("⬅️ حساب کاربری"), callback_data="acct:hub")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1796,6 +1800,9 @@ ADMIN_PANEL_ITEMS = [
     ("adm_stats", "📊 آمار فروش", "adm_stats"),
     ("adm_wstats", "📈 آمار ویجتی (تعاملی)", "adm_wstats"),
     ("adm_wfeat", "🎛 قابلیت‌ها (ویجت)", "adm_wfeat"),
+    ("adm_wqueue", "🧾 صف تایید (ویجت)", "adm_wqueue"),
+    ("adm_whealth", "🩺 سلامت پنل‌ها (ویجت)", "adm_whealth"),
+    ("adm_wusers", "👥 کاربران سریع (ویجت)", "adm_wusers"),
     ("adm_user_search", "👥 مدیریت کاربران", "adm_stats_user"),
     ("adm_cfg_search", "🔎 جستجوی کانفیگ", "adm_cfg_search"),
     ("adm_backup_menu", "🗄 بکاپ و بازیابی", "adm_backup_menu"),
@@ -1907,7 +1914,7 @@ ADMIN_HUBS = [
         ("زبان", ["adm_lang_settings", "adm_translation_settings"]),
     ]),
     ("management", "⚙️ ادمین، آمار و سیستم", [
-        ("آمار و کاربران", ["adm_stats", "adm_wstats", "adm_wfeat", "adm_user_search", "adm_cfg_search"]),
+        ("آمار و کاربران", ["adm_stats", "adm_wstats", "adm_wfeat", "adm_wqueue", "adm_whealth", "adm_wusers", "adm_user_search", "adm_cfg_search"]),
         ("ادمین و امنیت", ["adm_admins_menu", "adm_spam_settings"]),
         ("سیستم", [
             "adm_backup_menu", "adm_update", "adm_gswitch", "adm_report_group",
@@ -2131,8 +2138,9 @@ USER_SCREENS = {
             ("wal_giftcard", "🎁 کارت هدیه", None, False),
             ("wal_progress", "📈 پیشرفت من", None, False),
             ("wal_history", "📜 تاریخچه تراکنش‌ها", None, False),
+            ("wal_widget", "💰 کیف پول و دعوت (ویجت)", None, False),
         ],
-        "default_rows": [["wal_topup"], ["wal_gift"], ["wal_transfer"], ["wal_coins"], ["wal_giftcard"], ["wal_progress"], ["wal_history"]],
+        "default_rows": [["wal_topup"], ["wal_gift"], ["wal_transfer"], ["wal_coins"], ["wal_giftcard"], ["wal_progress"], ["wal_history"], ["wal_widget"]],
     },
     "contact_menu": {
         "label": "ارتباط با پشتیبانی",
@@ -5125,6 +5133,10 @@ def pricing_tiers_kb(db) -> InlineKeyboardMarkup:
 # کیف پول
 # ---------------------------------------------------------------------------
 
+def _widgets_on(db) -> bool:
+    return os.environ.get("SHOPVPN_WIDGETS", "1") != "0" and db.get_setting("widgets_enabled", "1") != "0"
+
+
 def wallet_menu_kb(db=None) -> InlineKeyboardMarkup:
     if db is None:
         rows = [
@@ -5152,6 +5164,8 @@ def wallet_menu_kb(db=None) -> InlineKeyboardMarkup:
     if db.get_setting("streak_enabled", "0") == "1":
         add("wal_progress", "📈 پیشرفت من", "prog_view")
     add("wal_history", "📜 تاریخچه تراکنش‌ها", "wallet_history")
+    if _widgets_on(db):
+        add("wal_widget", "💰 کیف پول و دعوت (ویجت)", "u_wwal")
     rows = _layout_group_rows(db, "wallet_menu", entries, default_rows=USER_SCREENS["wallet_menu"]["default_rows"])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

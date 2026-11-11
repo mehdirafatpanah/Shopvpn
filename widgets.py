@@ -10,9 +10,9 @@ from aiogram import Dispatcher, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
-from aiogram.methods import TelegramMethod
+from aiogram.methods import AnswerCallbackQuery, TelegramMethod
 from aiogram import F
-from aiogram.types import CallbackQuery, Message, User
+from aiogram.types import CallbackQuery, Message, Update, User
 
 import widget_html
 
@@ -31,6 +31,11 @@ STATS_KEYS = ("1", "7", "30", "0")
 
 _HOOKS: dict = {}
 _TASKS: set = set()
+_SYNTHETIC = "wgt-"
+_PATCHED_BOTS: set = set()
+_MEMBER_TABS = {"n": "all", "b": "blocked", "w": "all"}
+_CHARGE_STEPS = (10000, 50000, 100000)
+_TOPUP_PRESETS = (50000, 100000, 200000, 500000)
 
 
 class SendWidget(TelegramMethod[Message]):
@@ -67,9 +72,26 @@ def _dumps(obj) -> str:
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
 
 
+def register_hook(db, name: str, fn) -> None:
+    _HOOKS[(id(db), name)] = fn
+
+
 def register_custom_hook(db, fn) -> None:
     """fn(bot, user, chat_id, state, volume_gb, days) -> (error_text | result_text, runner | None)."""
-    _HOOKS[id(db)] = fn
+    register_hook(db, "custom", fn)
+
+
+def _hook(db, name: str):
+    return _HOOKS.get((id(db), name))
+
+
+class _SyntheticAnswerMiddleware:
+    """Swallows answerCallbackQuery for callbacks fed from widget buttons (no real query id exists)."""
+
+    async def __call__(self, make_request, bot, method):
+        if isinstance(method, AnswerCallbackQuery) and str(method.callback_query_id).startswith(_SYNTHETIC):
+            return True
+        return await make_request(bot, method)
 
 
 def allowed_updates(dp: Dispatcher) -> list:
@@ -162,6 +184,100 @@ def features_state(db) -> list:
     return out
 
 
+def queue_payload(db) -> dict:
+    rows = [o for o in db.get_pending_orders() if not o["lootbox_type_id"]]
+    topups = db.get_pending_topups()
+    out = []
+
+    def who(user_id):
+        user = db.get_user(user_id)
+        label = (user["first_name"] or user["username"]) if user else ""
+        return str(label or user_id)[:12]
+
+    for o in rows[:3]:
+        if o["is_custom_config"]:
+            name = f"{o['custom_volume_gb']} گیگ"
+        else:
+            product = db.get_product(o["product_id"])
+            name = product["name"] if product else "؟"
+        price = o["final_price"] if o["final_price"] is not None else o["base_price"]
+        out.append(["o", o["id"], who(o["user_id"]), name[:14], int(price or 0)])
+    for t in topups[:2]:
+        out.append(["t", t["id"], who(t["user_id"]), "شارژ کیف پول", int(t["amount"] or 0)])
+    return {"n": len(rows) + len(topups), "q": out}
+
+
+async def health_payload(db, live: bool = False) -> dict:
+    servers = list(await asyncio.to_thread(db.get_panel_servers, True))[:6]
+
+    def stored():
+        try:
+            with db._get_conn() as conn:
+                return {r["server_id"]: r["status"] for r in conn.execute("SELECT server_id, status FROM panel_health")}
+        except Exception:
+            return {}
+
+    status = await asyncio.to_thread(stored)
+    latency = {}
+    if live:
+        import panel_health
+
+        sem = asyncio.Semaphore(panel_health.PROBE_CONCURRENCY)
+
+        async def probe(server):
+            started = asyncio.get_running_loop().time()
+            try:
+                ok, _err = await asyncio.wait_for(panel_health._probe(server, sem), 10)
+            except asyncio.TimeoutError:
+                return server["id"], None, 0
+            return server["id"], ok, int((asyncio.get_running_loop().time() - started) * 1000)
+
+        for sid, ok, ms in await asyncio.gather(*(probe(s) for s in servers)):
+            status[sid] = "up" if ok else ("down" if ok is not None else "slow")
+            latency[sid] = ms
+    out = []
+    for server in servers:
+        info = await asyncio.to_thread(db.get_panel_capacity_info, server["id"])
+        active = int(info["active_services"]) if info else 0
+        cap = int(info["max_services"] or 0) if info else 0
+        state = status.get(server["id"], "up")
+        light = 0 if state == "down" else (2 if state == "slow" or (cap and active * 10 >= cap * 9) else 1)
+        out.append([(server["name"] or "")[:14], light, active, cap, latency.get(server["id"], 0)])
+    return {"p": out, "l": 1 if live else 0}
+
+
+def members_payload(db, tab: str, offset: int) -> dict:
+    tab = tab if tab in _MEMBER_TABS else "n"
+    rows, total = db.search_users(
+        "", _MEMBER_TABS[tab], limit=5, offset=offset, sort="balance" if tab == "w" else "newest",
+    )
+    users = [
+        [r["telegram_id"], str(r["first_name"] or r["username"] or r["telegram_id"])[:12],
+         int(r["referral_credit"] or 0), 1 if r["is_blocked"] else 0]
+        for r in rows
+    ]
+    return {"t": tab, "o": offset, "n": int(total), "u": users}
+
+
+def _toggle_block(db, admin_id: int, target: int) -> Optional[str]:
+    user = db.get_user(target)
+    if not user:
+        return "کاربر یافت نشد."
+    if db.is_admin(target):
+        return "⛔️ ادمین‌ها را نمی‌توان مسدود کرد."
+    blocked = not bool(user["is_blocked"])
+    db.set_user_blocked(target, blocked)
+    db.log_admin_action(admin_id, "widget_user_block", f"کاربر {target} | {'مسدود' if blocked else 'آزاد'}")
+    return None
+
+
+def _charge_user(db, admin_id: int, target: int, amount: int) -> Optional[str]:
+    if db.admin_adjust_wallet(target, amount, "widget") is None:
+        return "کاربر یافت نشد."
+    db.log_admin_action(admin_id, "widget_wallet_adjust", f"کاربر {target} | {amount:,} تومان")
+    return None
+
+
 def _toggle(db, index: int) -> Optional[str]:
     key, _label, default = FEATURES[index]
     state = features_state(db)
@@ -203,6 +319,8 @@ class WidgetHub:
         kind, _, rest = (query.get("data") or "").partition(":")
         if kind == "c":
             return await self._custom(dp, bot, query, uid, rest)
+        if kind in ("v", "w"):
+            return await self._user(dp, bot, query, uid, kind, rest)
         if not await asyncio.to_thread(db.is_admin, uid):
             return "⛔️ دسترسی ندارید.", None
         if kind == "s":
@@ -210,10 +328,79 @@ class WidgetHub:
             return _dumps(payload), self._persist(bot, query, payload)
         if kind == "f":
             return await self._features(bot, query, uid, rest)
+        if kind == "q":
+            return await self._queue(dp, bot, query, uid, rest)
+        if kind == "h":
+            return await self._health(bot, query, rest)
+        if kind == "m":
+            return await self._members(bot, query, uid, rest)
         return None, None
 
+    async def _user(self, dp, bot, query, uid, kind, rest):
+        hook = _hook(self.db, "user")
+        if hook is None:
+            return "این بخش فعال نیست.", None
+        state = FSMContext(storage=dp.storage, key=StorageKey(bot_id=bot.id, chat_id=uid, user_id=uid))
+        user = User.model_validate(query["from"])
+        error, payload = await hook(bot, user, state, kind, rest)
+        if payload is None:
+            return error, None
+        return _dumps(payload), self._persist(bot, query, payload)
+
+    async def _press(self, dp, bot, query, uid, data: str) -> None:
+        if id(bot) not in _PATCHED_BOTS:
+            bot.session.middleware(_SyntheticAnswerMiddleware())
+            _PATCHED_BOTS.add(id(bot))
+        sent = await bot.send_message(uid, "⏳")
+        call = CallbackQuery(
+            id=f"{_SYNTHETIC}{uid}-{sent.message_id}",
+            from_user=User.model_validate(query["from"]),
+            chat_instance="widget",
+            message=sent,
+            data=data,
+        ).as_(bot)
+        await dp.feed_update(bot, Update(update_id=0, callback_query=call))
+
+    async def _queue(self, dp, bot, query, uid, rest):
+        db = self.db
+        act, _, ident = rest.partition(":")
+        if act in ("a", "x", "ta", "tx"):
+            if not ident.isdigit():
+                return "❌ مقدار نامعتبر.", None
+            data = {"a": "order_approve", "x": "order_reject", "ta": "topup_approve", "tx": "topup_reject"}[act]
+            await self._press(dp, bot, query, uid, f"{data}:{int(ident)}")
+        payload = await asyncio.to_thread(queue_payload, db)
+        return _dumps(payload), (None if act == "r" else self._persist(bot, query, payload))
+
+    async def _health(self, bot, query, rest):
+        payload = await health_payload(self.db, live=(rest == "p"))
+        return _dumps(payload), self._persist(bot, query, payload)
+
+    async def _members(self, bot, query, uid, rest):
+        db = self.db
+        parts = rest.split(":")
+        act = parts[0]
+        try:
+            if act in ("b", "c"):
+                tab, offset, target = parts[1], int(parts[2]), int(parts[3])
+                if not await asyncio.to_thread(db.is_senior_admin, uid):
+                    return "⛔️ فقط مالک و مدیر کامل.", None
+                if act == "b":
+                    error = await asyncio.to_thread(_toggle_block, db, uid, target)
+                else:
+                    step = int(parts[4])
+                    error = await asyncio.to_thread(_charge_user, db, uid, target, step) if step in _CHARGE_STEPS else "❌ مقدار نامعتبر."
+                if error:
+                    return error, None
+            else:
+                tab, offset = parts[1], int(parts[2])
+        except (ValueError, IndexError):
+            return "❌ مقدار نامعتبر.", None
+        payload = await asyncio.to_thread(members_payload, db, tab, max(offset, 0))
+        return _dumps(payload), (None if act == "r" else self._persist(bot, query, payload))
+
     async def _custom(self, dp, bot, query, uid, rest):
-        hook = _HOOKS.get(id(self.db))
+        hook = _hook(self.db, "custom")
         if hook is None:
             return "این بخش فعال نیست.", None
         try:
@@ -303,6 +490,73 @@ def create_router(db) -> Router:
     async def cmd_wfeatures(message: Message):
         if await asyncio.to_thread(db.is_admin, message.from_user.id):
             await _features(message)
+
+    async def _admin_widget(message: Message, html: str, caption: str, payload) -> None:
+        await _send(message, html, caption, _dumps(payload))
+
+    @router.message(Command("wqueue"))
+    async def cmd_wqueue(message: Message):
+        if await asyncio.to_thread(db.is_admin, message.from_user.id):
+            await _admin_widget(message, widget_html.queue_html(), "🧾 صف تایید", await asyncio.to_thread(queue_payload, db))
+
+    @router.message(Command("whealth"))
+    async def cmd_whealth(message: Message):
+        if await asyncio.to_thread(db.is_admin, message.from_user.id):
+            await _admin_widget(message, widget_html.health_html(), "🩺 سلامت پنل‌ها", await health_payload(db))
+
+    @router.message(Command("wusers"))
+    async def cmd_wusers(message: Message):
+        if await asyncio.to_thread(db.is_admin, message.from_user.id):
+            await _admin_widget(message, widget_html.members_html(), "👥 مدیریت سریع کاربران", await asyncio.to_thread(members_payload, db, "n", 0))
+
+    @router.message(Command("wservices"))
+    async def cmd_wservices(message: Message, state: FSMContext):
+        await _user_widget(message, state, "v", widget_html.services_html(), "📶 سرویس‌های من")
+
+    @router.message(Command("wwallet"))
+    async def cmd_wwallet(message: Message, state: FSMContext):
+        await _user_widget(message, state, "w", widget_html.wallet_html(), "💰 کیف پول و دعوت")
+
+    async def _user_widget(message: Message, state: FSMContext, kind: str, html: str, caption: str, user=None) -> None:
+        hook = _hook(db, "user")
+        if hook is None or not ENABLED:
+            return
+        _error, payload = await hook(message.bot, user or message.from_user, state, kind, "r")
+        if payload is None:
+            await message.answer(_error or "⚠️ در دسترس نیست.")
+            return
+        await _send(message, html, caption, _dumps(payload))
+
+    @router.callback_query(F.data.in_({"u_wsvc", "u_wwal"}))
+    async def cb_user_widget(call: CallbackQuery, state: FSMContext):
+        await call.answer()
+        if (await asyncio.to_thread(db.get_setting, "widgets_enabled", "1")) == "0":
+            return
+        if call.data == "u_wsvc":
+            await _user_widget(call.message, state, "v", widget_html.services_html(), "📶 سرویس‌های من", call.from_user)
+        else:
+            await _user_widget(call.message, state, "w", widget_html.wallet_html(), "💰 کیف پول و دعوت", call.from_user)
+
+    @router.callback_query(F.data == "adm_wqueue")
+    async def cb_wqueue(call: CallbackQuery):
+        if not await asyncio.to_thread(db.is_admin, call.from_user.id):
+            return await call.answer("⛔️ دسترسی ندارید.", show_alert=True)
+        await call.answer()
+        await _admin_widget(call.message, widget_html.queue_html(), "🧾 صف تایید", await asyncio.to_thread(queue_payload, db))
+
+    @router.callback_query(F.data == "adm_whealth")
+    async def cb_whealth(call: CallbackQuery):
+        if not await asyncio.to_thread(db.is_admin, call.from_user.id):
+            return await call.answer("⛔️ دسترسی ندارید.", show_alert=True)
+        await call.answer()
+        await _admin_widget(call.message, widget_html.health_html(), "🩺 سلامت پنل‌ها", await health_payload(db))
+
+    @router.callback_query(F.data == "adm_wusers")
+    async def cb_wusers(call: CallbackQuery):
+        if not await asyncio.to_thread(db.is_admin, call.from_user.id):
+            return await call.answer("⛔️ دسترسی ندارید.", show_alert=True)
+        await call.answer()
+        await _admin_widget(call.message, widget_html.members_html(), "👥 مدیریت سریع کاربران", await asyncio.to_thread(members_payload, db, "n", 0))
 
     @router.callback_query(F.data == "adm_wstats")
     async def cb_wstats(call: CallbackQuery):

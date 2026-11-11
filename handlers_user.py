@@ -3371,6 +3371,134 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
     widgets.register_custom_hook(db, _widget_custom_go)
 
+    async def _widget_sub_info(url):
+        if not url:
+            return {}
+        try:
+            return await asyncio.wait_for(fetch_sub_info(url), 6)
+        except Exception:
+            return {}
+
+    def _widget_days_left(raw) -> int:
+        if not raw:
+            return -1
+        try:
+            exp = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            return -1
+        now = datetime.now(timezone.utc) if exp.tzinfo else datetime.utcnow()
+        return max(0, (exp - now).days)
+
+    async def _widget_services_payload(user_id: int) -> dict:
+        items = [
+            it for it in await asyncio.to_thread(_my_orders_items, user_id)
+            if it["kind"] == "custom" and it["custom"]["source"] != "test"
+        ][:4]
+        infos = await asyncio.gather(*(_widget_sub_info(it["custom"]["subscription_url"]) for it in items))
+        gib = 1024 ** 3
+        out = []
+        for it, info in zip(items, infos):
+            cc = it["custom"]
+            used = (int(info.get("upload") or 0) + int(info.get("download") or 0)) / gib if info.get("ok") else 0
+            total = (int(info.get("total") or 0) / gib) if info.get("ok") and info.get("total") else float(cc["volume_gb"] or 0)
+            days = _widget_days_left(cc["expires_at"])
+            if days < 0 and info.get("expire"):
+                days = max(0, int((int(info["expire"]) - datetime.now(timezone.utc).timestamp()) // 86400))
+            enabled = 1 if (cc["enabled"] if "enabled" in cc.keys() else 1) == 1 else 0
+            name = str(cc["display_name"] or cc["username"] or "")[:16]
+            out.append([it["cb_id"], name, round(used, 1), round(total, 1), days, enabled])
+        return {"s": out}
+
+    async def _widget_service_action(bot, user, act: str, cb_id: str):
+        item = await asyncio.to_thread(_find_my_orders_item, user.id, cb_id)
+        if not item or item["kind"] != "custom" or item["custom"]["source"] == "test":
+            return "❌ سرویس یافت نشد.", None
+        if act == "l":
+            link = _item_sub_link(item)
+            if not link:
+                return "⚠️ این سرویس لینکی ندارد.", None
+            shown = await asyncio.to_thread(dedicated_sub.dedicated_link_for_upstream, db, link)
+            await bot.send_message(
+                user.id, f"🔗 <code>{html.escape(str(shown))}</code>", parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text=tr("📋 کپی لینک"), copy_text=CopyTextButton(text=str(shown))),
+                ]]),
+            )
+            return "✅ لینک در چت ارسال شد.", None
+        rows = []
+        for key, label, mode in (
+            ("svc_show_renew_full", "🛠 تمدید کامل سرویس", "full"),
+            ("svc_show_renew_volume", "🔋 تمدید حجم سرویس", "volume"),
+            ("svc_show_renew_time", "⏱ تمدید زمان سرویس", "time"),
+        ):
+            if (await asyncio.to_thread(db.get_setting, key, "1")) == "1":
+                rows.append([InlineKeyboardButton(text=tr(label), callback_data=f"svc_renew:{mode}:{cb_id}")])
+        if not rows:
+            return "⚠️ تمدید در حال حاضر غیرفعال است.", None
+        name = item["custom"]["display_name"] or item["custom"]["username"]
+        await bot.send_message(
+            user.id, tr(f"🔄 تمدید «{name}»؛ نوع تمدید را انتخاب کنید:"),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        )
+        return "✅ گزینه‌های تمدید در چت ارسال شد.", None
+
+    async def _widget_wallet_payload(user_id: int) -> dict:
+        status = await asyncio.to_thread(db.get_wallet_status, user_id)
+        rows = await asyncio.to_thread(db.get_wallet_transactions, user_id, 5)
+        stats = await asyncio.to_thread(db.get_referral_stats, user_id)
+        min_topup = int((await asyncio.to_thread(db.get_setting, "min_amount_wallet_topup", "1000")) or "1000")
+        presets = [a for a in widgets._TOPUP_PRESETS if a >= min_topup] or [min_topup]
+        labels = db.WALLET_TX_KIND_LABELS
+        return {
+            "b": int(status["balance"]), "p": presets,
+            "t": [[int(r["delta"]), labels.get(r["kind"], "سایر")] for r in rows],
+            "c": int(stats["count"]), "r": int(stats["credit"]),
+        }
+
+    async def _widget_invite(bot, user):
+        keys = ("referral_enabled", "referral_free_config_enabled", "referral_invite_bonus_enabled")
+        defaults = ("1", "0", "0")
+        flags = [(await asyncio.to_thread(db.get_setting, k, d)) == "1" for k, d in zip(keys, defaults)]
+        if not any(flags) or (await asyncio.to_thread(db.get_setting, "referral_button_enabled", "1")) != "1":
+            return "⚠️ سیستم زیرمجموعه‌گیری غیرفعال است.", None
+        me = await bot.get_me()
+        link = f"https://t.me/{me.username}?start=ref{user.id}"
+        await bot.send_message(
+            user.id, tr("🤝 لینک اختصاصی دعوت شما:") + f"\n{link}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text=tr("📋 کپی لینک دعوت"), copy_text=CopyTextButton(text=link)),
+            ]]),
+        )
+        return "✅ لینک دعوت در چت ارسال شد.", None
+
+    async def _widget_user(bot, user, state, kind, rest):
+        row = await asyncio.to_thread(db.get_user, user.id)
+        if not row or row["is_blocked"]:
+            return "⛔️ دسترسی ندارید.", None
+        act, _, arg = rest.partition(":")
+        if kind == "v":
+            if act == "r":
+                return None, await _widget_services_payload(user.id)
+            if act in ("l", "n") and arg:
+                return await _widget_service_action(bot, user, act, arg)
+            return "❌ مقدار نامعتبر.", None
+        if act == "r":
+            return None, await _widget_wallet_payload(user.id)
+        if act == "i":
+            return await _widget_invite(bot, user)
+        if act == "t" and arg.isdigit():
+            amount = int(arg)
+            min_topup = int((await asyncio.to_thread(db.get_setting, "min_amount_wallet_topup", "1000")) or "1000")
+            if amount < min_topup:
+                return f"❌ حداقل مبلغ شارژ {min_topup:,} تومان است.", None
+            sent = await bot.send_message(user.id, "⏳")
+            message = sent.model_copy(update={"from_user": user}).as_(bot)
+            ok = await _begin_topup(message, state, user.id, amount)
+            return ("✅ روش پرداخت را در چت انتخاب کنید." if ok else "⚠️ شارژ این مبلغ ممکن نیست؛ پیام چت را ببینید."), None
+        return "❌ مقدار نامعتبر.", None
+
+    widgets.register_hook(db, "user", _widget_user)
+
     @router.callback_query(F.data == "pay_card2card", CustomConfigFlow.waiting_receipt)
     async def cb_pay_card2card_custom_config(call: CallbackQuery, state: FSMContext):
         if (await asyncio.to_thread(db.get_setting, "card_to_card_enabled", "1")) != "1":
@@ -4503,7 +4631,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 await target.answer(text)
             return
         text = "📦 سفارش‌ها و کانفیگ‌های شما\n\nیکی از موارد زیر را برای مشاهده‌ی جزئیات انتخاب کنید:"
-        markup = kb.my_orders_menu_kb(items)
+        markup = kb.my_orders_menu_kb(items, db)
         if edit:
             await _safe_edit(target, text, reply_markup=markup)
         else:
@@ -6668,26 +6796,17 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         )
         await call.answer()
 
-    @router.message(WalletTopup.waiting_amount)
-    async def process_topup_amount(message: Message, state: FSMContext):
-        min_topup = int((await asyncio.to_thread(db.get_setting, "min_amount_wallet_topup", "1000")) or "1000")
-        text = message.text.strip().replace(",", "")
-        if not text.isdigit() or int(text) < min_topup:
-            await message.answer(tr(f"لطفاً یک عدد معتبر و حداقل {min_topup:,} تومان ارسال کنید."))
-            return
-
-        amount = int(text)
-
+    async def _begin_topup(message, state, user_id: int, amount: int) -> bool:
         max_balance = int((await asyncio.to_thread(db.get_setting, "max_wallet_balance", "0")) or "0")
         if max_balance > 0:
-            current_balance = await asyncio.to_thread(db.get_wallet_credit, message.from_user.id)
+            current_balance = await asyncio.to_thread(db.get_wallet_credit, user_id)
             if current_balance + amount > max_balance:
                 remaining = max(max_balance - current_balance, 0)
                 await message.answer(
                     tr(f"⛔️ با این شارژ، موجودی کیف پول شما از سقف مجاز ({max_balance:,} تومان) بیشتر می‌شود.\n"
                     f"حداکثر مبلغ قابل شارژ فعلی: {remaining:,} تومان.")
                 )
-                return
+                return False
 
         wallet_allowed_methods = (await asyncio.to_thread(db.get_wallet_topup_payment_methods))
 
@@ -6695,7 +6814,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await message.answer(
                 db.get_text('handlers_user.auto_b6a66c09', '⛔️ در حال حاضر هیچ روش پرداخت فعالی برای این مبلغ در دسترس نیست. لطفاً مبلغ دیگری وارد کنید یا بعداً تلاش کنید.')
             )
-            return
+            return False
 
         await state.update_data(topup_amount=amount)
         await state.set_state(WalletTopup.waiting_receipt)
@@ -6715,9 +6834,20 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 noapay_enabled=noapay_payment.noapay_payment_available(db),
                 blupal_enabled=blupal_payment.blupal_payment_available(db),
                 extra_gateways=extra_gateway_payment.available_keys(db, is_main_bot),
-                user_id=message.from_user.id,
+                user_id=user_id,
             ),
         )
+        return True
+
+    @router.message(WalletTopup.waiting_amount)
+    async def process_topup_amount(message: Message, state: FSMContext):
+        min_topup = int((await asyncio.to_thread(db.get_setting, "min_amount_wallet_topup", "1000")) or "1000")
+        text = message.text.strip().replace(",", "")
+        if not text.isdigit() or int(text) < min_topup:
+            await message.answer(tr(f"لطفاً یک عدد معتبر و حداقل {min_topup:,} تومان ارسال کنید."))
+            return
+
+        await _begin_topup(message, state, message.from_user.id, int(text))
 
     @router.callback_query(F.data == "pay_card2card", WalletTopup.waiting_receipt)
     async def cb_pay_card2card_topup(call: CallbackQuery, state: FSMContext):
