@@ -5087,6 +5087,7 @@ class ProductCreate(BaseModel):
     max_users: int = 0
     renew_rules: Optional[dict] = None  # قوانین تمدید کامل (renewal_rules.py)
     ai_description: str = ""  # توضیح برای راهنمای خرید هوشمند
+    product_kind: str = "config"  # config | panel_account
 
 
 class ProductUpdate(BaseModel):
@@ -5612,6 +5613,7 @@ def api_admin_list_products(cat_id: int, auth=Depends(require_senior_admin)):
             "provision_target_config": p["provision_target_config"] if "provision_target_config" in p.keys() else None,
             "auto_provision_volume_gb": p["auto_provision_volume_gb"],
             "stock": None if p["is_auto_provision"] else db.count_available_configs(p["id"]),
+            "product_kind": (p["product_kind"] if "product_kind" in p.keys() else "config") or "config",
             "base_users": p["base_users"] or 0, "extra_user_price": p["extra_user_price"] or 0, "max_users": p["max_users"] or 0,
             **renewal_rules.product_rules(p),
         }
@@ -5649,12 +5651,17 @@ async def api_admin_create_product(body: ProductCreate, auth=Depends(require_sen
     is_full_access = db.is_full_access_bot(not bool(tenant.tenant_id))
     provision_server_id = body.provision_server_id if is_full_access else None
     is_auto_provision = bool(body.is_auto_provision or provision_server_id)
-    if not is_auto_provision and is_volume_credit_bot(db, not bool(tenant.tenant_id)):
+    is_panel_kind = body.product_kind == "panel_account"
+    if is_panel_kind:
+        if not is_full_access or tenant.tenant_id or is_volume_credit_bot(db, True) or is_auto_provision:
+            raise HTTPException(status_code=403, detail=tr("فروش پنل فقط برای بات اصلی و به‌صورت بانک موجودی مجاز است."))
+        body.duration_days = 0
+    if not is_auto_provision and not is_panel_kind and is_volume_credit_bot(db, not bool(tenant.tenant_id)):
         raise HTTPException(status_code=403, detail=tr("نمایندگی VIP بانک کانفیگ ندارد؛ محصول باید از اعتبار حجمی ساخته شود."))
 
     if body.duration_days < 0:
         raise HTTPException(status_code=400, detail=tr("مدت اعتبار نامعتبر است."))
-    if body.duration_days == 0 and not provision_server_id:
+    if body.duration_days == 0 and not provision_server_id and not is_panel_kind:
         raise HTTPException(status_code=400, detail=tr("مدت نامحدود فقط برای محصولات با اتصال مستقیم به پنل ممکن است."))
 
     if is_auto_provision:
@@ -5741,6 +5748,7 @@ async def api_admin_create_product(body: ProductCreate, auth=Depends(require_sen
         provision_target_config=target_config, extra_panel_ids=extra_panel_ids,
         extra_panel_target_configs=extra_panel_target_configs,
         renew_rules=body.renew_rules, ai_description=body.ai_description,
+        product_kind="panel_account" if is_panel_kind else "config",
     )
     if int(body.compare_price or 0) > 0 and (body.discount_days is not None or body.discount_max_uses is not None):
         db.edit_product(product_id, compare_price=int(body.compare_price),
@@ -5970,6 +5978,18 @@ def api_admin_add_configs(product_id: int, body: ConfigsAdd, auth=Depends(requir
     links = [l.strip() for l in body.links if l.strip()]
     if not links:
         raise HTTPException(status_code=400, detail=tr("هیچ لینک معتبری وارد نشده است."))
+    if db.is_panel_account_product(product_id):
+        items, invalid = [], 0
+        for line in links:
+            parts = [x.strip() for x in line.split("|")]
+            if len(parts) < 3 or not all(parts[:3]):
+                invalid += 1
+                continue
+            items.append({"url": parts[0], "user": parts[1], "password": parts[2], "info": " | ".join(parts[3:])})
+        if not items:
+            raise HTTPException(status_code=400, detail=tr("هیچ خط معتبری پیدا نشد. فرمت: آدرس | یوزر | پسورد | توضیحات"))
+        added, _dups = db.add_panel_accounts(product_id, items)
+        return {"added": added, "invalid": invalid}
     db.add_configs(product_id, links)
     return {"added": len(links)}
 
