@@ -37,6 +37,8 @@ class FakeRunner:
             out = {"stat": [{"name": f"user>>>{n}>>>traffic>>>downlink", "value": str(v)} for n, v in self.stats.items()]}
             self.stats = {}
             return 0, json.dumps(out), ""
+        if "adu" in args:
+            return 0, "processing inbound: x\nAdded 1 user(s) in total.", ""
         if "statsonlineiplist" in args:
             return 0, json.dumps({"ips": {"1.2.3.4": 1}}), ""
         return 0, "", ""
@@ -64,6 +66,21 @@ class AgentTest(unittest.TestCase):
         self.assertIn("mode=stream-one", [l for l in links if "type=xhttp" in l][0])
         self.assertFalse(any("packet-up" in l for l in links))
         self.assertTrue(any("adu" in c for c in self.fake.calls))
+
+    def test_adu_rc0_but_added_zero_falls_back_to_rewrite(self):
+        class Silent(FakeRunner):
+            def run(self, args, stdin=None, timeout=15):
+                if "adu" in args:
+                    self.calls.append(list(args))
+                    return 0, "failed to build config: no Port(s) set\nAdded 0 user(s) in total.", ""
+                return super().run(args, stdin, timeout)
+        fr = Silent()
+        self.agent.runner = fr
+        self.agent.op_create({"username": "s1", "volume_gb": 1, "duration_days": 5})
+        self.assertTrue(any("restart" in c for c in fr.calls))  # بازنویسی کامل + ریستارت
+        uid = self.agent._load_users()["s1"]["uuid"]
+        self.assertIn(uid, Path(self.tmp, "xray.json").read_text())
+        self.assertTrue(self.agent._load_users()["s1"]["_in_xray"])
 
     def test_failed_sync_is_persisted_and_retried(self):
         class Failing(FakeRunner):
