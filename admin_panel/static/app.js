@@ -9618,10 +9618,15 @@ async function saveExtraGroup(groupEl, btn) {
   $$('.switch[data-xkey]', groupEl).forEach(sw => { values[sw.dataset.xkey] = sw.dataset.on === '1' ? '1' : '0'; });
   btn.disabled = true;
   try {
-    await apiPost('/settings/extra', { values });
+    const saved = await apiPost('/settings/extra', { values });
     // رمز تازه‌ذخیره‌شده دیگر در صفحه نمی‌ماند؛ به ماسک برمی‌گردد.
     $$('input[type=password][data-xkey]', groupEl).forEach(inp => { if (inp.value.trim()) inp.value = EXTRA_SECRET_MASK; });
     toast(settingsUiText('ذخیره شد.'));
+    if (saved && saved.profile) {
+      const errs = Object.values(saved.profile.errors || {}).join('؛ ');
+      toast(saved.profile.ok ? settingsUiText('روی تلگرام اعمال شد.')
+        : settingsUiText('ذخیره شد ولی اعمال روی تلگرام ناموفق بود: ') + errs);
+    }
     const qbox = groupEl.closest('#extra-settings-root');
     if (qbox && qbox._refreshQrBg && groupEl.dataset.extraGroup === 'post_tools') qbox._refreshQrBg();
   } catch (e) {
