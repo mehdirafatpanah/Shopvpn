@@ -18,6 +18,7 @@ import widgets
 import re
 import asyncio
 import logging
+logger = logging.getLogger("handlers_user")
 from service_alerts import send_service_alert
 import math
 from datetime import datetime, timezone, timedelta
