@@ -492,18 +492,28 @@
     var lead = h("p", { class: "lead", text: t("hero_sub") });
     var quick = h("div", { class: "quick" });
     var tunnelHost = h("div", { class: "tunnel" });
-    var node = h("section", { class: "wrap hero" },
-      h("div", null,
-        h("h1", { text: t("hero_title") }),
-        lead,
-        h("div", { class: "cta" },
-          h("a", { class: "btn", href: "#/plans", text: t("hero_cta") }),
-          h("a", { class: "btn ghost", href: "#/guide", text: t("hero_cta2") }))),
-      tunnelHost);
+    var canvas = h("canvas", { class: "scene-gl", "aria-hidden": "true" });
+    var copy = h("div", { class: "scene-copy" },
+      h("h1", { text: t("hero_title") }),
+      lead,
+      h("div", { class: "cta" },
+        h("a", { class: "btn", href: "#/plans", text: t("hero_cta") }),
+        h("a", { class: "btn ghost", href: "#/guide", text: t("hero_cta2") })));
+    var stage = h("div", { class: "scene-stick" }, canvas, copy, h("i", { class: "scene-hint", "aria-hidden": "true" }));
+    var scene = h("section", { class: "scene" }, stage);
+    var sceneCtl = null;
+    var node = h("div", { class: "hero-stack" }, scene, h("section", { class: "quick-hero" }, tunnelHost));
     tunnelHost.appendChild(buildTunnel(3).node);
     return {
       node: node,
+      start: function () {
+        if (!window.ShopVPNHeroScene) return;
+        try {
+          sceneCtl = window.ShopVPNHeroScene.mount({ scene: scene, stage: stage, canvas: canvas, copy: copy, word: S.brand.name || "ShopVPN" });
+        } catch (e) { sceneCtl = null; }
+      },
       bind: function (c) {
+        if (sceneCtl && S.brand.name) sceneCtl.setWord(S.brand.name);
         if (c.tagline) lead.textContent = c.tagline;
         var list = allProducts(c).filter(function (p) { return p.in_stock; }).slice(0, 4);
         if (!list.length) return;
@@ -722,6 +732,7 @@
       plansBox);
     var networkMap = window.ShopVPNNetworkMap && window.ShopVPNNetworkMap.create ? window.ShopVPNNetworkMap.create() : null;
     mount(h("div", null, hero.node, networkMap, storefrontHighlights(), plans, deviceSection(), howSection(), testimonialSection(), faqSection(), finalCtaSection()), "");
+    hero.start();
     plansBox.appendChild(skeletonCards(3));
     loadCatalog().then(function (c) {
       fillPlans(plansBox, c);

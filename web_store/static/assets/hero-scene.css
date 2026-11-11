@@ -1,0 +1,110 @@
+body { overflow-x: clip; }
+
+.hero-stack { position: relative; }
+
+.scene {
+  --hdr: 72px;
+  --tab: 0px;
+  position: relative;
+  height: 190vh;
+  height: 190svh;
+}
+.scene-stick {
+  position: sticky;
+  top: var(--hdr);
+  height: calc(100vh - var(--hdr));
+  height: calc(100svh - var(--hdr));
+  min-height: 520px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+.scene-stick::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 38%;
+  background: linear-gradient(to top, var(--bg) 6%, color-mix(in srgb, var(--bg) 60%, transparent) 46%, transparent 100%);
+  pointer-events: none;
+}
+.scene-gl {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: pan-y;
+}
+.scene-copy {
+  position: relative;
+  z-index: 1;
+  width: min(780px, 100% - 40px);
+  margin-inline: auto;
+  padding-block-end: calc(var(--tab) + clamp(26px, 5vh, 56px));
+  text-align: center;
+}
+.scene-copy h1 {
+  font-size: clamp(28px, 4.2vw, 50px);
+  line-height: 1.28;
+  font-weight: 800;
+  letter-spacing: -.02em;
+  text-wrap: balance;
+}
+.scene-copy .lead {
+  margin: 14px auto 0;
+  max-width: 52ch;
+  color: var(--mute);
+  font-size: clamp(15px, 1.5vw, 18px);
+  line-height: 1.85;
+}
+.scene-copy .cta {
+  margin-top: 22px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+.scene-copy .cta .btn { min-width: 148px; }
+
+.scene-hint {
+  position: absolute;
+  inset-inline-start: 50%;
+  bottom: calc(var(--tab) + 8px);
+  z-index: 1;
+  width: 2px;
+  height: 28px;
+  margin-inline-start: -1px;
+  border-radius: 2px;
+  background: linear-gradient(to bottom, transparent, var(--accent-2));
+  transform-origin: top;
+  animation: sceneHint 1.8s ease-in-out infinite;
+  pointer-events: none;
+  transition: opacity .3s;
+}
+.scene[data-s="1"] .scene-hint { animation: none; opacity: 0; }
+
+.quick-hero {
+  width: min(720px, 100% - 40px);
+  margin: 0 auto;
+  padding-block: 28px 44px;
+}
+
+@keyframes sceneHint {
+  0%, 100% { transform: scaleY(.3); opacity: .4; }
+  50% { transform: scaleY(1); opacity: 1; }
+}
+
+@media (max-width: 879px) {
+  .scene { --tab: 72px; height: 175vh; height: 175svh; }
+  .scene-copy .cta { display: grid; grid-template-columns: 1fr 1fr; }
+  .scene-copy .cta .btn { min-width: 0; width: 100%; padding-inline: 12px; }
+}
+
+@media (max-height: 640px) {
+  .scene-copy .lead { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scene-hint { animation: none; opacity: .7; }
+}
