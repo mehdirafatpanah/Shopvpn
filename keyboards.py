@@ -1898,9 +1898,12 @@ ADMIN_HUBS = [
         ("جذب کاربر", ["adm_referral_settings", "adm_signup_gift_settings", "adm_welcome_gift"]),
         ("بازی و جایزه", ["adm_wheel_settings", "adm_lottery_settings", "adm_season_quiz", "adm_engage"]),
         ("هدیه", ["adm_bulk_gift", "adm_gift_cards"]),
+        # کل قابلیت پست کانال با AI یک کلید مستقل دارد؛ تنظیمات مدل، برند،
+        # نظرسنجی/کوییز و زمان‌بندی هم از داخل همین کلید باز می‌شوند.
+        ("🤖 محتوای کانال با AI", ["adm_cposts"]),
     ]),
     ("comms", "📣 ارتباط با کاربران", [
-        ("پیام و کانال", ["adm_broadcast", "adm_temp_message", "adm_deeplink_tools", "adm_cposts"]),
+        ("پیام و کانال", ["adm_broadcast", "adm_temp_message", "adm_deeplink_tools"]),
         ("ورود کاربر جدید", ["adm_forcejoin_menu", "adm_terms_menu", "adm_edit_welcome", "adm_tutorial_devices"]),
     ]),
     ("support", "🎧 پشتیبانی و هوش مصنوعی", [
@@ -2192,7 +2195,13 @@ def admin_hub_of_item(db, item_key: str):
 
 def _valid_item_overrides(db) -> dict:
     valid = {c[0] for c in ADMIN_PANEL_CATEGORIES}
-    return {k: c for k, c in db.get_admin_item_cat_overrides().items() if c in valid}
+    # محتوای کانال با AI طبق ساختار جدید همیشه زیر «بازاریابی و رشد» است؛
+    # override قدیمی آن از نسخه‌های قبلی (که در comms قرار داشت) نباید
+    # باعث نمایش دوباره یا باقی‌ماندنش در دسته‌ی ارتباط با کاربران شود.
+    return {
+        k: c for k, c in db.get_admin_item_cat_overrides().items()
+        if c in valid and k != "adm_cposts"
+    }
 
 
 def _ensure_hub_layout(db) -> None:
@@ -2216,7 +2225,7 @@ def admin_category_item_keys(db, cat_key: str) -> list:
     overrides = _valid_item_overrides(db)
     base = [
         k for k in defaults
-        if (overrides.get(k, cat_key) == cat_key or (cat_key == "comms" and k == "adm_cposts"))
+        if overrides.get(k, cat_key) == cat_key
     ]
     moved_in = [
         k for k, c in overrides.items()
