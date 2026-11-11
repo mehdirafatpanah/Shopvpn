@@ -1554,8 +1554,51 @@ async function renderDashboard() {
   const root = content();
   if (root) root.insertAdjacentHTML('afterbegin', dashRangeBarHtml(s));
   wireDashRangeBar();
+  appendDashboardCommandCenter(s, sys);
   appendExtraStatsPanel(s);
   await appendCronPanel();
+}
+
+/* نوار فرمان داشبورد: میان‌برهای پرتکرار و هشدارهای عملیاتی، مستقل از تم */
+function appendDashboardCommandCenter(s, sys) {
+  const root = content();
+  if (!root || ME?.tenant) return;
+  $('#dashboard-command-center', root)?.remove();
+  const shortcuts = [
+    { key: 'orders', icon: '🧾', title: 'بررسی سفارش‌ها', desc: 'پرداخت‌ها و سفارش‌های جدید' },
+    { key: 'users', icon: '👥', title: 'مدیریت کاربران', desc: 'جستجو و مدیریت مشتریان' },
+    { key: 'catalog', icon: '📦', title: 'محصولات و کانفیگ‌ها', desc: 'موجودی و بانک سرویس' },
+    { key: 'panels', icon: '🖥️', title: 'پنل‌های VPN', desc: 'اتصال و وضعیت پنل‌ها' },
+    { key: 'analytics', icon: '📈', title: 'گزارش‌های تحلیلی', desc: 'روند فروش و عملکرد' },
+    { key: 'settings', icon: '⚙️', title: 'تنظیمات فروشگاه', desc: 'پیکربندی و برندینگ' },
+  ].filter(item => canSee(NAV.find(n => n.key === item.key)?.role || 'any'));
+  const lowStock = (s.low_stock_products || []).length;
+  const openTickets = Number(s.open_tickets || 0);
+  const resourceAlerts = [sys?.cpu?.percent, sys?.ram?.percent, sys?.disk?.percent]
+    .map(Number).filter(v => Number.isFinite(v) && v >= 85).length;
+  const alerts = [
+    { count: lowStock, label: 'محصول کم‌موجودی', target: 'catalog', tone: 'warning', icon: '📦' },
+    { count: openTickets, label: 'تیکت نیازمند رسیدگی', target: 'tickets', tone: 'info', icon: '🎧' },
+    { count: resourceAlerts, label: 'منبع سرور در آستانه هشدار', target: 'system', tone: 'danger', icon: '🛡️' },
+  ].filter(a => a.count > 0 && canSee(NAV.find(n => n.key === a.target)?.role || 'any'));
+  const el = document.createElement('section');
+  el.id = 'dashboard-command-center';
+  el.className = 'dashboard-command-center';
+  el.innerHTML = `
+    <div class="dcc-heading"><div><span class="dcc-eyebrow">SHOPVPN · CONTROL CENTER</span>
+      <h3>${greetingByHour()}، ${esc(ME?.username || 'مدیر')} 👋</h3>
+      <p>دسترسی سریع به بخش‌های مهم و مواردی که نیاز به توجه دارند.</p></div>
+      <div class="dcc-status"><i></i><span>پنل مدیریت فعال است</span></div></div>
+    <div class="dcc-body"><div class="dcc-shortcuts">${shortcuts.map(item => `
+      <button type="button" class="dcc-shortcut" data-dash-go="${item.key}"><span class="dcc-shortcut-icon">${item.icon}</span>
+      <span class="dcc-shortcut-copy"><b>${item.title}</b><small>${item.desc}</small></span><span class="dcc-arrow">←</span></button>`).join('')}
+      </div><aside class="dcc-alerts"><div class="dcc-alert-head"><b>نیازمند توجه</b><span>${alerts.length ? `${alerts.length} مورد` : 'همه‌چیز مرتب است'}</span></div>
+      ${alerts.length ? alerts.map(a => `<button type="button" class="dcc-alert ${a.tone}" data-dash-go="${a.target}"><span>${a.icon}</span><span>${a.label}</span><b class="mono">${fmt(a.count)}</b></button>`).join('') :
+      '<div class="dcc-all-clear"><span>✓</span><b>مورد فوری وجود ندارد</b><small>موجودی، پشتیبانی و منابع سرور در وضعیت عادی هستند.</small></div>'}</aside></div>`;
+  const rangeBar = $('.dash-range-row', root)?.closest('.card');
+  if (rangeBar?.parentNode === root) rangeBar.insertAdjacentElement('afterend', el);
+  else root.insertBefore(el, root.firstChild);
+  $$('[data-dash-go]', el).forEach(btn => btn.addEventListener('click', () => goTo(btn.dataset.dashGo)));
 }
 
 /* ------------------------------------------ dashboard: extra stats panel --- */
