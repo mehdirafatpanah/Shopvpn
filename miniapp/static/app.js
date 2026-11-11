@@ -3560,6 +3560,10 @@ async function renderAdminExtraSettingsSection() {
         tg.HapticFeedback.notificationOccurred("success");
         card.querySelectorAll('input[type="password"]').forEach((el) => { el.value = ""; });
         notify(res.changed && res.changed.length ? "تنظیمات ذخیره شد." : "تغییری برای ذخیره وجود نداشت.");
+        if (res.profile) {
+          notify(res.profile.ok ? "روی تلگرام اعمال شد."
+            : "ذخیره شد ولی اعمال روی تلگرام ناموفق بود: " + Object.values(res.profile.errors || {}).join("؛ "));
+        }
         if (refreshQrBg && card.dataset.gid === "post_tools") refreshQrBg();
       } catch (e) {
         errBox.textContent = e.message;
