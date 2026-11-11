@@ -8989,6 +8989,27 @@ const SETTINGS_GROUPS = [
   // نکته: متن/رنگ/ترتیب/فعال‌سازی دکمه‌های منوی اصلی ربات، و همچنین رنگ
   // دکمه‌های مسیر خرید (انتخاب دسته/محصول/ادامه/کد تخفیف/بازگشت) دیگر اینجا
   // نیست؛ برای یکپارچه‌سازی، همه‌شان به تب «دکمه‌های ربات» منتقل شدند.
+  { tab: 'content', title: '🛍 دکمه مینی‌اپ فروشگاه', fields: [
+    { key: 'miniapp_button_text', label: 'نام دکمه فروشگاه در منوی اصلی ربات', type: 'text' },
+    { key: 'miniapp_button_style', label: 'رنگ دکمه فروشگاه', type: 'select', options: [['', 'پیش‌فرض'], ['primary', 'آبی'], ['success', 'سبز'], ['danger', 'قرمز']] },
+    { key: 'miniapp_menu_button_text', label: 'نام دکمه فروشگاه کنار کادر پیام تلگرام', type: 'text' },
+  ]},
+  { tab: 'content', title: '📨 قالب پیام تحویل کانفیگ بر اساس نوع پنل', fields: [
+    { key: 'delivery_message_template_default', label: 'قالب تحویل — عمومی', type: 'textarea' },
+    { key: 'delivery_message_template_pasarguard', label: 'قالب تحویل — PasarGuard', type: 'textarea' },
+    { key: 'delivery_message_template_3xui', label: 'قالب تحویل — 3X-UI', type: 'textarea' },
+    { key: 'delivery_message_template_marzban', label: 'قالب تحویل — Marzban', type: 'textarea' },
+    { key: 'delivery_message_template_marzneshin', label: 'قالب تحویل — Marzneshin', type: 'textarea' },
+    { key: 'delivery_message_template_hiddify', label: 'قالب تحویل — Hiddify', type: 'textarea' },
+    { key: 'delivery_message_template_alireza', label: 'قالب تحویل — Alireza', type: 'textarea' },
+    { key: 'delivery_message_template_rebecca', label: 'قالب تحویل — Rebecca', type: 'textarea' },
+    { key: 'delivery_message_template_sui', label: 'قالب تحویل — SUI', type: 'textarea' },
+    { key: 'delivery_message_template_wgdashboard', label: 'قالب تحویل — WGDashboard', type: 'textarea' },
+    { key: 'delivery_message_template_mikrotik', label: 'قالب تحویل — MikroTik', type: 'textarea' },
+    { key: 'delivery_message_template_ibsng', label: 'قالب تحویل — IBSng', type: 'textarea' },
+    { key: 'delivery_message_template_wui', label: 'قالب تحویل — WUI', type: 'textarea' },
+    { key: 'delivery_message_template_stealth', label: 'قالب تحویل — Stealth', type: 'textarea' },
+  ]},
   { tab: 'content', title: '🗺 نقشه زنده شبکه — مکان سرورها (دستی)', fields: [
     { key: 'netmap_locations', label: 'مکان سرورها', type: 'netmap_simple' },
   ]},
