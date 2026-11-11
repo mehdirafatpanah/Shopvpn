@@ -59,6 +59,7 @@ from database import Database, WEB_ADMIN_PERMISSIONS, MENU_BUTTON_META
 import button_registry
 import extra_gateway_registry
 import extra_settings_schema
+import bot_profile
 from admin_panel.security import hash_password, verify_password, create_session_token, verify_session_token
 from admin_panel import mobile_auth
 from asset_versioning import file_digest, static_version, ApiNoStoreMiddleware
@@ -7290,7 +7291,11 @@ def api_set_extra_settings(body: ExtraSettingsBody, admin=Depends(require_permis
     db.log_admin_action(admin["id"], "setting_change",
                         f"extra settings: {', '.join(changed)} (پنل وب - {admin['username']})",
                         "setting", "extra")
-    return {"ok": True, "changed": changed}
+    resp = {"ok": True, "changed": changed}
+    if bot_profile.has_profile_keys(changed):
+        # اعمال روی تلگرام با توکن همین مستأجر؛ خطای تلگرام ذخیره را خراب نمی‌کند.
+        resp["profile"] = bot_profile.apply_profile_sync(_bot_token(), db)
+    return resp
 
 
 # ---- پس‌زمینه‌ی QR (همان فایل مشترک qr_background.png که بات هم استفاده می‌کند) ----
