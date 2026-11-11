@@ -57,7 +57,8 @@ def _web_catalog_payload(db: Database) -> list:
                 "in_stock": in_stock,
             })
         if products:
-            categories.append({"id": c["id"], "name": paths.get(c["id"], c["name"]), "products": products})
+            categories.append({"id": c["id"], "name": paths.get(c["id"], c["name"]),
+                               "description": c["description"] if "description" in c.keys() else "", "products": products})
     return categories
 
 
