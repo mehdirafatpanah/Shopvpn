@@ -87,6 +87,16 @@ async def deliver_config_to_user_web(
         if db.gift_mark_order_delivered(order_id):
             await tg_send(bot_token, user_tg_id, "✅ خرید انجام شد و کانفیگ داخل کارت هدیه قرار گرفت. کارت را از «کیف پول ← 🎁 کارت هدیه ← کارت‌های من» ببینید و برای گیرنده بفرستید.")
         return
+    if db is not None and order_id:
+        from config_delivery import panel_account_messages
+        panel_msgs = await asyncio.to_thread(panel_account_messages, db, order_id, product_name)
+        if panel_msgs is not None:
+            for text in panel_msgs:
+                if not await tg_send(bot_token, user_tg_id, text, parse_mode="HTML"):
+                    await tg_send(bot_token, user_tg_id, strip_html(text))
+            if final_price is not None:
+                await tg_send(bot_token, user_tg_id, build_summary_text(final_price, len(panel_msgs)))
+            return
     if isinstance(links, str):
         links = [links]
     total = len(links)
