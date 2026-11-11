@@ -61,6 +61,7 @@ TOPIC_GROUPS = {
 TOPIC_SPECS = (
     # ---- فروش و مالی ----
     TopicSpec("purchase", "🛒 خرید", "سفارش‌های جدید، رسید کارت‌به‌کارت و نتیجه‌ی تایید/رد سفارش.", "sales", COLOR_GREEN),
+    TopicSpec("delivered_stock", "📦 اشتراک‌های تحویل‌شده", "ثبت جزئیات هر اشتراک خریداری‌شده و تحویل‌شده به مشتری.", "sales", COLOR_GREEN, True),
     TopicSpec("renewal", "🔄 تمدید", "تمدیدهای انجام‌شده، یادآورهای تمدید و پیشنهادهای تمدید هوشمند.", "sales", COLOR_GREEN, True, profiles=("standard",)),
     TopicSpec("finance", "💰 مالی", "شارژ کیف پول، رسیدهای واریز و تراکنش‌های مالی.", "sales", COLOR_YELLOW),
     TopicSpec("gateway", "💳 درگاه‌های پرداخت", "خطاها و مشکلات درگاه‌های پرداخت اضافه (زرین‌پال، کریپتو، استارز و...).", "sales", COLOR_YELLOW, profiles=("standard",)),
@@ -507,6 +508,26 @@ def format_event(title: str, rows=(), *, icon: str = "", note: str = "", with_ti
         except Exception:
             lines += ["", f"🕒 {datetime.now().strftime('%Y-%m-%d %H:%M')}"]
     return "\n".join(lines)
+
+
+def build_delivered_subscription_event(*, user_id: int, username: str = "", account_name: str = "",
+                                        product_name: str = "", panel_name: str = "", volume: str = "",
+                                        duration: str = "", order_id=None, amount=None, payment_method="",
+                                        subscription_details: str = "") -> str:
+    """گزارش کامل اشتراک تحویل‌شده؛ ورودی‌های متنی توسط format_event امن‌سازی می‌شوند."""
+    return format_event("اشتراک خریداری‌شده و تحویل‌شده", [
+        ("شناسه عددی کاربر", code(user_id)),
+        ("یوزرنیم", ("@" + username.lstrip("@")) if username else "ندارد"),
+        ("نام اکانت", account_name),
+        ("محصول", product_name),
+        ("پنل", panel_name),
+        ("حجم", volume),
+        ("مدت", duration),
+        ("شماره سفارش", f"#{order_id}" if order_id else ""),
+        ("مبلغ", f"{int(amount):,} تومان" if amount not in (None, "") else ""),
+        ("روش پرداخت", payment_method),
+        ("مشخصات اشتراک", code(subscription_details) if subscription_details else ""),
+    ], icon="📦")
 
 
 def build_refund_event(user_id: int, service_name: str, quote: dict, refunded: int, via: str) -> str:

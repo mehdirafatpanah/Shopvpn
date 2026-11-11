@@ -83,11 +83,28 @@ async def scheduled_broadcast_loop(bot, db):
         try:
             jobs=await asyncio.to_thread(db.get_due_scheduled_broadcasts, datetime.utcnow().isoformat())
             for job in jobs:
-                user_ids=await asyncio.to_thread(db.get_all_user_ids)
+                target = job["target"] if "target" in job.keys() else "all"
+                if target == "purchasers":
+                    user_ids = await asyncio.to_thread(db.get_user_ids_with_purchases)
+                elif target == "test_recipients":
+                    user_ids = await asyncio.to_thread(db.get_user_ids_with_test_configs)
+                elif target in ("active", "expired", "inactive", "test_only"):
+                    user_ids = await asyncio.to_thread(db.get_user_ids_by_service_state, target)
+                else:
+                    user_ids = await asyncio.to_thread(db.get_all_user_ids)
                 sent=failed=0
                 for uid in user_ids:
                     try:
-                        await send_scheduled_broadcast(bot, uid, job["message_text"])
+                        if job["source_chat_id"] and job["source_message_id"]:
+                            import json
+                            from telegram_media import copy_messages as _copy_media_messages
+                            try:
+                                media_ids = json.loads(job["source_message_ids"] or "[]") if "source_message_ids" in job.keys() else []
+                            except Exception:
+                                media_ids = []
+                            await _copy_media_messages(bot, uid, job["source_chat_id"], media_ids or [job["source_message_id"]])
+                        else:
+                            await send_scheduled_broadcast(bot, uid, job["message_text"])
                         sent+=1
                     except Exception:
                         failed+=1
@@ -431,8 +448,10 @@ class BotManager:
         miniapp_url = kb._miniapp_url(db)
         try:
             if miniapp_url:
+                menu_text = (await asyncio.to_thread(db.get_setting, "miniapp_menu_button_text", "فروشگاه") or "فروشگاه").strip()
+                menu_text = menu_text[:64] or "فروشگاه"
                 await bot.set_chat_menu_button(
-                    menu_button=MenuButtonWebApp(text=tr("فروشگاه"), web_app=WebAppInfo(url=miniapp_url))
+                    menu_button=MenuButtonWebApp(text=menu_text, web_app=WebAppInfo(url=miniapp_url))
                 )
             else:
                 await bot.set_chat_menu_button(menu_button=MenuButtonDefault())

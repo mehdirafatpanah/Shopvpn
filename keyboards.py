@@ -82,13 +82,14 @@ def language_kb(db=None, back_callback: str = "", callback_prefix: str = "langua
 
 
 
-def miniapp_inline_kb(miniapp_url: str) -> InlineKeyboardMarkup:
+def miniapp_inline_kb(miniapp_url: str, db=None) -> InlineKeyboardMarkup:
     """دکمه‌ی واقعی وب‌اپ به‌صورت inline (نه reply keyboard)، چون طبق تجربه‌ی عملی،
     initData وقتی از دکمه‌ی reply keyboard با web_app مستقیم باز شود، در برخی
     کلاینت‌های تلگرام همیشه خالی برمی‌گردد. راه اصلی و مطمئن، Menu Button
     (در bot_manager._sync_menu_button) است؛ این دکمه صرفاً یک مسیر جایگزین است."""
+    label = ((db.get_setting("miniapp_button_text", MINIAPP_BTN_TEXT) if db is not None else MINIAPP_BTN_TEXT) or MINIAPP_BTN_TEXT).strip()[:64]
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=tr(MINIAPP_BTN_TEXT), web_app=WebAppInfo(url=miniapp_url))]
+        [InlineKeyboardButton(text=tr(label), web_app=WebAppInfo(url=miniapp_url))]
     ])
 
 
@@ -104,7 +105,8 @@ def _menu_items(db, is_admin: bool, is_reseller: bool, is_main_bot: bool, show_r
     def item_miniapp():
         if settings.get("miniapp_enabled", "1") != "1":
             return None
-        return (MINIAPP_BTN_TEXT, "") if miniapp_url else None
+        label = (settings.get("miniapp_button_text") or MINIAPP_BTN_TEXT).strip()[:64]
+        return (label or MINIAPP_BTN_TEXT, settings.get("miniapp_button_style", "")) if miniapp_url else None
 
     def item_buy():
         return (settings.get("btn_buy", "🛒 خرید کانفیگ"), settings.get("btn_buy_style", ""))
@@ -272,9 +274,9 @@ def main_menu_inline_kb(db, is_admin: bool, is_reseller: bool = False, is_main_b
     miniapp_url = _miniapp_url(db, getattr(db, "_current_menu_language", ""))
 
     def _build_button(key, text, style):
-        if key == "miniapp" and miniapp_url:
-            return InlineKeyboardButton(text=text, web_app=WebAppInfo(url=miniapp_url))
         s = style if style in ("primary", "success", "danger") else None
+        if key == "miniapp" and miniapp_url:
+            return InlineKeyboardButton(text=text, web_app=WebAppInfo(url=miniapp_url), style=s)
         return InlineKeyboardButton(text=text, callback_data=f"mm:{key}", style=s)
 
     rows = [[_build_button(key, tr(text), style) for key, text, style in row] for row in item_rows]
@@ -1132,6 +1134,8 @@ def payment_card_detail_kb(card) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=toggle_text, callback_data=f"adm_pcard_toggle:{card['id']}")],
         [InlineKeyboardButton(text=tr("🎯 تغییر درصد نمایش"), callback_data=f"adm_pcard_w:{card['id']}")],
+        [InlineKeyboardButton(text=tr("🖼 تنظیم عکس کارت"), callback_data=f"adm_pcard_photo:{card['id']}")],
+        [InlineKeyboardButton(text=tr("📝 تنظیم توضیحات پارامتردار"), callback_data=f"adm_pcard_desc:{card['id']}")],
         [InlineKeyboardButton(text=tr("🗑 حذف"), callback_data=f"adm_pcard_del:{card['id']}")],
         [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_pcards")],
     ])
@@ -2681,7 +2685,8 @@ def admin_broadcast_target_kb() -> InlineKeyboardMarkup:
         [b("📩 ارسال به همه", "adm_broadcast_target:all"), b("📤 فوروارد به همه", "adm_broadcast_fwd")],
         [b("📩 ارسال به اکانت‌های منقضی", "adm_broadcast_target:expired"), b("📩 ارسال به کاربران فعال", "adm_broadcast_target:active")],
         [b("📩 ارسال به کاربران غیرفعال", "adm_broadcast_target:inactive")],
-        [b("🧪 ارسال به کاربران فقط دارای اکانت تست", "adm_broadcast_target:test_only")],
+        [b("🧪 ارسال به دریافت‌کنندگان کانفیگ تست", "adm_broadcast_target:test_recipients")],
+        [b("🛍 ارسال به خریداران اشتراک", "adm_broadcast_target:purchasers")],
         [b("📣 ارسال به کانال", "adm_broadcast_channel")],
         [b("❌ لغو ارسال", "adm_broadcast_stop"), b("⏳ وضعیت ارسال", "adm_broadcast_status")],
         [b("📍 آن‌پین آخرین ارسال", "adm_broadcast_unpin")],
@@ -2740,7 +2745,7 @@ def admin_broadcast_duration_kb(pin_after_send: bool = False, allow_schedule: bo
         [InlineKeyboardButton(text=tr("❌ لغو ارسال"), callback_data="adm_broadcast_cancel")],
     ]
     if allow_schedule:
-        rows.insert(-2, [InlineKeyboardButton(text=tr("⏰ زمان‌بندی ارسال (فقط متن)"), callback_data="adm_broadcast_schedule")])
+        rows.insert(-2, [InlineKeyboardButton(text=tr("⏰ زمان‌بندی همین پیام (متن/عکس/استیکر)"), callback_data="adm_broadcast_schedule")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -3021,6 +3026,7 @@ def deeplink_tools_menu_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=tr("🔗 ساخت دیپ‌لینک تبلیغاتی"), callback_data="adm_dl_build")],
         [InlineKeyboardButton(text=tr("🖼 افزودن دکمه به پست کانال"), callback_data="adm_dl_addbtn")],
         [InlineKeyboardButton(text=tr("📋 پارامترهای اصلی منوی کاربر"), callback_data="adm_dl_params_list")],
+        [InlineKeyboardButton(text=tr("🔗 ساخت لینک میانبر برای دکمه‌های ربات"), callback_data="adm_dl_buttons")],
         [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:marketing")],
     ])
 
@@ -3113,6 +3119,7 @@ def admin_categories_kb(db, parent_id=0) -> InlineKeyboardMarkup:
             text=tr(f"🎨 رنگ دکمه این دسته: {color_icon}"),
             callback_data=f"adm_catcolor:{pid}",
         )])
+        rows.append([InlineKeyboardButton(text=tr("📝 توضیحات دسته‌بندی"), callback_data=f"adm_cat_desc:{pid}")])
         rows.append([InlineKeyboardButton(text=tr("➕ افزودن زیردسته"), callback_data=f"adm_cat_add:{pid}")])
         back_cb = _category_parent_cb(db, pid, "adm_cat_open", "adm_categories")
     else:

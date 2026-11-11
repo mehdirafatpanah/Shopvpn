@@ -19,6 +19,7 @@ from i18n import tr
 
 import asyncio
 import html as html_lib
+import logging
 import math
 import os
 import re
@@ -28,6 +29,8 @@ from datetime import datetime
 from io import BytesIO
 
 import qrcode
+
+logger = logging.getLogger(__name__)
 
 import dedicated_sub
 from aiogram import Bot
@@ -278,15 +281,47 @@ def _delivery_flags(db) -> tuple:
     return sub_link_on, individual_on
 
 
+def _post_delivery_media_for_prefix(db, prefix: str):
+    """Return (source chat, ordered message ids); accepts legacy single-id settings."""
+    import json
+    chat_id = (db.get_setting(prefix + "_media_chat_id", "") or "").strip()
+    raw_ids = (db.get_setting(prefix + "_media_message_ids", "") or "").strip()
+    legacy_id = (db.get_setting(prefix + "_media_message_id", "") or "").strip()
+    try:
+        ids = json.loads(raw_ids) if raw_ids else ([int(legacy_id)] if legacy_id.isdigit() else [])
+    except Exception:
+        ids = [int(legacy_id)] if legacy_id.isdigit() else []
+    ids = [int(x) for x in ids if str(x).lstrip("-").isdigit()]
+    if chat_id and chat_id.lstrip("-").isdigit() and ids:
+        return int(chat_id), ids
+    return None
+
+
+def get_post_delivery_media(db, is_test: bool = False):
+    """پیام چندرسانه‌ای ذخیره‌شده؛ متن اختصاصی تست بر رسانه عمومی اولویت دارد."""
+    if db is None:
+        return None
+    if is_test:
+        test_media = _post_delivery_media_for_prefix(db, "test_post_delivery")
+        if test_media:
+            return test_media
+        if (db.get_setting("test_post_delivery_text", "") or "").strip():
+            return None
+    return _post_delivery_media_for_prefix(db, "post_delivery_custom")
+
+
 def get_post_delivery_text(db, is_test: bool = False) -> str:
-    """متن دلخواه ادمین که بعد از تحویل کامل کانفیگ (و خلاصه‌ی مبلغ) برای کاربر
-    ارسال می‌شود؛ اگر db داده نشود یا چیزی تنظیم نشده باشد، رشته‌ی خالی برمی‌گردد."""
+    """متن دلخواه ادمین؛ رسانه‌ی تنظیم‌شده متن را از پیام اصلی کپی می‌کند."""
     if db is None:
         return ""
     if is_test:
+        if _post_delivery_media_for_prefix(db, "test_post_delivery"):
+            return ""
         test_text = (db.get_setting("test_post_delivery_text", "") or "").strip()
         if test_text:
             return test_text
+    if _post_delivery_media_for_prefix(db, "post_delivery_custom"):
+        return ""
     return (db.get_setting("post_delivery_custom_text", "") or "").strip()
 
 
@@ -437,7 +472,7 @@ def build_delivery_message(svc: dict, idx: int, total: int, sub_link_on: bool,
 
 
 async def prepare_delivery(link: str, product_name: str, idx: int, total: int,
-                           db=None, user_tg_id: int = None, header_text=None):
+                           db=None, user_tg_id: int = None, header_text=None, panel_type: str = ""):
     """مرحله‌ی مشترک بین بات (aiogram) و پنل وب: جمع‌آوری مشخصات و ساخت کپشن/پیام‌های اضافه."""
     sub_link_on, individual_on = _delivery_flags(db)
     if db is not None and user_tg_id is not None:
@@ -456,6 +491,25 @@ async def prepare_delivery(link: str, product_name: str, idx: int, total: int,
             alternates = await asyncio.to_thread(db.get_alternate_sub_urls, link)
         except Exception:
             alternates = []
+    # Per-provider custom delivery text. Empty template keeps the full legacy rich message.
+    if db is not None:
+        provider_key = re.sub(r"[^a-z0-9_]+", "_", str(panel_type or svc.get("protocol") or "default").lower()).strip("_") or "default"
+        template = (await asyncio.to_thread(db.get_setting, f"delivery_message_template_{provider_key}", "") or "").strip()
+        if not template:
+            template = (await asyncio.to_thread(db.get_setting, "delivery_message_template_default", "") or "").strip()
+        if template:
+            safe_values = {
+                "product_name": product_name or "", "protocol": svc.get("protocol") or "",
+                "service_name": svc.get("name") or "", "volume": svc.get("volume") or "",
+                "duration": svc.get("duration") or "", "index": idx, "total": total,
+                "subscription_url": svc.get("sub_url") or "", "config_links": "\n".join(svc.get("configs") or []),
+            }
+            try:
+                custom = template.format_map({k: html_lib.escape(str(v)) for k, v in safe_values.items()})
+                if custom.strip():
+                    return custom, []
+            except (KeyError, ValueError, IndexError):
+                logger.warning("قالب تحویل %s نامعتبر است؛ از قالب پیش‌فرض استفاده شد.", provider_key)
     return build_delivery_message(svc, idx, total, sub_link_on, individual_on, alternates, L, header_text)
 
 
@@ -467,6 +521,36 @@ async def _send_html(bot: Bot, chat_id: int, text: str) -> None:
             await bot.send_message(chat_id, strip_html(text))
         except Exception:
             pass
+
+
+async def notify_delivered_subscription(bot_token: str, db, user_tg_id: int, product_name: str,
+                                         links, final_price=None, order_id=None) -> None:
+    """ثبت تحویل در تاپیک اختصاصی؛ از مسیر بات و پنل وب مشترک استفاده می‌شود."""
+    if db is None:
+        return
+    try:
+        import report_router
+        from report_router import build_delivered_subscription_event
+        link = links[0] if isinstance(links, (list, tuple)) and links else (links or "")
+        svc = await collect_service_info(link, product_name) if link else {}
+        user = await asyncio.to_thread(db.get_user, int(user_tg_id))
+        order = await asyncio.to_thread(db.get_order, int(order_id)) if order_id else None
+        product = await asyncio.to_thread(db.get_product, int(order["product_id"])) if order else None
+        server_id = product["provision_server_id"] if product and "provision_server_id" in product.keys() else None
+        server = await asyncio.to_thread(db.get_panel_server, int(server_id)) if server_id else None
+        panel_type = server["panel_type"] if server else ""
+        panel_name = server["name"] if server else panel_type
+        event = build_delivered_subscription_event(
+            user_id=user_tg_id, username=(user["username"] if user else "") or "",
+            account_name=(user["first_name"] if user else "") or "", product_name=product_name,
+            panel_name=panel_name or svc.get("protocol") or "نامشخص",
+            volume=svc.get("volume") or "", duration=svc.get("duration") or "",
+            order_id=order_id, amount=final_price,
+            subscription_details=svc.get("sub_url") or ", ".join(svc.get("configs") or []),
+        )
+        await report_router.notify_raw(bot_token, db, "delivered_stock", event, senior_only=False, parse_mode="HTML")
+    except Exception:
+        logger.exception("ثبت گزارش اشتراک تحویل‌شده ناموفق بود (user=%s, order=%s)", user_tg_id, order_id)
 
 
 async def deliver_config_to_user(
@@ -499,9 +583,22 @@ async def deliver_config_to_user(
     if isinstance(links, str):
         links = [links]
     total = len(links)
+    delivery_panel_type = ""
+    delivery_panel_name = ""
+    if db is not None and order_id:
+        try:
+            order_row = await asyncio.to_thread(db.get_order, int(order_id))
+            product_row = await asyncio.to_thread(db.get_product, int(order_row["product_id"])) if order_row else None
+            server_id = product_row["provision_server_id"] if product_row and "provision_server_id" in product_row.keys() else None
+            server_row = await asyncio.to_thread(db.get_panel_server, int(server_id)) if server_id else None
+            if server_row:
+                delivery_panel_type = server_row["panel_type"] or ""
+                delivery_panel_name = server_row["name"] or delivery_panel_type
+        except Exception:
+            logger.debug("تشخیص نوع پنل برای قالب تحویل ناموفق بود.", exc_info=True)
 
     for idx, link in enumerate(links, start=1):
-        caption, extras = await prepare_delivery(link, product_name, idx, total, db=db, user_tg_id=user_tg_id, header_text=header_text)
+        caption, extras = await prepare_delivery(link, product_name, idx, total, db=db, user_tg_id=user_tg_id, header_text=header_text, panel_type=delivery_panel_type)
 
         try:
             qr_link = await asyncio.to_thread(dedicated_sub.dedicated_link_for_upstream, db, link) if db is not None else link
@@ -514,15 +611,28 @@ async def deliver_config_to_user(
         for extra in extras:
             await _send_html(bot, user_tg_id, extra)
 
+    if db is not None and not is_test:
+        await notify_delivered_subscription(bot.token, db, user_tg_id, product_name, links, final_price, order_id)
+
     if final_price is not None:
         await bot.send_message(user_tg_id, localized(build_summary_text(final_price, total), db, user_tg_id))
 
-    post_text = get_post_delivery_text(db, is_test=is_test)
-    if post_text:
+    post_media = get_post_delivery_media(db, is_test=is_test)
+    if post_media:
         try:
-            await bot.send_message(user_tg_id, post_text)
+            from telegram_media import copy_messages as _copy_media_messages
+            await _copy_media_messages(bot, user_tg_id, post_media[0], post_media[1])
         except Exception:
-            pass
+            logger.warning("کپی پیام چندرسانه‌ای بعد از تحویل ناموفق بود.", exc_info=True)
+            post_text = get_post_delivery_text(db, is_test=is_test)
+            if post_text:
+                try: await bot.send_message(user_tg_id, post_text)
+                except Exception: pass
+    else:
+        post_text = get_post_delivery_text(db, is_test=is_test)
+        if post_text:
+            try: await bot.send_message(user_tg_id, post_text)
+            except Exception: pass
 
     if db is not None:
         try:

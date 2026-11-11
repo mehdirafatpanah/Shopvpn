@@ -146,6 +146,10 @@ class AdminAddCategory(StatesGroup):
     waiting_name = State()
 
 
+class AdminCategoryDescription(StatesGroup):
+    waiting_description = State()
+
+
 class AdminEmojiEdit(StatesGroup):
     waiting_global = State()
     waiting_category = State()
@@ -257,12 +261,18 @@ class AdminPayCard(StatesGroup):
     waiting_holder = State()
     waiting_weight = State()
     waiting_edit_weight = State()
+    waiting_photo = State()
+    waiting_description = State()
+    waiting_edit_photo = State()
+    waiting_edit_description = State()
 
 
 class AdminC2CCard(StatesGroup):
     waiting_number = State()
     waiting_holder = State()
     waiting_bank = State()
+    waiting_photo = State()
+    waiting_description = State()
 
 
 class AdminC2CSettings(StatesGroup):

@@ -415,10 +415,24 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         cfg = await asyncio.to_thread(card_payment_ui.get_cfg, db)
         card_number, card_holder = _card["card_number"], _card["card_holder"]
         bank_name = _card["bank_name"] if "bank_name" in _card.keys() else ""
+        description = (_card.get("description_template") or "").strip()
+        if description:
+            try:
+                intro_lines = list(intro_lines) + [description.format(
+                    card_number=card_number or "", holder=card_holder or "", bank=bank_name or "",
+                    amount_toman=int(final_price), amount_rial=int(final_price) * 10,
+                )]
+            except (KeyError, ValueError, IndexError):
+                intro_lines = list(intro_lines) + [description]
         text = card_payment_ui.build_text(
             cfg, intro_lines, card_number, card_holder, bank_name, int(final_price), auto=False,
         )
         markup = _card_pay_markup(cfg, card_number, card_holder, int(final_price), back_cb=back_cb)
+        if _card.get("photo_file_id"):
+            try:
+                await target.answer_photo(_card["photo_file_id"])
+            except Exception:
+                logger.warning("ارسال تصویر کارت‌به‌کارت ناموفق بود.", exc_info=True)
         sent = await target.answer(
             text, parse_mode="Markdown", reply_markup=markup, protect_content=bool(cfg["protect"]) or None,
         )
@@ -440,10 +454,25 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         timeout_minutes = int((await asyncio.to_thread(
             db.get_setting, "card_to_card_auto_timeout_minutes", "15")) or 15)
         cfg = await asyncio.to_thread(card_payment_ui.get_cfg, db)
+        description = (invoice.get("description_template") or "").strip()
+        if description:
+            try:
+                intro_lines = list(intro_lines) + [description.format(
+                    card_number=invoice["card_number"] or "", holder=invoice["card_holder"] or "",
+                    bank=invoice.get("bank_name") or "", amount_toman=int(invoice["amount_toman"]),
+                    amount_rial=int(invoice["amount_rial"]),
+                )]
+            except (KeyError, ValueError, IndexError):
+                intro_lines = list(intro_lines) + [description]
         text = card_payment_ui.build_text(
             cfg, intro_lines, invoice["card_number"], invoice["card_holder"], invoice.get("bank_name"),
             int(invoice["amount_toman"]), auto=True, timeout_minutes=timeout_minutes,
         )
+        if invoice.get("photo_file_id"):
+            try:
+                await target.answer_photo(invoice["photo_file_id"])
+            except Exception:
+                logger.warning("ارسال تصویر کارت خودکار ناموفق بود.", exc_info=True)
         status_row = [InlineKeyboardButton(text=tr("🔄 بررسی وضعیت پرداخت"), callback_data=f"check_c2c:{invoice['invoice_id']}")]
         markup = _card_pay_markup(
             cfg, invoice["card_number"], invoice["card_holder"], int(invoice["amount_toman"]),
@@ -636,6 +665,24 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             elif action.startswith("__quiz_answer__:"):
                 _quiz_id, _choice = action.split(":")[1:3]
                 await answer_quiz_for_message(db, message, int(_quiz_id), int(_choice))
+            elif action.startswith("__open_menu_button__:"):
+                key = action.split(":", 1)[1]
+                if key == "miniapp":
+                    url = kb._miniapp_url(db, getattr(db, "_current_menu_language", ""))
+                    if url:
+                        await message.answer("🛍 فروشگاه", reply_markup=kb.miniapp_inline_kb(url, db))
+                elif key == "btn_buy": await show_categories(message, state)
+                elif key == "btn_test": await get_test_config(message)
+                elif key == "btn_my_orders": await my_orders(message)
+                elif key == "btn_tutorial": await tutorial_menu_entry(message)
+                elif key == "btn_referral": await referral_menu(message, bot)
+                elif key == "btn_wheel": await wheel_of_fortune(message, bot)
+                elif key == "btn_contact": await contact_start(message, state)
+                elif key == "btn_wallet": await wallet_menu(message)
+                elif key == "btn_reseller_panel": await reseller_panel_open(message, state)
+                elif key == "btn_reseller_tiers": await reseller_tiers_menu(message)
+                elif key in ("btn_reseller_request", "btn_commission_reseller_request"):
+                    await reseller_tiers_menu(message)
             else:
                 await message.answer(action)
 
@@ -1087,7 +1134,16 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             (await asyncio.to_thread(db.set_force_join_exempt, message.from_user.id))
 
         for token in filter(None, start_param.split("-")):
-            if token.startswith("resref_"):
+            if token.startswith("btn_"):
+                menu_key = token[4:]
+                allowed_menu_keys = {
+                    "miniapp", "btn_buy", "btn_test", "btn_my_orders", "btn_tutorial", "btn_referral",
+                    "btn_wheel", "btn_contact", "btn_wallet", "btn_reseller_panel", "btn_reseller_tiers",
+                    "btn_reseller_request", "btn_commission_reseller_request",
+                }
+                if menu_key in allowed_menu_keys:
+                    post_start_actions.append("__open_menu_button__:" + menu_key)
+            elif token.startswith("resref_"):
                 # نماینده با «لینک اختصاصی داخل بات اصلی» (بند ۳.۱ اسپک) —
                 # کاملاً مستقل از سیستم زیرمجموعه‌گیری ref<id> زیر.
                 owner_part = token[len("resref_"):]
@@ -1240,6 +1296,24 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             elif action.startswith("__quiz_answer__:"):
                 _quiz_id, _choice = action.split(":")[1:3]
                 await answer_quiz_for_message(db, message, int(_quiz_id), int(_choice))
+            elif action.startswith("__open_menu_button__:"):
+                key = action.split(":", 1)[1]
+                if key == "miniapp":
+                    url = kb._miniapp_url(db, getattr(db, "_current_menu_language", ""))
+                    if url:
+                        await message.answer("🛍 فروشگاه", reply_markup=kb.miniapp_inline_kb(url, db))
+                elif key == "btn_buy": await show_categories(message, state)
+                elif key == "btn_test": await get_test_config(message)
+                elif key == "btn_my_orders": await my_orders(message)
+                elif key == "btn_tutorial": await tutorial_menu_entry(message)
+                elif key == "btn_referral": await referral_menu(message, bot)
+                elif key == "btn_wheel": await wheel_of_fortune(message, bot)
+                elif key == "btn_contact": await contact_start(message, state)
+                elif key == "btn_wallet": await wallet_menu(message)
+                elif key == "btn_reseller_panel": await reseller_panel_open(message, state)
+                elif key == "btn_reseller_tiers": await reseller_tiers_menu(message)
+                elif key in ("btn_reseller_request", "btn_commission_reseller_request"):
+                    await reseller_tiers_menu(message)
             else:
                 await message.answer(action)
 
@@ -1378,7 +1452,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
         await message.answer(
             db.get_text("handlers_user.miniapp.open_prompt", "برای ورود به مینی‌اپ فروشگاه، روی دکمه‌ی زیر بزن:"),
-            reply_markup=kb.miniapp_inline_kb(miniapp_url),
+            reply_markup=kb.miniapp_inline_kb(miniapp_url, db),
         )
 
     # -----------------------------------------------------------------------
@@ -1459,9 +1533,12 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             title = db.get_text("handlers_user.category.choose_sub", "یک زیردسته یا محصول را انتخاب کنید:")
         else:
             title = db.get_text("handlers_user.category.choose_product", "یک محصول را انتخاب کنید:")
+        category = await asyncio.to_thread(db.get_category, cat_id)
+        category_description = (category["description"] or "") if category and "description" in category.keys() else ""
+        display_title = f"{title}\n\n📝 {category_description}" if category_description else title
         await _safe_edit(
             call.message,
-            title,
+            display_title,
             reply_markup=kb.products_kb(db, products, cat_id, children),
         )
         await call.answer()

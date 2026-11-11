@@ -115,6 +115,8 @@ def _invoice_dict(invoice, card) -> dict:
         "bank_name": card["bank_name"] if card else None,
         "expires_at": invoice["expires_at"],
         "status": invoice["status"],
+        "photo_file_id": card["photo_file_id"] if card is not None and "photo_file_id" in card.keys() else None,
+        "description_template": card["description_template"] if card is not None and "description_template" in card.keys() else "",
     }
 
 
