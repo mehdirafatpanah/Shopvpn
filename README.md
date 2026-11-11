@@ -40,6 +40,7 @@
 - [🗂️ Project Structure](#project-structure)
 - [🧪 Technology Stack](#tech-stack)
 - [🆕 Recently Added Features](#new-features)
+- [🤖 Bot Features — Complete Reference](#bot-reference)
 - [🔎 Additional Features](#additional-features)
 - [🔗 Dedicated Subscription Server](#dedicated-sub)
 - [🤝 Contributing & License](#contributing)
@@ -80,6 +81,9 @@ The project is designed for real-world operation, with wallets, referrals, disco
 - 🚨 Config leak detection with smart Telegram discovery
 - 🏆 Seasons, lucky boxes, streaks and a daily quiz
 - 🔄 One-button project updates from inside the bot (with automatic rollback)
+- 🧩 Telegram widgets, 🧠 AI smart buy guide, 🚚 panel-to-panel user migration and 🔎 config search
+- 📦 Per-product delivery text/sticker, post-delivery media and WireGuard/OpenVPN files sent in the bot
+- ⌨️ Full command list and every admin-menu feature in the [Bot Features reference](#bot-reference)
 
 > **Detailed sections are collapsed below. Click any section to expand it.**
 
@@ -913,6 +917,104 @@ Beyond answering questions, the assistant can prepare account actions that the b
 | 40 | Telegram accounts: log in the userbot (AI replies to customers), log in a separate leak-scanner account (recommended) or use one account for both, show status, log out either account |
 | L | Language (English ⇄ فارسی) |
 | 0 | Exit |
+
+</details>
+
+---
+
+<a id="bot-reference"></a>
+
+## 🤖 Bot Features — Complete Reference
+
+<details>
+<summary><strong>Full list of bot, admin-menu and delivery features (click to expand)</strong></summary>
+
+Everything below is implemented in the code (v9.2.0) and complements the sections above.
+
+### ⌨️ Bot Commands
+
+| Command | Who | What it does |
+|---|---|---|
+| `/start` | Everyone | Entry point; also handles deep links (product, discount code, test config, lucky wheel, referral `ref<id>`, reseller `resref_<id>`) |
+| `/buy` · `/charge` · `/help` | Users | Open the purchase menu, wallet top-up and the tutorial/help text |
+| `/language` | Users | Choose the interface language |
+| `/transfer_wallet` | Users | Transfer wallet balance to another user |
+| `/smartsub` | Users | Merge several services into one smart subscription link |
+| `/merge CODE` | Users | Merge a web-shop account with the Telegram account |
+| `/myssh` | Users | Receive own SSH credentials (private chat only) |
+| `/reseller_link` | Commission resellers | Personal link plus commission statistics |
+| `/ai` · `/admin` · `/update` | Admins | Admin AI assistant, admin panel, in-bot update |
+| `/token2` | Admins | Issue a personal Integration API token (the previous one is revoked) |
+| `/bot_off` · `/bot_on` · `/bot_status` | Admins | Global bot switch |
+| `/pin` · `/unpin` | Admins | Reply to a message in a group/channel to pin or unpin it |
+| `/seasonadmin` · `/giftadmin` | Admins | Shortcuts to the seasons/quiz and gift-card admin screens |
+| `/wstats` `/wfeatures` `/wqueue` `/whealth` `/wusers` | Admins | Telegram widgets (see below) |
+| `/wservices` · `/wwallet` | Users | "My services" and "Wallet & invite" widgets |
+
+### 🧩 Telegram Widgets
+
+- 📊 **Admin widgets** inside the message: statistics with Today / 7 days / 30 days / All tabs and a 14-day chart, feature toggles (bot status, terms, phone verification, smart subscription), approval queue cards with approve/reject (with a second confirmation), panel health lights with live check and latency, quick user management (newest, blocked, top balances, block/unblock, quick top-up), live pulse, alerts center, leaderboards and sales analysis (30-day heat map, category share, peak hours)
+- 🎚️ **User widgets**: custom-plan sliders (volume/days) for the personal-config builder, "My services" with quick actions, "Wallet & invite" with top-up presets
+- 🔒 Private chat only; can be disabled with `SHOPVPN_WIDGETS=0` or the `widgets_enabled` setting
+
+### 🛒 Purchase & Catalog
+
+- 🧠 **Smart buy guide (AI)** — a few button questions followed by a free chat; only real products are suggested (including each product's "AI note"), and nothing is charged without the user's own confirmation on a real purchase card. The questions (up to 8 × 8 options) and the tone prompt are editable (`buy_guide_questions`, `buy_guide_prompt`); safety rules stay locked in code. Works in the bot and the Mini App
+- 💲 **Discount display** — the pre-discount price is shown struck through next to the new price (display only; payment always uses the real price)
+- 🔄 **Full-renewal rules per product** — switches for: renewable on/off, only same-type services (unlimited vs. volume), full reset, carry remaining volume, carry remaining time (reset disables both carry options)
+- 🏷️ **Account naming modes per panel** — 8 modes for auto-provisioned usernames: user-chosen name, hash + name, prefix + name, name + suffix, counter + name, prefix + counter, counter + suffix, Telegram ID + counter (affix up to 12 characters)
+- 🧩 **Multi-panel products** — one product can target several panels and SSH nodes with a per-panel configuration; capacity is checked on every panel, and delete/disable actions are synchronised to the extra panels
+- 🗂️ **Category descriptions with a photo** (also shown in the web shop) and configurable emojis for category, product and test-plan buttons
+- 📱 **Phone verification gate** — purchases can be limited to verified phone numbers by country code (Telegram share-contact button; Iran by default, 20+ countries in the list)
+- 📢 **Unlimited mandatory-channel list** — any number of required channels (the old single-channel setting keeps working)
+- 🎁 **Welcome config gift** — a service from a chosen panel-linked product (volume/days, `0` = unlimited) is created and sent to every new user after a delay such as `30m`, `2h` or `3d`; once per user, only for users who join after activation
+
+### 📦 Delivery (new in 9.2.0)
+
+- 📝 **Per-product delivery text and sticker** sent right after the config
+- 🎞️ **Post-delivery media message** (text, photo, sticker or a whole album copied from any chat), with a separate one for test configs
+- 📨 **Delivery message template per panel type** (14 templates: generic, PasarGuard, 3X-UI, Marzban, Marzneshin, Hiddify, Alireza, Rebecca, S-UI, WGDashboard, MikroTik, IBSng, W-UI, Stealth)
+- 📎 **WireGuard / AmneziaWG / OpenVPN files** from SSH/Linux nodes and panels such as W-UI are sent as documents at delivery (`deliver_vpn_files_enabled`; max 20 files, 200 KB each)
+- 📦 **"Delivered subscriptions" report topic** — every delivered subscription is logged with copyable links
+- 💳 **Card-to-card per card**: an optional photo and a description template for each card; "beautiful" or "classic" message style, copy buttons (card number, Toman, Rial, holder name) with selectable colors, content protection against copy/forward/screenshot, bank-name display
+
+### 👑 Admin Menu (in the bot)
+
+The admin panel has 10 categories — Products & sales, Finance, Alerts & retention, Infrastructure, Resellers, Marketing & growth, Communication, Support & AI, Appearance, Management — each with a built-in help button describing every item.
+
+- 📢 **Broadcast menu** — to one user, to everyone, forward to everyone, expired accounts, active users, inactive users, test-only users, to the channel; background job with progress status and cancel; photos and albums supported; scheduled broadcasts keep their media and target; the admin gets a preview copy first
+- 🔎 **Config search** — find the owner of a config by panel sub link, dedicated sub link/token, config ID or username; actions: enable/disable, auto-renew, rename, transfer, history, add volume/days, new sub token, cut access + new link, full delete
+- 👤 **User card** — full config list and per-config management, enable/disable all configs, direct message, personal discount code, wallet edit, block/unblock
+- 🧭 **Link management** — Mini App, web shop, web panel, dedicated sub and support links in one place, health probe, editing the sub/support/panel URLs without server access, sub-link lookup for a service
+- 🚚 **Panel user migration** — moves all active services between panels (even different panel types): remaining volume/time are read from the source, the user is created on the target, the record is switched, and the new user is rolled back if switching fails; options: notify users, retarget sales, disable old users, estimate from the database when the source is down. Owner/senior admins, main bot only. A resync tool repairs old users after a node/host/group change
+- 🎛️ **Main-menu display** — reply menu and inline menu enabled separately, 1 or 2 buttons per row; separate color settings for the admin panel and the purchase flow; Mini App button name and color
+- 📝 **Admin audit forwarding** — every admin action (bot, web panel, Mini App) is forwarded to the "📝 Admin log" topic with secrets masked
+- 🪪 **Bot profile** — "description" (512 chars) and "short description" (120 chars) in Persian and English, synchronised to Telegram (only changes are sent)
+- 🎁 **Welcome gift, signup gift, wallet top-up/deduct in bulk, gift cards, seasons, quiz, lucky boxes** each have their own menu and switches
+
+### 🖥️ Web Panel Additions
+
+- 👥 **Dynamic user groups** — saved groups defined by rules over join date, blocked, phone-verified, wallet balance, purchase count, total purchases, last purchase, top-ups, active services, expiry date and referrals
+- 🩺 **Hourly system checks** — panels, capacity, stock, server resources, backups, config scan, exchange rate, renewal loop, database, SSH nodes, payment gateways, AI, translation, sessions, SMTP and SSL-certificate expiry, shown on the dashboard
+- 🛰️ **Stealth VLESS node** — a panel type installed in one step from an IP, root password and domain; the agent builds the subscription itself (no inbound or template needed)
+
+### 🔎 Ported from the Persian Documentation
+
+- 🎁 Signup gift for users without a purchase; 💸 automatic service refund based on real unused volume
+- 📖 Step-by-step connection tutorials per device (also offered right after purchase) and contextual tutorials attached to bot sections
+- 🧾 Every bot text editable from the web panel (the AST-based text scanner finds all `db.get_text(...)` texts)
+- 🔌 Global bot on/off switch · 🕵️ referral-fraud alerts · 📶 connect / not-connected alerts · 📣 channel notice for finished/deleted configs
+- 🗳 Order satisfaction surveys (1–5 stars, per panel) and ⭐ per-service star ratings
+- 🎁 Early full-renewal discount · ➕➖ bulk wallet credit/deduction with before/after preview
+- 🧩 Personal config builder with per-product panel, ranges, flat or tiered pricing and allowed payment methods
+- 🛠 Service management from "My Account": auto-renew from wallet, enable/disable, rename, transfer, extra users, cut access + new link, delete with refund, history; each button has its own switch
+- 💸 Wallet transfers · 🧾 wallet ledger with before/after balance · 💳 payment methods restricted per product
+- 🔗 Multiple domains/IPs per server for sub links · 📎 smart subscription (`/sub/smart/<token>`, needs the dedicated sub server)
+- 🔧 3X-UI tools: create inbounds, panel backup/restore, full panel statistics · 🎛 per-server usage flags (personal purchase, test, reseller)
+- 🗄 Full backup (main bot + all reseller databases) and restore, secondary destinations (second Telegram chat, SFTP) · 🏭 owner-only factory reset · 🧹 orphan-config cleanup
+- ⏰ Scheduled broadcasts · 🔘 automatic Mini App menu-button sync · 📈 advanced statistics (trends, per-gateway success rate, funnel, hourly activity)
+- 🔗 In-bot deep-link builder (purchase, product, discount code, test config, lucky wheel, custom parameter; counts as mandatory-channel exemption and records the source)
+- 🟢 Live-chat routing by admin presence · 🔀 multi-level referral and fraud suspension · 💳 reseller postpaid credit · 🌐 resellers without a bot
 
 </details>
 
