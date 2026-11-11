@@ -726,6 +726,7 @@ _ACCOUNT_HUB_CALLBACKS = {
     "acct_lootbox": ("acct_show_lootbox", "lb_menu"),
     "acct_add_service": ("acct_show_add_service", "acct:addsvc"),
     "acct_merge": ("acct_show_merge", "acct:merge"),
+    "acct_smartsub": ("acct_show_smartsub", "acct:smartsub"),
 }
 
 
@@ -740,6 +741,8 @@ def account_hub_kb(db, is_main_bot: bool = True) -> InlineKeyboardMarkup:
         if key == "acct_tutorial" and tutorial_hub.GENERAL not in db.get_tutorial_bound_targets():
             continue
         if key == "acct_merge" and not is_main_bot:
+            continue
+        if key == "acct_smartsub" and db.get_setting("smart_subscription_enabled", "1") != "1":
             continue
         # دکمه‌ی زیرمجموعه‌گیری فقط وقتی نشان داده شود که کلید اصلی و حداقل یکی از
         # سه مدل پاداش روشن باشد (هم‌رفتار با item_referral در منوی اصلی)؛ وگرنه

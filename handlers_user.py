@@ -808,24 +808,39 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     async def help_cmd(message: Message):
         await tutorial_menu_entry(message)
 
-    @router.message(Command("smartsub"))
-    async def smartsub_cmd(message: Message):
+    async def _smartsub_build(user_id: int) -> tuple:
+        """(متن پیام، موفق؟) - مشترک بین /smartsub و دکمه‌ی حساب کاربری."""
         if db.get_setting("smart_subscription_enabled","1")!="1":
-            await message.answer(db.get_text('handlers_user.auto_cc8afc71', '⛔️ اشتراک هوشمند غیرفعال است.')); return
-        rows=await asyncio.to_thread(db.get_user_custom_configs, message.from_user.id) if hasattr(db,"get_user_custom_configs") else []
+            return db.get_text('handlers_user.auto_cc8afc71', '⛔️ اشتراک هوشمند غیرفعال است.'), False
+        rows=await asyncio.to_thread(db.get_user_custom_configs, user_id) if hasattr(db,"get_user_custom_configs") else []
         urls=[]
         for r in rows or []:
             if r["subscription_url"] and r["status"]=="active": urls.append(r["subscription_url"])
         if len(urls)<2:
-            await message.answer(db.get_text('handlers_user.auto_95fbba11', 'ℹ️ برای ساخت اشتراک هوشمند حداقل دو اشتراک فعال لازم است.')); return
-        token=await asyncio.to_thread(db.create_smart_subscription,message.from_user.id,urls)
+            return db.get_text('handlers_user.auto_95fbba11', 'ℹ️ برای ساخت اشتراک هوشمند حداقل دو اشتراک فعال لازم است.'), False
+        token=await asyncio.to_thread(db.create_smart_subscription,user_id,urls)
         from config import API_BASE_URL
         # اگر ساب اختصاصی روشن است، لینک هوشمند هم از دامنه‌ی همان سرور ساخته می‌شود (آن سرور endpoint را سرو می‌کند)
         dedicated_base=dedicated_sub.base_url(db) if dedicated_sub.is_enabled(db) else ""
         base=(db.get_setting("smart_subscription_base_url","") or dedicated_base or API_BASE_URL).rstrip("/")
         if not base:
-            await message.answer(db.get_text('handlers_user.auto_c76802fa', '⛔️ آدرس عمومی API تنظیم نشده است.')); return
-        await message.answer(tr(f"🔗 لینک اشتراک هوشمند شما:\n{base}/sub/smart/{token}"))
+            return db.get_text('handlers_user.auto_c76802fa', '⛔️ آدرس عمومی API تنظیم نشده است.'), False
+        return tr(f"🔗 لینک اشتراک هوشمند شما:\n{base}/sub/smart/{token}"), True
+
+    @router.message(Command("smartsub"))
+    async def smartsub_cmd(message: Message):
+        text, _ok = await _smartsub_build(message.from_user.id)
+        await message.answer(text)
+
+    @router.callback_query(F.data == "acct:smartsub")
+    async def cb_account_smartsub(call: CallbackQuery):
+        if (await asyncio.to_thread(db.get_setting, "acct_show_smartsub", "1")) != "1":
+            await call.answer(db.get_text('handlers_user.auto_877cd65e', 'این بخش غیرفعال است.'), show_alert=True)
+            return
+        text, _ok = await _smartsub_build(call.from_user.id)
+        back = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=tr("⬅️ حساب کاربری"), callback_data="acct:hub")]])
+        await _safe_edit(call.message, text, reply_markup=back)
+        await call.answer()
 
     # -----------------------------------------------------------------------
     # شروع
