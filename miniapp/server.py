@@ -35,6 +35,7 @@ from typing import Optional, List, Dict, Any
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import aiohttp
+import bot_profile
 import account_naming
 from i18n import tr, api_message, set_language, reset_language, normalize_language, is_language_enabled
 from db_text_policy import render_stored_setting
@@ -6503,14 +6504,17 @@ def api_admin_get_extra_settings(auth=Depends(require_main_admin)):
 @app.post("/api/admin/settings/extra")
 def api_admin_set_extra_settings(body: ExtraSettingsUpdate, auth=Depends(require_main_admin)):
     from extra_settings_schema import save_values, SettingsValidationError
-    _, db, _ = auth
+    _, db, tenant = auth
     try:
         changed = save_values(db, "mini", body.values or {})
     except SettingsValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if changed:
         db.log_admin_action(auth[0], "setting_change", "extra settings updated (میناپ): " + ", ".join(changed), "setting", "extra")
-    return {"ok": True, "changed": changed}
+    resp = {"ok": True, "changed": changed}
+    if bot_profile.has_profile_keys(changed):
+        resp["profile"] = bot_profile.apply_profile_sync(tenant.bot_token, db)
+    return resp
 
 
 # ---- رجیستری دکمه‌ها (button_registry.py): همان منطق تب «دکمه‌های ربات» پنل وب ----
