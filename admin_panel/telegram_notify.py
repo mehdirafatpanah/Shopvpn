@@ -162,6 +162,42 @@ async def fetch_telegram_file(bot_token: str, file_id: str):
         return None
 
 
+async def send_document_bytes(bot_token: str, chat_id: int, data: bytes, filename: str, caption: str = "") -> bool:
+    """ارسال فایل از روی بایت‌ها (مثلاً فایل .conf/.ovpn سرویس) بدون وابستگی به aiogram."""
+    if not bot_token:
+        return False
+    url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
+    try:
+        form = aiohttp.FormData()
+        form.add_field("chat_id", str(chat_id))
+        if caption:
+            form.add_field("caption", caption)
+        form.add_field("document", data, filename=filename, content_type="application/octet-stream")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                return resp.status == 200
+    except Exception:
+        logger.exception("ارسال فایل تلگرام به %s ناموفق بود", chat_id)
+        return False
+
+
+async def send_sticker(bot_token: str, chat_id: int, sticker_file_id: str) -> bool:
+    """ارسال استیکر با file_id (استیکر محصول)؛ file_id باید با همین توکن بات گرفته شده باشد."""
+    if not bot_token or not sticker_file_id:
+        return False
+    url = f"https://api.telegram.org/bot{bot_token}/sendSticker"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url, json={"chat_id": chat_id, "sticker": sticker_file_id},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                return resp.status == 200
+    except Exception:
+        logger.exception("ارسال استیکر تلگرام به %s ناموفق بود", chat_id)
+        return False
+
+
 async def send_document(bot_token: str, chat_id: int, file_path: str, caption: str = "") -> bool:
     """ارسال فایل (مثلاً بکاپ دیتابیس) به یک ادمین تلگرامی، بدون وابستگی به aiogram
     (پنل وب یک نمونه‌ی Bot در دسترس ندارد، پس مستقیم با Bot API خام کار می‌کند)."""

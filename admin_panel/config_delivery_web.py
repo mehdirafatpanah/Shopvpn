@@ -7,8 +7,10 @@
 (از طریق admin_panel.telegram_notify) کار می‌کند.
 """
 
+import asyncio
 from config_delivery import build_qr_bytes, build_summary_text, get_post_delivery_media, get_post_delivery_text, prepare_delivery, strip_html
-from admin_panel.telegram_notify import send_message as tg_send, send_photo as tg_send_photo, copy_message as tg_copy_message
+from admin_panel.telegram_notify import send_message as tg_send, send_photo as tg_send_photo, copy_message as tg_copy_message, send_document_bytes as tg_send_doc, send_sticker as tg_send_sticker
+import delivery_extras
 from config import BOT_TOKEN
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 
@@ -104,6 +106,16 @@ async def deliver_config_to_user_web(
         if not ok:
             await tg_send(bot_token, user_tg_id, strip_html(text))
 
+    if db is not None and order_id:
+        try:
+            p_text, p_sticker = await asyncio.to_thread(delivery_extras.get_product_delivery_extras, db, order_id)
+            if p_text:
+                await tg_send(bot_token, user_tg_id, delivery_extras.render_product_text(p_text, product_name, order_id))
+            if p_sticker:
+                await tg_send_sticker(bot_token, user_tg_id, p_sticker)
+        except Exception:
+            pass
+
     for idx, link in enumerate(links, start=1):
         caption, extras = await prepare_delivery(link, product_name, idx, total, db=db, user_tg_id=user_tg_id, panel_type=delivery_panel_type)
 
@@ -120,8 +132,19 @@ async def deliver_config_to_user_web(
         for extra in extras:
             await _send_html(extra)
 
+        if db is not None:
+            try:
+                files = await delivery_extras.collect_vpn_files(db, link)
+                if files:
+                    await tg_send(bot_token, user_tg_id, "📎 فایل‌های اتصال این سرویس (WireGuard / OpenVPN):")
+                    for f in files:
+                        await tg_send_doc(bot_token, user_tg_id, f["content"], f["filename"], f["label"][:200])
+            except Exception:
+                pass
+
     if final_price is not None:
         await tg_send(bot_token, user_tg_id, build_summary_text(final_price, total))
+
 
     if db is not None:
         try:
