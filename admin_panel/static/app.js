@@ -9103,6 +9103,7 @@ const SETTINGS_GROUPS = [
     { key: 'acct_show_wallet', label: 'نمایش «کیف پول من»', type: 'bool' },
     { key: 'acct_show_add_service', label: 'نمایش «افزودن حساب (اتصال کانفیگ قبلی)»', type: 'bool' },
     { key: 'acct_show_merge', label: 'نمایش «ادغام با حساب ایمیلی»', type: 'bool' },
+    { key: 'acct_show_smartsub', label: 'نمایش «اشتراک هوشمند (ادغام کانفیگ‌ها)»', type: 'bool' },
     { key: 'acct_add_service_by_username', label: 'افزودن حساب با نام کاربری کانفیگ (علاوه بر لینک ساب)', type: 'bool' },
   ]},
   { tab: 'sales', title: '🛠 نمایش دکمه‌های سرویس', fields: [
