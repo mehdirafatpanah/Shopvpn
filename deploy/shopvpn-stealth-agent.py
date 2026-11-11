@@ -94,8 +94,10 @@ def _client_obj(user: dict, name: str) -> dict:
 def xray_add_user(name: str, user: dict, node: dict) -> bool:
     """کاربر را روی همه‌ی inbound های فعال اضافه می‌کند. True = موفق."""
     for t in active_transports(node):
+        # listen+port الزامی است: بدون آن xray خطای "Listen on AnyIP but no Port(s) set" می‌دهد،
+        # ولی exit code را 0 برمی‌گرداند و می‌نویسد "Added 0 user(s)" (فقط برای ساخت config؛ inbound جدیدی ساخته نمی‌شود)
         cfg = {"inbounds": [{
-            "tag": inbound_tag(t["name"]), "protocol": "vless",
+            "tag": inbound_tag(t["name"]), "listen": "127.0.0.1", "port": 1, "protocol": "vless",
             "settings": {"clients": [_client_obj(user, name)], "decryption": "none"},
         }]}
         tmp = os.path.join(CONF_DIR, f".adu-{secrets.token_hex(4)}.json")
@@ -108,7 +110,11 @@ def xray_add_user(name: str, user: dict, node: dict) -> bool:
                 os.remove(tmp)
             except OSError:
                 pass
-        if rc != 0:
+        # exit code قابل‌اعتماد نیست؛ باید واقعاً "Added N user(s)" با N>=1 دیده شود
+        m = re.search(r"Added (\d+) user", (out or "") + "\n" + (err or ""))
+        if rc != 0 or not m or int(m.group(1)) < 1:
+            print(f"xray adu failed for {name} on {t['name']}: rc={rc} {(out or '')[-200:]} {(err or '')[-200:]}",
+                  file=sys.stderr, flush=True)
             return False
     return True
 
