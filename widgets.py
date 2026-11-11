@@ -15,6 +15,8 @@ from aiogram import F
 from aiogram.types import CallbackQuery, Message, Update, User
 
 import widget_html
+import widget_html_pro
+import widgets_pro
 
 logger = logging.getLogger(__name__)
 
@@ -334,7 +336,27 @@ class WidgetHub:
             return await self._health(bot, query, rest)
         if kind == "m":
             return await self._members(bot, query, uid, rest)
+        if kind in ("p", "t", "a", "k"):
+            return await self._pro(dp, bot, query, uid, kind, rest)
         return None, None
+
+    async def _pro(self, dp, bot, query, uid, kind, rest):
+        db = self.db
+        if kind == "p":
+            payload = await asyncio.to_thread(widgets_pro.pulse_payload, db, 1 if rest == "1" else 0)
+        elif kind == "t":
+            tab, _, period = rest.partition(":")
+            payload = await asyncio.to_thread(widgets_pro.top_payload, db, tab or "p", period or "30")
+        elif kind == "a":
+            if rest.startswith("go:"):
+                _go, _, idx = rest.partition(":")
+                target = widgets_pro.ALERT_TARGETS.get(int(idx)) if idx.isdigit() else None
+                if target:
+                    await self._press(dp, bot, query, uid, target)
+            payload = await asyncio.to_thread(widgets_pro.alerts_payload, db)
+        else:
+            payload = await asyncio.to_thread(widgets_pro.analysis_payload, db, "h" if rest == "r" else rest)
+        return _dumps(payload), (None if rest in ("r", "") or rest.startswith("go:") else self._persist(bot, query, payload))
 
     async def _user(self, dp, bot, query, uid, kind, rest):
         hook = _hook(self.db, "user")
@@ -536,6 +558,53 @@ def create_router(db) -> Router:
             await _user_widget(call.message, state, "v", widget_html.services_html(), "📶 سرویس‌های من", call.from_user)
         else:
             await _user_widget(call.message, state, "w", widget_html.wallet_html(), "💰 کیف پول و دعوت", call.from_user)
+
+    async def _show_menu(call: CallbackQuery, text: str, markup) -> None:
+        try:
+            await call.message.edit_text(text, reply_markup=markup)
+        except Exception:
+            await call.message.answer(text, reply_markup=markup)
+
+    @router.callback_query(F.data == "adm_widgets")
+    async def cb_admin_widgets_menu(call: CallbackQuery):
+        if not await asyncio.to_thread(db.is_admin, call.from_user.id):
+            return await call.answer("⛔️ دسترسی ندارید.", show_alert=True)
+        await call.answer()
+        import keyboards as kb
+        await _show_menu(call, "🧩 ویجت‌های مدیریت:", kb.admin_widgets_menu_kb())
+
+    @router.callback_query(F.data == "u_widgets")
+    async def cb_user_widgets_menu(call: CallbackQuery):
+        await call.answer()
+        if not ENABLED or (await asyncio.to_thread(db.get_setting, "widgets_enabled", "1")) == "0":
+            return
+        import keyboards as kb
+        await _show_menu(call, "🧩 ویجت‌ها:", kb.user_widgets_menu_kb())
+
+    def _register_pro(cmd: str, cb: str, html_fn, caption: str, payload_fn) -> None:
+        async def send(message: Message) -> None:
+            payload = await asyncio.to_thread(payload_fn, db)
+            await _admin_widget(message, html_fn(), caption, payload)
+
+        @router.message(Command(cmd))
+        async def _cmd(message: Message):
+            if await asyncio.to_thread(db.is_admin, message.from_user.id):
+                await send(message)
+
+        @router.callback_query(F.data == cb)
+        async def _cb(call: CallbackQuery):
+            if not await asyncio.to_thread(db.is_admin, call.from_user.id):
+                return await call.answer("⛔️ دسترسی ندارید.", show_alert=True)
+            await call.answer()
+            await send(call.message)
+
+    _register_pro("wpulse", "adm_wpulse", widget_html_pro.pulse_html, "🔴 نبض زنده فروشگاه",
+                  lambda d: widgets_pro.pulse_payload(d, 0))
+    _register_pro("walerts", "adm_walerts", widget_html_pro.alerts_html, "🚨 مرکز هشدار", widgets_pro.alerts_payload)
+    _register_pro("wtop", "adm_wtop", widget_html_pro.top_html, "🏆 برترین‌ها",
+                  lambda d: widgets_pro.top_payload(d, "p", "30"))
+    _register_pro("wanalysis", "adm_wanalysis", widget_html_pro.analysis_html, "📊 تحلیل فروش",
+                  lambda d: widgets_pro.analysis_payload(d, "h"))
 
     @router.callback_query(F.data == "adm_wqueue")
     async def cb_wqueue(call: CallbackQuery):
