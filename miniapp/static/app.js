@@ -5629,6 +5629,7 @@ function productProvisionFieldsHtml(panelServers, bankAllowed = true) {
     <div style="display:flex;gap:14px;align-items:center;margin-bottom:10px">
       <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="new-prod-source" value="bank" checked /> 📦 بانک کانفیگ</label>
       <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="new-prod-source" value="direct" /> 🔌 اتصال مستقیم به پنل</label>
+      <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="new-prod-source" value="panel" /> 🔑 فروش پنل (یوزر/پسورد)</label>
     </div>
     <div id="new-prod-direct-fields" style="display:none;margin-bottom:8px">
       <select class="input" id="new-prod-server" style="margin-bottom:8px">${panelServers.map((s) => `<option value="${s.id}">${s.name}</option>`).join("")}</select>
@@ -5826,6 +5827,15 @@ async function renderAdminProducts(body) {
     loadMiniExtraPanelTargets().catch(e => { document.getElementById("new-prod-error").textContent = e.message; });
   }));
   sourceRadios.forEach((r) => r.addEventListener("change", syncNewProdUserLimit));
+  const syncNewProdPanelKind = () => {
+    const isPanelKind = body.querySelector('input[name="new-prod-source"]:checked')?.value === "panel";
+    ["new-prod-duration", "new-prod-duration-unlimited"].forEach((id) => {
+      const el = document.getElementById(id);
+      const box = el ? (el.closest("label") || el) : null;
+      if (box) box.style.display = isPanelKind ? "none" : "";
+    });
+  };
+  sourceRadios.forEach((r) => r.addEventListener("change", syncNewProdPanelKind));
   syncNewProdUserLimit();
   if (document.getElementById("new-prod-server")) {
     loadAdminProductTargets(document.getElementById("new-prod-server").value, "new-prod-target-picker").then(() => loadMiniExtraPanelTargets()).catch(() => {});
@@ -5855,6 +5865,7 @@ async function renderAdminProducts(body) {
       base_users: Number(document.getElementById("new-prod-base-users")?.value || 0),
       extra_user_price: Number(document.getElementById("new-prod-extra-user-price")?.value || 0),
       max_users: Number(document.getElementById("new-prod-max-users")?.value || 0) };
+    if (sourceEl && sourceEl.value === "panel") { payload.product_kind = "panel_account"; payload.duration_days = 0; }
     if (isDirect) payload.renew_rules = collectMiniRenewRules("new-prod");
     if (isDirect) {
       const provision_server_id = Number(document.getElementById("new-prod-server").value);
@@ -6084,7 +6095,7 @@ async function renderAdminConfigs(body) {
     </div>
     <div class="card">
       <div class="eyebrow" style="margin-top:0">افزودن دسته‌ای کانفیگ</div>
-      <p class="hint-text">هر خط یک لینک کانفیگ (vmess/vless/...) وارد کن.</p>
+      <p class="hint-text">هر خط یک لینک کانفیگ (vmess/vless/...) وارد کن. برای محصول «فروش پنل» هر خط: آدرس | یوزر | پسورد | توضیحات</p>
       <textarea class="input" id="new-configs-bulk" rows="5" style="direction:ltr;text-align:left;resize:vertical"></textarea>
       <button class="btn" id="new-configs-save" style="margin-top:8px">➕ افزودن به انبار</button>
     </div>
