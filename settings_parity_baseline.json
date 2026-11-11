@@ -9,7 +9,10 @@
   "firebase_project_id",
   "firebase_sender_id",
   "master_sub_link",
-  "netmap_locations"
+  "netmap_locations",
+  "web_3d_auto_lite",
+  "web_3d_mobile",
+  "web_3d_mode"
  ],
  "mini_only": [
   "header_image_data"
