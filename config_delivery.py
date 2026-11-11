@@ -33,6 +33,7 @@ import qrcode
 logger = logging.getLogger(__name__)
 
 import dedicated_sub
+import delivery_extras
 from aiogram import Bot
 from aiogram.types import BufferedInputFile
 
@@ -553,6 +554,42 @@ async def notify_delivered_subscription(bot_token: str, db, user_tg_id: int, pro
         logger.exception("ثبت گزارش اشتراک تحویل‌شده ناموفق بود (user=%s, order=%s)", user_tg_id, order_id)
 
 
+async def _send_vpn_files(bot: Bot, user_tg_id: int, link: str, db) -> None:
+    """فایل‌های WireGuard/OpenVPN (نودها و پنل‌هایی مثل W-UI) را به‌صورت document می‌فرستد.
+    silent-fail: مشکل در این مرحله نباید تحویل اصلی سفارش را خراب کند."""
+    try:
+        files = await delivery_extras.collect_vpn_files(db, link)
+        if not files:
+            return
+        await bot.send_message(user_tg_id, localized("📎 فایل‌های اتصال این سرویس (WireGuard / OpenVPN):", db, user_tg_id))
+        for f in files:
+            try:
+                await bot.send_document(
+                    user_tg_id, BufferedInputFile(f["content"], filename=f["filename"]),
+                    caption=f["label"][:200],
+                )
+            except Exception:
+                logger.warning("ارسال فایل %s به کاربر %s ناموفق بود.", f["filename"], user_tg_id, exc_info=True)
+    except Exception:
+        logger.warning("ارسال فایل‌های VPN ناموفق بود.", exc_info=True)
+
+
+async def _send_product_extras(bot: Bot, user_tg_id: int, db, order_id, product_name: str) -> None:
+    """متن و استیکر اختصاصی محصول (اگر ادمین تعریف کرده باشد)."""
+    text, sticker = await asyncio.to_thread(delivery_extras.get_product_delivery_extras, db, order_id)
+    if text:
+        text = delivery_extras.render_product_text(text, product_name, order_id)
+        try:
+            await bot.send_message(user_tg_id, text)
+        except Exception:
+            logger.warning("ارسال متن اختصاصی محصول ناموفق بود.", exc_info=True)
+    if sticker:
+        try:
+            await bot.send_sticker(user_tg_id, sticker)
+        except Exception:
+            logger.warning("ارسال استیکر اختصاصی محصول ناموفق بود.", exc_info=True)
+
+
 async def deliver_config_to_user(
     bot: Bot,
     user_tg_id: int,
@@ -597,6 +634,9 @@ async def deliver_config_to_user(
         except Exception:
             logger.debug("تشخیص نوع پنل برای قالب تحویل ناموفق بود.", exc_info=True)
 
+    if db is not None and order_id and not is_test:
+        await _send_product_extras(bot, user_tg_id, db, order_id, product_name)
+
     for idx, link in enumerate(links, start=1):
         caption, extras = await prepare_delivery(link, product_name, idx, total, db=db, user_tg_id=user_tg_id, header_text=header_text, panel_type=delivery_panel_type)
 
@@ -610,6 +650,9 @@ async def deliver_config_to_user(
 
         for extra in extras:
             await _send_html(bot, user_tg_id, extra)
+
+        if db is not None:
+            await _send_vpn_files(bot, user_tg_id, link, db)
 
     if db is not None and not is_test:
         await notify_delivered_subscription(bot.token, db, user_tg_id, product_name, links, final_price, order_id)

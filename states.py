@@ -624,6 +624,8 @@ class AdminAddPanelServer(StatesGroup):
 
 class AdminEditProduct(StatesGroup):
     waiting_ai_desc = State()
+    waiting_delivery_text = State()
+    waiting_delivery_sticker = State()
     waiting_volume = State()
     waiting_src_volume = State()
     waiting_src_bank_days = State()

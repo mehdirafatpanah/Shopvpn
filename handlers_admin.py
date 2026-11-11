@@ -1496,6 +1496,96 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         else:
             await message.answer(tr("✅ توضیح AI ذخیره شد."))
 
+    @router.callback_query(F.data == "adm_deliver_vpnfiles_toggle")
+    async def cb_admin_deliver_vpnfiles_toggle(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        current = (await asyncio.to_thread(db.get_setting, "deliver_vpn_files_enabled", "1"))
+        new_value = "0" if current != "0" else "1"
+        (await asyncio.to_thread(db.set_setting, "deliver_vpn_files_enabled", new_value))
+        (await asyncio.to_thread(db.log_admin_action, call.from_user.id, "deliver_vpnfiles_toggle", f"وضعیت جدید: {new_value}"))
+        await safe_edit(call, db.get_text('handlers_admin.auto_8ec9e02c', '📤 تنظیمات ارسال کانفیگ:'), reply_markup=kb.delivery_settings_kb(db))
+        await call.answer(db.get_text('handlers_admin.auto_d5ebb39c', 'وضعیت تغییر کرد.'))
+
+    @router.callback_query(F.data.startswith("adm_prod_dtext:"))
+    async def cb_admin_prod_dtext(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_prod_dtext")
+        product = (await asyncio.to_thread(db.get_product, product_id)) if product_id is not None else None
+        if not product:
+            return await call.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
+        current = (product["delivery_text"] if "delivery_text" in product.keys() else "") or "—"
+        await state.update_data(editing_product_id=product_id)
+        await state.set_state(AdminEditProduct.waiting_delivery_text)
+        back_cb = f"adm_prod_cat:{product['category_id']}" if product["category_id"] is not None else "adm_products"
+        await safe_edit(
+            call,
+            tr(f"📝 متن اختصاصی تحویل «{product['name']}»\n\nمتن فعلی:\n{current}\n\n")
+            + tr("متن جدید را بفرست؛ بعد از ارسال کانفیگ و خلاصه‌ی مبلغ برای خریدار فرستاده می‌شود.\n"
+                 "متغیرهای قابل استفاده: {product_name} و {order_id}\n"
+                 "برای پاک کردن بنویسید: -"),
+            reply_markup=kb.admin_back_kb(back_cb))
+        await call.answer()
+
+    @router.message(AdminEditProduct.waiting_delivery_text)
+    async def process_prod_edit_delivery_text(message: Message, state: FSMContext):
+        data = await state.get_data()
+        product_id = data.get("editing_product_id")
+        product = (await asyncio.to_thread(db.get_product, product_id))
+        text = (message.text or message.caption or "").strip()
+        if not text:
+            return await message.answer(tr("⚠️ فقط متن بفرست (یا - برای پاک کردن)."))
+        await asyncio.to_thread(db.edit_product, product_id, delivery_text=("" if text == "-" else text[:3500]))
+        await asyncio.to_thread(db.log_admin_action, message.from_user.id, "product_delivery_text_edit",
+                                f"محصول «{product['name'] if product else product_id}»")
+        await state.clear()
+        if product:
+            products = (await asyncio.to_thread(db.get_products, product["category_id"], active_only=False))
+            await message.answer(tr("✅ متن تحویل محصول ذخیره شد."), reply_markup=kb.admin_products_list_kb(db, products))
+        else:
+            await message.answer(tr("✅ متن تحویل محصول ذخیره شد."))
+
+    @router.callback_query(F.data.startswith("adm_prod_dstk:"))
+    async def cb_admin_prod_dstk(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = callback_id(call.data, "adm_prod_dstk")
+        product = (await asyncio.to_thread(db.get_product, product_id)) if product_id is not None else None
+        if not product:
+            return await call.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
+        has_it = bool((product["delivery_sticker"] if "delivery_sticker" in product.keys() else "") or "")
+        await state.update_data(editing_product_id=product_id)
+        await state.set_state(AdminEditProduct.waiting_delivery_sticker)
+        back_cb = f"adm_prod_cat:{product['category_id']}" if product["category_id"] is not None else "adm_products"
+        await safe_edit(
+            call,
+            tr(f"🎭 استیکر اختصاصی تحویل «{product['name']}»\n\nوضعیت فعلی: {'تنظیم‌شده ✅' if has_it else 'تنظیم‌نشده'}\n\n")
+            + tr("یک استیکر بفرست تا بعد از تحویل این محصول برای خریدار ارسال شود.\nبرای پاک کردن بنویسید: -"),
+            reply_markup=kb.admin_back_kb(back_cb))
+        await call.answer()
+
+    @router.message(AdminEditProduct.waiting_delivery_sticker)
+    async def process_prod_edit_delivery_sticker(message: Message, state: FSMContext):
+        data = await state.get_data()
+        product_id = data.get("editing_product_id")
+        product = (await asyncio.to_thread(db.get_product, product_id))
+        if message.sticker:
+            value = message.sticker.file_id
+        elif (message.text or "").strip() == "-":
+            value = ""
+        else:
+            return await message.answer(tr("⚠️ باید یک استیکر بفرستی (یا - برای پاک کردن)."))
+        await asyncio.to_thread(db.edit_product, product_id, delivery_sticker=value)
+        await asyncio.to_thread(db.log_admin_action, message.from_user.id, "product_delivery_sticker_edit",
+                                f"محصول «{product['name'] if product else product_id}»")
+        await state.clear()
+        if product:
+            products = (await asyncio.to_thread(db.get_products, product["category_id"], active_only=False))
+            await message.answer(tr("✅ استیکر تحویل محصول ذخیره شد."), reply_markup=kb.admin_products_list_kb(db, products))
+        else:
+            await message.answer(tr("✅ استیکر تحویل محصول ذخیره شد."))
+
     @router.callback_query(F.data.startswith("adm_prod_vol:"))
     async def cb_admin_prod_vol(call: CallbackQuery, state: FSMContext):
         if not senior_admin_only(call.from_user.id):

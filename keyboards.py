@@ -2641,6 +2641,7 @@ def delivery_settings_kb(db) -> InlineKeyboardMarkup:
     (برای هر سه مسیر تحویل: بانک کانفیگ، محصول متصل به پنل، ساخت کانفیگ شخصی، و کانفیگ تست)."""
     sub_link_on = db.get_setting("deliver_sub_link_enabled", "1") != "0"
     individual_on = db.get_setting("deliver_individual_configs_enabled", "1") != "0"
+    vpn_files_on = db.get_setting("deliver_vpn_files_enabled", "1") != "0"
     post_text_set = bool((db.get_setting("post_delivery_custom_text", "") or "").strip())
     test_text_set = bool((db.get_setting("test_post_delivery_text", "") or "").strip())
     test_text_label = "🧪 متن دلخواه بعد از کانفیگ تست: تنظیم‌شده" if test_text_set else "🧪 متن دلخواه بعد از کانفیگ تست: تنظیم‌نشده"
@@ -2657,6 +2658,7 @@ def delivery_settings_kb(db) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text=sub_link_text, callback_data="adm_deliver_sublink_toggle")],
         [InlineKeyboardButton(text=individual_text, callback_data="adm_deliver_individual_toggle")],
+        [InlineKeyboardButton(text=tr("✅ ارسال فایل WireGuard/OpenVPN: فعال" if vpn_files_on else "❌ ارسال فایل WireGuard/OpenVPN: غیرفعال"), callback_data="adm_deliver_vpnfiles_toggle")],
         [InlineKeyboardButton(text=post_text_label, callback_data="adm_edit_post_delivery_text")],
         [InlineKeyboardButton(text=test_text_label, callback_data="adm_edit_test_delivery_text")],
         [InlineKeyboardButton(text=qr_bg_label, callback_data="adm_qr_background_menu")],
@@ -3302,6 +3304,12 @@ def admin_products_list_kb(db, products, category_id=None) -> InlineKeyboardMark
         rows.append(
             [InlineKeyboardButton(text=tr("🤖 توضیح AI ✅" if _has_ai else "🤖 توضیح برای AI"), callback_data=f"adm_prod_aidesc:{p['id']}")]
         )
+        _has_dtext = "delivery_text" in p.keys() and (p["delivery_text"] or "").strip()
+        _has_dstk = "delivery_sticker" in p.keys() and (p["delivery_sticker"] or "").strip()
+        rows.append([
+            InlineKeyboardButton(text=tr("📝 متن تحویل ✅" if _has_dtext else "📝 متن تحویل"), callback_data=f"adm_prod_dtext:{p['id']}"),
+            InlineKeyboardButton(text=tr("🎭 استیکر تحویل ✅" if _has_dstk else "🎭 استیکر تحویل"), callback_data=f"adm_prod_dstk:{p['id']}"),
+        ])
         compare = p["compare_price"] if "compare_price" in p.keys() else 0
         compare_label = f"🏷 تخفیف: {plain_range(compare, p['price'])}" if compare and compare > p["price"] else "🏷 تنظیم تخفیف"
         rows.append(
