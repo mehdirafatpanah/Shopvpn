@@ -59,6 +59,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 import logging
+logger = logging.getLogger("miniapp")
 from types import SimpleNamespace
 import sqlite3
 import ipaddress
