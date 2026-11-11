@@ -524,6 +524,49 @@ async def _send_html(bot: Bot, chat_id: int, text: str) -> None:
             pass
 
 
+async def _subscription_report_details(db, link_list, svc) -> tuple:
+    """متن «مشخصات اشتراک» گزارش تاپیک: لینک اصلی پنل + لینک ساب اختصاصی + لینک همه‌ی پنل‌های
+    یک محصول چندپنلی (هر سرویس جدا). خروجی: (متن, نام پنل‌های اضافه)."""
+    lines, panel_names = [], []
+    seen = set()
+
+    def add(label, url):
+        if url and url not in seen:
+            seen.add(url)
+            lines.append(f"{label}: {url}")
+
+    for n, upstream in enumerate(link_list, start=1):
+        prefix = f"[{n}] " if len(link_list) > 1 else ""
+        upstream = await asyncio.to_thread(dedicated_sub.upstream_for_link, db, upstream)
+        add(prefix + "🔗 لینک اصلی (پنل)", upstream)
+        try:
+            dedicated = await asyncio.to_thread(dedicated_sub.dedicated_link_for_upstream, db, upstream)
+            if dedicated != upstream:
+                add(prefix + "🌐 لینک اختصاصی", dedicated)
+        except Exception:
+            pass
+        try:
+            cc = await asyncio.to_thread(db.ds_find_config_by_sub_url, upstream)
+            panel_links = await asyncio.to_thread(db.panel_links_for_config, cc["id"]) if cc is not None else []
+            for pl in panel_links:
+                try:
+                    name = ""
+                    srv = await asyncio.to_thread(db.get_panel_server, int(pl["panel_server_id"]))
+                    if srv:
+                        name = srv["name"] or ""
+                    if name and name not in panel_names:
+                        panel_names.append(name)
+                    add(prefix + f"🔗 پنل {name or pl['panel_server_id']}", pl["subscription_url"])
+                except Exception:
+                    continue
+        except Exception:
+            logger.debug("خواندن پنل‌های اضافه‌ی سرویس برای گزارش ناموفق بود.", exc_info=True)
+    if not lines:
+        fallback = svc.get("sub_url") or ", ".join(svc.get("configs") or [])
+        return fallback, panel_names
+    return "\n".join(lines), panel_names
+
+
 async def notify_delivered_subscription(bot_token: str, db, user_tg_id: int, product_name: str,
                                          links, final_price=None, order_id=None) -> None:
     """ثبت تحویل در تاپیک اختصاصی؛ از مسیر بات و پنل وب مشترک استفاده می‌شود."""
@@ -532,7 +575,8 @@ async def notify_delivered_subscription(bot_token: str, db, user_tg_id: int, pro
     try:
         import report_router
         from report_router import build_delivered_subscription_event
-        link = links[0] if isinstance(links, (list, tuple)) and links else (links or "")
+        link_list = [l for l in (links if isinstance(links, (list, tuple)) else [links]) if l]
+        link = link_list[0] if link_list else ""
         svc = await collect_service_info(link, product_name) if link else {}
         user = await asyncio.to_thread(db.get_user, int(user_tg_id))
         order = await asyncio.to_thread(db.get_order, int(order_id)) if order_id else None
@@ -541,13 +585,16 @@ async def notify_delivered_subscription(bot_token: str, db, user_tg_id: int, pro
         server = await asyncio.to_thread(db.get_panel_server, int(server_id)) if server_id else None
         panel_type = server["panel_type"] if server else ""
         panel_name = server["name"] if server else panel_type
+        details, extra_panel_names = await _subscription_report_details(db, link_list, svc)
+        if extra_panel_names:
+            panel_name = " + ".join([n for n in [panel_name] + extra_panel_names if n])
         event = build_delivered_subscription_event(
             user_id=user_tg_id, username=(user["username"] if user else "") or "",
             account_name=(user["first_name"] if user else "") or "", product_name=product_name,
             panel_name=panel_name or svc.get("protocol") or "نامشخص",
             volume=svc.get("volume") or "", duration=svc.get("duration") or "",
             order_id=order_id, amount=final_price,
-            subscription_details=svc.get("sub_url") or ", ".join(svc.get("configs") or []),
+            subscription_details=details,
         )
         await report_router.notify_raw(bot_token, db, "delivered_stock", event, parse_mode="HTML")
     except Exception:

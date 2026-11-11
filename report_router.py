@@ -510,6 +510,23 @@ def format_event(title: str, rows=(), *, icon: str = "", note: str = "", with_ti
     return "\n".join(lines)
 
 
+def _subscription_details_html(details: str):
+    """هر خط «برچسب: لینک» جدا نمایش داده می‌شود و خودِ لینک داخل code است (کپی با یک لمس)."""
+    if not details:
+        return ""
+    out = []
+    for line in str(details).splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        label, sep, url = line.rpartition(": ")
+        if sep and "://" in url:
+            out.append(f"{html.escape(label)}:\n<code>{html.escape(url)}</code>")
+        else:
+            out.append(f"<code>{html.escape(line)}</code>")
+    return Html("\n" + "\n".join(out))
+
+
 def build_delivered_subscription_event(*, user_id: int, username: str = "", account_name: str = "",
                                         product_name: str = "", panel_name: str = "", volume: str = "",
                                         duration: str = "", order_id=None, amount=None, payment_method="",
@@ -526,7 +543,7 @@ def build_delivered_subscription_event(*, user_id: int, username: str = "", acco
         ("شماره سفارش", f"#{order_id}" if order_id else ""),
         ("مبلغ", f"{int(amount):,} تومان" if amount not in (None, "") else ""),
         ("روش پرداخت", payment_method),
-        ("مشخصات اشتراک", code(subscription_details) if subscription_details else ""),
+        ("مشخصات اشتراک", _subscription_details_html(subscription_details)),
     ], icon="📦")
 
 
