@@ -1451,6 +1451,7 @@ def api_catalog(auth=Depends(get_verified_user)):
             "id": c["id"],
             "parent_id": c["parent_id"],
             "name": c["name"],
+            "description": c["description"] if "description" in c.keys() else "",
             "button_color": c["button_color"] if "button_color" in c.keys() else None,
             "products": [
                 {
@@ -5054,12 +5055,14 @@ def api_admin_save_banners(body: BannersUpdate, auth=Depends(require_senior_admi
 class CategoryCreate(BaseModel):
     name: str
     parent_id: Optional[int] = None
+    description: str = ""
 
 
 class CategoryUpdate(BaseModel):
     name: Optional[str] = None
     parent_id: Optional[int] = None
     button_color: Optional[str] = None
+    description: Optional[str] = None
 
 
 class ProductCreate(BaseModel):
@@ -5120,6 +5123,7 @@ def api_admin_list_categories(auth=Depends(require_senior_admin)):
             "id": c["id"], "name": paths.get(c["id"], c["name"]), "is_active": bool(c["is_active"]),
             "parent_id": c["parent_id"], "product_count": len(products),
             "button_color": c["button_color"] if "button_color" in c.keys() else None,
+            "description": c["description"] if "description" in c.keys() else "",
         })
     return result
 
@@ -5131,6 +5135,8 @@ def api_admin_create_category(body: CategoryCreate, auth=Depends(require_senior_
         raise HTTPException(status_code=400, detail=tr("نام دسته‌بندی نمی‌تواند خالی باشد."))
     try:
         cat_id = db.add_category(body.name.strip(), parent_id=getattr(body, "parent_id", None))
+        if (body.description or "").strip():
+            db.set_category_description(cat_id, body.description.strip())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=tr(str(e)))
     return {"id": cat_id}
@@ -5152,6 +5158,8 @@ def api_admin_edit_category(cat_id: int, body: CategoryUpdate, auth=Depends(requ
                 db.edit_category(cat_id, body.name.strip())
         if "button_color" in fields_set:
             db.set_category_button_color(cat_id, body.button_color)
+        if "description" in fields_set:
+            db.set_category_description(cat_id, body.description or "")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=tr(str(e)))
     return {"status": "ok"}
