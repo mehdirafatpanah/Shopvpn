@@ -4552,6 +4552,7 @@ function productProvisionFieldsHtml(panelServers, sshNodes = [], prefill = null)
     <div class="form-row" style="gap:12px;align-items:center">
       <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="prod-source" value="bank" ${isDirect ? '' : 'checked'}> بانک کانفیگ</label>
       <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="prod-source" value="direct" ${isDirect ? 'checked' : ''}> ساخت خودکار</label>
+      ${prefill ? '' : '<label style="display:flex;align-items:center;gap:4px"><input type="radio" name="prod-source" value="panel"> 🔑 فروش پنل (یوزر/پسورد)</label>'}
     </div>
     <div id="prod-direct-fields" class="form-grid" style="display:${isDirect ? '' : 'none'}">
       <label class="field"><span>نوع مقصد</span><select class="input" id="prod-target-type"><option value="vpn" ${target === 'vpn' ? 'selected' : ''}>پنل VPN</option>${panelServers.some(s => s.panel_type === 'stealth') ? `<option value="vless" ${target === 'vless' ? 'selected' : ''}>نود VLESS</option>` : ''}${sshNodes.length || (prefill && prefill.provision_ssh_node_id) ? `<option value="ssh" ${target === 'ssh' ? 'selected' : ''}>نود SSH (Linux Agent)</option><option value="both" ${target === 'both' ? 'selected' : ''} ${comboLocked && target !== 'both' ? 'disabled' : ''}>ترکیبی VPN + SSH (حجم و زمان مشترک)${comboLocked ? ' — نیازمند ساب اختصاصی فعال' : ''}</option>` : ''}<option value="multi" ${target === 'multi' ? 'selected' : ''} ${comboLocked && target !== 'multi' ? 'disabled' : ''}>چند پنل / چند نود (حجم و زمان مشترک)${comboLocked ? ' — نیازمند ساب اختصاصی فعال' : ''}</option></select><span class="card-sub" id="prod-multi-hint" style="display:${comboLocked ? '' : 'none'}">ترکیب و چند مقصدی فقط وقتی ساب اختصاصی فعال باشد کار می‌کند.</span></label>
@@ -4629,7 +4630,9 @@ function wireProductProvisionToggle(b) {
   wireRenewRules(b);
   $$('input[name="prod-source"]', b).forEach(r => r.addEventListener('change', () => {
     const df = $('#prod-direct-fields', b);
-    if (df) df.style.display = $('input[name="prod-source"]:checked', b).value === 'direct' ? '' : 'none';
+    const srcVal = $('input[name="prod-source"]:checked', b).value;
+    if (df) df.style.display = srcVal === 'direct' ? '' : 'none';
+    ['#prod-duration', '#prod-renew-rules'].forEach(sel => { const el = $(sel, b); const box = el ? (el.closest('.field') || el) : null; if (box) box.style.display = srcVal === 'panel' ? 'none' : ''; });
   }));
   const targetType = $('#prod-target-type', b);
   const syncPanelOptions = () => {
@@ -4756,6 +4759,7 @@ function readProductProvisionFields(b) {
   const durInput = $('#prod-duration', b);
   const duration_days = durationUnlimited ? 0 : (Number(durInput ? durInput.value : 0) || 30);
   const userLimit = () => ({ base_users: Number($('#prod-base-users', b)?.value || 0), extra_user_price: Number($('#prod-extra-user-price', b)?.value || 0), max_users: Number($('#prod-max-users', b)?.value || 0), renew_rules: collectRenewRules(b) });
+  if (source === 'panel') return { ok: true, source: 'panel', product_kind: 'panel_account', provision_server_id: null, provision_ssh_node_id: null, extra_panel_ids: [], extra_ssh_node_ids: [], auto_provision_volume_gb: null, duration_days: 0 };
   if (!isDirect) return { ok: true, source: 'bank', provision_server_id: null, provision_ssh_node_id: null, extra_panel_ids: [], extra_ssh_node_ids: [], auto_provision_volume_gb: null, duration_days, ...userLimit() };
   const target = $('#prod-target-type', b)?.value || 'vpn';
   const volUnlimitedCb = $('#prod-volume-unlimited', b);
@@ -4914,7 +4918,7 @@ function openProductEditModal(product, categories, panelServers, sshNodes) {
       if (!prov.ok) return;
       const payload = {
         category_id: Number($('#pe-cat', b).value), name, price: disc.price, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
-        description: $('#pe-desc', b).value, btn_style: readProductBtnStyle(b, 'pe'), ai_description: $('#pe-ai-desc', b)?.value ?? '', duration_days: prov.duration_days,
+        description: $('#pe-desc', b).value, btn_style: readProductBtnStyle(b, 'pe'), ai_description: $('#pe-ai-desc', b)?.value ?? '', duration_days: prov.duration_days, product_kind: prov.product_kind || 'config',
         source: prov.source,
       };
       if (prov.source === 'direct') {
@@ -5080,7 +5084,7 @@ async function renderCatalog() {
       try {
         await apiPost('/products', {
           category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
-          description: $('#prod-desc', b).value, btn_style: readProductBtnStyle(b, 'prod'), ai_description: $('#prod-ai-desc', b)?.value || '', duration_days: prov.duration_days,
+          description: $('#prod-desc', b).value, btn_style: readProductBtnStyle(b, 'prod'), ai_description: $('#prod-ai-desc', b)?.value || '', duration_days: prov.duration_days, product_kind: prov.product_kind || 'config',
           provision_server_id: prov.provision_server_id, provision_target_values: prov.provision_target_values, extra_panel_target_values: prov.extra_panel_target_values, provision_ssh_node_id: prov.provision_ssh_node_id, provision_ssh_protocol: prov.provision_ssh_protocol, extra_panel_ids: prov.extra_panel_ids, extra_ssh_node_ids: prov.extra_ssh_node_ids,
           auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods, base_users: prov.base_users, extra_user_price: prov.extra_user_price, max_users: prov.max_users, renew_rules: prov.renew_rules,
         });
@@ -5213,7 +5217,7 @@ function renderCatalogBento(categories, products, panelServers, sshNodes, paymen
       try {
         await apiPost('/products', {
           category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
-          description: $('#prod-desc', b).value, btn_style: readProductBtnStyle(b, 'prod'), ai_description: $('#prod-ai-desc', b)?.value || '', duration_days: prov.duration_days,
+          description: $('#prod-desc', b).value, btn_style: readProductBtnStyle(b, 'prod'), ai_description: $('#prod-ai-desc', b)?.value || '', duration_days: prov.duration_days, product_kind: prov.product_kind || 'config',
           provision_server_id: prov.provision_server_id, provision_target_values: prov.provision_target_values, extra_panel_target_values: prov.extra_panel_target_values, provision_ssh_node_id: prov.provision_ssh_node_id, provision_ssh_protocol: prov.provision_ssh_protocol, extra_panel_ids: prov.extra_panel_ids, extra_ssh_node_ids: prov.extra_ssh_node_ids,
           auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods, base_users: prov.base_users, extra_user_price: prov.extra_user_price, max_users: prov.max_users, renew_rules: prov.renew_rules,
         });
@@ -5346,7 +5350,7 @@ function renderCatalogBrutalist(categories, products, panelServers, sshNodes, pa
       try {
         await apiPost('/products', {
           category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
-          description: $('#prod-desc', b).value, btn_style: readProductBtnStyle(b, 'prod'), ai_description: $('#prod-ai-desc', b)?.value || '', duration_days: prov.duration_days,
+          description: $('#prod-desc', b).value, btn_style: readProductBtnStyle(b, 'prod'), ai_description: $('#prod-ai-desc', b)?.value || '', duration_days: prov.duration_days, product_kind: prov.product_kind || 'config',
           provision_server_id: prov.provision_server_id, provision_target_values: prov.provision_target_values, extra_panel_target_values: prov.extra_panel_target_values, provision_ssh_node_id: prov.provision_ssh_node_id, provision_ssh_protocol: prov.provision_ssh_protocol, extra_panel_ids: prov.extra_panel_ids, extra_ssh_node_ids: prov.extra_ssh_node_ids,
           auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods, base_users: prov.base_users, extra_user_price: prov.extra_user_price, max_users: prov.max_users, renew_rules: prov.renew_rules,
         });
@@ -5392,15 +5396,16 @@ async function showConfigBank(productId) {
   const configs = res.items || [];
   const usedConfigs = usedRes.items || [];
   const usedCount = res.used_count || 0;
-  openModal('بانک کانفیگ', `
+  const isPanelKind = res.product_kind === 'panel_account';
+  openModal(isPanelKind ? 'موجودی پنل‌ها' : 'بانک کانفیگ', `
     <div class="cfg-stats">
       <div class="cfg-stat"><span>لینک‌های آزاد</span><b class="mono">${fmt(configs.length)}</b></div>
       <div class="cfg-stat"><span>تحویل‌شده</span><b class="mono">${fmt(usedCount)}</b></div>
       <div class="cfg-stat"><span>مجموع</span><b class="mono">${fmt(configs.length + usedCount)}</b></div>
     </div>
     <label class="field" style="margin-top:16px">
-      <span>افزودن لینک جدید</span>
-      <textarea class="input" id="new-links" rows="6" placeholder="هر خط یک لینک کانفیگ..."></textarea>
+      <span>${isPanelKind ? 'افزودن پنل جدید' : 'افزودن لینک جدید'}</span>
+      <textarea class="input" id="new-links" rows="6" placeholder="${isPanelKind ? 'هر خط یک پنل: آدرس | یوزر | پسورد | توضیحات' : 'هر خط یک لینک کانفیگ...'}"></textarea>
     </label>
     <button class="btn btn-primary btn-block" id="add-links" style="margin-top:10px">افزودن لینک‌ها</button>
     <h4 class="cfg-list-title">لینک‌های آزاد (${configs.length})</h4>
