@@ -687,7 +687,7 @@ class CatalogMixin:
                       provision_server_id=..., payment_methods=..., category_id: int = None,
                       provision_ssh_node_id=..., provision_ssh_protocol=...,
                       compare_price=..., discount_days=..., discount_max_uses=..., provision_target_config=...,
-                      ai_description: str = None, btn_style=...):
+                      ai_description: str = None, btn_style=..., delivery_text=..., delivery_sticker=...):
         # نکته: is_auto_provision/auto_provision_volume_gb/provision_server_id از سنتینل
         # Ellipsis استفاده می‌کنند (مثل payment_methods) چون باید بتوان آن‌ها را عمداً
         # NULL/False کرد (مثلاً وقتی محصول از «اتصال مستقیم به پنل» به «بانک کانفیگ»
@@ -705,6 +705,10 @@ class CatalogMixin:
             fields.append("duration_days=?"); values.append(duration_days)
         if ai_description is not None:
             fields.append("ai_description=?"); values.append(str(ai_description).strip()[:2000])
+        if delivery_text is not ...:
+            fields.append("delivery_text=?"); values.append(str(delivery_text or "").strip()[:3500])
+        if delivery_sticker is not ...:
+            fields.append("delivery_sticker=?"); values.append(str(delivery_sticker or "").strip()[:200])
         if is_auto_provision is not ...:
             fields.append("is_auto_provision=?"); values.append(1 if is_auto_provision else 0)
         if auto_provision_volume_gb is not ...:

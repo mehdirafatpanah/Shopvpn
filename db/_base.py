@@ -2097,6 +2097,9 @@ class DatabaseBase:
             ("products", "max_users", "INTEGER DEFAULT 0"),
             ("products", "base_users", "INTEGER DEFAULT 0"),
             ("products", "ai_description", "TEXT DEFAULT ''"),
+            # متن و استیکر اختصاصی تحویل هر محصول (file_id استیکر تلگرام)؛ خالی = ندارد.
+            ("products", "delivery_text", "TEXT DEFAULT ''"),
+            ("products", "delivery_sticker", "TEXT DEFAULT ''"),
             # قیمت قبل از تخفیف (فقط نمایشی: خط‌خورده کنار قیمت فعلی). 0 یعنی بدون تخفیف.
             ("products", "compare_price", "INTEGER DEFAULT 0"),
             # محدودیت تخفیف محصول: انقضا (UTC ISO)، سقف تعداد خرید و شمارنده‌ی خریدهای انجام‌شده.
