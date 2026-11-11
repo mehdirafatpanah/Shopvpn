@@ -14,6 +14,7 @@ import html
 import time
 import random
 import account_naming
+import widgets
 import re
 import asyncio
 import logging
@@ -3128,6 +3129,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 f"⏳ مدت اعتبار: {settings['duration_days']} روز (ثابت)"),
                 reply_markup=kb.cancel_kb(),
             )
+        await widgets.send_custom_plan(message.bot, db, message.chat.id, product_id)
 
     @router.message(CustomConfigFlow.waiting_duration)
     async def custom_config_receive_duration(message: Message, state: FSMContext):
@@ -3328,6 +3330,46 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await message.answer(
                 db.get_text('handlers_user.auto_7c0e859b', '⛔️ خطای غیرمنتظره\u200cای در پردازش سفارش رخ داد.\nاگر مبلغی از کیف پول شما کسر شده بود، به\u200cطور کامل بازگردانده شد. لطفاً دوباره تلاش کنید یا با پشتیبانی تماس بگیرید.')
             )
+
+    async def _widget_custom_go(bot, user, chat_id, state, volume_gb, days):
+        current = await state.get_state()
+        if current not in (CustomConfigFlow.waiting_volume.state, CustomConfigFlow.waiting_duration.state):
+            return "⌛ این درخواست منقضی شده؛ از منو دوباره شروع کنید.", None
+        data = await state.get_data()
+        product_id = data.get("product_id")
+        product = (await asyncio.to_thread(db.get_custom_config_product, product_id)) if product_id else None
+        if product:
+            low, high = product["min_gb"], product["max_gb"]
+            user_choice = product["duration_mode"] == "user_choice"
+            min_days, max_days = product["min_days"] or 1, product["max_days"] or 90
+            fixed_days = product["duration_days"]
+            price = await asyncio.to_thread(db.calc_custom_config_product_price, product_id, volume_gb)
+        else:
+            settings = await asyncio.to_thread(db.get_custom_config_settings)
+            low, high = settings["min_gb"], settings["max_gb"]
+            user_choice = False
+            min_days = max_days = 0
+            fixed_days = settings["duration_days"]
+            price = await asyncio.to_thread(db.calc_custom_config_price, volume_gb)
+        if volume_gb < low or volume_gb > high:
+            return f"❌ حجم باید بین {low} تا {high} گیگابایت باشد.", None
+        if user_choice:
+            if days < min_days or days > max_days:
+                return f"❌ مدت باید بین {min_days} تا {max_days} روز باشد.", None
+        else:
+            days = fixed_days
+        if price <= 0:
+            return "⚠️ قیمت‌گذاری این بخش هنوز تنظیم نشده.", None
+
+        async def run():
+            await state.update_data(custom_volume_gb=volume_gb, custom_price=price)
+            sent = await bot.send_message(chat_id, "⏳ در حال ثبت سفارش...")
+            message = sent.model_copy(update={"from_user": user}).as_(bot)
+            await _custom_config_finalize_order(message, state, days)
+
+        return "✅ ثبت شد؛ ادامه‌ی پرداخت در چت.", run
+
+    widgets.register_custom_hook(db, _widget_custom_go)
 
     @router.callback_query(F.data == "pay_card2card", CustomConfigFlow.waiting_receipt)
     async def cb_pay_card2card_custom_config(call: CallbackQuery, state: FSMContext):

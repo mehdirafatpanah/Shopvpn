@@ -15,6 +15,7 @@ import os
 import time
 
 from aiogram import Bot, Dispatcher
+import widgets
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -465,7 +466,9 @@ class BotManager:
                 fsm_db_path,
             )
             fsm_storage = MemoryStorage()
-        dp = Dispatcher(storage=fsm_storage)
+        dp = widgets.WidgetDispatcher(storage=fsm_storage)
+        dp.widget_hub = widgets.WidgetHub(db)
+        dp.include_router(widgets.create_router(db))
         async def _error_with_report(event: ErrorEvent, _bot=bot, _db=db) -> bool:
             await _report_error_to_group(_bot, _db, event)
             return await _global_error_handler(event)
@@ -531,7 +534,7 @@ class BotManager:
                     webhook_url,
                     secret_token=WEBHOOK_SECRET or None,
                     drop_pending_updates=True,
-                    allowed_updates=dp.resolve_used_update_types(),
+                    allowed_updates=widgets.allowed_updates(dp),
                 )
             except Exception:
                 logger.warning(
@@ -553,7 +556,7 @@ class BotManager:
                     "delete_webhook برای db_path=%s ناموفق بود؛ راه‌اندازی بات ادامه می‌یابد.",
                     db_path, exc_info=True,
                 )
-            task = asyncio.create_task(dp.start_polling(bot))
+            task = asyncio.create_task(dp.start_polling(bot, allowed_updates=widgets.allowed_updates(dp)))
         await self._sync_menu_button(bot, db)
         reminder_task = asyncio.create_task(renewal_reminder_loop(bot, db))
         connect_alert_task = asyncio.create_task(connect_alert_loop(bot, db))

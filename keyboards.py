@@ -1794,6 +1794,8 @@ ADMIN_PANEL_ITEMS = [
     ("adm_deeplink_tools", "🔗 دیپ‌لینک و پست کانال", "adm_deeplink_tools"),
     ("adm_cposts", "🤖 مدیریت محتوای کانال با AI", "adm_cposts"),
     ("adm_stats", "📊 آمار فروش", "adm_stats"),
+    ("adm_wstats", "📈 آمار ویجتی (تعاملی)", "adm_wstats"),
+    ("adm_wfeat", "🎛 قابلیت‌ها (ویجت)", "adm_wfeat"),
     ("adm_user_search", "👥 مدیریت کاربران", "adm_stats_user"),
     ("adm_cfg_search", "🔎 جستجوی کانفیگ", "adm_cfg_search"),
     ("adm_backup_menu", "🗄 بکاپ و بازیابی", "adm_backup_menu"),
@@ -1905,7 +1907,7 @@ ADMIN_HUBS = [
         ("زبان", ["adm_lang_settings", "adm_translation_settings"]),
     ]),
     ("management", "⚙️ ادمین، آمار و سیستم", [
-        ("آمار و کاربران", ["adm_stats", "adm_user_search", "adm_cfg_search"]),
+        ("آمار و کاربران", ["adm_stats", "adm_wstats", "adm_wfeat", "adm_user_search", "adm_cfg_search"]),
         ("ادمین و امنیت", ["adm_admins_menu", "adm_spam_settings"]),
         ("سیستم", [
             "adm_backup_menu", "adm_update", "adm_gswitch", "adm_report_group",
