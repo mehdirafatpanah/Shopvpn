@@ -489,6 +489,33 @@
   }
 
   function buildHero() {
+    if (!window.ShopVPNCinema || !window.ShopVPNCinema.supported()) return buildClassicHero();
+    var node = h("div", { class: "hero-stack" });
+    var ctl = null;
+    var classic = null;
+    return {
+      node: node,
+      start: function () {
+        try {
+          ctl = window.ShopVPNCinema.mount({ host: node, lang: lang, t: t, fmt: fmt, word: S.brand.name || "ShopVPN" });
+        } catch (e) { ctl = null; }
+        if (ctl) return;
+        classic = buildClassicHero();
+        node.textContent = "";
+        node.appendChild(classic.node);
+        classic.start();
+      },
+      bind: function (c) {
+        if (classic) { classic.bind(c); return; }
+        if (!ctl) return;
+        if (S.brand.name) ctl.setWord(S.brand.name);
+        if (c.tagline) ctl.setLead(c.tagline);
+        ctl.setPlans(allProducts(c).filter(function (p) { return p.in_stock; }).slice(0, 9));
+      }
+    };
+  }
+
+  function buildClassicHero() {
     var lead = h("p", { class: "lead", text: t("hero_sub") });
     var quick = h("div", { class: "quick" });
     var tunnelHost = h("div", { class: "tunnel" });
