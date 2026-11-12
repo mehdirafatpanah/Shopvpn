@@ -1,0 +1,5 @@
+{
+  "app.js": {"src": "9656e091ad", "out": "app.min.js"},
+  "i18n.js": {"src": "610f5110bd", "out": "i18n.min.js"},
+  "style.css": {"src": "09446f108f", "out": "style.min.css"}
+}
