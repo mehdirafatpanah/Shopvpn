@@ -49,7 +49,9 @@ class NoCacheStaticFiles(StaticFiles):
 
     async def get_response(self, path, scope):
         response = await super().get_response(path, scope)
-        if response.status_code in (200, 304) and b"v=" in scope.get("query_string", b""):
+        if response.status_code in (200, 304) and (
+            b"v=" in scope.get("query_string", b"") or path.startswith("fonts/") and path.endswith(".woff2")
+        ):
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
 from pydantic import BaseModel
@@ -2141,10 +2143,10 @@ def api_notifications_summary(admin=Depends(get_current_admin)):
     داده می‌شود، چون خودِ endpointهای /api/support هم به مجوز خاصی گیر نخورده‌اند."""
     out = {}
     if admin["role"] == "owner" or "orders" in admin["permissions"]:
-        out["orders"] = len(db.get_orders_awaiting_review())
-        out["topups"] = len(db.get_pending_topups())
+        out["orders"] = db.count_orders_awaiting_review()
+        out["topups"] = db.count_pending_topups()
     if admin["role"] == "owner" or "tickets" in admin["permissions"]:
-        out["tickets"] = len(db.get_all_tickets("open"))
+        out["tickets"] = db.count_tickets_by_status("open")
     out["support"] = db.count_unread_support_conversations()
     return out
 
@@ -8980,16 +8982,24 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 app.mount("/assets", NoCacheStaticFiles(directory=STATIC_DIR), name="assets")
 
 
-_CHUNK_FILES = {"app.js", "i18n.js"}
+_CHUNK_FILES = {
+    "app.js": "app.js",
+    "i18n.js": "i18n.js",
+    "app.min.js": os.path.join("built", "app.min.js"),
+    "i18n.min.js": os.path.join("built", "i18n.min.js"),
+}
 _CHUNK_SIZE = 40000
 
 
 @app.get("/_chunk/{name}/{index}")
 def serve_asset_chunk(name: str, index: int, request: Request):
-    """Serves a big static script in small slices for clients whose connection drops large transfers."""
-    if name not in _CHUNK_FILES or index < 0:
+    """Fallback only: serves a big static script in small slices for clients whose connection drops large transfers."""
+    rel = _CHUNK_FILES.get(name)
+    if rel is None or index < 0:
         raise HTTPException(404)
-    path = os.path.join(STATIC_DIR, name)
+    path = os.path.join(STATIC_DIR, rel)
+    if not os.path.isfile(path):
+        raise HTTPException(404)
     total = max(1, -(-os.path.getsize(path) // _CHUNK_SIZE))
     if index >= total:
         raise HTTPException(404)
@@ -9051,11 +9061,55 @@ def _asset_version(filename: str) -> str:
     return file_digest(os.path.join(STATIC_DIR, filename))
 
 
+_BUILT_MANIFEST = {"mtime": None, "data": {}}
+
+
+def _built_manifest() -> dict:
+    path = os.path.join(STATIC_DIR, "built", "manifest.json")
+    try:
+        mtime = os.stat(path).st_mtime_ns
+    except OSError:
+        return {}
+    if _BUILT_MANIFEST["mtime"] != mtime:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            data = {}
+        _BUILT_MANIFEST["mtime"] = mtime
+        _BUILT_MANIFEST["data"] = data
+    return _BUILT_MANIFEST["data"]
+
+
+def _asset_url(filename: str) -> str:
+    """URL of the minified build when it matches the current source, otherwise of the source file itself."""
+    entry = _built_manifest().get(filename)
+    if entry and entry.get("src") == _asset_version(filename):
+        out = os.path.join("built", entry["out"])
+        if os.path.isfile(os.path.join(STATIC_DIR, out)):
+            return f"/assets/built/{entry['out']}?v={file_digest(os.path.join(STATIC_DIR, out))}"
+    return f"/assets/{filename}?v={_asset_version(filename)}"
+
+
+_FONTS_BLOCK_RE = re.compile(r"<!--SV_FONTS_START-->.*?<!--SV_FONTS_END-->", re.S)
+
+
 def _bust_asset_cache(html: str) -> str:
-    html = html.replace('src="/assets/app.js"', f'src="/assets/app.js?v={_asset_version("app.js")}"')
-    html = html.replace('data-app="/assets/app.js"', f'data-app="/assets/app.js?v={_asset_version("app.js")}"')
-    html = html.replace('data-i18n="/assets/i18n.js"', f'data-i18n="/assets/i18n.js?v={_asset_version("i18n.js")}"')
-    html = html.replace('href="/assets/style.css"', f'href="/assets/style.css?v={_asset_version("style.css")}"')
+    app_url = _asset_url("app.js")
+    i18n_url = _asset_url("i18n.js")
+    html = html.replace('src="/assets/app.js"', f'src="{app_url}"')
+    html = html.replace('data-app="/assets/app.js"', f'data-app="{app_url}"')
+    html = html.replace('data-i18n="/assets/i18n.js"', f'data-i18n="{i18n_url}"')
+    html = html.replace('href="/assets/style.css"', f'href="{_asset_url("style.css")}"')
+    html = html.replace(
+        "<!--SV_PRELOAD-->",
+        f'<link rel="preload" as="script" href="{i18n_url}"><link rel="preload" as="script" href="{app_url}">',
+    )
+    local_fonts = os.path.join(STATIC_DIR, "fonts", "fonts.css")
+    if os.path.isfile(local_fonts):
+        html = _FONTS_BLOCK_RE.sub(
+            f'<link rel="stylesheet" href="/assets/fonts/fonts.css?v={file_digest(local_fonts)}">', html, count=1
+        )
     html = html.replace("{{ASSET_VERSION}}", static_version(STATIC_DIR))
     return html
 
