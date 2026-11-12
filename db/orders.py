@@ -1279,6 +1279,17 @@ class OrdersMixin:
                     "UPDATE users SET referral_credit = MAX(referral_credit + ?, MIN(referral_credit, 0)) WHERE telegram_id=?",
                     (delta, user_tg_id),
                 )
+        # PayG must regain quota immediately after a successful top-up rather
+        # than waiting for the next 10-minute billing tick.
+        if int(delta or 0) > 0:
+            try:
+                from payg import refresh_payg_quota
+                refresh_payg_quota(self, int(user_tg_id))
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception(
+                    "Could not refresh PayG quota after wallet top-up (user=%s)", user_tg_id
+                )
 
 
     def deduct_wallet_credit(self, user_tg_id: int, amount: int, exact: bool = False) -> int:
