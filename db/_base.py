@@ -1903,6 +1903,7 @@ class DatabaseBase:
         # Optional descriptive/media fields; additive so existing customer databases remain intact.
         for _table, _column, _ddl in (
             ("categories", "description", "TEXT NOT NULL DEFAULT ''"),
+            ("categories", "description_media", "TEXT NOT NULL DEFAULT ''"),
             ("payment_cards", "photo_file_id", "TEXT"),
             ("payment_cards", "description_template", "TEXT NOT NULL DEFAULT ''"),
             ("card_to_card_cards", "photo_file_id", "TEXT"),

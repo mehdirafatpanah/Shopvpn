@@ -312,6 +312,23 @@ class CatalogMixin:
                 raise ValueError("category not found")
 
 
+    def get_category_description_media(self, cat_id: int) -> list:
+        """لیست رسانه‌های توضیحات دسته: [{"type","file_id"}, ...]"""
+        import category_media
+        row = self.get_category(cat_id)
+        if row is None or "description_media" not in row.keys():
+            return []
+        return category_media.parse(row["description_media"])
+
+    def set_category_description_media(self, cat_id: int, items) -> None:
+        """ذخیره‌ی رسانه‌های توضیحات دسته؛ لیست خالی رسانه را پاک می‌کند."""
+        import category_media
+        value = category_media.serialize(items)
+        with self._get_conn() as conn:
+            cur = conn.execute("UPDATE categories SET description_media=? WHERE id=?", (value, int(cat_id)))
+            if not cur.rowcount:
+                raise ValueError("category not found")
+
     def set_category_emoji(self, cat_id: int, field: str, value) -> None:
         """field: emoji (دکمه‌ی خود دسته) یا product_emoji (علامت موجودی محصولات آن دسته). مقدار خالی = پیش‌فرض سراسری، '-' = بدون ایموجی."""
         if field not in ("emoji", "product_emoji"):
