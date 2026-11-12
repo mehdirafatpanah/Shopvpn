@@ -27,6 +27,8 @@ class DatabaseBase:
         # event loop تک‌رشته‌ای هستند، پس این لاک برای آن‌ها overhead
         # واقعی ندارد ولی برای مینی‌اپ لازم است.
         self._lock = threading.Lock()
+        self._read_local = threading.local()
+        self._read_gen = 0
 
     async def cache_autorefresh_loop(self, interval: float = 2.0):
         """فقط برای پردازش بات (aiogram) استفاده می‌شود، نه مینی‌اپ/پنل وب.
@@ -106,6 +108,27 @@ class DatabaseBase:
                 raise
 
 
+    @contextmanager
+    def _get_read_conn(self):
+        """Per-thread read-only connection so reads do not queue behind the shared writer lock (WAL allows concurrent readers)."""
+        local = self._read_local
+        conn = getattr(local, "conn", None)
+        if conn is not None and getattr(local, "gen", -1) != self._read_gen:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            conn = None
+        if conn is None:
+            conn = sqlite3.connect(self.db_path, timeout=5)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout = 4000")
+            conn.execute("PRAGMA query_only = ON")
+            local.conn = conn
+            local.gen = self._read_gen
+        yield conn
+
+
     def close(self):
         """اتصال persistent فعلی را می‌بندد و کش تنظیمات را پاک می‌کند. فراخوانی
         بعدی هر متدی خودش دوباره یک اتصال تازه باز می‌کند. لازم قبل از
@@ -119,6 +142,7 @@ class DatabaseBase:
                 self._conn = None
             self._settings_cache = None
             self._admin_cache = None
+            self._read_gen += 1
 
 
     def replace_file(self, uploaded_file_path: str) -> str:
@@ -154,6 +178,7 @@ class DatabaseBase:
                 self._conn = None
             self._settings_cache = None
             self._admin_cache = None
+            self._read_gen += 1
 
             if os.path.exists(self.db_path):
                 src = sqlite3.connect(self.db_path)
@@ -1018,6 +1043,7 @@ class DatabaseBase:
 
                 CREATE INDEX IF NOT EXISTS idx_custom_gw_invoices_txn ON custom_gateway_invoices(gateway_id, txn_id);
                 CREATE INDEX IF NOT EXISTS idx_custom_gw_invoices_ref ON custom_gateway_invoices(gateway_id, kind, ref_id);
+                CREATE INDEX IF NOT EXISTS idx_custom_gw_invoices_kind_ref ON custom_gateway_invoices(kind, ref_id);
 
                 -- ===== کارت‌به‌کارت با تایید خودکار (پیامک بانک از اپ BankSmsForwarder) =====
                 CREATE TABLE IF NOT EXISTS card_to_card_cards (

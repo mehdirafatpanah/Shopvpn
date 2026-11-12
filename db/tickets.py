@@ -382,10 +382,15 @@ class TicketsMixin:
             return result
 
 
+    def count_tickets_by_status(self, status: str) -> int:
+        with self._get_read_conn() as conn:
+            return conn.execute("SELECT COUNT(*) FROM tickets WHERE status=?", (status,)).fetchone()[0]
+
+
     def count_unread_support_conversations(self) -> int:
         """تعداد مکالمات چت زنده‌ای که حداقل یک پیام خوانده‌نشده از کاربر دارند
         (برای بج زنده‌ی منو کنار «چت زنده»)."""
-        with self._get_conn() as conn:
+        with self._get_read_conn() as conn:
             row = conn.execute(
                 "SELECT COUNT(DISTINCT user_id) AS c FROM support_messages "
                 "WHERE sender='user' AND is_read_by_admin=0"

@@ -619,6 +619,13 @@ class OrdersMixin:
         "AND NOT EXISTS (SELECT 1 FROM card_to_card_invoices gi WHERE gi.kind='order' AND gi.ref_id=o.id AND gi.status='pending')"
     )
 
+    def count_orders_awaiting_review(self) -> int:
+        with self._get_read_conn() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM orders o WHERE " + self._AWAITING_REVIEW_SQL
+            ).fetchone()[0]
+
+
     def get_orders_awaiting_review(self):
         """سفارش‌هایی که واقعاً منتظر تایید/رد دستی ادمین هستند: رسید ثبت شده و مبلغ باقی‌مانده مثبت است.
         سفارش‌های نیمه‌کاره (بدون رسید)، سفارش‌های پرداخت‌شده با کیف پول و سفارش‌های منتظر درگاه اینجا نمی‌آیند."""
@@ -2160,23 +2167,32 @@ class OrdersMixin:
             ).fetchall()
 
 
+    _PENDING_TOPUPS_WHERE = (
+        "t.status='pending' "
+        "AND NOT EXISTS (SELECT 1 FROM crypto_invoices ci WHERE ci.kind='wallet_topup' AND ci.ref_id=t.id) "
+        "AND NOT EXISTS (SELECT 1 FROM abangateway_invoices gi WHERE gi.kind='wallet_topup' AND gi.ref_id=t.id AND gi.status IN ('new','pending')) "
+        "AND NOT EXISTS (SELECT 1 FROM blupal_invoices gi WHERE gi.kind='wallet_topup' AND gi.ref_id=t.id AND gi.status IN ('new','pending')) "
+        "AND NOT EXISTS (SELECT 1 FROM noapay_invoices gi WHERE gi.kind='wallet_topup' AND gi.ref_id=t.id AND gi.status IN ('new','pending')) "
+        "AND NOT EXISTS (SELECT 1 FROM extra_gateway_invoices gi WHERE gi.kind='wallet_topup' AND gi.ref_id=t.id AND gi.status IN ('new','pending')) "
+        "AND NOT EXISTS (SELECT 1 FROM custom_gateway_invoices gi WHERE gi.kind='wallet_topup' AND gi.ref_id=t.id AND gi.status IN ('new','pending')) "
+        "AND NOT EXISTS (SELECT 1 FROM card_to_card_invoices gi WHERE gi.kind='wallet_topup' AND gi.ref_id=t.id AND gi.status='pending') "
+    )
+
     def get_pending_topups(self):
         """شارژهای نیازمند بررسی دستی؛ شارژهای دارای فاکتور کریپتو، یا فاکتور فعال
         new/pending نزد یک درگاه «تایید آنی» دیگر (آبان‌گیت‌وی/بلوپال/نوپی/درگاه
         سفارشی/کارت‌به‌کارت خودکار)، اینجا نمی‌آیند - رجوع به توضیح get_pending_orders."""
         with self._get_conn() as conn:
             return conn.execute(
-                "SELECT t.* FROM wallet_topups t "
-                "WHERE t.status='pending' "
-                "AND NOT EXISTS (SELECT 1 FROM crypto_invoices ci WHERE ci.kind='wallet_topup' AND ci.ref_id=t.id) "
-                "AND NOT EXISTS (SELECT 1 FROM abangateway_invoices gi WHERE gi.kind='wallet_topup' AND gi.ref_id=t.id AND gi.status IN ('new','pending')) "
-                "AND NOT EXISTS (SELECT 1 FROM blupal_invoices gi WHERE gi.kind='wallet_topup' AND gi.ref_id=t.id AND gi.status IN ('new','pending')) "
-                "AND NOT EXISTS (SELECT 1 FROM noapay_invoices gi WHERE gi.kind='wallet_topup' AND gi.ref_id=t.id AND gi.status IN ('new','pending')) "
-                "AND NOT EXISTS (SELECT 1 FROM extra_gateway_invoices gi WHERE gi.kind='wallet_topup' AND gi.ref_id=t.id AND gi.status IN ('new','pending')) "
-                "AND NOT EXISTS (SELECT 1 FROM custom_gateway_invoices gi WHERE gi.kind='wallet_topup' AND gi.ref_id=t.id AND gi.status IN ('new','pending')) "
-                "AND NOT EXISTS (SELECT 1 FROM card_to_card_invoices gi WHERE gi.kind='wallet_topup' AND gi.ref_id=t.id AND gi.status='pending') "
-                "ORDER BY t.id"
+                "SELECT t.* FROM wallet_topups t WHERE " + self._PENDING_TOPUPS_WHERE + " ORDER BY t.id"
             ).fetchall()
+
+
+    def count_pending_topups(self) -> int:
+        with self._get_read_conn() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM wallet_topups t WHERE " + self._PENDING_TOPUPS_WHERE
+            ).fetchone()[0]
 
     # -----------------------------------------------------------------------
     # ثبت‌نام بات‌های نمایندگی (فقط در دیتابیس بات اصلی معنا دارد)
