@@ -153,6 +153,40 @@ def _cleanup_unmarked_legacy_services(db):
                 logger.exception("Could not delete empty legacy PAYG pool %s", pool_id)
 
 
+def get_payg_panel_ids(db):
+    """پنل‌های فعال انتخاب‌شده برای ساخت سرویس؛ سازگار با تنظیم قدیمی تک‌پنلی."""
+    raw = str(db.get_setting("payg_panel_server_ids", "") or "").strip()
+    ids = []
+    if raw:
+        try:
+            value = json.loads(raw)
+            if isinstance(value, list):
+                ids = [int(x) for x in value if str(x).isdigit()]
+        except Exception:
+            ids = []
+    if not ids:
+        legacy = str(db.get_setting("payg_panel_server_id", "") or "").strip()
+        if legacy.isdigit() and int(legacy) > 0:
+            ids = [int(legacy)]
+    return list(dict.fromkeys(x for x in ids if x > 0))
+
+
+def _choose_payg_panel(db, panel_ids):
+    """اختيار پنل فعال با ظرفیت و کمترین بار."""
+    candidates = []
+    for server_id in panel_ids:
+        server = db.get_panel_server(int(server_id))
+        if not server or not server["is_active"]:
+            continue
+        info = db.get_panel_capacity_info(int(server_id)) or {}
+        if info.get("max_services") is not None and int(info.get("remaining") or 0) < 1:
+            continue
+        load = float(info.get("percent") or 0) if info.get("max_services") else int(info.get("active_services") or 0)
+        candidates.append((load, int(server_id), server))
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return candidates[0][2] if candidates else None
+
+
 def get_rates(db):
     try:
         rates = json.loads(db.get_setting("payg_rates", json.dumps(DEFAULT_RATES)))
@@ -621,7 +655,21 @@ def create_payg_router(db, is_main_bot=True):
                      f"تا ۵۰ GB: {rates[0]:,} تومان | ۵۰ تا ۲۰۰ GB: {rates[1]:,} تومان\n"
                      f"۲۰۰ تا ۵۰۰ GB: {rates[2]:,} تومان | بیشتر از ۵۰۰ GB: {rates[3]:,} تومان\n")
         supported_text = "سرویس‌های قابل صورتحساب فعلی: VPN و SSH با شمارنده مصرف معتبر.\n"
-        panel_id = str(db.get_setting("payg_panel_server_id", "") or "").strip()
+        panel_ids = get_payg_panel_ids(db)
+        panel_names = []
+        for pid in panel_ids:
+            panel = await asyncio.to_thread(db.get_panel_server, int(pid))
+            if panel and panel["is_active"]:
+                panel_names.append(str(panel["name"] or f"پنل {pid}"))
+        with db._get_conn() as conn:
+            service_rows = conn.execute(
+                "SELECT cc.id,cc.username,cc.subscription_url,cc.panel_server_id,ps.name AS panel_name "
+                "FROM payg_provisioned_services p JOIN custom_configs cc "
+                "ON p.service_kind='vpn' AND p.service_id=('custom_config:' || cc.id) "
+                "LEFT JOIN panel_servers ps ON ps.id=cc.panel_server_id "
+                "WHERE p.user_id=? AND cc.status='active' ORDER BY cc.id DESC",
+                (int(user_id),),
+            ).fetchall()
         if status['active']:
             text = ("💳 <b>Pay As You Go</b>\n\n"
                     f"وضعیت: فعال\nموجودی کیف پول: {balance:,} تومان\n"
@@ -629,15 +677,26 @@ def create_payg_router(db, is_main_bot=True):
                     f"مصرف ثبت‌شده: {status['month_used_bytes']/GIB:.3f} GB\n"
                     f"سرویس‌های متصل: {status['services']}\n"
                     + rate_text + supported_text + "تسویه مصرف هر ۱۰ دقیقه انجام می‌شود.\n"
-                    "برای ساخت سرویس مصرفی جدید از دکمه زیر استفاده کنید.")
+                    + (f"پنل‌های فعال ساخت سرویس: {', '.join(panel_names)}\n" if panel_names else "⚠️ پنل فعالی برای ساخت سرویس انتخاب نشده است.\n")
+                    + "برای ساخت سرویس مصرفی جدید از دکمه زیر استفاده کنید.")
         else:
             text = ("💳 <b>Pay As You Go</b>\n\n"
                     f"موجودی کیف پول: {balance:,} تومان\n"
                     + rate_text + supported_text
                     + "با ساخت سرویس مصرفی، حجم و زمان ثابت نخواهید داشت و هزینه از کیف پول کسر می‌شود.\n"
                     "برای شروع، کیف پول باید موجودی مثبت داشته باشد.")
-        if not panel_id:
-            text += "\n\n⚠️ هنوز پنل ساخت سرویس توسط مدیریت تنظیم نشده است."
+        if not panel_names:
+            text += "\n\n⚠️ هنوز پنل فعال ساخت سرویس توسط مدیریت انتخاب نشده است."
+        if service_rows:
+            text += "\n\n🔗 <b>لینک‌های اشتراک اختصاصی فعال:</b>"
+            for item in service_rows:
+                url = str(item["subscription_url"] or "").strip()
+                if not url:
+                    continue
+                safe_url = url.replace("&", "&amp;").replace('"', "&quot;")
+                label = str(item["username"] or f"سرویس {item['id']}")
+                panel_label = str(item["panel_name"] or f"پنل {item['panel_server_id']}")
+                text += f"\n• {label} · {panel_label}: <a href=\"{safe_url}\">باز کردن لینک</a>"
         with db._get_conn() as conn:
             configured = conn.execute("SELECT 1 FROM payg_accounts WHERE user_id=?", (int(user_id),)).fetchone() is not None
         await message.answer(text, reply_markup=menu(status['active'], configured), parse_mode="HTML")
@@ -713,17 +772,15 @@ def create_payg_router(db, is_main_bot=True):
         if int(service_count or 0) >= max_services:
             await call.message.answer(f"⛔️ حداکثر {max_services} سرویس Pay As You Go برای هر کاربر مجاز است.")
             return
-        try:
-            server_id = int(str(db.get_setting("payg_panel_server_id", "") or "0"))
-        except Exception:
-            server_id = 0
-        if server_id <= 0:
-            await call.message.answer("⛔️ پنل ساخت سرویس Pay As You Go هنوز توسط مدیریت تنظیم نشده است.")
+        panel_ids = get_payg_panel_ids(db)
+        if not panel_ids:
+            await call.message.answer("⛔️ هیچ پنل فعالی برای ساخت سرویس Pay As You Go توسط مدیریت انتخاب نشده است.")
             return
-        server = await asyncio.to_thread(db.get_panel_server, server_id)
-        if not server or not server["is_active"]:
-            await call.message.answer("⛔️ پنل تنظیم‌شده برای Pay As You Go در دسترس نیست. لطفاً با پشتیبانی تماس بگیرید.")
+        server = await asyncio.to_thread(_choose_payg_panel, db, panel_ids)
+        if not server:
+            await call.message.answer("⛔️ هیچ‌یک از پنل‌های انتخاب‌شده فعال یا دارای ظرفیت کافی نیستند.")
             return
+        server_id = int(server["id"])
         if not await asyncio.to_thread(_acquire_provision_lock, db, uid):
             await call.message.answer("⏳ درخواست ساخت سرویس شما در حال پردازش است؛ لطفاً چند لحظه صبر کنید.")
             return
@@ -833,7 +890,7 @@ def create_payg_router(db, is_main_bot=True):
         return InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=("🔴 توقف فروش جدید" if enabled else "🟢 فعال‌سازی فروش جدید"), callback_data="payg:admin_toggle")],
             [InlineKeyboardButton(text="💵 تنظیم تعرفه‌ها", callback_data="payg:admin_rates")],
-            [InlineKeyboardButton(text="🖥 انتخاب پنل ساخت سرویس", callback_data="payg:admin_servers")],
+            [InlineKeyboardButton(text="🖥 مدیریت چندپنل و توزیع سرویس", callback_data="payg:admin_servers")],
             [InlineKeyboardButton(text="👥 جستجوی کاربر PayG", callback_data="payg:admin_user_search")],
             [InlineKeyboardButton(text="📋 فهرست حساب‌های PayG", callback_data="payg:admin_users:0")],
             [InlineKeyboardButton(text="📈 گزارش مصرف و درآمد", callback_data="payg:admin_report")],
@@ -847,13 +904,19 @@ def create_payg_router(db, is_main_bot=True):
             stats = conn.execute("SELECT COUNT(*) total, SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) active, SUM(CASE WHEN status='suspended_admin' THEN 1 ELSE 0 END) suspended FROM payg_accounts").fetchone()
             revenue = conn.execute("SELECT COALESCE(SUM(amount),0) amount FROM payg_transactions WHERE substr(cycle_key,1,7)=?", (_month_key(),)).fetchone()["amount"]
             used = conn.execute("SELECT COALESCE(SUM(month_used_bytes),0) n FROM payg_accounts WHERE month_key=?", (_month_key(),)).fetchone()["n"]
-        server_id = str(db.get_setting("payg_panel_server_id", "") or "تنظیم نشده")
+        selected_ids = get_payg_panel_ids(db)
+        selected_names = []
+        for pid in selected_ids:
+            panel = await asyncio.to_thread(db.get_panel_server, int(pid))
+            if panel:
+                selected_names.append(f"{panel['name']} (#{pid})")
+        server_label = "، ".join(selected_names) if selected_names else "تنظیم نشده"
         text = ("⚙️ <b>مدیریت Pay As You Go</b>\n\n"
                 f"فروش جدید: {'فعال' if enabled else 'غیرفعال'}\n"
                 f"حساب‌ها: {int(stats['active'] or 0)} فعال | {int(stats['suspended'] or 0)} تعلیق مدیریتی | {int(stats['total'] or 0)} کل\n"
                 f"مصرف این ماه: {int(used or 0)/GIB:.3f} GB\n"
                 f"درآمد این ماه: {int(revenue or 0):,} تومان\n"
-                f"پنل ساخت سرویس: {server_id}\n"
+                f"پنل‌های ساخت سرویس: {server_label}\n"
                 f"تعرفه‌ها (تومان/GB): {rates[0]:,} / {rates[1]:,} / {rates[2]:,} / {rates[3]:,}\n"
                 f"چرخه تسویه: هر {max(60, int(db.get_setting('payg_cycle_seconds', '600') or 600))} ثانیه")
         await target.answer(text, reply_markup=_admin_home_kb(enabled), parse_mode="HTML")
@@ -1056,16 +1119,31 @@ def create_payg_router(db, is_main_bot=True):
         if not db.is_full_admin(call.from_user.id):
             return
         servers = await asyncio.to_thread(db.get_panel_servers, True)
-        rows = [[InlineKeyboardButton(text=f"🖥 {s['name']} · #{s['id']}", callback_data=f"payg:admin_server:{int(s['id'])}")]
-                for s in servers]
-        rows.append([InlineKeyboardButton(text="🚫 حذف انتخاب پنل", callback_data="payg:admin_server:0")])
+        selected = set(get_payg_panel_ids(db))
+        rows = []
+        for server in servers:
+            sid = int(server["id"])
+            mark = "✅" if sid in selected else "▫️"
+            info = await asyncio.to_thread(db.get_panel_capacity_info, sid)
+            load = ""
+            if info:
+                load = (f" · {int(info['active_services'])}/{info['max_services']} ظرفیت"
+                        if info.get("max_services") else f" · {int(info['active_services'])} سرویس")
+            rows.append([InlineKeyboardButton(
+                text=f"{mark} {server['name']} · #{sid}{load}",
+                callback_data=f"payg:admin_server_toggle:{sid}",
+            )])
+        rows.append([InlineKeyboardButton(text="🧹 پاک‌کردن همه انتخاب‌ها", callback_data="payg:admin_server_clear")])
         rows.append([InlineKeyboardButton(text="↩️ بازگشت", callback_data="adm_payg")])
-        await call.message.answer("پنل مورد استفاده برای ساخت سرویس جدید Pay As You Go را انتخاب کنید:",
-                                  reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        await call.message.answer(
+            "🖥 <b>انتخاب چندپنل برای Pay As You Go</b>\n"
+            "هر تعداد پنل فعال می‌خواهید انتخاب کنید. هنگام ساخت سرویس، سیستم به‌صورت خودکار پنل دارای ظرفیت و بار کمتر را انتخاب می‌کند.\n"
+            "پنل‌های انتخاب‌شده فقط برای سرویس‌های جدید استفاده می‌شوند؛ سرویس‌های قبلی روی پنل خود باقی می‌مانند.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML",
+        )
 
-    @router.callback_query(F.data.startswith("payg:admin_server:"))
+    @router.callback_query(F.data.startswith("payg:admin_server_toggle:"))
     async def payg_admin_set_server(call: CallbackQuery):
-        await call.answer()
         if not db.is_full_admin(call.from_user.id):
             return
         try:
@@ -1073,16 +1151,27 @@ def create_payg_router(db, is_main_bot=True):
         except Exception:
             await call.message.answer("شناسه پنل نامعتبر است.")
             return
-        if server_id:
-            server = await asyncio.to_thread(db.get_panel_server, server_id)
-            if not server or not server['is_active']:
-                await call.message.answer("پنل فعال پیدا نشد.")
-                return
-            db.set_setting("payg_panel_server_id", str(server_id))
-            await call.message.answer(f"✅ پنل {server['name']} برای ساخت سرویس‌های Pay As You Go انتخاب شد.")
+        server = await asyncio.to_thread(db.get_panel_server, server_id)
+        if not server or not server["is_active"]:
+            await call.message.answer("پنل فعال پیدا نشد.")
+            return
+        selected = set(get_payg_panel_ids(db))
+        if server_id in selected:
+            selected.remove(server_id)
         else:
-            db.set_setting("payg_panel_server_id", "")
-            await call.message.answer("انتخاب پنل Pay As You Go حذف شد.")
+            selected.add(server_id)
+        ordered = sorted(selected)
+        db.set_setting("payg_panel_server_ids", json.dumps(ordered))
+        db.set_setting("payg_panel_server_id", str(ordered[0]) if ordered else "")
+        await payg_admin_servers(call)
+
+    @router.callback_query(F.data == "payg:admin_server_clear")
+    async def payg_admin_server_clear(call: CallbackQuery):
+        if not db.is_full_admin(call.from_user.id):
+            return
+        db.set_setting("payg_panel_server_ids", "[]")
+        db.set_setting("payg_panel_server_id", "")
+        await payg_admin_servers(call)
 
     @router.callback_query(F.data == "payg:admin_toggle")
     async def payg_admin_toggle(call: CallbackQuery):
