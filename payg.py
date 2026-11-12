@@ -2,9 +2,8 @@
 """Pay As You Go billing for the main Telegram bot.
 
 Only services with authoritative byte counters are billable. In this release
-that means custom VPN configs and registered SSH accounts represented in
-usage_snapshots. Other product families are deliberately not billed until a
-real usage adapter exists for them.
+that means custom VPN configs explicitly provisioned by PayG and represented
+in usage_snapshots. Existing purchased services are never enrolled implicitly.
 """
 from __future__ import annotations
 
@@ -12,6 +11,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from aiogram import Router, F
 from aiogram.filters import Command, StateFilter
@@ -80,11 +80,19 @@ def ensure_schema(db):
         conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('payg_rates',?)",
                      (json.dumps(DEFAULT_RATES),))
         conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('payg_cycle_seconds','600')")
+        conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('payg_max_services_per_user','5')")
         conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('payg_panel_server_id','')")
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS payg_provision_locks (
             user_id INTEGER PRIMARY KEY,
             created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS payg_provisioned_services (
+            service_kind TEXT NOT NULL,
+            service_id TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(service_kind, service_id)
         );
         """)
         columns = {r[1] for r in conn.execute("PRAGMA table_info(payg_accounts)").fetchall()}
@@ -95,6 +103,54 @@ def ensure_schema(db):
         # Upgrade accounts created by the first PAYG preview without resetting usage.
         conn.execute("UPDATE payg_accounts SET last_balance=initial_balance WHERE last_balance=0 AND initial_balance>0")
         conn.execute("UPDATE payg_accounts SET month_rates=? WHERE month_rates=''", (json.dumps(DEFAULT_RATES),))
+    _cleanup_unmarked_legacy_services(db)
+
+
+def _cleanup_unmarked_legacy_services(db):
+    """Fail safe on pre-marker rows: detach them so purchased services cannot be billed."""
+    with db._get_conn() as conn:
+        rows = conn.execute(
+            "SELECT ps.user_id,ps.service_kind,ps.service_id,pa.quota_pool_id "
+            "FROM payg_services ps LEFT JOIN payg_provisioned_services p "
+            "ON p.service_kind=ps.service_kind AND p.service_id=ps.service_id AND p.user_id=ps.user_id "
+            "LEFT JOIN payg_accounts pa ON pa.user_id=ps.user_id "
+            "WHERE p.service_id IS NULL"
+        ).fetchall()
+    for row in rows:
+        pool_id = row["quota_pool_id"]
+        if pool_id:
+            try:
+                db.detach_quota_service(int(pool_id), row["service_kind"], row["service_id"])
+            except Exception:
+                logger.exception("Could not detach legacy non-PayG service %s/%s",
+                                 row["service_kind"], row["service_id"])
+                continue
+            # detach_quota_service preserves usage as a pool adjustment. This was
+            # not PayG consumption, so remove that adjustment from the PayG pool.
+            with db._get_conn() as conn:
+                conn.execute(
+                    "DELETE FROM quota_pool_adjustments WHERE pool_id=? AND service_kind=? AND service_id=?",
+                    (int(pool_id), row["service_kind"], row["service_id"]),
+                )
+        with db._get_conn() as conn:
+            conn.execute(
+                "DELETE FROM payg_services WHERE user_id=? AND service_kind=? AND service_id=?",
+                (int(row["user_id"]), row["service_kind"], row["service_id"]),
+            )
+            remaining = conn.execute("SELECT COUNT(*) n FROM payg_services WHERE user_id=?",
+                                     (int(row["user_id"]),)).fetchone()["n"]
+            if not remaining:
+                conn.execute(
+                    "UPDATE payg_accounts SET status='inactive',quota_pool_id=NULL,updated_at=? "
+                    "WHERE user_id=? AND status='active'",
+                    (_now(), int(row["user_id"])),
+                )
+                conn.execute("DELETE FROM payg_provision_locks WHERE user_id=?", (int(row["user_id"]),))
+        if not remaining and pool_id:
+            try:
+                db.delete_quota_pool(int(pool_id))
+            except Exception:
+                logger.exception("Could not delete empty legacy PAYG pool %s", pool_id)
 
 
 def get_rates(db):
@@ -124,57 +180,33 @@ def _progressive_cost(total_bytes: int, rates: list[int]) -> int:
 
 
 def _month_key():
-    return datetime.now(timezone.utc).strftime("%Y-%m")
+    return datetime.now(ZoneInfo("Asia/Tehran")).strftime("%Y-%m")
 
 
 def _sync_services(db, user_id: int, pool_id: int):
-    """Attach eligible active VPN/SSH services without charging historical use."""
+    """Attach only services explicitly provisioned as PayG services."""
     attachments = []
     with db._get_conn() as conn:
         configs = conn.execute(
-            "SELECT id,panel_server_id FROM custom_configs WHERE user_id=? AND status='active' AND source!='test'",
-            (int(user_id),),
-        ).fetchall()
-        ssh_rows = conn.execute(
-            "SELECT account_id,node_id FROM ssh_accounts WHERE user_id=? AND status='active'",
-            (int(user_id),),
-        ).fetchall()
-        links = conn.execute(
-            "SELECT l.id,l.panel_server_id FROM config_panel_links l "
-            "JOIN custom_configs cc ON cc.id=l.custom_config_id "
-            "WHERE cc.user_id=? AND cc.status='active' AND l.status='active'",
+            "SELECT cc.id,cc.panel_server_id FROM custom_configs cc "
+            "JOIN payg_provisioned_services p ON p.service_kind='vpn' "
+            "AND p.service_id=('custom_config:' || cc.id) AND p.user_id=cc.user_id "
+            "WHERE cc.user_id=? AND cc.status='active'",
             (int(user_id),),
         ).fetchall()
         for row in configs:
             sid = f"custom_config:{int(row['id'])}"
-            snap = conn.execute("SELECT used_bytes FROM usage_snapshots WHERE service_kind='vpn' AND service_id=?", (sid,)).fetchone()
+            snap = conn.execute(
+                "SELECT used_bytes FROM usage_snapshots WHERE service_kind='vpn' AND service_id=?",
+                (sid,),
+            ).fetchone()
             baseline = int(snap['used_bytes'] or 0) if snap else -1
             conn.execute(
                 "INSERT OR IGNORE INTO payg_services(user_id,service_kind,service_id,last_billed_bytes,created_at) VALUES(?,?,?,?,?)",
-                (int(user_id), 'vpn', sid, baseline, _now()),
+                (int(user_id), "vpn", sid, baseline, _now()),
             )
-            attachments.append(('vpn', sid, int(row['panel_server_id']) if row['panel_server_id'] else None))
-        for row in links:
-            sid = f"panel_link:{int(row['id'])}"
-            snap = conn.execute("SELECT used_bytes FROM usage_snapshots WHERE service_kind='vpn' AND service_id=?", (sid,)).fetchone()
-            baseline = int(snap['used_bytes'] or 0) if snap else -1
-            conn.execute(
-                "INSERT OR IGNORE INTO payg_services(user_id,service_kind,service_id,last_billed_bytes,created_at) VALUES(?,?,?,?,?)",
-                (int(user_id), 'vpn', sid, baseline, _now()),
-            )
-            attachments.append(('vpn', sid, int(row['panel_server_id']) if row['panel_server_id'] else None))
-        for row in ssh_rows:
-            sid = str(row['account_id'])
-            snap = conn.execute("SELECT used_bytes FROM usage_snapshots WHERE service_kind='ssh' AND service_id=?", (sid,)).fetchone()
-            baseline = int(snap['used_bytes'] or 0) if snap else -1
-            conn.execute(
-                "INSERT OR IGNORE INTO payg_services(user_id,service_kind,service_id,last_billed_bytes,created_at) VALUES(?,?,?,?,?)",
-                (int(user_id), 'ssh', sid, baseline, _now()),
-            )
-            attachments.append(('ssh', sid, int(row['node_id']) if row['node_id'] else None))
-    # Do not call other Database methods while holding its non-reentrant DB lock.
-    attached = 0
-    conflicts = 0
+            attachments.append(("vpn", sid, int(row["panel_server_id"]) if row["panel_server_id"] else None))
+    attached = conflicts = 0
     for kind, sid, node_id in attachments:
         try:
             db.attach_quota_service(pool_id, kind, sid, node_id=node_id)
@@ -183,8 +215,10 @@ def _sync_services(db, user_id: int, pool_id: int):
             conflicts += 1
             logger.warning("PAYG service could not be attached: %s/%s (%s)", kind, sid, exc)
             with db._get_conn() as conn:
-                conn.execute("DELETE FROM payg_services WHERE user_id=? AND service_kind=? AND service_id=?",
-                             (int(user_id), kind, sid))
+                conn.execute(
+                    "DELETE FROM payg_services WHERE user_id=? AND service_kind=? AND service_id=?",
+                    (int(user_id), kind, sid),
+                )
     return {"attached": attached, "conflicts": conflicts, "discovered": len(attachments)}
 
 
@@ -196,6 +230,8 @@ def activate_payg(db, user_id: int):
         return {"ok": False, "reason": "balance"}
     with db._get_conn() as conn:
         existing = conn.execute("SELECT * FROM payg_accounts WHERE user_id=?", (int(user_id),)).fetchone()
+    if existing and existing['status'] == 'suspended_admin':
+        return {"ok": False, "reason": "suspended_admin"}
     if existing and existing['status'] == 'active':
         sync = _sync_services(db, user_id, int(existing['quota_pool_id']))
         try:
@@ -238,7 +274,7 @@ def payg_status(db, user_id: int):
     with db._get_conn() as conn:
         row = conn.execute("SELECT * FROM payg_accounts WHERE user_id=?", (int(user_id),)).fetchone()
         services = conn.execute("SELECT COUNT(*) n FROM payg_services WHERE user_id=?", (int(user_id),)).fetchone()['n']
-        tx = conn.execute("SELECT COALESCE(SUM(amount),0) total FROM payg_transactions WHERE user_id=? AND substr(created_at,1,7)=?",
+        tx = conn.execute("SELECT COALESCE(SUM(amount),0) total FROM payg_transactions WHERE user_id=? AND substr(cycle_key,1,7)=?",
                           (int(user_id), _month_key())).fetchone()
     if not row:
         return {"active": False, "services": 0, "spent": 0}
@@ -300,12 +336,43 @@ def _affordable_limit_bytes(balance: int, rates: list[int], billed_base_bytes: i
     return max(base + 1, base + low)
 
 
+def refresh_payg_quota(db, user_id: int):
+    """Immediately rebase an active PAYG pool after a wallet top-up."""
+    ensure_schema(db)
+    with db._get_conn() as conn:
+        account = conn.execute("SELECT * FROM payg_accounts WHERE user_id=? AND status='active'",
+                               (int(user_id),)).fetchone()
+        if not account or not account["quota_pool_id"]:
+            return False
+        account = dict(account)
+    month = _month_key()
+    rates = (json.loads(account.get("month_rates") or "[]")
+             if account.get("month_key") == month else get_rates(db))
+    if len(rates) != 4:
+        rates = get_rates(db)
+    balance = int(db.get_wallet_credit(user_id) or 0)
+    month_used = int(account.get("month_used_bytes") or 0) if account.get("month_key") == month else 0
+    limit = _affordable_limit_bytes(balance, [int(x) for x in rates],
+                                    _billing_base_bytes(db, user_id), month_used)
+    db.set_quota_pool_limit(int(account["quota_pool_id"]), limit / GIB)
+    with db._get_conn() as conn:
+        if balance > int(account.get("last_balance") or 0):
+            conn.execute("UPDATE payg_accounts SET last_balance=?,initial_balance=?,last_alert_level=0,updated_at=? WHERE user_id=?",
+                         (balance, balance, _now(), int(user_id)))
+    return True
+
+
+
 class PaygEngine:
     def __init__(self, db, bot=None, interval_seconds=600):
         self.db = db
         self.bot = bot
-        self.interval_seconds = max(600, int(interval_seconds))
         ensure_schema(db)
+        try:
+            configured_interval = int(db.get_setting("payg_cycle_seconds", str(interval_seconds)) or interval_seconds)
+        except (TypeError, ValueError):
+            configured_interval = int(interval_seconds)
+        self.interval_seconds = max(60, min(86400, configured_interval))
 
     def _bill_once(self):
         current_rates = get_rates(self.db)
@@ -354,10 +421,11 @@ class PaygEngine:
                 # A top-up starts a fresh warning sequence. Never infer usage from stale/missing telemetry.
                 if current_balance > int(account.get('last_balance') or 0):
                     with self.db._get_conn() as conn:
-                        conn.execute("UPDATE payg_accounts SET last_alert_level=0,last_balance=? WHERE user_id=?",
-                                     (current_balance, uid))
+                        conn.execute("UPDATE payg_accounts SET last_alert_level=0,last_balance=?,initial_balance=? WHERE user_id=?",
+                                     (current_balance, current_balance, uid))
                     account['last_alert_level'] = 0
                     account['last_balance'] = current_balance
+                    account['initial_balance'] = current_balance
 
                 for service in services:
                     if service['used_bytes'] is None or not service['reported_at']:
@@ -380,7 +448,14 @@ class PaygEngine:
                             conn.execute("UPDATE payg_services SET last_billed_bytes=? WHERE id=? AND last_billed_bytes<0",
                                          (current_bytes, service['id']))
                         continue
-                    delta = max(0, current_bytes - previous)
+                    if current_bytes < previous:
+                        # Provider counter reset: establish a fresh baseline instead of
+                        # waiting for the counter to climb back to its old value.
+                        with self.db._get_conn() as conn:
+                            conn.execute("UPDATE payg_services SET last_billed_bytes=? WHERE id=?",
+                                         (current_bytes, service['id']))
+                        continue
+                    delta = current_bytes - previous
                     if delta <= 0:
                         continue
 
@@ -465,17 +540,25 @@ class PaygEngine:
                 alerts = await asyncio.to_thread(self._bill_once)
                 if self.bot:
                     for alert in alerts or []:
+                        # Persist the threshold before delivery to avoid retrying every cycle
+                        # when the user has blocked the bot. A top-up resets the level.
+                        with self.db._get_conn() as conn:
+                            conn.execute("UPDATE payg_accounts SET last_alert_level=?,updated_at=? WHERE user_id=?",
+                                         (alert["level"], _now(), alert["user_id"]))
                         try:
                             await self.bot.send_message(alert["user_id"], alert["text"])
-                            with self.db._get_conn() as conn:
-                                conn.execute("UPDATE payg_accounts SET last_alert_level=?,updated_at=? WHERE user_id=?",
-                                             (alert["level"], _now(), alert["user_id"]))
                         except Exception:
-                            logger.exception("PAYG alert failed for user=%s", alert["user_id"])
+                            logger.warning("PAYG alert delivery failed for user=%s; threshold will not be spammed", alert["user_id"])
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("PAYG worker cycle failed")
+            try:
+                self.interval_seconds = max(60, min(86400, int(
+                    self.db.get_setting("payg_cycle_seconds", str(self.interval_seconds)) or self.interval_seconds
+                )))
+            except (TypeError, ValueError):
+                pass
             await asyncio.sleep(self.interval_seconds)
 
 
@@ -522,8 +605,6 @@ def create_payg_router(db, is_main_bot=True):
 
     def menu(active=False, configured=False):
         rows = [[InlineKeyboardButton(text="🚀 ساخت سرویس مصرفی جدید", callback_data="payg:provision")]]
-        if not active and not configured:
-            rows.append([InlineKeyboardButton(text="🔗 اتصال سرویس‌های VPN/SSH موجود", callback_data="payg:activate")])
         rows.extend([
             [InlineKeyboardButton(text="💰 شارژ کیف پول", callback_data="acct:wallet")],
             [InlineKeyboardButton(text="🧾 تاریخچه برداشت‌ها", callback_data="payg:history")],
@@ -607,6 +688,20 @@ def create_payg_router(db, is_main_bot=True):
             await call.message.answer("برای ساخت سرویس مصرفی، ابتدا کیف پول تومانی خود را شارژ کنید.")
             return
         try:
+            max_services = max(1, min(100, int(db.get_setting("payg_max_services_per_user", "5") or 5)))
+        except (TypeError, ValueError):
+            max_services = 5
+        with db._get_conn() as conn:
+            service_count = conn.execute(
+                "SELECT COUNT(*) n FROM payg_provisioned_services p "
+                "JOIN custom_configs cc ON p.service_kind='vpn' AND p.service_id=('custom_config:' || cc.id) "
+                "WHERE p.user_id=? AND cc.status='active'",
+                (uid,),
+            ).fetchone()["n"]
+        if int(service_count or 0) >= max_services:
+            await call.message.answer(f"⛔️ حداکثر {max_services} سرویس Pay As You Go برای هر کاربر مجاز است.")
+            return
+        try:
             server_id = int(str(db.get_setting("payg_panel_server_id", "") or "0"))
         except Exception:
             server_id = 0
@@ -648,6 +743,12 @@ def create_payg_router(db, is_main_bot=True):
                 uploaded_bytes=usage.get("uploaded_bytes", 0), downloaded_bytes=usage.get("downloaded_bytes", 0),
                 source=f"panel:{server['panel_type']}", reported_at=usage.get("reported_at") or _now(),
             )
+            sid = f"custom_config:{int(provisioned['custom_config_id'])}"
+            with db._get_conn() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO payg_provisioned_services(service_kind,service_id,user_id,created_at) VALUES('vpn',?,?,?)",
+                    (sid, uid, _now()),
+                )
             enrolled = await asyncio.to_thread(activate_payg, db, uid)
             sid = f"custom_config:{int(provisioned['custom_config_id'])}"
             with db._get_conn() as conn:
@@ -676,7 +777,14 @@ def create_payg_router(db, is_main_bot=True):
                     pass
             else:
                 if provisioned:
-                    await _rollback_payg_vpn(db, server, provisioned)
+                    try:
+                        sid = f"custom_config:{int(provisioned.get('custom_config_id') or 0)}"
+                        with db._get_conn() as conn:
+                            conn.execute("DELETE FROM payg_provisioned_services WHERE service_kind='vpn' AND service_id=? AND user_id=?",
+                                         (sid, uid))
+                        await _rollback_payg_vpn(db, server, provisioned)
+                    except Exception:
+                        logger.exception("PAYG provisioning rollback/marker cleanup failed for user=%s", uid)
                 await call.message.answer(f"⛔️ ساخت سرویس Pay As You Go ناموفق بود: {str(exc)[:250]}\nهیچ هزینه مصرفی برای این سرویس ثبت نشده است.")
         finally:
             await asyncio.to_thread(_release_provision_lock, db, uid)
@@ -684,10 +792,17 @@ def create_payg_router(db, is_main_bot=True):
     @router.callback_query(F.data == "payg:activate")
     async def payg_activate_callback(call: CallbackQuery):
         await call.answer()
+        with db._get_conn() as conn:
+            acc = conn.execute("SELECT status FROM payg_accounts WHERE user_id=?", (int(call.from_user.id),)).fetchone()
+        if acc and acc["status"] == "suspended_admin":
+            await call.message.answer("⛔️ حساب Pay As You Go شما توسط مدیریت تعلیق شده است. برای پیگیری با پشتیبانی تماس بگیرید.")
+            return
         result = await asyncio.to_thread(activate_payg, db, call.from_user.id)
         if not result['ok']:
             if result['reason'] == 'disabled':
                 reason = "این قابلیت در حال حاضر غیرفعال است."
+            elif result['reason'] == 'suspended_admin':
+                reason = "حساب Pay As You Go شما توسط مدیریت تعلیق شده است."
             elif result['reason'] == 'no_services':
                 reason = ("⛔️ سرویس فعالی با آمار مصرف معتبر برای این حساب پیدا نشد.\n\n"
                           "ابتدا یک سرویس VPN یا SSH قابل‌اندازه‌گیری تهیه کنید. سرویس‌هایی که از قبل به استخر حجم دیگری متصل‌اند، بدون انتقال امن به این حساب اضافه نمی‌شوند.")
@@ -718,7 +833,7 @@ def create_payg_router(db, is_main_bot=True):
         enabled = db.get_setting("payg_enabled", "1") == "1"
         with db._get_conn() as conn:
             stats = conn.execute("SELECT COUNT(*) total, SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) active, SUM(CASE WHEN status='suspended_admin' THEN 1 ELSE 0 END) suspended FROM payg_accounts").fetchone()
-            revenue = conn.execute("SELECT COALESCE(SUM(amount),0) amount FROM payg_transactions WHERE substr(created_at,1,7)=?", (_month_key(),)).fetchone()["amount"]
+            revenue = conn.execute("SELECT COALESCE(SUM(amount),0) amount FROM payg_transactions WHERE substr(cycle_key,1,7)=?", (_month_key(),)).fetchone()["amount"]
             used = conn.execute("SELECT COALESCE(SUM(month_used_bytes),0) n FROM payg_accounts WHERE month_key=?", (_month_key(),)).fetchone()["n"]
         server_id = str(db.get_setting("payg_panel_server_id", "") or "تنظیم نشده")
         text = ("⚙️ <b>مدیریت Pay As You Go</b>\n\n"
@@ -728,7 +843,7 @@ def create_payg_router(db, is_main_bot=True):
                 f"درآمد این ماه: {int(revenue or 0):,} تومان\n"
                 f"پنل ساخت سرویس: {server_id}\n"
                 f"تعرفه‌ها (تومان/GB): {rates[0]:,} / {rates[1]:,} / {rates[2]:,} / {rates[3]:,}\n"
-                "چرخه تسویه: هر ۱۰ دقیقه (ثابت)")
+                f"چرخه تسویه: هر {max(60, int(db.get_setting('payg_cycle_seconds', '600') or 600))} ثانیه")
         await target.answer(text, reply_markup=_admin_home_kb(enabled), parse_mode="HTML")
 
     @router.callback_query(F.data == "adm_payg")
@@ -916,7 +1031,7 @@ def create_payg_router(db, is_main_bot=True):
         await call.answer()
         if not db.is_full_admin(call.from_user.id): return
         with db._get_conn() as conn:
-            rows = conn.execute("SELECT service_kind,COUNT(*) tx,COALESCE(SUM(used_bytes),0) bytes,COALESCE(SUM(amount),0) amount FROM payg_transactions WHERE substr(created_at,1,7)=? GROUP BY service_kind", (_month_key(),)).fetchall()
+            rows = conn.execute("SELECT service_kind,COUNT(*) tx,COALESCE(SUM(used_bytes),0) bytes,COALESCE(SUM(amount),0) amount FROM payg_transactions WHERE substr(cycle_key,1,7)=? GROUP BY service_kind", (_month_key(),)).fetchall()
             alerts = conn.execute("SELECT COUNT(*) n FROM payg_accounts WHERE status='active' AND last_balance<=0").fetchone()['n']
         lines=["📈 <b>گزارش ماه جاری PayG</b>", f"حساب‌های فعال با موجودی صفر: {int(alerts or 0)}"]
         for r in rows: lines.append(f"{r['service_kind'].upper()}: {int(r['tx'])} تراکنش | {int(r['bytes'])/GIB:.3f} GB | {int(r['amount']):,} تومان")
@@ -998,6 +1113,36 @@ def create_payg_router(db, is_main_bot=True):
             return
         db.set_setting("payg_rates", json.dumps(rates))
         await message.answer("✅ تعرفه‌های Pay As You Go ذخیره شد. برای حساب‌های فعال، تعرفه‌ی دوره‌ی جاری ثابت می‌ماند و نرخ جدید از ابتدای ماه بعد اعمال می‌شود.")
+
+    @router.message(Command("payg_cycle"))
+    async def payg_cycle_set(message: Message):
+        if not db.is_full_admin(message.from_user.id):
+            return
+        parts = (message.text or "").split()
+        try:
+            seconds = int(parts[1])
+            if not 60 <= seconds <= 86400:
+                raise ValueError
+        except Exception:
+            await message.answer("فرمت صحیح: /payg_cycle 600 (محدوده مجاز: ۶۰ تا ۸۶۴۰۰ ثانیه)")
+            return
+        db.set_setting("payg_cycle_seconds", str(seconds))
+        await message.answer(f"✅ چرخه تسویه از چرخه بعدی روی {seconds} ثانیه تنظیم شد.")
+
+    @router.message(Command("payg_max_services"))
+    async def payg_max_services_set(message: Message):
+        if not db.is_full_admin(message.from_user.id):
+            return
+        parts = (message.text or "").split()
+        try:
+            maximum = int(parts[1])
+            if not 1 <= maximum <= 100:
+                raise ValueError
+        except Exception:
+            await message.answer("فرمت صحیح: /payg_max_services 5 (محدوده مجاز: ۱ تا ۱۰۰)")
+            return
+        db.set_setting("payg_max_services_per_user", str(maximum))
+        await message.answer(f"✅ حداکثر سرویس PayG برای هر کاربر روی {maximum} تنظیم شد.")
 
     @router.message(Command("payg_enable"))
     async def payg_enable(message: Message):
