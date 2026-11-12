@@ -18,9 +18,13 @@
 <meta name="apple-mobile-web-app-title" content="ShopVPN">
 <link rel="apple-touch-icon" href="/assets/icons/apple-touch-icon.png">
 
+<!--SV_FONTS_START-->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Chakra+Petch:wght@500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Chakra+Petch:wght@500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Chakra+Petch:wght@500;600;700&display=swap" rel="stylesheet"></noscript>
+<!--SV_FONTS_END-->
+<!--SV_PRELOAD-->
 <link rel="stylesheet" href="/assets/style.css">
 <script>
 (function(){
@@ -249,16 +253,27 @@
     }
     throw new Error('chunk');
   }
-  async function load(src) {
-    var u = new URL(src, location.href), name = u.pathname.split('/').pop(), key = u.pathname + u.search;
-    var cache = null;
-    try {
-      cache = await caches.open('sv-assets');
-      var hit = await cache.match(key);
-      if (hit) return await hit.text();
-    } catch (e) {}
-    var base = '/_chunk/' + name + '/';
-    var first = await getBuf(base + '0' + u.search);
+  function base(p) { return p.split('/').pop().replace('.min', ''); }
+  async function direct(src) {
+    for (var a = 0; a < 2; a++) {
+      var c = new AbortController(), t = setTimeout(function () { c.abort(); }, 25000);
+      try {
+        var r = await fetch(src, { signal: c.signal, credentials: 'same-origin' });
+        if (!r.ok) throw new Error('http');
+        var text = await r.text();
+        clearTimeout(t);
+        return text;
+      } catch (e) {
+        clearTimeout(t);
+        await sleep(300);
+      }
+    }
+    return null;
+  }
+  async function chunked(u) {
+    var name = u.pathname.split('/').pop();
+    var prefix = '/_chunk/' + name + '/';
+    var first = await getBuf(prefix + '0' + u.search);
     var n = parseInt(first.n, 10);
     if (!(n >= 1)) throw new Error('count');
     var parts = new Array(n), next = 1;
@@ -266,7 +281,7 @@
     async function worker() {
       while (next < n) {
         var i = next++;
-        parts[i] = (await getBuf(base + i + u.search)).b;
+        parts[i] = (await getBuf(prefix + i + u.search)).b;
       }
     }
     var ws = [];
@@ -275,12 +290,23 @@
     var total = parts.reduce(function (s, p) { return s + p.byteLength; }, 0);
     var all = new Uint8Array(total), off = 0;
     parts.forEach(function (p) { all.set(new Uint8Array(p), off); off += p.byteLength; });
-    var text = new TextDecoder('utf-8').decode(all);
+    return new TextDecoder('utf-8').decode(all);
+  }
+  async function load(src) {
+    var u = new URL(src, location.href), key = u.pathname + u.search;
+    var cache = null;
+    try {
+      cache = await caches.open('sv-assets');
+      var hit = await cache.match(key);
+      if (hit) return await hit.text();
+    } catch (e) {}
+    var text = await direct(src);
+    if (text === null) text = await chunked(u);
     try {
       if (cache) {
         (await cache.keys()).forEach(function (r) {
           var x = new URL(r.url);
-          if (x.pathname === u.pathname && x.search !== u.search) cache.delete(r);
+          if (base(x.pathname) === base(u.pathname) && x.pathname + x.search !== key) cache.delete(r);
         });
         await cache.put(key, new Response(text, { headers: { 'Content-Type': 'application/javascript' } }));
       }
