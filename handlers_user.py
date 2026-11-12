@@ -1488,12 +1488,13 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             (await asyncio.to_thread(db.get_setting, "custom_config_enabled", "0")) == "1"
             or (await asyncio.to_thread(db.count_active_custom_config_products)) > 0
         )
-        if not categories and not custom_enabled:
+        payg_on = is_main_bot and (await asyncio.to_thread(db.get_setting, "payg_enabled", "1")) == "1"
+        if not categories and not custom_enabled and not payg_on:
             await message.answer(db.get_text("handlers_user.category.none_active", "در حال حاضر دسته‌بندی فعالی وجود ندارد."))
             return
         await message.answer(
             db.get_text("handlers_user.category.choose_option", "یک گزینه را انتخاب کنید:"),
-            reply_markup=kb.categories_kb(db, categories, full_access_bot),
+            reply_markup=kb.categories_kb(db, categories, full_access_bot, show_payg=is_main_bot),
         )
 
     @router.callback_query(F.data == "gift_open_store")
@@ -1554,7 +1555,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await _safe_edit(
             call.message,
             db.get_text("handlers_user.category.choose_category", "یک دسته‌بندی را انتخاب کنید:"),
-            reply_markup=kb.categories_kb(db, categories, is_main_bot),
+            reply_markup=kb.categories_kb(db, categories, is_main_bot, show_payg=is_main_bot),
         )
         await call.answer()
 

@@ -609,6 +609,7 @@ def create_payg_router(db, is_main_bot=True):
             [InlineKeyboardButton(text="💰 شارژ کیف پول", callback_data="acct:wallet")],
             [InlineKeyboardButton(text="🧾 تاریخچه برداشت‌ها", callback_data="payg:history")],
             [InlineKeyboardButton(text="📊 وضعیت و جزئیات مصرف", callback_data="payg:status")],
+            [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="back_categories")],
         ])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -652,6 +653,17 @@ def create_payg_router(db, is_main_bot=True):
     @router.callback_query(F.data == "mm:btn_payg")
     async def payg_inline_menu_button(call: CallbackQuery):
         await call.answer()
+        await show(call.message, call.from_user.id)
+
+    @router.callback_query(F.data == "payg:open")
+    async def payg_open_from_buy(call: CallbackQuery):
+        await call.answer()
+        if db.get_setting("payg_enabled", "1") != "1":
+            return
+        try:
+            await call.message.delete()
+        except Exception:
+            pass
         await show(call.message, call.from_user.id)
 
     @router.callback_query(F.data == "payg:status")
