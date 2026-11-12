@@ -82,6 +82,7 @@ import bulk_gifts
 import report_router
 from test_config_provision import format_plan_amount
 import tutorial_hub
+import category_media
 from service_alerts import normalize_channel
 from notification_i18n import send_telegram
 from panel_providers import (
@@ -587,6 +588,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             hint = tr("زیردسته‌ها:") if kids else tr("این دسته زیردسته‌ای ندارد.")
             description = (path[-1]["description"] or "") if path and "description" in path[-1].keys() else ""
             text = f"📂 {names}\n{hint}" + (f"\n\n📝 توضیحات: {description}" if description else "\n\n📝 توضیحی ثبت نشده است.")
+            media_summary = category_media.summary(path[-1]["description_media"]) if path and "description_media" in path[-1].keys() else ""
+            if media_summary:
+                text += f"\n🖼 رسانه‌ی همراه: {media_summary}"
         else:
             text = tr("📂 مدیریت دسته‌بندی‌ها:")
         return text, await asyncio.to_thread(kb.admin_categories_kb, db, pid)
@@ -622,6 +626,28 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         except Exception:
             await call.answer(db.get_text('handlers_admin.auto_9a43de7a', '⚠️ بارگذاری دسته\u200cبندی\u200cها ناموفق بود. دوباره تلاش کنید.'), show_alert=True)
 
+    def _cat_desc_kb(cat_id: int, has_text: bool, has_media: bool):
+        rows = []
+        if has_media:
+            rows.append([InlineKeyboardButton(text=tr("🗑 حذف رسانه"), callback_data=f"adm_cat_descclr:{cat_id}:media")])
+        if has_text:
+            rows.append([InlineKeyboardButton(text=tr("🗑 حذف متن"), callback_data=f"adm_cat_descclr:{cat_id}:text")])
+        rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت به پنل مدیریت"), callback_data=f"adm_cat_open:{cat_id}")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    async def _cat_desc_prompt_text(cat) -> str:
+        current = (cat["description"] or "") if "description" in cat.keys() else ""
+        media = category_media.summary(cat["description_media"]) if "description_media" in cat.keys() else ""
+        return (
+            "توضیحات این دسته/زیردسته را ارسال کنید.\n\n"
+            "• فقط متن بفرستید ← متن توضیحات عوض می‌شود (رسانه‌ی قبلی می‌ماند).\n"
+            "• عکس، ویدیو، ویس، موزیک، گیف یا فایل بفرستید (می‌توانید آلبوم هم بفرستید) ← "
+            "رسانه عوض می‌شود و اگر کپشن بنویسید همان کپشن، متن توضیحات می‌شود.\n"
+            "• برای پاک‌کردن همه‌چیز یک خط تیره (-) بفرستید.\n\n"
+            f"📝 متن فعلی: {current or 'ثبت نشده'}\n"
+            f"🖼 رسانه‌ی فعلی: {media or 'ثبت نشده'}"
+        )
+
     @router.callback_query(F.data.startswith("adm_cat_desc:"))
     async def cb_admin_cat_description(call: CallbackQuery, state: FSMContext):
         if not senior_admin_only(call.from_user.id):
@@ -632,24 +658,62 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await call.answer("⚠️ دسته‌بندی پیدا نشد.", show_alert=True)
         await state.update_data(category_description_id=cat_id)
         await state.set_state(AdminCategoryDescription.waiting_description)
-        current = (cat["description"] or "") if "description" in cat.keys() else ""
-        await safe_edit(call, "توضیحات این دسته/زیردسته را ارسال کنید. برای پاک‌کردن توضیحات، یک خط تیره (-) بفرستید.\n\n" + (current or "توضیحی ثبت نشده است."),
-                        reply_markup=kb.admin_back_kb(f"adm_cat_open:{cat_id}"))
+        has_text = bool((cat["description"] or "") if "description" in cat.keys() else "")
+        has_media = bool(category_media.parse(cat["description_media"])) if "description_media" in cat.keys() else False
+        await safe_edit(call, await _cat_desc_prompt_text(cat), reply_markup=_cat_desc_kb(cat_id, has_text, has_media))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("adm_cat_descclr:"))
+    async def cb_admin_cat_description_clear(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        try:
+            _, cat_raw, which = call.data.split(":", 2)
+            cat_id = int(cat_raw)
+        except Exception:
+            return await call.answer("⚠️ درخواست نامعتبر است.", show_alert=True)
+        if (await asyncio.to_thread(db.get_category, cat_id)) is None:
+            return await call.answer("⚠️ دسته‌بندی پیدا نشد.", show_alert=True)
+        try:
+            if which == "media":
+                await asyncio.to_thread(db.set_category_description_media, cat_id, [])
+            else:
+                await asyncio.to_thread(db.set_category_description, cat_id, "")
+            await asyncio.to_thread(db.log_admin_action, call.from_user.id, "category_description", f"دسته‌بندی #{cat_id}")
+        except Exception:
+            return await call.answer("⚠️ حذف ناموفق بود؛ دوباره تلاش کنید.", show_alert=True)
+        await state.clear()
+        text, markup = await _category_view(cat_id)
+        await safe_edit(call, "✅ حذف شد.\n" + text, markup)
         await call.answer()
 
     @router.message(AdminCategoryDescription.waiting_description)
     async def process_category_description(message: Message, state: FSMContext):
         if not senior_admin_only(message.from_user.id):
             return
+        from telegram_media import collect_media_group
         data = await state.get_data()
         cat_id = data.get("category_description_id")
-        value = (message.text or "").strip()
-        if not cat_id or len(value) > 2000:
+        if not cat_id:
+            return
+        # آلبوم: فقط یک آپدیت لیست کامل را می‌گیرد؛ بقیه None می‌گیرند
+        messages = await collect_media_group(message)
+        if messages is None:
+            return
+        items, caption = category_media.from_messages(messages)
+        if not items and not caption:
+            return await message.answer("⚠️ این نوع پیام پشتیبانی نمی‌شود. متن، عکس، ویدیو، ویس، موزیک، گیف یا فایل بفرستید.")
+        if len(caption) > 2000:
             return await message.answer("⚠️ توضیحات باید حداکثر ۲۰۰۰ کاراکتر باشد.")
-        if value == "-":
-            value = ""
         try:
-            await asyncio.to_thread(db.set_category_description, cat_id, value)
+            if not items and caption == "-":
+                await asyncio.to_thread(db.set_category_description, cat_id, "")
+                await asyncio.to_thread(db.set_category_description_media, cat_id, [])
+            else:
+                if items:
+                    await asyncio.to_thread(db.set_category_description_media, cat_id, items)
+                if caption:
+                    await asyncio.to_thread(db.set_category_description, cat_id, caption)
             await asyncio.to_thread(db.log_admin_action, message.from_user.id, "category_description", f"دسته‌بندی #{cat_id}")
             await state.clear()
             text, markup = await _category_view(cat_id)

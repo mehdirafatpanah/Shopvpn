@@ -3130,7 +3130,8 @@ def admin_categories_kb(db, parent_id=0) -> InlineKeyboardMarkup:
             text=tr(f"🎨 رنگ دکمه این دسته: {color_icon}"),
             callback_data=f"adm_catcolor:{pid}",
         )])
-        rows.append([InlineKeyboardButton(text=tr("📝 توضیحات دسته‌بندی"), callback_data=f"adm_cat_desc:{pid}")])
+        _has_media = bool(cur is not None and "description_media" in cur.keys() and (cur["description_media"] or ""))
+        rows.append([InlineKeyboardButton(text=tr("📝 توضیحات دسته‌بندی") + (" 🖼" if _has_media else ""), callback_data=f"adm_cat_desc:{pid}")])
         rows.append([InlineKeyboardButton(text=tr("➕ افزودن زیردسته"), callback_data=f"adm_cat_add:{pid}")])
         back_cb = _category_parent_cb(db, pid, "adm_cat_open", "adm_categories")
     else:

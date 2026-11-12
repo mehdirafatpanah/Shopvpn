@@ -44,6 +44,7 @@ import ai_support
 import buy_guide
 import phone_gate
 import ai_media
+import category_media
 from draft_stream import DraftStreamer
 import account_link
 import web_auth
@@ -1513,6 +1514,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
 
     @router.callback_query(F.data == "back_main")
     async def cb_back_main(call: CallbackQuery, state: FSMContext):
+        await _clear_category_media(call.bot, call.message.chat.id, state)
         await state.clear()
         try:
             await call.message.delete()
@@ -1529,8 +1531,25 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if (await asyncio.to_thread(db.get_setting, "main_menu_reply_enabled", "1")) != "1":
             await _show_main_menu_after_exit(call.message, call.from_user.id)
 
+    async def _clear_category_media(bot_obj, chat_id: int, state: FSMContext):
+        """پیام‌های رسانه‌ی توضیحات دسته‌ی قبلی را پاک می‌کند تا چت شلوغ نشود."""
+        try:
+            data = await state.get_data()
+            ids = data.get("cat_media_ids") or []
+            if not ids:
+                return
+            await state.update_data(cat_media_ids=[])
+            for mid in ids:
+                try:
+                    await bot_obj.delete_message(chat_id, int(mid))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     @router.callback_query(F.data == "back_categories")
-    async def cb_back_categories(call: CallbackQuery):
+    async def cb_back_categories(call: CallbackQuery, state: FSMContext):
+        await _clear_category_media(call.bot, call.message.chat.id, state)
         categories = (await asyncio.to_thread(db.get_child_categories, None, True))
         await _safe_edit(
             call.message,
@@ -1540,7 +1559,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await call.answer()
 
     @router.callback_query(F.data.startswith("cat:"))
-    async def cb_category(call: CallbackQuery):
+    async def cb_category(call: CallbackQuery, state: FSMContext):
         cat_id = int(call.data.split(":")[1])
         products = (await asyncio.to_thread(db.get_products, cat_id, active_only=True))
         children = (await asyncio.to_thread(db.get_child_categories, cat_id, True))
@@ -1549,6 +1568,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 db.get_text("handlers_user.category.empty", "محصولی در این دسته‌بندی موجود نیست."), show_alert=True
             )
             return
+        await _clear_category_media(call.bot, call.message.chat.id, state)
         if children:
             title = db.get_text("handlers_user.category.choose_sub", "یک زیردسته یا محصول را انتخاب کنید:")
         else:
@@ -1556,6 +1576,24 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         category = await asyncio.to_thread(db.get_category, cat_id)
         category_description = (category["description"] or "") if category and "description" in category.keys() else ""
         display_title = f"{title}\n\n📝 {category_description}" if category_description else title
+        media_items = category_media.parse(category["description_media"]) if category and "description_media" in category.keys() else []
+        if media_items:
+            # رسانه (عکس/ویس/ویدیو/فایل...) همراه توضیحات: اول رسانه، بعد منوی انتخاب زیر آن
+            chat_id = call.message.chat.id
+            caption = f"📝 {category_description}" if category_description else ""
+            try:
+                await call.message.delete()
+            except Exception:
+                pass
+            sent_ids, caption_sent = await category_media.send_media(call.bot, chat_id, media_items, caption)
+            if sent_ids:
+                await state.update_data(cat_media_ids=sent_ids)
+            menu_text = title if (caption_sent or not category_description) else display_title
+            await call.bot.send_message(
+                chat_id, menu_text, reply_markup=kb.products_kb(db, products, cat_id, children),
+            )
+            await call.answer()
+            return
         await _safe_edit(
             call.message,
             display_title,
