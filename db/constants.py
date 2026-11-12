@@ -500,7 +500,6 @@ for _gw_key in extra_gateway_registry.GATEWAY_ORDER:
 MENU_BUTTON_META = {
     "miniapp": {"label": "دکمه مینی‌اپ فروشگاه", "toggle_key": "miniapp_enabled", "admin_only": False, "has_text": False, "has_style": False, "default_text": None},
     "btn_buy": {"label": "دکمه خرید کانفیگ", "toggle_key": None, "admin_only": False, "has_text": True, "has_style": True, "default_text": "🛒 خرید کانفیگ"},
-    "btn_payg": {"label": "دکمه پرداخت به‌ازای مصرف", "toggle_key": "payg_enabled", "admin_only": False, "has_text": True, "has_style": True, "default_text": "💳 پرداخت به‌ازای مصرف"},
     "btn_test": {"label": "دکمه کانفیگ تست", "toggle_key": "test_enabled", "admin_only": False, "has_text": True, "has_style": True, "default_text": "🧪 کانفیگ تست رایگان"},
     "btn_my_orders": {"label": "دکمه حساب کاربری من", "toggle_key": None, "admin_only": False, "has_text": True, "has_style": True, "default_text": "🧾 حساب کاربری من"},
     "btn_referral": {"label": "دکمه زیرمجموعه‌گیری", "toggle_key": "referral_button_enabled", "admin_only": False, "has_text": True, "has_style": True, "default_text": "🤝 زیرمجموعه‌گیری من"},
@@ -596,7 +595,7 @@ BUYFLOW_STYLE_ONLY_META = {
 DEFAULT_SETTINGS.update({key: default for key, _label, default in ACCOUNT_TOGGLE_KEYS})
 
 DEFAULT_MENU_ORDER = [
-    "miniapp", "btn_reseller_panel", "btn_reseller_tiers", "btn_buy", "btn_payg", "btn_test",
+    "miniapp", "btn_reseller_panel", "btn_reseller_tiers", "btn_buy", "btn_test",
     "btn_my_orders", "btn_tutorial", "btn_referral", "btn_wheel", "btn_contact", "btn_admin_panel",
 ]
 
