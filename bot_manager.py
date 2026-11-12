@@ -35,6 +35,7 @@ from business_chat import create_business_router
 from userbot_admin import create_userbot_router
 from leak_admin import create_leak_router
 from handlers_admin import create_admin_router
+from payg import create_payg_router, PaygEngine
 from renewal_reminders import renewal_reminder_loop
 from connect_alerts import connect_alert_loop
 from churn_prediction import churn_offer_loop
@@ -535,6 +536,8 @@ class BotManager:
         dp.include_router(create_gift_router(db, is_main_bot=is_main_bot))
         dp.include_router(create_season_quiz_router(db, is_main_bot=is_main_bot))
         dp.include_router(create_engagement_router(db, is_main_bot=is_main_bot))
+        if is_main_bot:
+            dp.include_router(create_payg_router(db, is_main_bot=True))
         dp.include_router(create_admin_router(db, is_main_bot=is_main_bot, bot_manager=self))
         dp.include_router(create_user_router(db, is_main_bot=is_main_bot, bot_manager=self))
 
@@ -594,6 +597,7 @@ class BotManager:
             asyncio.create_task(extra_gateway_payment.poll_loop(bot, db)) if is_main_bot else None
         )
         panel_health_task = asyncio.create_task(panel_health_loop(bot, db)) if is_main_bot else None
+        payg_task = asyncio.create_task(PaygEngine(db, bot=bot, interval_seconds=600).run_forever()) if is_main_bot else None
         cron_task = asyncio.create_task(cron_loop(bot, db)) if is_main_bot else None
         daily_report_task = asyncio.create_task(daily_report_loop(bot, db))
         scheduled_broadcast_task = asyncio.create_task(scheduled_broadcast_loop(bot, db))
@@ -619,7 +623,7 @@ class BotManager:
             "connect_alert_task": connect_alert_task, "churn_offer_task": churn_offer_task,
             "backup_task": backup_task, "cache_refresh_task": cache_refresh_task,
             "temp_msg_task": temp_msg_task, "extra_gateway_task": extra_gateway_task,
-            "panel_health_task": panel_health_task, "cron_task": cron_task, "daily_report_task": daily_report_task,
+            "panel_health_task": panel_health_task, "payg_task": payg_task, "cron_task": cron_task, "daily_report_task": daily_report_task,
             "scheduled_broadcast_task": scheduled_broadcast_task, "channel_post_task": channel_post_task,
             "cleanup_task": cleanup_task, "lottery_task": lottery_task,
             "reseller_expiry_task": reseller_expiry_task, "signup_gift_task": signup_gift_task, "welcome_gift_task": welcome_gift_task,
@@ -633,7 +637,7 @@ class BotManager:
     _STOP_TASK_KEYS = (
         "reminder_task", "connect_alert_task", "churn_offer_task", "backup_task",
         "scheduled_broadcast_task", "channel_post_task", "cache_refresh_task", "temp_msg_task",
-        "extra_gateway_task", "panel_health_task", "cron_task", "daily_report_task",
+        "extra_gateway_task", "panel_health_task", "payg_task", "cron_task", "daily_report_task",
         "cleanup_task", "lottery_task", "reseller_expiry_task", "signup_gift_task", "welcome_gift_task",
         "gift_expiry_task", "audit_task", "season_task", "quiz_task", "update_check_task",
     )

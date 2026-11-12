@@ -111,6 +111,11 @@ def _menu_items(db, is_admin: bool, is_reseller: bool, is_main_bot: bool, show_r
     def item_buy():
         return (settings.get("btn_buy", "🛒 خرید کانفیگ"), settings.get("btn_buy_style", ""))
 
+    def item_payg():
+        if not is_main_bot or settings.get("payg_enabled", "1") != "1":
+            return None
+        return (settings.get("btn_payg", "💳 پرداخت به‌ازای مصرف"), settings.get("btn_payg_style", "success"))
+
     def item_test():
         if settings.get("test_enabled", "1") != "1":
             return None
@@ -183,6 +188,7 @@ def _menu_items(db, is_admin: bool, is_reseller: bool, is_main_bot: bool, show_r
     builders = {
         "miniapp": item_miniapp,
         "btn_buy": item_buy,
+        "btn_payg": item_payg,
         "btn_test": item_test,
         "btn_my_orders": item_my_orders,
         "btn_tutorial": item_tutorial,
@@ -1749,6 +1755,7 @@ ADMIN_PANEL_ITEMS = [
     ("adm_tickets_menu", "🎫 تیکت‌های پشتیبانی", "adm_tickets_menu"),
     ("adm_ticket_departments", "🧩 دپارتمان‌های پشتیبانی", "adm_ticket_departments"),
     ("adm_pending_topups", "👛 درخواست‌های شارژ کیف پول", "adm_pending_topups"),
+    ("adm_payg", "💳 مدیریت پرداخت به‌ازای مصرف", "adm_payg"),
     ("adm_crypto_payments", "🪙 پرداخت‌های کریپتو", "adm_crypto_payments"),
     ("adm_abangateway_payments", "💳 پرداخت‌های آبان گیت وی", "adm_abangateway_payments"),
     ("adm_blupal_payments", "💳 پرداخت‌های بلوپال", "adm_blupal_payments"),
@@ -1871,7 +1878,7 @@ ADMIN_HUBS = [
             "adm_min_amount_settings", "adm_pmgate", "adm_wallet_paymethods",
             "adm_cc_paymethods", "adm_xs_parity_extra",
         ]),
-        ("کیف پول و کش‌بک", ["adm_cashback_settings", "adm_bulk_wallet_deduct", "adm_bulk_wallet_credit"]),
+        ("کیف پول و کش‌بک", ["adm_cashback_settings", "adm_bulk_wallet_deduct", "adm_bulk_wallet_credit", "adm_payg"]),
         ("پرداخت‌های ثبت‌شده", [
             "adm_crypto_payments", "adm_abangateway_payments", "adm_blupal_payments",
             "adm_noapay_payments", *[f"adm_xgw_pay_{_k}" for _k in extra_gateway_registry.GATEWAY_ORDER],
@@ -2003,6 +2010,8 @@ def _unmapped_xs_groups() -> list:
 
 
 def _is_item_visible(db, key: str, is_main_bot: bool) -> bool:
+    if key == "adm_payg":
+        return bool(is_main_bot)
     if key == "adm_extra_settings":
         return bool(_unmapped_xs_groups())
     if key == "adm_my_volume":
