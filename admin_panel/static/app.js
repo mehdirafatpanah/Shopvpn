@@ -879,6 +879,7 @@ function showApp() {
   const startTab = queryValid ? queryTab : (savedValid ? saved : 'dashboard');
   const startItem = NAV.find(n => n.key === startTab);
   goTo(startTab, queryValid && querySub && startItem?.subs?.some(s => s[0] === querySub) ? querySub : undefined);
+  initAssistant();
 }
 
 /* ==================================================== web push (level 2) ===
@@ -12979,6 +12980,160 @@ async function renderAccount() {
       $('#acc-cur').value = ''; $('#acc-new').value = '';
     } catch (e) { handleErr(e); }
   });
+}
+
+/* ============================================== assistant (دستیار هوشمند) === */
+const ASSISTANT = { root: null, busy: false };
+const ASSISTANT_CHIPS = ['امروز چه کارهایی مانده؟', 'فروش این هفته چطور بود؟', 'برو به کدهای تخفیف', 'چرا فروش افت کرده؟'];
+
+function assistantNavPayload() {
+  return NAV.filter(n => canSee(n.role)).map(n => ({ k: n.key, l: n.label, s: n.subs || [] }));
+}
+
+function assistantAdd(kind, text) {
+  const box = $('#ai-msgs');
+  const el = document.createElement('div');
+  el.className = 'ai-msg ai-' + kind;
+  el.textContent = text;
+  box.appendChild(el);
+  box.scrollTop = box.scrollHeight;
+  return el;
+}
+
+function assistantHighlight(text) {
+  const norm = s => String(s || '').replace(/\u200c/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+  const needle = norm(text);
+  if (!needle) return;
+  let tries = 0;
+  const timer = setInterval(() => {
+    tries++;
+    const nodes = $$('label, h2, h3, h4, th, summary, button, .tab-btn, .field-label', content());
+    const hit = nodes.find(n => n.offsetParent !== null && norm(n.textContent).includes(needle));
+    if (hit) {
+      clearInterval(timer);
+      const target = hit.closest('.card, .field, .form-row, tr') || hit;
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      target.classList.add('ai-highlight');
+      setTimeout(() => target.classList.remove('ai-highlight'), 3500);
+    } else if (tries > 20) clearInterval(timer);
+  }, 250);
+}
+
+function assistantNavigate(d) {
+  if (!NAV.some(n => n.key === d.tab && canSee(n.role))) return;
+  goTo(d.tab, d.sub || undefined);
+  if (d.highlight) assistantHighlight(d.highlight);
+  const chip = assistantAdd('nav', 'باز شد: ' + d.label);
+  chip.classList.add('ai-note');
+  if (window.matchMedia('(max-width: 700px)').matches) assistantToggle(false);
+}
+
+function assistantConfirmCard(d) {
+  const box = $('#ai-msgs');
+  const card = document.createElement('div');
+  card.className = 'ai-confirm' + (d.danger ? ' ai-danger' : '');
+  card.innerHTML = `<div class="ai-confirm-label">${esc(d.label)}</div>
+    <div class="ai-confirm-actions"><button class="btn btn-sm btn-primary" data-ok>تایید و اجرا</button><button class="btn btn-sm" data-no>انصراف</button></div>`;
+  const actions = $('.ai-confirm-actions', card);
+  const finish = (msg, ok) => {
+    actions.innerHTML = `<span class="${ok ? 'ai-ok' : 'ai-bad'}">${esc(msg)}</span>`;
+  };
+  $('[data-no]', card).addEventListener('click', () => finish('لغو شد', false));
+  $('[data-ok]', card).addEventListener('click', async () => {
+    actions.querySelectorAll('button').forEach(b => { b.disabled = true; });
+    try {
+      await apiPost('/assistant/confirm', { token: d.token });
+      finish('انجام شد', true);
+      toast('انجام شد: ' + d.label);
+      renderPage(CURRENT_TAB);
+    } catch (e) {
+      finish(e.message || 'اجرا نشد', false);
+      handleErr(e);
+    }
+  });
+  box.appendChild(card);
+  box.scrollTop = box.scrollHeight;
+}
+
+async function assistantSend(text) {
+  text = (text || '').trim();
+  if (!text || ASSISTANT.busy) return;
+  ASSISTANT.busy = true;
+  $('#ai-send').disabled = true;
+  $('#ai-chips').hidden = true;
+  assistantAdd('user', text);
+  const wait = assistantAdd('bot', 'در حال فکر کردن…');
+  wait.classList.add('ai-wait');
+  try {
+    const data = await apiPost('/assistant/chat', { text, tab: CURRENT_TAB, nav: assistantNavPayload() });
+    wait.remove();
+    if (data.reply) assistantAdd('bot', data.reply);
+    (data.directives || []).forEach(d => {
+      if (d.type === 'navigate') assistantNavigate(d);
+      else if (d.type === 'confirm') assistantConfirmCard(d);
+    });
+  } catch (e) {
+    wait.remove();
+    if (e.message !== 'unauthorized') assistantAdd('bot', e.message || 'خطا در ارتباط با دستیار');
+  } finally {
+    ASSISTANT.busy = false;
+    $('#ai-send').disabled = false;
+  }
+}
+
+function assistantToggle(force) {
+  const panel = $('#ai-panel');
+  const show = typeof force === 'boolean' ? force : panel.hidden;
+  panel.hidden = !show;
+  $('#ai-fab').classList.toggle('ai-fab-open', show);
+  if (show) setTimeout(() => $('#ai-input').focus(), 50);
+}
+
+function assistantResetView() {
+  $('#ai-msgs').innerHTML = '';
+  assistantAdd('bot', 'سلام. بپرس کجا چی هست، بگو کجا بروم تا همان تب را باز کنم، یا کاری مثل بلاک کاربر، شارژ کیف پول، تایید سفارش و ساخت کد تخفیف را بگو تا کارت تایید بسازم.');
+  $('#ai-chips').hidden = false;
+}
+
+function initAssistant() {
+  if (!ME) return;
+  if (ASSISTANT.root) { assistantResetView(); return; }
+  const root = document.createElement('div');
+  root.id = 'ai-assistant';
+  root.innerHTML = `
+    <button class="ai-fab" id="ai-fab" type="button" title="دستیار هوشمند" aria-label="دستیار هوشمند">✨</button>
+    <section class="ai-panel" id="ai-panel" hidden>
+      <header class="ai-head"><strong>دستیار هوشمند</strong>
+        <span class="ai-head-actions"><button type="button" id="ai-reset" title="گفتگوی جدید">↺</button><button type="button" id="ai-close" title="بستن">✕</button></span></header>
+      <div class="ai-msgs" id="ai-msgs"></div>
+      <div class="ai-chips" id="ai-chips">${ASSISTANT_CHIPS.map(c => `<button type="button" class="ai-chip">${esc(c)}</button>`).join('')}</div>
+      <form class="ai-form" id="ai-form"><textarea id="ai-input" rows="1" placeholder="بپرس یا بگو کجا بروم…"></textarea><button class="btn btn-primary" id="ai-send" type="submit">ارسال</button></form>
+    </section>`;
+  document.body.appendChild(root);
+  ASSISTANT.root = root;
+  $('#ai-fab').addEventListener('click', () => assistantToggle());
+  $('#ai-close').addEventListener('click', () => assistantToggle(false));
+  $('#ai-reset').addEventListener('click', async () => {
+    try { await apiPost('/assistant/reset'); } catch (e) { handleErr(e); }
+    assistantResetView();
+  });
+  $$('.ai-chip', root).forEach(b => b.addEventListener('click', () => assistantSend(b.textContent)));
+  $('#ai-form').addEventListener('submit', e => {
+    e.preventDefault();
+    const input = $('#ai-input');
+    const v = input.value;
+    input.value = '';
+    input.style.height = '';
+    assistantSend(v);
+  });
+  $('#ai-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#ai-form').requestSubmit(); }
+  });
+  $('#ai-input').addEventListener('input', e => {
+    e.target.style.height = 'auto';
+    e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+  });
+  assistantResetView();
 }
 
 boot();
