@@ -1355,11 +1355,18 @@ async def api_create_custom_config(body: CustomConfigPurchase, auth=Depends(requ
     if body.volume_gb < settings["min_gb"] or body.volume_gb > settings["max_gb"]:
         raise HTTPException(status_code=400, detail=tr(f"حجم باید بین {settings['min_gb']} تا {settings['max_gb']} گیگابایت باشد."))
     price = db.calc_custom_config_price(body.volume_gb)
-    if price <= 0:
-        raise HTTPException(status_code=400, detail=tr("قیمت‌گذاری این بخش هنوز تنظیم نشده است."))
     server = db.get_panel_server_for_usage("custom_config")
     if not server or not server["is_active"]:
         raise HTTPException(status_code=400, detail=tr("در حال حاضر سروری برای ساخت کانفیگ شخصی فعال نیست."))
+    try:
+        import payg
+        cost_quote = payg.custom_plan_cost(db, int(server["id"]), int(body.volume_gb), int(settings["duration_days"]), 1, "*")
+        if cost_quote is not None:
+            price = int(cost_quote)
+    except Exception:
+        logging.getLogger("miniapp").exception("محاسبه تعرفه پنل برای کانفیگ شخصی ناموفق بود")
+    if price <= 0:
+        raise HTTPException(status_code=400, detail=tr("قیمت‌گذاری این بخش هنوز تنظیم نشده است."))
     if not db.panel_has_capacity(server["id"], 1):
         cap = db.get_panel_capacity_info(server["id"])
         raise HTTPException(status_code=409, detail=tr(f"ظرفیت پنل تکمیل است ({cap['active_services']}/{cap['max_services']} سرویس فعال)."))
