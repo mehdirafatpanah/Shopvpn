@@ -4271,6 +4271,386 @@ async def api_panel_product_targets(server_id: int, admin=Depends(require_any_pe
         raise HTTPException(400, tr(f"دریافت فهرست مقصدهای پنل ناموفق بود: {str(exc)[:220]}"))
 
 
+class PaygSettingsBody(BaseModel):
+    enabled: Optional[bool] = None
+    rates: Optional[List[int]] = None
+    cycle_seconds: Optional[int] = None
+    max_services: Optional[int] = None
+
+
+class PaygTargetBody(BaseModel):
+    values: List[str] = []
+
+
+class PaygModeBody(BaseModel):
+    mode: str
+
+
+class PaygSshBody(BaseModel):
+    node_ids: List[int] = []
+    protocols: List[str] = []
+
+
+def _payg_gib() -> int:
+    return 1024 ** 3
+
+
+def _payg_month_key() -> str:
+    import payg
+    return payg._month_key()
+
+
+def _payg_prepare():
+    import payg
+    payg.ensure_schema(db)
+    return payg
+
+
+def _payg_panel_rows(payg) -> list:
+    selected = set(payg.get_payg_panel_ids(db))
+    targets = payg.get_payg_targets(db)
+    rows = []
+    for server in db.get_panel_servers(True):
+        sid = int(server["id"])
+        info = db.get_panel_capacity_info(sid) or {}
+        rows.append({
+            "id": sid,
+            "name": server["name"],
+            "panel_type": server["panel_type"],
+            "selected": sid in selected,
+            "has_target": sid in targets,
+            "target_count": payg._target_count(targets[sid]) if sid in targets else 0,
+            "active_services": int(info.get("active_services") or 0),
+            "max_services": info.get("max_services"),
+        })
+    return rows
+
+
+def _payg_ssh_rows(payg) -> list:
+    import ssh_service
+    picked = set(payg.get_payg_ssh_nodes(db))
+    rows = []
+    for node in db.list_ssh_nodes(True):
+        if node.get("node_type") != "linux":
+            continue
+        rows.append({
+            "id": int(node["id"]),
+            "name": node.get("name") or f"#{node['id']}",
+            "host": node.get("host") or "",
+            "protocols": ssh_service.node_protocols(node),
+            "selected": int(node["id"]) in picked,
+        })
+    return rows
+
+
+@app.get("/api/payg/overview")
+def api_payg_overview(admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    payg = _payg_prepare()
+    import dedicated_sub
+    from ssh_service import SUPPORTED_PROTOCOLS
+    month = _payg_month_key()
+    with db._get_conn() as conn:
+        stats = conn.execute(
+            "SELECT COUNT(*) total, "
+            "SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) active, "
+            "SUM(CASE WHEN status='suspended_admin' THEN 1 ELSE 0 END) suspended, "
+            "SUM(CASE WHEN status='active' AND last_balance<=0 THEN 1 ELSE 0 END) zero_balance "
+            "FROM payg_accounts").fetchone()
+        revenue = conn.execute(
+            "SELECT COALESCE(SUM(amount),0) n FROM payg_transactions WHERE substr(cycle_key,1,7)=?",
+            (month,)).fetchone()["n"]
+        used = conn.execute(
+            "SELECT COALESCE(SUM(month_used_bytes),0) n FROM payg_accounts WHERE month_key=?",
+            (month,)).fetchone()["n"]
+    return {
+        "enabled": db.get_setting("payg_enabled", "1") == "1",
+        "rates": payg.get_rates(db),
+        "cycle_seconds": max(60, int(db.get_setting("payg_cycle_seconds", "600") or 600)),
+        "max_services": int(db.get_setting("payg_max_services_per_user", "5") or 5),
+        "mode": payg.get_payg_mode(db),
+        "dsub_enabled": bool(dedicated_sub.is_enabled(db)),
+        "ssh_protocols": payg.get_payg_ssh_protocols(db),
+        "supported_protocols": list(SUPPORTED_PROTOCOLS),
+        "panels": _payg_panel_rows(payg),
+        "ssh_nodes": _payg_ssh_rows(payg),
+        "stats": {
+            "total": int(stats["total"] or 0),
+            "active": int(stats["active"] or 0),
+            "suspended": int(stats["suspended"] or 0),
+            "zero_balance": int(stats["zero_balance"] or 0),
+            "month_used_bytes": int(used or 0),
+            "month_revenue": int(revenue or 0),
+        },
+    }
+
+
+@app.post("/api/payg/settings")
+def api_payg_settings(body: PaygSettingsBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    payg = _payg_prepare()
+    changes = []
+    if body.rates is not None:
+        rates = [int(x) for x in body.rates]
+        if len(rates) != 4 or any(x <= 0 for x in rates) or rates != sorted(rates, reverse=True):
+            raise HTTPException(400, tr("هر چهار تعرفه باید مثبت و به‌ترتیب نزولی باشند."))
+        db.set_setting("payg_rates", json.dumps(rates))
+        changes.append("rates=" + "/".join(str(x) for x in rates))
+    if body.cycle_seconds is not None:
+        if not 60 <= int(body.cycle_seconds) <= 86400:
+            raise HTTPException(400, tr("چرخه تسویه باید بین ۶۰ تا ۸۶۴۰۰ ثانیه باشد."))
+        db.set_setting("payg_cycle_seconds", str(int(body.cycle_seconds)))
+        changes.append(f"cycle_seconds={int(body.cycle_seconds)}")
+    if body.max_services is not None:
+        if not 1 <= int(body.max_services) <= 100:
+            raise HTTPException(400, tr("حداکثر سرویس هر کاربر باید بین ۱ تا ۱۰۰ باشد."))
+        db.set_setting("payg_max_services_per_user", str(int(body.max_services)))
+        changes.append(f"max_services={int(body.max_services)}")
+    if body.enabled is not None:
+        db.set_setting("payg_enabled", "1" if body.enabled else "0")
+        changes.append(f"enabled={int(bool(body.enabled))}")
+    if changes:
+        db.log_admin_action(admin["id"], "payg_settings_change", f"{', '.join(changes)} (پنل وب - {admin['username']})", "setting", "payg")
+    return {"ok": True}
+
+
+def _payg_save_panels(payg, ids: set, targets: dict):
+    ordered = sorted(ids)
+    db.set_setting("payg_panel_server_ids", json.dumps(ordered))
+    db.set_setting("payg_panel_server_id", str(ordered[0]) if ordered else "")
+    payg._save_payg_targets(db, targets)
+
+
+@app.put("/api/payg/targets/{server_id}")
+async def api_payg_set_target(server_id: int, body: PaygTargetBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    payg = _payg_prepare()
+    server = db.get_panel_server(server_id)
+    if not server or not server["is_active"]:
+        raise HTTPException(404, tr("پنل فعال یافت نشد."))
+    try:
+        from product_targets import list_product_targets, build_target_config
+        info = await list_product_targets(server)
+    except Exception as exc:
+        raise HTTPException(400, tr(f"دریافت فهرست مقصدهای پنل ناموفق بود: {str(exc)[:220]}"))
+    ids = set(payg.get_payg_panel_ids(db))
+    targets = payg.get_payg_targets(db)
+    if not (info.get("choices") or []):
+        ids.add(server_id)
+        targets.pop(server_id, None)
+    else:
+        if not body.values:
+            raise HTTPException(400, tr("حداقل یک اینباند یا گروه انتخاب کنید."))
+        norm = {"field": info.get("field", "group_ids"), "kind": info.get("kind", "list"), "choices": info.get("choices") or []}
+        try:
+            targets[server_id] = build_target_config(server, body.values, norm)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        ids.add(server_id)
+    _payg_save_panels(payg, ids, targets)
+    db.log_admin_action(admin["id"], "payg_target_set", f"panel={server_id} targets={len(body.values)} (پنل وب - {admin['username']})", "setting", "payg")
+    return {"ok": True}
+
+
+@app.delete("/api/payg/targets/{server_id}")
+def api_payg_remove_target(server_id: int, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    payg = _payg_prepare()
+    ids = set(payg.get_payg_panel_ids(db))
+    ids.discard(server_id)
+    targets = payg.get_payg_targets(db)
+    targets.pop(server_id, None)
+    _payg_save_panels(payg, ids, targets)
+    db.log_admin_action(admin["id"], "payg_target_remove", f"panel={server_id} (پنل وب - {admin['username']})", "setting", "payg")
+    return {"ok": True}
+
+
+@app.get("/api/payg/targets/{server_id}")
+async def api_payg_get_target(server_id: int, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    payg = _payg_prepare()
+    server = db.get_panel_server(server_id)
+    if not server or not server["is_active"]:
+        raise HTTPException(404, tr("پنل فعال یافت نشد."))
+    try:
+        from product_targets import list_product_targets
+        info = await list_product_targets(server)
+    except Exception as exc:
+        raise HTTPException(400, tr(f"دریافت فهرست مقصدهای پنل ناموفق بود: {str(exc)[:220]}"))
+    choices = info.get("choices") or []
+    cfg = payg.get_payg_targets(db).get(server_id)
+    value = (cfg or {}).get("value")
+    if isinstance(value, dict):
+        selected = [f"{proto}::{item}" for proto, items in value.items() for item in (items or [])]
+    elif isinstance(value, list):
+        selected = [str(x) for x in value]
+    elif value in (None, ""):
+        selected = []
+    else:
+        selected = [str(value)]
+    allowed = {str(c.get("value")) for c in choices}
+    return {
+        "choices": choices,
+        "selected": [v for v in selected if v in allowed],
+        "is_member": server_id in set(payg.get_payg_panel_ids(db)),
+    }
+
+
+@app.post("/api/payg/mode")
+def api_payg_mode(body: PaygModeBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    _payg_prepare()
+    if body.mode not in ("balance", "all"):
+        raise HTTPException(400, tr("حالت نامعتبر است."))
+    if body.mode == "all":
+        import dedicated_sub
+        if not dedicated_sub.is_enabled(db):
+            raise HTTPException(400, tr("برای حالت «همه مقصدها» ابتدا ساب اختصاصی را روشن کنید."))
+    db.set_setting("payg_target_mode", body.mode)
+    db.log_admin_action(admin["id"], "payg_mode_change", f"mode={body.mode} (پنل وب - {admin['username']})", "setting", "payg")
+    return {"ok": True}
+
+
+@app.put("/api/payg/ssh")
+def api_payg_ssh(body: PaygSshBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    _payg_prepare()
+    from ssh_service import SUPPORTED_PROTOCOLS
+    valid_nodes = {int(n["id"]) for n in db.list_ssh_nodes(True) if n.get("node_type") == "linux"}
+    node_ids = sorted({int(x) for x in body.node_ids if int(x) in valid_nodes})
+    protocols = [p for p in SUPPORTED_PROTOCOLS if p in {str(x).strip().lower() for x in body.protocols}]
+    if not protocols:
+        protocols = ["ssh"]
+    db.set_setting("payg_ssh_node_ids", json.dumps(node_ids))
+    db.set_setting("payg_ssh_protocols", json.dumps(protocols))
+    db.log_admin_action(admin["id"], "payg_ssh_change", f"nodes={node_ids} protocols={protocols} (پنل وب - {admin['username']})", "setting", "payg")
+    return {"ok": True}
+
+
+@app.post("/api/payg/clear")
+def api_payg_clear(admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    payg = _payg_prepare()
+    _payg_save_panels(payg, set(), {})
+    db.set_setting("payg_ssh_node_ids", "[]")
+    db.log_admin_action(admin["id"], "payg_targets_clear", f"(پنل وب - {admin['username']})", "setting", "payg")
+    return {"ok": True}
+
+
+@app.get("/api/payg/accounts")
+def api_payg_accounts(offset: int = 0, limit: int = 25, q: str = "", admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    _payg_prepare()
+    limit = max(1, min(int(limit), 100))
+    offset = max(0, int(offset))
+    where, args = "", []
+    term = (q or "").strip()
+    if term.isdigit():
+        where, args = "WHERE a.user_id=?", [int(term)]
+    with db._get_conn() as conn:
+        total = conn.execute(f"SELECT COUNT(*) n FROM payg_accounts a {where}", args).fetchone()["n"]
+        rows = conn.execute(
+            "SELECT a.user_id,a.status,a.month_used_bytes,a.month_cost,a.last_balance,a.updated_at,"
+            "(SELECT COUNT(*) FROM payg_services s WHERE s.user_id=a.user_id) services "
+            f"FROM payg_accounts a {where} ORDER BY a.updated_at DESC LIMIT ? OFFSET ?",
+            args + [limit, offset]).fetchall()
+    items = []
+    for r in rows:
+        items.append({
+            "user_id": int(r["user_id"]),
+            "status": r["status"],
+            "month_used_bytes": int(r["month_used_bytes"] or 0),
+            "month_cost": int(r["month_cost"] or 0),
+            "balance": int(db.get_wallet_credit(int(r["user_id"])) or 0),
+            "services": int(r["services"] or 0),
+            "updated_at": r["updated_at"],
+        })
+    return {"items": items, "total": int(total or 0), "offset": offset, "limit": limit}
+
+
+@app.get("/api/payg/accounts/{user_id}")
+def api_payg_account_detail(user_id: int, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    _payg_prepare()
+    with db._get_conn() as conn:
+        row = conn.execute("SELECT * FROM payg_accounts WHERE user_id=?", (user_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, tr("برای این کاربر حساب PayG ثبت نشده است."))
+        services = conn.execute(
+            "SELECT ps.id,ps.service_kind,ps.service_id,ps.last_billed_bytes,s.used_bytes,s.reported_at,s.source "
+            "FROM payg_services ps LEFT JOIN usage_snapshots s ON s.service_kind=ps.service_kind AND s.service_id=ps.service_id "
+            "WHERE ps.user_id=?", (user_id,)).fetchall()
+        txs = conn.execute(
+            "SELECT service_kind,service_id,used_bytes,amount,created_at FROM payg_transactions WHERE user_id=? ORDER BY id DESC LIMIT 20",
+            (user_id,)).fetchall()
+        spent = conn.execute(
+            "SELECT COUNT(*) n,COALESCE(SUM(amount),0) spent FROM payg_transactions WHERE user_id=?", (user_id,)).fetchone()
+    pool = db.get_quota_usage(int(row["quota_pool_id"])) if row["quota_pool_id"] else None
+    return {
+        "user_id": user_id,
+        "status": row["status"],
+        "balance": int(db.get_wallet_credit(user_id) or 0),
+        "month_used_bytes": int(row["month_used_bytes"] or 0),
+        "month_cost": int(row["month_cost"] or 0),
+        "total_spent": int(spent["spent"] or 0),
+        "tx_count": int(spent["n"] or 0),
+        "pool": ({"limit_bytes": int(pool["limit_bytes"]), "used_bytes": int(pool["used_bytes"])} if pool else None),
+        "services": [{
+            "id": int(s["id"]), "kind": s["service_kind"], "service_id": s["service_id"],
+            "used_bytes": int(s["used_bytes"] or 0), "billed_bytes": int(s["last_billed_bytes"] or 0),
+            "reported_at": s["reported_at"], "source": s["source"],
+        } for s in services],
+        "transactions": [{
+            "kind": t["service_kind"], "service_id": t["service_id"], "used_bytes": int(t["used_bytes"]),
+            "amount": int(t["amount"]), "created_at": t["created_at"],
+        } for t in txs],
+    }
+
+
+@app.post("/api/payg/accounts/{user_id}/suspend")
+def api_payg_account_suspend(user_id: int, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    payg = _payg_prepare()
+    with db._get_conn() as conn:
+        row = conn.execute("SELECT quota_pool_id FROM payg_accounts WHERE user_id=?", (user_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, tr("حساب پیدا نشد."))
+        conn.execute("UPDATE payg_accounts SET status='suspended_admin',updated_at=? WHERE user_id=?", (payg._now(), user_id))
+    if row["quota_pool_id"]:
+        usage = db.get_quota_usage(int(row["quota_pool_id"]))
+        used = int((usage or {}).get("used_bytes") or 0)
+        db.set_quota_pool_limit(int(row["quota_pool_id"]), max(1, used) / _payg_gib())
+    db.log_admin_action(admin["id"], "payg_account_suspend", f"user={user_id} (پنل وب - {admin['username']})", "user", str(user_id))
+    return {"ok": True}
+
+
+@app.post("/api/payg/accounts/{user_id}/resume")
+def api_payg_account_resume(user_id: int, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    payg = _payg_prepare()
+    with db._get_conn() as conn:
+        row = conn.execute("SELECT * FROM payg_accounts WHERE user_id=?", (user_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, tr("حساب پیدا نشد."))
+    balance = int(db.get_wallet_credit(user_id) or 0)
+    if balance <= 0:
+        raise HTTPException(400, tr("برای فعال‌سازی مجدد ابتدا کاربر باید کیف پولش را شارژ کند."))
+    with db._get_conn() as conn:
+        conn.execute("UPDATE payg_accounts SET status='active',last_alert_level=0,updated_at=? WHERE user_id=?", (payg._now(), user_id))
+    if row["quota_pool_id"]:
+        rates = [int(x) for x in json.loads(row["month_rates"] or json.dumps(payg.get_rates(db)))]
+        limit = payg._affordable_limit_bytes(balance, rates, payg._billing_base_bytes(db, user_id), int(row["month_used_bytes"] or 0))
+        db.set_quota_pool_limit(int(row["quota_pool_id"]), limit / _payg_gib())
+    db.log_admin_action(admin["id"], "payg_account_resume", f"user={user_id} (پنل وب - {admin['username']})", "user", str(user_id))
+    return {"ok": True}
+
+
+@app.get("/api/payg/report")
+def api_payg_report(admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    _payg_prepare()
+    month = _payg_month_key()
+    with db._get_conn() as conn:
+        kinds = conn.execute(
+            "SELECT service_kind,COUNT(*) tx,COALESCE(SUM(used_bytes),0) bytes,COALESCE(SUM(amount),0) amount "
+            "FROM payg_transactions WHERE substr(cycle_key,1,7)=? GROUP BY service_kind", (month,)).fetchall()
+        months = conn.execute(
+            "SELECT substr(cycle_key,1,7) m,COALESCE(SUM(used_bytes),0) bytes,COALESCE(SUM(amount),0) amount "
+            "FROM payg_transactions GROUP BY m ORDER BY m DESC LIMIT 6").fetchall()
+    return {
+        "month": month,
+        "kinds": [{"kind": r["service_kind"], "tx": int(r["tx"]), "bytes": int(r["bytes"]), "amount": int(r["amount"])} for r in kinds],
+        "months": [{"month": r["m"], "bytes": int(r["bytes"]), "amount": int(r["amount"])} for r in months],
+    }
+
+
 @app.get("/api/ssh/nodes-lite")
 def api_ssh_nodes_lite(admin=Depends(require_any_permission("catalog", "settings")), _fa=Depends(require_full_access_tenant)):
     """Only active Linux Agent nodes can currently be attached to paid SSH products."""
