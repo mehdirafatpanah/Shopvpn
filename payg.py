@@ -171,6 +171,78 @@ def get_payg_panel_ids(db):
     return list(dict.fromkeys(x for x in ids if x > 0))
 
 
+def get_payg_targets(db):
+    """اینباند/گروه انتخاب‌شده برای هر پنل PayG: {panel_id: target_config}."""
+    raw = str(db.get_setting("payg_panel_targets", "") or "").strip()
+    out = {}
+    if not raw:
+        return out
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return out
+    if isinstance(data, dict):
+        for key, cfg in data.items():
+            if str(key).isdigit() and isinstance(cfg, dict) and "field" in cfg:
+                out[int(key)] = cfg
+    return out
+
+
+def _save_payg_targets(db, targets):
+    db.set_setting("payg_panel_targets",
+                   json.dumps({str(k): v for k, v in targets.items()}, ensure_ascii=False))
+
+
+MULTI_NEEDS_DSUB = ("⛔️ حالت «همه مقصدها» در PayG فقط با ساب اختصاصی فعال کار می‌کند؛ "
+                    "مدیریت باید ساب اختصاصی را روشن و آدرس پایه‌اش را تنظیم کند.")
+
+
+def _json_list(db, key):
+    try:
+        value = json.loads(str(db.get_setting(key, "") or "") or "[]")
+    except Exception:
+        return []
+    return value if isinstance(value, list) else []
+
+
+def get_payg_ssh_nodes(db):
+    """نودهای SSH انتخاب‌شده برای PayG (فقط در حالت «همه مقصدها» استفاده می‌شوند)."""
+    ids = [int(x) for x in _json_list(db, "payg_ssh_node_ids") if str(x).isdigit()]
+    return list(dict.fromkeys(x for x in ids if x > 0))
+
+
+def get_payg_ssh_protocols(db):
+    from ssh_service import SUPPORTED_PROTOCOLS
+    chosen = {str(x).strip().lower() for x in _json_list(db, "payg_ssh_protocols")}
+    picked = [p for p in SUPPORTED_PROTOCOLS if p in chosen]
+    return picked or ["ssh"]
+
+
+def get_payg_mode(db):
+    """'balance' = هر سرویس روی یک پنل (کم‌بارترین)؛ 'all' = هر سرویس روی همه مقصدها با ساب اختصاصی."""
+    return "all" if str(db.get_setting("payg_target_mode", "balance") or "") == "all" else "balance"
+
+
+def payg_multi_plan(db):
+    """(panel_ids, node_ids, protocols) اگر ساخت چندمقصدی لازم است؛ وگرنه None."""
+    if get_payg_mode(db) != "all":
+        return None
+    panels = get_payg_panel_ids(db)
+    nodes = get_payg_ssh_nodes(db)
+    if not panels or len(panels) + len(nodes) < 2:
+        return None
+    return panels, nodes, get_payg_ssh_protocols(db)
+
+
+def _target_count(cfg):
+    value = (cfg or {}).get("value")
+    if isinstance(value, dict):
+        return sum(len(v or []) for v in value.values())
+    if isinstance(value, list):
+        return len(value)
+    return 1 if value not in (None, "") else 0
+
+
 def _choose_payg_panel(db, panel_ids):
     """اختيار پنل فعال با ظرفیت و کمترین بار."""
     candidates = []
@@ -240,6 +312,22 @@ def _sync_services(db, user_id: int, pool_id: int):
                 (int(user_id), "vpn", sid, baseline, _now()),
             )
             attachments.append(("vpn", sid, int(row["panel_server_id"]) if row["panel_server_id"] else None))
+    # Multi-target services: every panel link / SSH account in the PayG pool is
+    # metered and billed on its own counter (the sum is the user's usage).
+    with db._get_conn() as conn:
+        extra_members = conn.execute(
+            "SELECT service_kind,service_id FROM quota_pool_members WHERE pool_id=? AND "
+            "(service_kind='ssh' OR (service_kind='vpn' AND service_id LIKE 'panel_link:%'))",
+            (int(pool_id),),
+        ).fetchall()
+        for member in extra_members:
+            snap = conn.execute("SELECT used_bytes FROM usage_snapshots WHERE service_kind=? AND service_id=?",
+                                (member["service_kind"], member["service_id"])).fetchone()
+            baseline = int(snap["used_bytes"] or 0) if snap else -1
+            conn.execute(
+                "INSERT OR IGNORE INTO payg_services(user_id,service_kind,service_id,last_billed_bytes,created_at) VALUES(?,?,?,?,?)",
+                (int(user_id), member["service_kind"], member["service_id"], baseline, _now()),
+            )
     attached = conflicts = 0
     for kind, sid, node_id in attachments:
         try:
@@ -256,7 +344,7 @@ def _sync_services(db, user_id: int, pool_id: int):
     return {"attached": attached, "conflicts": conflicts, "discovered": len(attachments)}
 
 
-def activate_payg(db, user_id: int):
+def activate_payg(db, user_id: int, existing_pool_id: int = None):
     if db.get_setting("payg_enabled", "1") != "1":
         return {"ok": False, "reason": "disabled"}
     balance = int(db.get_wallet_credit(user_id) or 0)
@@ -281,8 +369,9 @@ def activate_payg(db, user_id: int):
     rates = get_rates(db)
     # Temporarily create a generous pool ceiling; after attaching services,
     # rebase it on settled usage and the wallet's exact tiered purchasing power.
-    pool_id = db.create_quota_pool(user_id, 1_000_000_000,
-                                   label="Pay As You Go", metadata={"payg": True})
+    pool_id = (int(existing_pool_id) if existing_pool_id else
+               db.create_quota_pool(user_id, 1_000_000_000,
+                                    label="Pay As You Go", metadata={"payg": True}))
     with db._get_conn() as conn:
         conn.execute(
             "INSERT INTO payg_accounts(user_id,status,quota_pool_id,initial_balance,last_balance,month_key,month_rates,month_used_bytes,month_cost,last_alert_level,created_at,updated_at) "
@@ -631,6 +720,165 @@ async def _rollback_payg_vpn(db, server, provisioned: dict) -> None:
             conn.execute("DELETE FROM custom_configs WHERE id=?", (custom_id,))
 
 
+async def _provision_payg_multi(db, uid: int, panel_ids, node_ids, protocols) -> dict:
+    """ساخت یک سرویس PayG روی همه پنل‌ها (با اینباند انتخاب‌شده‌ی هرکدام) و نودهای SSH.
+
+    پنل اول سرویس اصلی (custom_config) است، بقیه با config_panel_links وصل می‌شوند و
+    ساب اختصاصی همه را یکجا می‌دهد. مصرف هر مقصد جدا خوانده و جمعش صورتحساب می‌شود.
+    همه‌یا‌هیچ: با هر خطا هرچه ساخته شده پاک می‌شود. ثبت‌نام در حساب PayG هم داخل همین تابع است."""
+    import dedicated_sub
+    from direct_panel_provision import _provision_vpn, provision_ssh_direct
+    from panel_providers import get_provider
+    from ssh_service import node_protocols
+
+    if not dedicated_sub.is_enabled(db):
+        raise RuntimeError(MULTI_NEEDS_DSUB)
+    targets = get_payg_targets(db)
+    for sid in panel_ids:
+        server = db.get_panel_server(int(sid))
+        if not server or not server["is_active"]:
+            raise RuntimeError(f"پنل #{sid} فعال نیست؛ مدیریت باید انتخاب پنل‌های PayG را اصلاح کند.")
+        if not db.panel_has_capacity(int(sid), 1):
+            raise RuntimeError(f"ظرفیت پنل «{server['name']}» تکمیل است.")
+    nodes_by_id = {int(n["id"]): n for n in db.list_ssh_nodes(active_only=True)}
+    node_plan = []
+    for nid in node_ids:
+        node = nodes_by_id.get(int(nid))
+        if not node or node.get("node_type") != "linux":
+            raise RuntimeError(f"نود SSH #{nid} فعال نیست؛ مدیریت باید انتخاب نودهای PayG را اصلاح کند.")
+        picks = [p for p in protocols if p in node_protocols(node)]
+        if not picks:
+            raise RuntimeError(f"هیچ‌یک از پروتکل‌های انتخابی PayG روی نود «{node.get('name') or nid}» نصب نیست.")
+        node_plan.append((int(nid), picks))
+
+    with db._get_conn() as conn:
+        account = conn.execute("SELECT status,quota_pool_id FROM payg_accounts WHERE user_id=?", (int(uid),)).fetchone()
+    created_pool = False
+    if account and account["status"] == "active" and account["quota_pool_id"]:
+        pool_id = int(account["quota_pool_id"])
+    else:
+        pool_id = int(db.create_quota_pool(int(uid), 1_000_000_000, label="Pay As You Go", metadata={"payg": True}))
+        created_pool = True
+
+    ssh_items, panel_users, link_ids = [], [], []
+    state = {"primary": None}
+
+    async def rollback():
+        for item in ssh_items:
+            try:
+                from ssh_providers import get_ssh_provider
+                from quota_reconciler import _env_secret_resolver
+                node = nodes_by_id.get(int(item["node_id"]))
+                await get_ssh_provider(node, secret_resolver=_env_secret_resolver).delete_account(item["account_id"])
+            except Exception:
+                logger.exception("PAYG multi rollback: SSH delete failed for %s", item.get("account_id"))
+            with db._get_conn() as conn:
+                conn.execute("DELETE FROM ssh_accounts WHERE account_id=?", (item["account_id"],))
+                for table in ("usage_snapshots", "quota_enforcement_state"):
+                    conn.execute(f"DELETE FROM {table} WHERE service_kind='ssh' AND service_id=?", (item["account_id"],))
+                conn.execute("DELETE FROM quota_pool_members WHERE service_kind='ssh' AND service_id=?", (item["account_id"],))
+        for sid, username in panel_users:
+            try:
+                await get_provider(db.get_panel_server(int(sid))).delete_user(username)
+            except Exception:
+                logger.exception("PAYG multi rollback: panel user delete failed %s on %s", username, sid)
+        primary = state["primary"]
+        if primary:
+            try:
+                db.delete_config_panel_links(int(primary["custom_config_id"]))
+            except Exception:
+                logger.exception("PAYG multi rollback: link cleanup failed")
+            sid_key = f"custom_config:{int(primary['custom_config_id'])}"
+            with db._get_conn() as conn:
+                conn.execute("DELETE FROM payg_provisioned_services WHERE service_kind='vpn' AND service_id=?", (sid_key,))
+                conn.execute("DELETE FROM payg_services WHERE service_kind='vpn' AND service_id=?", (sid_key,))
+                conn.execute("DELETE FROM quota_pool_members WHERE service_kind='vpn' AND service_id=?", (sid_key,))
+                conn.execute("DELETE FROM quota_enforcement_state WHERE service_kind='vpn' AND service_id=?", (sid_key,))
+                conn.execute("DELETE FROM usage_snapshots WHERE service_kind='vpn' AND service_id=?", (sid_key,))
+                conn.execute("DELETE FROM custom_configs WHERE id=?", (int(primary["custom_config_id"]),))
+        if created_pool:
+            db.delete_quota_pool(pool_id)
+
+    try:
+        ssh_product_base = {"name": "Pay As You Go", "auto_provision_volume_gb": 0, "duration_days": 0}
+        for nid, picks in node_plan:
+            for proto in picks:
+                prod = dict(ssh_product_base, provision_ssh_node_id=nid, provision_ssh_protocol=proto)
+                built = await provision_ssh_direct(db, prod, quantity=1, user_id=int(uid), order_id=None,
+                                                   allow_openvpn=True, node_id=nid, pool_id=pool_id, protocol=proto)
+                ssh_items.extend(built)
+                if any(not b.get("accounting_ready") for b in built):
+                    raise RuntimeError(f"نود #{nid} شمارنده‌ی مصرف معتبر ندارد؛ این نود برای Pay As You Go قابل استفاده نیست.")
+
+        primary_username = None
+        for index, sid in enumerate(panel_ids):
+            fake_product = {
+                "id": None, "name": "Pay As You Go", "auto_provision_volume_gb": 0, "duration_days": 0,
+                "provision_server_id": int(sid), "provision_ssh_node_id": None, "provision_ssh_protocol": "ssh",
+                "is_auto_provision": 1, "base_users": 0, "extra_user_price": 0, "max_users": 0,
+            }
+            override = json.dumps(targets[int(sid)], ensure_ascii=False) if int(sid) in targets else None
+            built = await _provision_vpn(db, fake_product, quantity=1, user_id=int(uid), order_id=None,
+                                         shared_pool=True, server_id=int(sid), register=(index == 0),
+                                         target_config_override=override)
+            item = built[0]
+            panel_users.append((int(sid), item["username"]))
+            if index == 0:
+                if not item.get("custom_config_id") or not item.get("subscription_url"):
+                    raise RuntimeError("ساخت سرویس اصلی روی پنل کامل نشد.")
+                state["primary"] = item
+                primary_username = item["username"]
+                with db._get_conn() as conn:
+                    conn.execute("INSERT OR REPLACE INTO payg_provisioned_services(service_kind,service_id,user_id,created_at) "
+                                 "VALUES('vpn',?,?,?)", (f"custom_config:{int(item['custom_config_id'])}", int(uid), _now()))
+                db.attach_custom_config_to_quota_pool(pool_id, int(item["custom_config_id"]))
+                for ssh_item in ssh_items:
+                    db.link_ssh_account_to_config(ssh_item["account_id"], int(item["custom_config_id"]))
+                snap_key = f"custom_config:{int(item['custom_config_id'])}"
+            else:
+                link_id = db.add_config_panel_link(int(state["primary"]["custom_config_id"]), int(sid), item["username"],
+                                                   item["subscription_url"], target_config=targets.get(int(sid)))
+                link_ids.append(link_id)
+                db.attach_quota_service(pool_id, "vpn", f"panel_link:{link_id}", node_id=int(sid))
+                snap_key = f"panel_link:{link_id}"
+            # Authoritative usage baseline per panel; never bill a panel without byte counters.
+            server = db.get_panel_server(int(sid))
+            usage = await get_provider(server).get_user_usage(item["username"])
+            if not isinstance(usage, dict) or usage.get("used_bytes") is None or int(usage["used_bytes"]) < 0:
+                raise RuntimeError(f"پنل «{server['name']}» شمارنده مصرف معتبر ندارد؛ برای Pay As You Go قابل استفاده نیست.")
+            db.record_usage_snapshot("vpn", snap_key, int(usage["used_bytes"]),
+                                     uploaded_bytes=usage.get("uploaded_bytes", 0),
+                                     downloaded_bytes=usage.get("downloaded_bytes", 0),
+                                     source=f"panel:{server['panel_type']}", reported_at=usage.get("reported_at") or _now())
+
+        primary = state["primary"]
+        link = dedicated_sub.link_for_config(db, int(primary["custom_config_id"]))
+        if not link:
+            raise RuntimeError("ساخت لینک ساب اختصاصی ناموفق بود.")
+        enrolled = await asyncio.to_thread(activate_payg, db, int(uid), pool_id if created_pool else None)
+        sid_key = f"custom_config:{int(primary['custom_config_id'])}"
+        with db._get_conn() as conn:
+            member = conn.execute("SELECT 1 FROM payg_services WHERE user_id=? AND service_kind='vpn' AND service_id=?",
+                                  (int(uid), sid_key)).fetchone()
+        if not enrolled.get("ok") or not member:
+            raise RuntimeError("اتصال سرویس ساخته‌شده به حساب مصرفی ناموفق بود.")
+    except Exception:
+        await rollback()
+        raise
+    return {"username": primary_username, "custom_config_id": int(primary["custom_config_id"]),
+            "subscription_url": link, "panels": len(panel_ids), "nodes": len(node_plan),
+            "ssh_accounts": len(ssh_items)}
+
+
+def _is_multi_service(db, custom_config_id: int) -> bool:
+    with db._get_conn() as conn:
+        n = conn.execute("SELECT COUNT(*) n FROM config_panel_links WHERE custom_config_id=? AND status='active'",
+                         (int(custom_config_id),)).fetchone()["n"]
+        m = conn.execute("SELECT COUNT(*) n FROM ssh_accounts WHERE custom_config_id=? AND status='active'",
+                         (int(custom_config_id),)).fetchone()["n"]
+    return bool(n or m)
+
+
 def create_payg_router(db, is_main_bot=True):
     router = Router(name="payg_router")
     if not is_main_bot:
@@ -691,11 +939,15 @@ def create_payg_router(db, is_main_bot=True):
             text += "\n\n🔗 <b>لینک‌های اشتراک اختصاصی فعال:</b>"
             for item in service_rows:
                 url = str(item["subscription_url"] or "").strip()
+                multi = await asyncio.to_thread(_is_multi_service, db, int(item["id"]))
+                if multi:
+                    import dedicated_sub
+                    url = str(dedicated_sub.display_link(db, int(item["id"]), url) or url).strip()
                 if not url:
                     continue
                 safe_url = url.replace("&", "&amp;").replace('"', "&quot;")
                 label = str(item["username"] or f"سرویس {item['id']}")
-                panel_label = str(item["panel_name"] or f"پنل {item['panel_server_id']}")
+                panel_label = ("چندمقصدی" if multi else str(item["panel_name"] or f"پنل {item['panel_server_id']}"))
                 text += f"\n• {label} · {panel_label}: <a href=\"{safe_url}\">باز کردن لینک</a>"
         with db._get_conn() as conn:
             configured = conn.execute("SELECT 1 FROM payg_accounts WHERE user_id=?", (int(user_id),)).fetchone() is not None
@@ -743,6 +995,40 @@ def create_payg_router(db, is_main_bot=True):
             lines.append(f"• {row['service_kind'].upper()} | {int(row['used_bytes'])/GIB:.3f} GB | {int(row['amount']):,} تومان | {str(row['created_at'])[:16]}")
         await call.message.answer("\n".join(lines), parse_mode="HTML")
 
+    async def _multi_provision_flow(call: CallbackQuery, uid: int, plan):
+        panel_ids, node_ids, protocols = plan
+        if not await asyncio.to_thread(_acquire_provision_lock, db, uid):
+            await call.message.answer("⏳ درخواست ساخت سرویس شما در حال پردازش است؛ لطفاً چند لحظه صبر کنید.")
+            return
+        try:
+            try:
+                result = await _provision_payg_multi(db, uid, panel_ids, node_ids, protocols)
+            except Exception as exc:
+                logger.exception("PAYG multi-target provisioning failed for user=%s", uid)
+                await call.message.answer(f"⛔️ ساخت سرویس Pay As You Go ناموفق بود: {str(exc)[:250]}\n"
+                                          "هیچ هزینه مصرفی برای این سرویس ثبت نشده است.")
+                return
+            try:
+                safe_url = str(result["subscription_url"]).replace("&", "&amp;").replace('"', "&quot;")
+                await call.message.answer(
+                    "✅ <b>سرویس Pay As You Go ساخته شد.</b>\n\n"
+                    f"👤 نام کاربری: <code>{result['username']}</code>\n"
+                    f"🧩 مقصدها: {result['panels']} پنل + {result['nodes']} نود\n"
+                    "📦 حجم: پرداخت به‌ازای مصرف\n⏳ مدت: بدون انقضای ثابت\n"
+                    "💳 هزینه از کیف پول تومانی شما کسر می‌شود.\n\n"
+                    f"🔗 <a href=\"{safe_url}\">دریافت لینک اشتراک</a>\n\n"
+                    "مصرف همه مقصدها با هم جمع و هر ۱۰ دقیقه تسویه می‌شود.",
+                    parse_mode="HTML", disable_web_page_preview=True)
+                await show(call.message, uid)
+            except Exception:
+                logger.exception("PAYG multi-target delivery message failed for user=%s", uid)
+                try:
+                    await call.message.answer("✅ سرویس Pay As You Go ساخته و فعال شده است. برای مشاهده لینک و وضعیت، دستور /payg را ارسال کنید.")
+                except Exception:
+                    pass
+        finally:
+            await asyncio.to_thread(_release_provision_lock, db, uid)
+
     @router.callback_query(F.data == "payg:provision")
     async def payg_provision_callback(call: CallbackQuery):
         uid = int(call.from_user.id)
@@ -776,6 +1062,10 @@ def create_payg_router(db, is_main_bot=True):
         if not panel_ids:
             await call.message.answer("⛔️ هیچ پنل فعالی برای ساخت سرویس Pay As You Go توسط مدیریت انتخاب نشده است.")
             return
+        plan = payg_multi_plan(db)
+        if plan:
+            await _multi_provision_flow(call, uid, plan)
+            return
         server = await asyncio.to_thread(_choose_payg_panel, db, panel_ids)
         if not server:
             await call.message.answer("⛔️ هیچ‌یک از پنل‌های انتخاب‌شده فعال یا دارای ظرفیت کافی نیستند.")
@@ -792,7 +1082,10 @@ def create_payg_router(db, is_main_bot=True):
                 "id": None, "name": "Pay As You Go", "auto_provision_volume_gb": 0,
                 "duration_days": 0, "provision_server_id": server_id,
                 "provision_ssh_node_id": None, "provision_ssh_protocol": "ssh",
-                "provision_target_config": None, "is_auto_provision": 1,
+                "provision_target_config": (
+                    json.dumps(get_payg_targets(db)[server_id], ensure_ascii=False)
+                    if server_id in get_payg_targets(db) else None),
+                "is_auto_provision": 1,
                 "base_users": 0, "extra_user_price": 0, "max_users": 0,
             }
             results = await provision_direct(db, fake_product, quantity=1, user_id=uid, order_id=None)
@@ -917,6 +1210,8 @@ def create_payg_router(db, is_main_bot=True):
                 f"مصرف این ماه: {int(used or 0)/GIB:.3f} GB\n"
                 f"درآمد این ماه: {int(revenue or 0):,} تومان\n"
                 f"پنل‌های ساخت سرویس: {server_label}\n"
+                f"حالت ساخت: {'همه مقصدها + ساب اختصاصی' if get_payg_mode(db) == 'all' else 'توزیع بار (یک پنل)'}"
+                f"{' · نودهای SSH: ' + str(len(get_payg_ssh_nodes(db))) if get_payg_ssh_nodes(db) else ''}\n"
                 f"تعرفه‌ها (تومان/GB): {rates[0]:,} / {rates[1]:,} / {rates[2]:,} / {rates[3]:,}\n"
                 f"چرخه تسویه: هر {max(60, int(db.get_setting('payg_cycle_seconds', '600') or 600))} ثانیه")
         await target.answer(text, reply_markup=_admin_home_kb(enabled), parse_mode="HTML")
@@ -1118,8 +1413,12 @@ def create_payg_router(db, is_main_bot=True):
         await call.answer()
         if not db.is_full_admin(call.from_user.id):
             return
+        await _show_servers(call)
+
+    async def _show_servers(call: CallbackQuery):
         servers = await asyncio.to_thread(db.get_panel_servers, True)
         selected = set(get_payg_panel_ids(db))
+        targets = get_payg_targets(db)
         rows = []
         for server in servers:
             sid = int(server["id"])
@@ -1129,41 +1428,209 @@ def create_payg_router(db, is_main_bot=True):
             if info:
                 load = (f" · {int(info['active_services'])}/{info['max_services']} ظرفیت"
                         if info.get("max_services") else f" · {int(info['active_services'])} سرویس")
+            tgt = ""
+            if sid in selected:
+                tgt = (f" · 🎯{_target_count(targets[sid])}" if sid in targets else " · ⚠️بدون اینباند")
             rows.append([InlineKeyboardButton(
-                text=f"{mark} {server['name']} · #{sid}{load}",
+                text=f"{mark} {server['name']} · #{sid}{load}{tgt}"[:64],
                 callback_data=f"payg:admin_server_toggle:{sid}",
             )])
+        mode = get_payg_mode(db)
+        rows.append([InlineKeyboardButton(
+            text=("🧩 حالت ساخت: همه مقصدها + ساب اختصاصی" if mode == "all" else "🔀 حالت ساخت: توزیع بار (یک پنل)"),
+            callback_data="payg:admin_mode")])
+        try:
+            from ssh_service import SUPPORTED_PROTOCOLS
+            ssh_nodes = [n for n in await asyncio.to_thread(db.list_ssh_nodes, True) if n.get("node_type") == "linux"]
+        except Exception:
+            SUPPORTED_PROTOCOLS, ssh_nodes = (), []
+        picked_nodes = set(get_payg_ssh_nodes(db))
+        for node in ssh_nodes:
+            nid = int(node["id"])
+            rows.append([InlineKeyboardButton(
+                text=f"{'✅' if nid in picked_nodes else '▫️'} 🖧 نود {node.get('name') or nid} · #{nid}"[:64],
+                callback_data=f"payg:admin_node:{nid}")])
+        if ssh_nodes:
+            picked_protocols = set(get_payg_ssh_protocols(db))
+            rows.append([InlineKeyboardButton(
+                text=f"{'✅' if p in picked_protocols else '▫️'} {p.upper()}", callback_data=f"payg:admin_proto:{p}")
+                for p in SUPPORTED_PROTOCOLS])
         rows.append([InlineKeyboardButton(text="🧹 پاک‌کردن همه انتخاب‌ها", callback_data="payg:admin_server_clear")])
         rows.append([InlineKeyboardButton(text="↩️ بازگشت", callback_data="adm_payg")])
         await call.message.answer(
             "🖥 <b>انتخاب چندپنل برای Pay As You Go</b>\n"
-            "هر تعداد پنل فعال می‌خواهید انتخاب کنید. هنگام ساخت سرویس، سیستم به‌صورت خودکار پنل دارای ظرفیت و بار کمتر را انتخاب می‌کند.\n"
-            "پنل‌های انتخاب‌شده فقط برای سرویس‌های جدید استفاده می‌شوند؛ سرویس‌های قبلی روی پنل خود باقی می‌مانند.",
+            "روی هر پنل بزنید تا اینباند/گروه مخصوص PayG همان پنل را انتخاب کنید (پنل بدون انتخاب اینباند اضافه نمی‌شود).\n"
+            "برای تغییر اینباند یا حذف یک پنل، دوباره روی همان پنل بزنید. 🎯 = تعداد اینباند/گروه انتخاب‌شده.\n"
+            "<b>حالت توزیع بار:</b> هر سرویس روی یک پنل (کم‌بارترین) و فقط روی اینباندهای انتخاب‌شده‌ی آن ساخته می‌شود.\n"
+            "<b>حالت همه مقصدها:</b> هر سرویس هم‌زمان روی همه پنل‌های انتخاب‌شده (با اینباند هرکدام) و نودهای SSH تیک‌خورده ساخته می‌شود؛ "
+            "کاربر یک لینک ساب اختصاصی می‌گیرد (ساب اختصاصی باید روشن باشد) و مصرف همه مقصدها جمع و صورتحساب می‌شود. "
+            "پروتکل‌های ردیف آخر برای نودها اعمال می‌شود.\n"
+            "سرویس‌های قبلی روی پنل خود باقی می‌مانند.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML",
         )
 
+    def _picker_kb(choices, selected, is_edit):
+        sel = {str(x) for x in selected}
+        rows = []
+        for idx, item in enumerate(choices):
+            value = str(item.get("value", ""))
+            mark = "✅" if value in sel else "▫️"
+            rows.append([InlineKeyboardButton(
+                text=f"{mark} {item.get('label') or value}"[:60], callback_data=f"payg:tt:{idx}")])
+        rows.append([InlineKeyboardButton(text="✅ تأیید اینباندهای انتخاب‌شده", callback_data="payg:td")])
+        if is_edit:
+            rows.append([InlineKeyboardButton(text="🗑 حذف این پنل از PayG", callback_data="payg:tx")])
+        rows.append([InlineKeyboardButton(text="↩️ بازگشت", callback_data="payg:admin_servers")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    def _current_selected_values(cfg, choices):
+        value = (cfg or {}).get("value")
+        if isinstance(value, dict):
+            vals = [f"{proto}::{item}" for proto, items in value.items() for item in (items or [])]
+        elif isinstance(value, list):
+            vals = [str(x) for x in value]
+        elif value in (None, ""):
+            vals = []
+        else:
+            vals = [str(value)]
+        allowed = {str(c.get("value")) for c in choices}
+        return [v for v in vals if v in allowed]
+
     @router.callback_query(F.data.startswith("payg:admin_server_toggle:"))
-    async def payg_admin_set_server(call: CallbackQuery):
+    async def payg_admin_set_server(call: CallbackQuery, state: FSMContext):
         if not db.is_full_admin(call.from_user.id):
             return
         try:
             server_id = int(call.data.rsplit(":", 1)[1])
         except Exception:
+            await call.answer()
             await call.message.answer("شناسه پنل نامعتبر است.")
             return
         server = await asyncio.to_thread(db.get_panel_server, server_id)
         if not server or not server["is_active"]:
+            await call.answer()
             await call.message.answer("پنل فعال پیدا نشد.")
             return
-        selected = set(get_payg_panel_ids(db))
-        if server_id in selected:
-            selected.remove(server_id)
+        try:
+            from product_targets import list_product_targets
+            info = await list_product_targets(server)
+        except Exception as exc:
+            logger.warning("PAYG target discovery failed for panel %s: %s", server_id, exc)
+            await call.answer(f"دریافت اینباند/گروه‌های پنل ناموفق بود: {str(exc)[:180]}", show_alert=True)
+            return
+        choices = info.get("choices") or []
+        selected_ids = set(get_payg_panel_ids(db))
+        targets = get_payg_targets(db)
+        if not choices:
+            # پنلی که انتخاب مستقل اینباند/گروه ندارد: مثل قبل toggle ساده.
+            if server_id in selected_ids:
+                selected_ids.remove(server_id)
+                targets.pop(server_id, None)
+            else:
+                selected_ids.add(server_id)
+            ordered = sorted(selected_ids)
+            db.set_setting("payg_panel_server_ids", json.dumps(ordered))
+            db.set_setting("payg_panel_server_id", str(ordered[0]) if ordered else "")
+            _save_payg_targets(db, targets)
+            await call.answer()
+            await _show_servers(call)
+            return
+        is_edit = server_id in selected_ids
+        pre = _current_selected_values(targets.get(server_id), choices) if is_edit else []
+        norm = {"field": info.get("field", "group_ids"), "kind": info.get("kind", "list"), "choices": choices}
+        await state.update_data(payg_tp={"sid": server_id, "choices": choices, "info": norm,
+                                         "selected": pre, "edit": is_edit})
+        await call.answer()
+        await call.message.answer(
+            f"🎯 <b>اینباند/گروه PayG برای پنل «{server['name']}»</b>\n"
+            "یک یا چند مورد را انتخاب کنید؛ سرویس‌های PayG فقط روی همین‌ها ساخته می‌شوند. "
+            "این انتخاب فقط برای PayG است و روی محصولات و تنظیم کلی پنل اثری ندارد.",
+            reply_markup=_picker_kb(choices, pre, is_edit), parse_mode="HTML",
+        )
+
+    @router.callback_query(F.data.startswith("payg:tt:"))
+    async def payg_admin_target_toggle(call: CallbackQuery, state: FSMContext):
+        if not db.is_full_admin(call.from_user.id):
+            return
+        data = (await state.get_data()).get("payg_tp")
+        if not data:
+            await call.answer("این صفحه منقضی شده؛ دوباره پنل را انتخاب کنید.", show_alert=True)
+            return
+        try:
+            idx = int(call.data.rsplit(":", 1)[1])
+            value = str(data["choices"][idx].get("value"))
+        except Exception:
+            await call.answer("گزینه نامعتبر است.", show_alert=True)
+            return
+        sel = [str(x) for x in data["selected"]]
+        if value in sel:
+            sel.remove(value)
         else:
-            selected.add(server_id)
-        ordered = sorted(selected)
+            sel.append(value)
+        order = {str(c.get("value")): i for i, c in enumerate(data["choices"])}
+        sel.sort(key=lambda x: order.get(x, 10**6))
+        data["selected"] = sel
+        await state.update_data(payg_tp=data)
+        await call.answer()
+        try:
+            await call.message.edit_reply_markup(reply_markup=_picker_kb(data["choices"], sel, data["edit"]))
+        except Exception:
+            pass
+
+    @router.callback_query(F.data == "payg:td")
+    async def payg_admin_target_done(call: CallbackQuery, state: FSMContext):
+        if not db.is_full_admin(call.from_user.id):
+            return
+        data = (await state.get_data()).get("payg_tp")
+        if not data:
+            await call.answer("این صفحه منقضی شده؛ دوباره پنل را انتخاب کنید.", show_alert=True)
+            return
+        if not data["selected"]:
+            await call.answer("حداقل یک اینباند/گروه انتخاب کنید.", show_alert=True)
+            return
+        server_id = int(data["sid"])
+        server = await asyncio.to_thread(db.get_panel_server, server_id)
+        if not server or not server["is_active"]:
+            await call.answer("پنل فعال پیدا نشد.", show_alert=True)
+            return
+        try:
+            from product_targets import build_target_config
+            cfg = build_target_config(server, data["selected"], data["info"])
+        except Exception as exc:
+            await call.answer(str(exc)[:190], show_alert=True)
+            return
+        targets = get_payg_targets(db)
+        targets[server_id] = cfg
+        _save_payg_targets(db, targets)
+        ids = set(get_payg_panel_ids(db))
+        ids.add(server_id)
+        ordered = sorted(ids)
         db.set_setting("payg_panel_server_ids", json.dumps(ordered))
         db.set_setting("payg_panel_server_id", str(ordered[0]) if ordered else "")
-        await payg_admin_servers(call)
+        await state.update_data(payg_tp=None)
+        await call.answer("اینباند پنل برای PayG ذخیره شد.")
+        await _show_servers(call)
+
+    @router.callback_query(F.data == "payg:tx")
+    async def payg_admin_target_remove(call: CallbackQuery, state: FSMContext):
+        if not db.is_full_admin(call.from_user.id):
+            return
+        data = (await state.get_data()).get("payg_tp")
+        if not data:
+            await call.answer("این صفحه منقضی شده؛ دوباره پنل را انتخاب کنید.", show_alert=True)
+            return
+        server_id = int(data["sid"])
+        ids = set(get_payg_panel_ids(db))
+        ids.discard(server_id)
+        ordered = sorted(ids)
+        db.set_setting("payg_panel_server_ids", json.dumps(ordered))
+        db.set_setting("payg_panel_server_id", str(ordered[0]) if ordered else "")
+        targets = get_payg_targets(db)
+        targets.pop(server_id, None)
+        _save_payg_targets(db, targets)
+        await state.update_data(payg_tp=None)
+        await call.answer("پنل از PayG حذف شد.")
+        await _show_servers(call)
 
     @router.callback_query(F.data == "payg:admin_server_clear")
     async def payg_admin_server_clear(call: CallbackQuery):
@@ -1171,7 +1638,62 @@ def create_payg_router(db, is_main_bot=True):
             return
         db.set_setting("payg_panel_server_ids", "[]")
         db.set_setting("payg_panel_server_id", "")
-        await payg_admin_servers(call)
+        db.set_setting("payg_ssh_node_ids", "[]")
+        _save_payg_targets(db, {})
+        await call.answer()
+        await _show_servers(call)
+
+    @router.callback_query(F.data == "payg:admin_mode")
+    async def payg_admin_mode(call: CallbackQuery):
+        if not db.is_full_admin(call.from_user.id):
+            return
+        if get_payg_mode(db) == "all":
+            db.set_setting("payg_target_mode", "balance")
+        else:
+            import dedicated_sub
+            if not dedicated_sub.is_enabled(db):
+                await call.answer("برای حالت «همه مقصدها» ابتدا ساب اختصاصی را روشن کنید.", show_alert=True)
+                return
+            db.set_setting("payg_target_mode", "all")
+        await call.answer()
+        await _show_servers(call)
+
+    @router.callback_query(F.data.startswith("payg:admin_node:"))
+    async def payg_admin_node(call: CallbackQuery):
+        if not db.is_full_admin(call.from_user.id):
+            return
+        try:
+            nid = int(call.data.rsplit(":", 1)[1])
+        except Exception:
+            await call.answer("شناسه نود نامعتبر است.", show_alert=True)
+            return
+        node = next((n for n in await asyncio.to_thread(db.list_ssh_nodes, True) if int(n["id"]) == nid), None)
+        if not node or node.get("node_type") != "linux":
+            await call.answer("نود SSH فعال پیدا نشد.", show_alert=True)
+            return
+        picked = set(get_payg_ssh_nodes(db))
+        picked.symmetric_difference_update({nid})
+        db.set_setting("payg_ssh_node_ids", json.dumps(sorted(picked)))
+        await call.answer()
+        await _show_servers(call)
+
+    @router.callback_query(F.data.startswith("payg:admin_proto:"))
+    async def payg_admin_proto(call: CallbackQuery):
+        if not db.is_full_admin(call.from_user.id):
+            return
+        from ssh_service import SUPPORTED_PROTOCOLS
+        proto = call.data.rsplit(":", 1)[1]
+        if proto not in SUPPORTED_PROTOCOLS:
+            await call.answer("پروتکل نامعتبر است.", show_alert=True)
+            return
+        picked = set(get_payg_ssh_protocols(db))
+        if proto in picked and len(picked) == 1:
+            await call.answer("حداقل یک پروتکل باید انتخاب شود.", show_alert=True)
+            return
+        picked.symmetric_difference_update({proto})
+        db.set_setting("payg_ssh_protocols", json.dumps([p for p in SUPPORTED_PROTOCOLS if p in picked]))
+        await call.answer()
+        await _show_servers(call)
 
     @router.callback_query(F.data == "payg:admin_toggle")
     async def payg_admin_toggle(call: CallbackQuery):
