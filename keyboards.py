@@ -1756,7 +1756,6 @@ ADMIN_PANEL_ITEMS = [
     ("adm_tickets_menu", "🎫 تیکت‌های پشتیبانی", "adm_tickets_menu"),
     ("adm_ticket_departments", "🧩 دپارتمان‌های پشتیبانی", "adm_ticket_departments"),
     ("adm_pending_topups", "👛 درخواست‌های شارژ کیف پول", "adm_pending_topups"),
-    ("adm_payg", "💳 مدیریت پرداخت به‌ازای مصرف", "adm_payg"),
     ("adm_crypto_payments", "🪙 پرداخت‌های کریپتو", "adm_crypto_payments"),
     ("adm_abangateway_payments", "💳 پرداخت‌های آبان گیت وی", "adm_abangateway_payments"),
     ("adm_blupal_payments", "💳 پرداخت‌های بلوپال", "adm_blupal_payments"),
@@ -1866,7 +1865,6 @@ ADMIN_HUBS = [
             "adm_test_menu", "adm_custom_config_settings", "adm_renewal_pricing",
         ]),
         ("قیمت و تخفیف", ["adm_discounts_menu"]),
-        ("پرداخت به‌ازای مصرف", ["adm_payg"]),
         ("موجودی و تحویل", ["adm_stock_alert_settings", "adm_delivery_settings"]),
     ]),
     ("finance", "💰 پرداخت و کیف پول", [
@@ -2012,8 +2010,6 @@ def _unmapped_xs_groups() -> list:
 
 
 def _is_item_visible(db, key: str, is_main_bot: bool) -> bool:
-    if key == "adm_payg":
-        return bool(is_main_bot)
     if key == "adm_extra_settings":
         return bool(_unmapped_xs_groups())
     if key == "adm_my_volume":
