@@ -10587,6 +10587,19 @@ function bsInspectorHtml(g) {
   const text = it.has_text ? `
     <label class="bs-field"><span>متن دکمه</span>
       <input class="input" id="bs-text" type="text" value="${esc(it.text || '')}" placeholder="متن دکمه"></label>` : '';
+  const customEditor = it.custom_menu ? `
+    <label class="bs-field"><span>نوع کلید سفارشی</span>
+      <select class="input" id="bs-custom-kind">
+        <option value="url" ${it.custom_kind === 'url' ? 'selected' : ''}>🔗 لینک</option>
+        <option value="content" ${it.custom_kind === 'content' ? 'selected' : ''}>💬 پیام</option>
+      </select></label>
+    ${it.custom_kind === 'url' ? `
+      <label class="bs-field"><span>آدرس لینک</span>
+        <input class="input" id="bs-custom-url" type="url" dir="ltr" value="${esc(it.custom_url || '')}" placeholder="https://example.com"></label>` : `
+      <label class="bs-field"><span>متن پیام ارسالی</span>
+        <textarea class="input" id="bs-custom-content" rows="5" placeholder="متن پیام">${esc(it.custom_content || '')}</textarea>
+        <small class="card-sub">پیام‌های رسانه‌ای قبلی حفظ می‌شوند؛ این بخش متن پیام را ویرایش می‌کند.</small></label>`}
+  ` : '';
   const toggle = it.togglable ? `
     <div class="bs-field bs-inline"><span>نمایش در ربات</span>
       <span class="switch" data-bs-act="toggle" data-on="${it.enabled ? '1' : '0'}"><i></i></span></div>` : '';
@@ -10609,8 +10622,8 @@ function bsInspectorHtml(g) {
   return `
     <div class="bs-insp-head"><b dir="auto">${esc(it.label)}</b><code>${esc(it.key)}</code>
       <button type="button" class="btn btn-ghost btn-sm bs-close" data-bs-act="close" title="بستن">✕</button></div>
-    ${text}${swatches}${toggle}${arrows}${catSel}
-    ${!it.has_text && !it.has_style && !it.togglable ? '<p class="card-sub">این دکمه متن/رنگ قابل ویرایش ندارد.</p>' : ''}
+    ${text}${customEditor}${swatches}${toggle}${arrows}${catSel}
+    ${!it.has_text && !it.has_style && !it.togglable && !it.custom_menu ? '<p class="card-sub">این دکمه متن/رنگ قابل ویرایش ندارد.</p>' : ''}
     <button type="button" class="btn btn-primary bs-insp-save" data-bs-act="save" ${bsChangeCount() ? '' : 'disabled'}>ذخیره تغییرات</button>`;
 }
 
@@ -10908,6 +10921,9 @@ async function bsSaveAll() {
           enabled: i.togglable ? !!i.enabled : undefined,
           text: i.has_text ? i.text : undefined,
           style: i.has_style ? i.style : undefined,
+          custom_kind: i.custom_menu ? i.custom_kind : undefined,
+          custom_url: i.custom_menu && i.custom_kind === 'url' ? i.custom_url : undefined,
+          custom_content: i.custom_menu && i.custom_kind === 'content' ? i.custom_content : undefined,
         }));
         if (BS.dirty.has(gk)) await apiPost('/settings/menu-layout', { order: bsFlatOrder(g), breaks: bsBreaks(g), buttons });
         else await apiPost('/settings/menu-order', { order: bsFlatOrder(g), buttons });
@@ -10971,15 +10987,26 @@ function bsWire() {
     }
   });
   root.addEventListener('input', (e) => {
-    if (e.target.id === 'bs-text' && BS.sel) {
+    if (['bs-text', 'bs-custom-url', 'bs-custom-content'].includes(e.target.id) && BS.sel) {
       const g = BS.groups[BS.cur];
-      bsItem(g, BS.sel).text = e.target.value; bsMarkEdited(g, BS.sel);
+      const it = bsItem(g, BS.sel);
+      if (e.target.id === 'bs-text') it.text = e.target.value;
+      if (e.target.id === 'bs-custom-url') it.custom_url = e.target.value;
+      if (e.target.id === 'bs-custom-content') it.custom_content = e.target.value;
+      bsMarkEdited(g, BS.sel);
       bsRenderTop(); bsRenderScreens(); bsRenderPhone();
       const sv = $('.bs-insp-save'); if (sv) sv.disabled = false;
     }
   });
   root.addEventListener('change', (e) => {
     if (e.target.id === 'bs-cat' && e.target.value && BS.sel) { bsMoveToCat(BS.sel, e.target.value); bsRefresh(); }
+    if (e.target.id === 'bs-custom-kind' && BS.sel) {
+      const g = BS.groups[BS.cur];
+      const it = bsItem(g, BS.sel);
+      it.custom_kind = e.target.value;
+      bsMarkEdited(g, BS.sel);
+      bsRefresh();
+    }
   });
 }
 
