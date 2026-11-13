@@ -572,6 +572,27 @@ async def _translation_sync_loop():
         await asyncio.sleep(900)
 
 
+def _build_assets_blocking():
+    import shutil
+    import subprocess
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "build_assets.sh")
+    if not os.path.isfile(script) or not shutil.which("bash"):
+        return
+    try:
+        res = subprocess.run(["bash", script, "--if-stale"], capture_output=True, text=True, timeout=420)
+        out = (res.stdout or "").strip().splitlines()
+        logger.info("build_assets: %s", out[0] if out else f"exit {res.returncode}")
+    except Exception:
+        logger.exception("build_assets failed (panel keeps serving source files)")
+
+
+@app.on_event("startup")
+async def _auto_build_assets():
+    # هر بار که پنل بالا می‌آید (ری‌استارت یا آپدیت)، اگر build با سورس نمی‌خواند در
+    # پس‌زمینه دوباره ساخته می‌شود؛ تا آماده شدن، سرور خودش فایل‌های سورس را سرو می‌کند.
+    asyncio.get_running_loop().run_in_executor(None, _build_assets_blocking)
+
+
 @app.on_event("startup")
 async def _start_notifier():
     # همیشه استارت می‌شود: این تسک هم پوش وب (VAPID) و هم پوش موبایل (FCM) را
