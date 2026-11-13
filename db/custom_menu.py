@@ -94,6 +94,32 @@ class CustomMenuMixin:
             for order, bid in enumerate(ids, start=1):
                 conn.execute("UPDATE custom_menu_buttons SET sort_order=? WHERE id=?", (order, bid))
 
+    def cm_set_order(self, button_ids) -> None:
+        """ذخیره‌ی ترتیب کامل کلیدهای سفارشی منو بر اساس شناسه‌ها."""
+        try:
+            requested = [int(x) for x in (button_ids or [])]
+        except (TypeError, ValueError):
+            raise ValueError("custom menu order")
+
+        # فقط شناسه‌های موجود پذیرفته می‌شوند و موارد جاافتاده در انتها می‌آیند.
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT id FROM custom_menu_buttons ORDER BY sort_order, id"
+            ).fetchall()
+            existing = [int(row["id"]) for row in rows]
+            ordered = []
+            seen = set()
+            for button_id in requested:
+                if button_id in existing and button_id not in seen:
+                    ordered.append(button_id)
+                    seen.add(button_id)
+            ordered.extend(button_id for button_id in existing if button_id not in seen)
+            for sort_order, button_id in enumerate(ordered, start=1):
+                conn.execute(
+                    "UPDATE custom_menu_buttons SET sort_order=? WHERE id=?",
+                    (sort_order, button_id),
+                )
+
     def cm_add_click(self, button_id: int) -> None:
         with self._get_conn() as conn:
             conn.execute("UPDATE custom_menu_buttons SET clicks=clicks+1 WHERE id=?", (int(button_id),))
