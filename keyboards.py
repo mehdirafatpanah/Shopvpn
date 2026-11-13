@@ -94,7 +94,7 @@ def miniapp_inline_kb(miniapp_url: str, db=None) -> InlineKeyboardMarkup:
 
 
 def _menu_items(db, is_admin: bool, is_reseller: bool, is_main_bot: bool, show_reseller_request: bool,
-                 show_commission_reseller_request: bool = False):
+                 show_commission_reseller_request: bool = False, customs: dict = None):
     """لیست مشترک آیتم‌های منوی اصلی را برمی‌گرداند: (key, text, style).
     این تابع پایه‌ی هر دو نوع منو (معمولی/پایین و شیشه‌ای/بالا) است تا منطق
     نمایش/عدم‌نمایش هر دکمه دقیقاً یک‌بار نوشته شده و همیشه هماهنگ بماند."""
@@ -198,6 +198,11 @@ def _menu_items(db, is_admin: bool, is_reseller: bool, is_main_bot: bool, show_r
 
     items = []
     for key in order:
+        if customs and key in customs:
+            btn = customs[key]
+            if custom_menu_button(btn) is not None:
+                items.append((key, (btn.get("title") or "").strip()[:64], btn.get("style") or ""))
+            continue
         builder = builders.get(key)
         if not builder:
             continue
@@ -269,19 +274,25 @@ def main_menu_inline_kb(db, is_admin: bool, is_reseller: bool = False, is_main_b
     """منوی شیشه‌ای بالا (Inline Keyboard) - همان آیتم‌های منوی پایین، به شکل inline.
     روی کلیک هر دکمه، callback_data به‌صورت 'mm:<key>' ارسال می‌شود که در
     handlers_user.py / handlers_admin.py به همان هندلر متنی متناظرش وصل شده."""
-    items = _menu_items(db, is_admin, is_reseller, is_main_bot, show_reseller_request, show_commission_reseller_request)
+    customs = {}
+    if is_main_bot:
+        try:
+            customs = {f"custom_menu:{b['id']}": b for b in db.cm_list(only_active=True)}
+        except Exception:
+            customs = {}
+    items = _menu_items(db, is_admin, is_reseller, is_main_bot, show_reseller_request, show_commission_reseller_request, customs)
     item_rows = _menu_item_rows(db, items)
     miniapp_url = _miniapp_url(db, getattr(db, "_current_menu_language", ""))
 
     def _build_button(key, text, style):
+        if key in customs:
+            return custom_menu_button(customs[key])
         s = style if style in ("primary", "success", "danger") else None
         if key == "miniapp" and miniapp_url:
             return InlineKeyboardButton(text=text, web_app=WebAppInfo(url=miniapp_url), style=s)
         return InlineKeyboardButton(text=text, callback_data=f"mm:{key}", style=s)
 
     rows = [[_build_button(key, tr(text), style) for key, text, style in row] for row in item_rows]
-    if is_main_bot:
-        rows.extend(custom_menu_rows(db))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -299,19 +310,6 @@ def custom_menu_button(btn: dict):
     if not btn.get("parts"):
         return None
     return InlineKeyboardButton(text=text, callback_data=f"cmb:{btn['id']}", style=s)
-
-
-def custom_menu_rows(db) -> list:
-    """ردیف‌های کلیدهای سفارشی فعال؛ با همان تنظیم تعداد ستون منوی اصلی (۱ یا ۲)."""
-    try:
-        items = db.cm_list(only_active=True)
-    except Exception:
-        return []
-    buttons = [b for b in (custom_menu_button(i) for i in items) if b is not None]
-    if not buttons:
-        return []
-    columns = _menu_columns(db) if db.get_menu_row_breaks() is None else 1
-    return _chunk_row(buttons, columns)
 
 
 def _show_commission_reseller_request(db, user_tg_id: int, is_main_bot: bool) -> bool:
