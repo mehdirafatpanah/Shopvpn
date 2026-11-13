@@ -4372,6 +4372,10 @@ class PaygTargetBody(BaseModel):
     values: List[str] = []
 
 
+class PaygPanelCostsBody(BaseModel):
+    entries: List[Dict[str, Any]] = []
+
+
 class PaygModeBody(BaseModel):
     mode: str
 
@@ -4447,7 +4451,7 @@ def api_payg_overview(admin=Depends(require_permission("catalog")), _mt=Depends(
             "SUM(CASE WHEN status='active' AND last_balance<=0 THEN 1 ELSE 0 END) zero_balance "
             "FROM payg_accounts").fetchone()
         revenue = conn.execute(
-            "SELECT COALESCE(SUM(amount),0) n FROM payg_transactions WHERE substr(cycle_key,1,7)=?",
+            "SELECT COALESCE(SUM(amount),0) n FROM payg_transactions WHERE strftime('%Y-%m',created_at,'+3 hours','+30 minutes')=?",
             (month,)).fetchone()["n"]
         used = conn.execute(
             "SELECT COALESCE(SUM(month_used_bytes),0) n FROM payg_accounts WHERE month_key=?",
@@ -4581,6 +4585,68 @@ async def api_payg_get_target(server_id: int, admin=Depends(require_permission("
     }
 
 
+@app.get("/api/payg/costs")
+async def api_payg_costs(admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    """Read live group/inbound choices and their independent cost rates."""
+    payg = _payg_prepare()
+    from product_targets import list_product_targets
+    configured = payg.get_panel_costs(db)
+    result = []
+    for server_row in db.get_panel_servers(active_only=True):
+        server = dict(server_row)
+        sid = int(server["id"])
+        info = {}
+        try:
+            info = await list_product_targets(server)
+            choices = info.get("choices") or []
+        except Exception as exc:
+            logger.warning("PAYG cost target discovery failed for panel %s: %s", sid, exc)
+            choices = []
+        panel_costs = configured.get(str(sid), {})
+        rows = []
+        # The panel-wide default is also used by the legacy personal-plan flow,
+        # where the customer selects a panel but not a specific inbound/group.
+        rates = panel_costs.get("*", {})
+        rows.append({"target_key": "*", "label": "تعرفه پیش‌فرض پنل",
+                     "gb_rate": int(rates.get("gb_rate", 0) or 0),
+                     "day_rate": int(rates.get("day_rate", 0) or 0),
+                     "user_rate": int(rates.get("user_rate", 0) or 0)})
+        for choice in choices:
+            key = str(choice.get("value", ""))
+            if not key:
+                continue
+            rates = panel_costs.get(key, {})
+            rows.append({"target_key": key, "label": str(choice.get("label") or key),
+                         "gb_rate": int(rates.get("gb_rate", 0) or 0),
+                         "day_rate": int(rates.get("day_rate", 0) or 0),
+                         "user_rate": int(rates.get("user_rate", 0) or 0)})
+        result.append({"id": sid, "name": server.get("name") or f"#{sid}",
+                       "target_label": info.get("kind") or info.get("field") or "گروه / اینباند",
+                       "rows": rows})
+    return {"panels": result}
+
+
+@app.put("/api/payg/costs/{server_id}")
+async def api_payg_save_costs(server_id: int, body: PaygPanelCostsBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    payg = _payg_prepare()
+    server = db.get_panel_server(server_id)
+    if not server:
+        raise HTTPException(404, tr("پنل یافت نشد."))
+    from product_targets import list_product_targets
+    try:
+        info = await list_product_targets(server)
+        allowed = {"*"} | {str(x.get("value")) for x in (info.get("choices") or []) if isinstance(x, dict) and x.get("value") not in (None, "")}
+        invalid = [str(x.get("target_key", "")) for x in body.entries if isinstance(x, dict) and str(x.get("target_key", "")) not in allowed]
+        if invalid:
+            raise ValueError("یکی از گروه‌ها یا اینباندهای انتخاب‌شده معتبر نیست؛ فهرست مقصدها را دوباره بارگذاری کنید.")
+        saved = payg.save_panel_costs(db, server_id, body.entries)
+    except ValueError as exc:
+        raise HTTPException(400, tr(str(exc)))
+    db.log_admin_action(admin["id"], "payg_panel_costs_change",
+                        f"panel={server_id} targets={len(saved)} (پنل وب - {admin['username']})", "setting", "payg")
+    return {"ok": True, "count": len(saved)}
+
+
 @app.post("/api/payg/mode")
 def api_payg_mode(body: PaygModeBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
     _payg_prepare()
@@ -4657,11 +4723,11 @@ def api_payg_account_detail(user_id: int, admin=Depends(require_permission("cata
         if not row:
             raise HTTPException(404, tr("برای این کاربر حساب PayG ثبت نشده است."))
         services = conn.execute(
-            "SELECT ps.id,ps.service_kind,ps.service_id,ps.last_billed_bytes,s.used_bytes,s.reported_at,s.source "
+            "SELECT ps.id,ps.service_kind,ps.service_id,ps.last_billed_bytes,ps.panel_server_id,ps.target_key,ps.user_capacity,ps.charged_users,ps.is_active,ps.day_billed_until,s.used_bytes,s.reported_at,s.source "
             "FROM payg_services ps LEFT JOIN usage_snapshots s ON s.service_kind=ps.service_kind AND s.service_id=ps.service_id "
             "WHERE ps.user_id=?", (user_id,)).fetchall()
         txs = conn.execute(
-            "SELECT service_kind,service_id,used_bytes,amount,created_at FROM payg_transactions WHERE user_id=? ORDER BY id DESC LIMIT 20",
+            "SELECT service_kind,service_id,used_bytes,amount,rate_snapshot,created_at FROM payg_transactions WHERE user_id=? ORDER BY id DESC LIMIT 50",
             (user_id,)).fetchall()
         spent = conn.execute(
             "SELECT COUNT(*) n,COALESCE(SUM(amount),0) spent FROM payg_transactions WHERE user_id=?", (user_id,)).fetchone()
@@ -4678,11 +4744,14 @@ def api_payg_account_detail(user_id: int, admin=Depends(require_permission("cata
         "services": [{
             "id": int(s["id"]), "kind": s["service_kind"], "service_id": s["service_id"],
             "used_bytes": int(s["used_bytes"] or 0), "billed_bytes": int(s["last_billed_bytes"] or 0),
+            "panel_id": s["panel_server_id"], "target_key": s["target_key"],
+            "user_capacity": int(s["user_capacity"] or 1), "charged_users": int(s["charged_users"] or 0),
+            "is_active": bool(s["is_active"]), "day_billed_until": s["day_billed_until"],
             "reported_at": s["reported_at"], "source": s["source"],
         } for s in services],
         "transactions": [{
             "kind": t["service_kind"], "service_id": t["service_id"], "used_bytes": int(t["used_bytes"]),
-            "amount": int(t["amount"]), "created_at": t["created_at"],
+            "amount": int(t["amount"]), "rate_snapshot": t["rate_snapshot"], "created_at": t["created_at"],
         } for t in txs],
     }
 
@@ -4717,7 +4786,7 @@ def api_payg_account_resume(user_id: int, admin=Depends(require_permission("cata
         conn.execute("UPDATE payg_accounts SET status='active',last_alert_level=0,updated_at=? WHERE user_id=?", (payg._now(), user_id))
     if row["quota_pool_id"]:
         rates = [int(x) for x in json.loads(row["month_rates"] or json.dumps(payg.get_rates(db)))]
-        limit = payg._affordable_limit_bytes(balance, rates, payg._billing_base_bytes(db, user_id), int(row["month_used_bytes"] or 0))
+        limit = payg._affordable_payg_limit(db, user_id, balance, payg._billing_base_bytes(db, user_id), int(row["month_used_bytes"] or 0), rates)
         db.set_quota_pool_limit(int(row["quota_pool_id"]), limit / _payg_gib())
     db.log_admin_action(admin["id"], "payg_account_resume", f"user={user_id} (پنل وب - {admin['username']})", "user", str(user_id))
     return {"ok": True}
@@ -4730,14 +4799,35 @@ def api_payg_report(admin=Depends(require_permission("catalog")), _mt=Depends(re
     with db._get_conn() as conn:
         kinds = conn.execute(
             "SELECT service_kind,COUNT(*) tx,COALESCE(SUM(used_bytes),0) bytes,COALESCE(SUM(amount),0) amount "
-            "FROM payg_transactions WHERE substr(cycle_key,1,7)=? GROUP BY service_kind", (month,)).fetchall()
+            "FROM payg_transactions WHERE strftime('%Y-%m',created_at,'+3 hours','+30 minutes')=? GROUP BY service_kind", (month,)).fetchall()
         months = conn.execute(
-            "SELECT substr(cycle_key,1,7) m,COALESCE(SUM(used_bytes),0) bytes,COALESCE(SUM(amount),0) amount "
+            "SELECT strftime('%Y-%m',created_at,'+3 hours','+30 minutes') m,COALESCE(SUM(used_bytes),0) bytes,COALESCE(SUM(amount),0) amount "
             "FROM payg_transactions GROUP BY m ORDER BY m DESC LIMIT 6").fetchall()
+        current_txs = conn.execute(
+            "SELECT service_kind,amount,rate_snapshot FROM payg_transactions "
+            "WHERE strftime('%Y-%m',created_at,'+3 hours','+30 minutes')=?", (month,)).fetchall()
+    panel_totals = {}
+    charge_totals = {"traffic": 0, "days": 0, "users": 0, "legacy": 0}
+    for tx in current_txs:
+        try:
+            snap = json.loads(tx["rate_snapshot"] or "{}")
+        except Exception:
+            snap = {}
+        kind = str(snap.get("type") or "legacy")
+        if kind not in charge_totals: kind = "legacy"
+        charge_totals[kind] += int(tx["amount"] or 0)
+        panel_id = snap.get("panel_id")
+        if panel_id:
+            key = str(int(panel_id))
+            item = panel_totals.setdefault(key, {"panel_id": int(panel_id), "traffic": 0, "days": 0, "users": 0, "total": 0})
+            bucket = kind if kind in ("traffic", "days", "users") else "traffic"
+            item[bucket] += int(tx["amount"] or 0)
+            item["total"] += int(tx["amount"] or 0)
     return {
         "month": month,
         "kinds": [{"kind": r["service_kind"], "tx": int(r["tx"]), "bytes": int(r["bytes"]), "amount": int(r["amount"])} for r in kinds],
         "months": [{"month": r["m"], "bytes": int(r["bytes"]), "amount": int(r["amount"])} for r in months],
+        "panels": list(panel_totals.values()), "charges": charge_totals,
     }
 
 
