@@ -855,6 +855,19 @@ class DatabaseBase:
                     PRIMARY KEY (tutorial_id, target_key)
                 );
 
+                CREATE TABLE IF NOT EXISTS custom_menu_buttons (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    style TEXT DEFAULT '',
+                    kind TEXT NOT NULL DEFAULT 'url',
+                    url TEXT DEFAULT '',
+                    parts TEXT DEFAULT '[]',
+                    is_active INTEGER DEFAULT 1,
+                    sort_order INTEGER DEFAULT 0,
+                    clicks INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
                 CREATE TABLE IF NOT EXISTS admin_presence (
                     telegram_id INTEGER PRIMARY KEY,
                     last_seen TEXT DEFAULT CURRENT_TIMESTAMP

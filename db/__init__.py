@@ -42,6 +42,7 @@ from .dedicated_sub import DedicatedSubMixin
 from .usage import UsageMixin
 from .multi_target import MultiTargetMixin
 from .panel_migration import PanelMigrationMixin
+from .custom_menu import CustomMenuMixin
 
 class Database(
     DatabaseBase,
@@ -65,6 +66,7 @@ class Database(
     UsageMixin,
     MultiTargetMixin,
     PanelMigrationMixin,
+    CustomMenuMixin,
 ):
     pass
 
