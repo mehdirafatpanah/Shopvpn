@@ -41,15 +41,17 @@ class OrdersMixin:
         تا هیچ دکمه‌ای گم نشود."""
         import json
         raw = self.get_setting("menu_order", "")
+        custom_keys = [f"custom_menu:{b['id']}" for b in self.cm_list()]
+        valid = set(DEFAULT_MENU_ORDER) | set(custom_keys)
         order = []
         if raw:
             try:
-                order = [k for k in json.loads(raw) if k in DEFAULT_MENU_ORDER]
+                order = [k for k in json.loads(raw) if k in valid]
             except (ValueError, TypeError):
                 order = []
         if not order:
             order = list(DEFAULT_MENU_ORDER)
-        for k in DEFAULT_MENU_ORDER:
+        for k in DEFAULT_MENU_ORDER + custom_keys:
             if k not in order:
                 order.append(k)
         return order
@@ -57,7 +59,7 @@ class OrdersMixin:
 
     def set_menu_order(self, order: list):
         import json
-        clean = [k for k in order if k in DEFAULT_MENU_ORDER]
+        clean = [k for k in order if k in DEFAULT_MENU_ORDER or str(k).startswith("custom_menu:")]
         for k in DEFAULT_MENU_ORDER:
             if k not in clean:
                 clean.append(k)

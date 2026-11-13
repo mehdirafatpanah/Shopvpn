@@ -290,12 +290,12 @@ class SystemMixin:
             return None
         if not isinstance(data, list):
             return None
-        return [k for k in data if isinstance(k, str) and k in DEFAULT_MENU_ORDER]
+        return [k for k in data if isinstance(k, str) and (k in DEFAULT_MENU_ORDER or k.startswith("custom_menu:"))]
 
 
     def set_menu_row_breaks(self, keys: list):
         import json
-        clean = [k for k in keys if k in DEFAULT_MENU_ORDER]
+        clean = [k for k in keys if k in DEFAULT_MENU_ORDER or str(k).startswith("custom_menu:")]
         self.set_setting("main_menu_row_breaks", json.dumps(clean, ensure_ascii=False))
 
     # -----------------------------------------------------------------------
