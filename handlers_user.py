@@ -4589,6 +4589,24 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return f"{gb:.2f} گیگابایت"
         return f"{n / (1024 ** 2):.2f} مگابایت"
 
+    def _payg_config_ids(user_tg_id: int) -> set:
+        """شناسه‌ی custom_configهایی که سرویس «پرداخت به‌ازای مصرف» هستند.
+        روی ربات‌های غیراصلی (که جدول payg ندارند) مجموعه‌ی خالی برمی‌گردد."""
+        ids = set()
+        try:
+            with db._get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT service_id FROM payg_provisioned_services WHERE user_id=? AND service_kind='vpn'",
+                    (int(user_tg_id),),
+                ).fetchall()
+            for r in rows:
+                sid = str(r["service_id"])
+                if sid.startswith("custom_config:"):
+                    ids.add(int(sid.split(":", 1)[1]))
+        except Exception:
+            pass
+        return ids
+
     def _my_orders_items(user_tg_id: int):
         """هر آیتم یک ردیف/دکمه‌ی جدا در منوست: یک کانفیگ محصول، یک کانفیگ شخصی،
         یا (فقط برای سفارش‌های در انتظار بررسی که هنوز کانفیگی ندارند) خود
@@ -4665,13 +4683,19 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 "product_name": pname, "_ts": order_ts,
             })
 
+        payg_ids = _payg_config_ids(user_tg_id)
         for cc in db.get_custom_configs_for_user(user_tg_id):
             label_name = cc["display_name"] or cc["username"]
-            if cc["source"] == "test":
+            is_payg = int(cc["id"]) in payg_ids
+            if is_payg:
+                # سرویس «پرداخت به‌ازای مصرف»: حجم/مدت ثابت ندارد؛ با 💳 از بقیه جدا می‌شود.
+                label = f"💳 «{label_name}» (پرداخت به‌ازای مصرف)"
+            elif cc["source"] == "test":
                 label = f"🧪 «{label_name}» (تست، {cc['volume_gb']:g} گیگ / {cc['duration_days']:g} روز)"
             else:
                 label = f"🛠 «{label_name}» ({cc['volume_gb']} گیگ / {cc['duration_days']} روز)"
-            items.append({"cb_id": f"x{cc['id']}", "kind": "custom", "label": label, "custom": cc, "_ts": cc["created_at"] or ""})
+            items.append({"cb_id": f"x{cc['id']}", "kind": "custom", "label": label, "custom": cc,
+                          "payg": is_payg, "_ts": cc["created_at"] or ""})
 
         items.sort(key=lambda it: it["_ts"], reverse=True)
         return items
@@ -4694,6 +4718,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             "is_gift": cc["source"] in ("welcome_gift", "gift"),
             "is_invoiceable": bool(cc["order_id"]),
             "can_add_users": ul.service_upgrade_info(db, cc) is not None,
+            "is_payg": bool(item.get("payg")),
         }
 
     def _is_test_item(item) -> bool:
@@ -4748,7 +4773,28 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                         "خواندن اطلاعات تازه از پنل برای «%s» ناموفق بود؛ لینک ذخیره‌شده نمایش داده می‌شود.",
                         cc["username"],
                     )
-            text = (
+            if item.get("payg"):
+                import payg as _payg
+                st = await asyncio.to_thread(_payg.payg_status, db, cc["user_id"])
+                with db._get_conn() as conn:
+                    snap = conn.execute(
+                        "SELECT used_bytes FROM usage_snapshots WHERE service_kind='vpn' AND service_id=?",
+                        (f"custom_config:{int(cc['id'])}",),
+                    ).fetchone()
+                svc_gb = (int(snap["used_bytes"] or 0) / (1024 ** 3)) if snap else 0.0
+                enabled_now = (cc["enabled"] if "enabled" in cc.keys() else 1) == 1
+                text = (
+                    f"💳 سرویس پرداخت به‌ازای مصرف «{escape_md(cc['display_name'] or cc['username'])}»\n"
+                    f"📶 حجم: بدون سقف ثابت (هزینه بر اساس مصرف واقعی) | ⏳ مدت: بدون انقضای ثابت\n"
+                    f"وضعیت: {'🟢 فعال' if enabled_now else '🔴 غیرفعال'}\n"
+                    f"🗓 تاریخ ساخت: {to_jalali_str(cc['created_at'], with_time=True)}\n"
+                    f"💰 موجودی کیف پول: {int(st.get('balance') or 0):,} تومان\n"
+                    f"📊 مصرف این سرویس: {svc_gb:.2f} GB\n"
+                    f"🧾 هزینه این ماه (همه سرویس‌های مصرفی): {int(st.get('spent') or 0):,} تومان\n"
+                    "ℹ️ هزینه هر ۱۰ دقیقه بر اساس مصرف از کیف پول کسر می‌شود؛ تمدید ندارد، فقط کیف پول را شارژ نگه دارید.\n"
+                )
+            else:
+              text = (
                 f"🛠 کانفیگ شخصی «{escape_md(cc['display_name'] or cc['username'])}»\n"
                 f"📶 حجم: {cc['volume_gb']} گیگ | ⏳ مدت: {cc['duration_days']} روز\n"
                 f"وضعیت: {'🟢 فعال' if (cc['enabled'] if 'enabled' in cc.keys() else 1) == 1 else '🔴 غیرفعال'} | "

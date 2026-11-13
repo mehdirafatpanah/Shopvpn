@@ -653,7 +653,7 @@ def service_inquiry_card_kb(cb_id: str, fields: list) -> InlineKeyboardMarkup:
 def service_detail_kb(db, cb_id: str, kind: str, deletable: bool, show_links: bool = False,
                        enabled: bool = True, auto_renew: bool = False, is_test: bool = False,
                        can_add_users: bool = False, is_invoiceable: bool = False,
-                       is_gift: bool = False) -> InlineKeyboardMarkup:
+                       is_gift: bool = False, is_payg: bool = False) -> InlineKeyboardMarkup:
     """دکمه‌های صفحه‌ی جزئیات یک سرویس.
     kind == 'custom' (کاربر واقعی روی پنل): هر سه نوع تمدید + قطع دسترسی +
     بروزرسانی + کیوآر + فعال/غیرفعال + تغییر نام + تمدید خودکار + انتقال +
@@ -674,7 +674,22 @@ def service_detail_kb(db, cb_id: str, kind: str, deletable: bool, show_links: bo
     def add(key, text, callback_data, allow_text=True):
         entries.append((key, text, _ubtn(db, key, text, callback_data, allow_text=allow_text)))
 
-    if kind == "custom" and not is_test:
+    if kind == "custom" and is_payg:
+        # سرویس «پرداخت به‌ازای مصرف»: حجم/زمان ثابت ندارد، پس تمدید (کامل/حجم/زمان)،
+        # تمدید خودکار، افزایش کاربر، انتقال مالکیت، تغییر لوکیشن و تاریخچه‌ی خرید معنا ندارند.
+        entries.append(("svc_payg_status", "📊 مصرف و هزینه",
+                        InlineKeyboardButton(text=tr("📊 مصرف و هزینه"), callback_data="payg:status")))
+        entries.append(("svc_payg_wallet", "💰 شارژ کیف پول",
+                        InlineKeyboardButton(text=tr("💰 شارژ کیف پول"), callback_data="acct:wallet")))
+        if on("svc_show_cut_access"):
+            add("svc_cut", "🚫 قطع دسترسی و لینک جدید", f"svc_cut:{cb_id}")
+        if on("svc_show_toggle"):
+            toggle_icon = "🔴 غیرفعال کردن کانفیگ" if enabled else "🟢 فعال کردن کانفیگ"
+            add("svc_toggle", toggle_icon, f"svc_toggle:{cb_id}", allow_text=False)
+        if on("svc_show_rename"):
+            add("svc_rename", "✏️ تغییر نام کانفیگ", f"svc_rename:{cb_id}")
+        add("svc_disruption", "⚠️ گزارش اختلال", f"svc_disruption:{cb_id}")
+    elif kind == "custom" and not is_test:
         if on("svc_show_renew_full"):
             add("svc_renew_full", "🛠 تمدید کامل سرویس", f"svc_renew:full:{cb_id}")
         if on("svc_show_renew_volume"):
@@ -2134,6 +2149,7 @@ USER_SCREENS = {
             ("svc_delete", "🗑 حذف کامل این سرویس", "svc_show_delete", False),
         ],
         "default_rows": [
+            ["svc_payg_status", "svc_payg_wallet"],
             ["svc_renew_full"], ["svc_renew_volume", "svc_renew_time"], ["svc_add_users"], ["svc_cut"],
             ["svc_toggle", "svc_rename"], ["svc_autorenew"], ["svc_transfer", "svc_location"],
             ["svc_history", "svc_disruption"], ["svc_rating"], ["svc_inquiry"], ["svc_update", "svc_qr"],
