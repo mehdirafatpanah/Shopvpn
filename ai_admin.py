@@ -708,7 +708,7 @@ def _gemini_text(response) -> str:
     return "".join(p.text for p in parts if getattr(p, "text", None)).strip()
 
 
-async def _run_gemini(db, history: list, text: str, system_prompt: str) -> str:
+async def _run_gemini(db, history: list, text: str, system_prompt: str, tools=None, runner=None) -> str:
     from google.genai import types
 
     keys = ai_support.resolve_gemini_keys(db)
@@ -717,7 +717,7 @@ async def _run_gemini(db, history: list, text: str, system_prompt: str) -> str:
     base = [types.Content(role=role, parts=[types.Part(text=msg)]) for role, msg in history]
     base.append(types.Content(role="user", parts=[types.Part(text=text)]))
     config = types.GenerateContentConfig(
-        system_instruction=system_prompt, tools=[types.Tool(function_declarations=_TOOLS)],
+        system_instruction=system_prompt, tools=[types.Tool(function_declarations=tools or _TOOLS)],
     )
     final_config = types.GenerateContentConfig(system_instruction=system_prompt)
     model_name = ai_support.resolve_gemini_model(db)
@@ -736,7 +736,7 @@ async def _run_gemini(db, history: list, text: str, system_prompt: str) -> str:
                 if not calls:
                     return _gemini_text(response)
                 contents.append(candidate.content)
-                results = await asyncio.gather(*[_run_tool(db, fc.name, dict(fc.args or {})) for fc in calls])
+                results = await asyncio.gather(*[(runner or _run_tool)(db, fc.name, dict(fc.args or {})) for fc in calls])
                 for fc, result in zip(calls, results):
                     contents.append(types.Content(
                         role="user", parts=[types.Part.from_function_response(name=fc.name, response=result)],
@@ -753,7 +753,7 @@ async def _run_gemini(db, history: list, text: str, system_prompt: str) -> str:
     raise last_exc or RuntimeError("Gemini failed")
 
 
-async def _run_openai_compatible(db, history: list, text: str, system_prompt: str, provider: str) -> str:
+async def _run_openai_compatible(db, history: list, text: str, system_prompt: str, provider: str, tools=None, runner=None) -> str:
     keys = ai_support.resolve_provider_keys(db, provider)
     if not keys:
         raise RuntimeError(f"{provider} API key تنظیم نشده")
@@ -769,7 +769,7 @@ async def _run_openai_compatible(db, history: list, text: str, system_prompt: st
         messages = list(base)
         try:
             for _ in range(_MAX_ROUNDS):
-                data = await ai_support._openai_chat(provider, api_key, model, messages, _TOOLS, url)
+                data = await ai_support._openai_chat(provider, api_key, model, messages, tools or _TOOLS, url)
                 msg = ((data.get("choices") or [{}])[0]).get("message") or {}
                 tool_calls = msg.get("tool_calls") or []
                 content = msg.get("content") or ""
@@ -784,7 +784,7 @@ async def _run_openai_compatible(db, history: list, text: str, system_prompt: st
                     except json.JSONDecodeError:
                         args = {}
                     parsed.append((tc, fn.get("name", ""), args))
-                results = await asyncio.gather(*[_run_tool(db, name, args) for _, name, args in parsed])
+                results = await asyncio.gather(*[(runner or _run_tool)(db, name, args) for _, name, args in parsed])
                 for (tc, _name, _args), result in zip(parsed, results):
                     messages.append({
                         "role": "tool", "tool_call_id": tc.get("id", ""),
@@ -826,6 +826,25 @@ def _build_system_prompt(db, admin_id: int, is_main_bot: bool) -> str:
             "مرجع این بخش:\n" + guide
         )
     return prompt
+
+
+async def get_reply_with(db, history_key, text: str, system_prompt: str, tools=None, runner=None) -> str:
+    """Run the tool-calling loop with a caller-supplied prompt, toolset and history key."""
+    if not ai_support.is_configured(db):
+        return "دستیار هوشمند تنظیم نشده؛ ابتدا کلید API را از بخش دستیار هوشمند وارد کن."
+    history = _get_history(history_key)
+    for provider in ai_support.active_providers(db):
+        try:
+            if provider == "gemini":
+                reply = await _run_gemini(db, history, text, system_prompt, tools, runner)
+            else:
+                reply = await _run_openai_compatible(db, history, text, system_prompt, provider, tools, runner)
+            if reply:
+                _remember(history_key, text, reply)
+                return reply
+        except Exception:
+            _log.exception("ai_admin provider %s failed", provider)
+    return "الان نتونستم جواب بگیرم؛ چند لحظه بعد دوباره امتحان کن."
 
 
 async def get_reply(db, admin_id: int, text: str, is_main_bot: bool = True) -> str:
