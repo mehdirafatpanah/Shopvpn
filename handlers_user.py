@@ -3092,6 +3092,16 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         lines.append("قیمت نهایی = کل حجم انتخابی × نرخ همان بازه‌ای که حجم داخلش قرار می‌گیرد.")
         return "\n".join(lines)
 
+    def _custom_plan_cost_quote(panel_server_id, volume_gb, duration_days, fallback_price):
+        """Use the panel cost tariff when configured; otherwise retain legacy pricing."""
+        try:
+            import payg
+            configured = payg.custom_plan_cost(db, int(panel_server_id), int(volume_gb), int(duration_days), 1, "*")
+            return int(configured) if configured is not None else int(fallback_price or 0)
+        except Exception:
+            logging.getLogger("handlers_user").exception("محاسبه تعرفه تمام‌شده پلن شخصی ناموفق بود")
+            return int(fallback_price or 0)
+
     async def custom_config_start(message: Message, state: FSMContext):
         if not full_access_bot:
             await message.answer(db.get_text('handlers_user.auto_1be04045', 'این بخش در حال حاضر غیرفعال است.'))
@@ -3323,6 +3333,13 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 return
             price = (await asyncio.to_thread(db.calc_custom_config_price, volume_gb))
 
+        panel_server_id = data.get("panel_server_id")
+        if product and product["duration_mode"] == "user_choice":
+            quote_days = int(product["min_days"] or 1)
+        else:
+            quote_days = int(product["duration_days"] if product else (await asyncio.to_thread(db.get_custom_config_settings))["duration_days"])
+        price = _custom_plan_cost_quote(panel_server_id, volume_gb, quote_days, price)
+
         if price <= 0:
             await message.answer(db.get_text('handlers_user.auto_9aee5aa0', '⚠️ قیمت\u200cگذاری برای این بخش هنوز تنظیم نشده. لطفاً با پشتیبانی تماس بگیرید.'))
             await state.clear()
@@ -3389,6 +3406,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await state.clear()
             return
 
+        price = _custom_plan_cost_quote(server["id"], volume_gb, duration_days, price)
+        await state.update_data(custom_price=price)
         tier_info = await _tier_info(message.from_user.id, price, 1)
         price = tier_info["total_after"]
         allowed_methods = await asyncio.to_thread(db.get_effective_custom_config_payment_methods, product_id)
@@ -3511,6 +3530,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 return f"❌ مدت باید بین {min_days} تا {max_days} روز باشد.", None
         else:
             days = fixed_days
+        price = _custom_plan_cost_quote(data.get("panel_server_id"), volume_gb, days, price)
         if price <= 0:
             return "⚠️ قیمت‌گذاری این بخش هنوز تنظیم نشده.", None
 
