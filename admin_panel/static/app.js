@@ -8427,16 +8427,18 @@ const PAYG_TIER_LABELS = ['تا ۵۰ گیگابایت', '۵۰ تا ۲۰۰ گیگ
 const paygGb = n => (Number(n || 0) / 1024 ** 3).toFixed(3);
 
 async function renderPayg() {
-  const tabs = [['settings', 'تنظیمات و تعرفه'], ['targets', 'پنل‌ها و نودها'], ['accounts', 'حساب‌ها'], ['report', 'گزارش']];
+  const tabs = [['settings', 'تنظیمات'], ['targets', 'پنل‌ها و نودها'], ['costs', 'قیمت تمام‌شده'], ['accounts', 'حساب‌ها'], ['report', 'گزارش']];
   const bar = `<div class="toolbar" style="gap:8px;flex-wrap:wrap">${tabs.map(([k, l]) => `<button class="btn btn-sm ${paygTab === k ? 'btn-primary' : ''}" data-payg-tab="${k}">${l}</button>`).join('')}</div>`;
   const body = paygTab === 'settings' ? await paygSettingsHtml()
     : paygTab === 'targets' ? await paygTargetsHtml()
+    : paygTab === 'costs' ? await paygCostsHtml()
     : paygTab === 'accounts' ? await paygAccountsHtml()
     : await paygReportHtml();
   setContent(bar + body);
   $$('[data-payg-tab]', content()).forEach(b => b.addEventListener('click', () => { paygTab = b.dataset.paygTab; renderPayg().catch(handleErr); }));
   if (paygTab === 'settings') paygBindSettings();
   else if (paygTab === 'targets') paygBindTargets();
+  else if (paygTab === 'costs') paygBindCosts();
   else if (paygTab === 'accounts') paygBindAccounts();
 }
 
@@ -8456,7 +8458,7 @@ async function paygSettingsHtml() {
       <div class="form-grid">
         <label class="field field-row"><span>فروش سرویس جدید پرداخت به‌ازای مصرف</span>${_swSpan('payg_enabled', d.enabled)}</label>
         <div class="card-sub">با خاموش‌کردن، فقط ساخت سرویس جدید متوقف می‌شود؛ حساب‌های فعلی طبق تسویه ادامه می‌دهند.</div>
-        <b>تعرفه‌های پلکانی (تومان بر هر گیگابایت)</b>
+        <b>تعرفه عمومی جایگزین (تومان بر هر گیگابایت)</b><div class="card-sub">برای سرویس‌های قدیمی یا مقصدهایی که تعرفه پنلی ندارند؛ تعرفه VPNهای دارای قیمت تمام‌شده از بخش «قیمت تمام‌شده» هر پنل خوانده می‌شود.</div>
         ${PAYG_TIER_LABELS.map((l, i) => `<label class="field"><span>${l}</span><input class="input" type="number" min="1" dir="ltr" data-payg-rate="${i}" value="${Number(d.rates[i])}"></label>`).join('')}
         <div class="card-sub">قیمت‌ها باید مثبت و نزولی باشند. نرخ جدید برای حساب‌های فعال از ابتدای ماه بعد اعمال می‌شود.</div>
         <label class="field"><span>چرخه تسویه (ثانیه، ۶۰ تا ۸۶۴۰۰)</span><input class="input" type="number" min="60" max="86400" dir="ltr" id="payg-cycle" value="${Number(d.cycle_seconds)}"></label>
@@ -8565,6 +8567,50 @@ function paygOpenTargetModal(serverId) {
   }, { wide: true });
 }
 
+async function paygCostsHtml() {
+  const d = await apiGet('/payg/costs');
+  window.__paygCosts = d;
+  const cards = (d.panels || []).map(p => `
+    <div class="card" style="padding:14px;margin-top:12px">
+      <div class="row-between" style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <div><b>${esc(p.name)}</b><div class="card-sub">پنل #${Number(p.id)} · ${esc(p.target_label || 'گروه / اینباند')}</div></div>
+        <button class="btn btn-sm btn-primary" data-payg-cost-edit="${Number(p.id)}">تنظیم تعرفه‌ها</button>
+      </div>
+      <div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>گروه / اینباند</th><th>هر گیگ</th><th>هر روز فعال</th><th>هر کاربر</th></tr></thead><tbody>
+      ${(p.rows || []).map(r => `<tr><td>${esc(r.label)}</td><td>${fmt(r.gb_rate)} تومان</td><td>${fmt(r.day_rate)} تومان</td><td>${fmt(r.user_rate)} تومان</td></tr>`).join('') || '<tr><td colspan="4">مقصدی یافت نشد.</td></tr>'}
+      </tbody></table></div>
+    </div>`).join('') || '<div class="empty-state">پنل فعالی وجود ندارد.</div>';
+  return `<div class="card" style="padding:14px;margin-top:12px"><b>تعرفه مستقل هر پنل و مقصد</b><p class="card-sub">برای هر گروه یا اینباند، بهای هر گیگ ترافیک مصرف‌شده، هر روز فعال‌بودن سرویس و هر کاربر ظرفیت را جداگانه تعیین کنید. مقدار صفر یعنی آن جزء هزینه ندارد. اگر سرویس چند مقصد انتخاب کند، بالاترین تعرفه مقصدهای انتخاب‌شده مبناست؛ پلن شخصی بدون انتخاب مقصد نیز از تعرفه پیش‌فرض و در نبود آن از بالاترین تعرفه مقصدهای پنل استفاده می‌کند.</p></div>${cards}`;
+}
+
+function paygBindCosts() {
+  $$('[data-payg-cost-edit]', content()).forEach(btn => btn.addEventListener('click', () => {
+    const panel = (window.__paygCosts?.panels || []).find(x => Number(x.id) === Number(btn.dataset.paygCostEdit));
+    if (!panel) return;
+    const rows = panel.rows || [];
+    const html = `<p class="card-sub">تعرفه‌ها به تومان هستند. هزینه کاربر بر اساس ظرفیت اکانت و فقط یک‌بار محاسبه خواهد شد.</p>
+      <div style="display:grid;gap:12px;max-height:60vh;overflow:auto;padding:2px">
+      ${rows.map((r,i) => `<div class="card" style="padding:10px"><b>${esc(r.label)}</b><input type="hidden" data-cost-key value="${esc(r.target_key)}">
+        <div class="form-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-top:8px">
+          <label class="field"><span>هر گیگ (تومان)</span><input class="input" type="number" min="0" step="1" data-cost-gb value="${Number(r.gb_rate||0)}"></label>
+          <label class="field"><span>هر روز فعال (تومان)</span><input class="input" type="number" min="0" step="1" data-cost-day value="${Number(r.day_rate||0)}"></label>
+          <label class="field"><span>هر کاربر (تومان)</span><input class="input" type="number" min="0" step="1" data-cost-user value="${Number(r.user_rate||0)}"></label>
+        </div></div>`).join('')}
+      </div><button class="btn btn-primary" id="payg-cost-save" style="margin-top:12px">ذخیره تعرفه‌های این پنل</button>`;
+    openModal(`قیمت تمام‌شده · ${esc(panel.name)}`, html, (el, close) => {
+      $('#payg-cost-save', el).addEventListener('click', async e => {
+        const button=e.currentTarget; button.disabled=true;
+        const entries = $$('[data-cost-key]', el).map((key, i) => {
+          const card=key.closest('.card');
+          return {target_key:key.value, gb_rate:Math.max(0, Number($('[data-cost-gb]',card).value||0)), day_rate:Math.max(0, Number($('[data-cost-day]',card).value||0)), user_rate:Math.max(0, Number($('[data-cost-user]',card).value||0))};
+        });
+        try { await apiPut(`/payg/costs/${Number(panel.id)}`, {entries}); toast('تعرفه‌های پنل ذخیره شد'); close(); renderPayg().catch(handleErr); }
+        catch(err){handleErr(err);button.disabled=false;}
+      });
+    }, {wide:true});
+  }));
+}
+
 async function paygAccountsHtml() {
   const q = encodeURIComponent(paygAcc.q);
   const d = await apiGet(`/payg/accounts?offset=${paygAcc.offset}&limit=25&q=${q}`);
@@ -8606,8 +8652,8 @@ function paygOpenAccountModal(uid) {
   openModal(`حساب PayG کاربر ${uid}`, '<div class="card-sub">در حال دریافت...</div>', async (el, close) => {
     let d;
     try { d = await apiGet(`/payg/accounts/${uid}`); } catch (e) { el.innerHTML = `<div class="form-error">${esc(e.message || 'خطا')}</div>`; return; }
-    const svcRows = d.services.map(s => `<tr><td>${esc(String(s.kind).toUpperCase())}</td><td class="mono" dir="ltr">${esc(s.service_id)}</td><td class="mono">${paygGb(s.used_bytes)} GB</td><td class="mono">${paygGb(s.billed_bytes)} GB</td><td>${esc(s.source || '—')}</td></tr>`).join('') || '<tr><td colspan="5" class="empty-state">سرویسی متصل نیست.</td></tr>';
-    const txRows = d.transactions.map(t => `<tr><td>${esc(String(t.kind).toUpperCase())}</td><td class="mono">${paygGb(t.used_bytes)} GB</td><td>${fmt(t.amount)}</td><td>${fmtDate(t.created_at)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty-state">تراکنشی ثبت نشده است.</td></tr>';
+    const svcRows = d.services.map(s => `<tr><td>${esc(String(s.kind).toUpperCase())}</td><td class="mono" dir="ltr">${esc(s.service_id)}</td><td>${s.panel_id ? `پنل #${Number(s.panel_id)} · ظرفیت ${fmt(s.user_capacity)} · دریافت‌شده ${fmt(s.charged_users)} کاربر` : '—'}</td><td>${s.is_active ? 'فعال' : 'غیرفعال'}</td><td class="mono">${paygGb(s.used_bytes)} / ${paygGb(s.billed_bytes)} GB</td></tr>`).join('') || '<tr><td colspan="5" class="empty-state">سرویسی متصل نیست.</td></tr>';
+    const txRows = d.transactions.map(t => { let snap={}; try { snap=JSON.parse(t.rate_snapshot||'{}'); } catch(_) {} const kindLabel = snap.type === 'users' ? `هزینه ظرفیت (${fmt(snap.capacity)} کاربر)` : snap.type === 'days' ? `هزینه روزانه (${fmt(snap.days)} روز)` : snap.type === 'traffic' ? `ترافیک · ${fmt(snap.gb_rate)} تومان/GB` : 'مصرف حجمی'; return `<tr><td>${esc(String(t.kind).toUpperCase())}</td><td>${kindLabel}</td><td class="mono">${paygGb(t.used_bytes)} GB</td><td>${fmt(t.amount)}</td><td>${fmtDate(t.created_at)}</td></tr>`; }).join('') || '<tr><td colspan="5" class="empty-state">تراکنشی ثبت نشده است.</td></tr>';
     el.innerHTML = `
       <div class="stats-grid" style="margin-bottom:12px">
         <div class="stat-card"><span class="label">وضعیت</span><span class="value">${esc(PAYG_STATUS_FA[d.status] || d.status)}</span></div>
@@ -8618,9 +8664,9 @@ function paygOpenAccountModal(uid) {
         ${d.pool ? `<div class="stat-card"><span class="label">استخر</span><span class="value mono">${paygGb(d.pool.used_bytes)} / ${paygGb(d.pool.limit_bytes)} GB</span></div>` : ''}
       </div>
       <b>سرویس‌ها</b>
-      <div class="table-wrap"><table><thead><tr><th>نوع</th><th>شناسه</th><th>مصرف</th><th>تسویه‌شده</th><th>منبع آمار</th></tr></thead><tbody>${svcRows}</tbody></table></div>
-      <b style="display:block;margin-top:12px">۲۰ برداشت آخر</b>
-      <div class="table-wrap"><table><thead><tr><th>نوع</th><th>مصرف</th><th>مبلغ (تومان)</th><th>زمان</th></tr></thead><tbody>${txRows}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>نوع</th><th>شناسه</th><th>پنل / ظرفیت</th><th>وضعیت</th><th>مصرف / تسویه</th></tr></thead><tbody>${svcRows}</tbody></table></div>
+      <b style="display:block;margin-top:12px">۵۰ برداشت آخر</b>
+      <div class="table-wrap"><table><thead><tr><th>نوع</th><th>شرح محاسبه</th><th>مصرف</th><th>مبلغ (تومان)</th><th>زمان</th></tr></thead><tbody>${txRows}</tbody></table></div>
       <div style="margin-top:12px">${d.status === 'active'
         ? '<button class="btn btn-danger" id="payg-acc-suspend">تعلیق دستی حساب</button>'
         : '<button class="btn btn-primary" id="payg-acc-resume">فعال‌سازی مجدد حساب</button>'}</div>`;
@@ -8638,11 +8684,16 @@ async function paygReportHtml() {
   const d = await apiGet('/payg/report');
   const kinds = d.kinds.map(k => `<tr><td>${esc(String(k.kind).toUpperCase())}</td><td>${fmt(k.tx)}</td><td class="mono">${paygGb(k.bytes)} GB</td><td>${fmt(k.amount)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty-state">هنوز تراکنشی ثبت نشده است.</td></tr>';
   const months = d.months.map(m => `<tr><td class="mono">${esc(m.month)}</td><td class="mono">${paygGb(m.bytes)} GB</td><td>${fmt(m.amount)}</td></tr>`).join('') || '<tr><td colspan="3" class="empty-state">داده‌ای نیست.</td></tr>';
+  const panels = (d.panels || []).map(p => `<tr><td>پنل #${Number(p.panel_id)}</td><td>${fmt(p.traffic)}</td><td>${fmt(p.days)}</td><td>${fmt(p.users)}</td><td><b>${fmt(p.total)}</b></td></tr>`).join('') || '<tr><td colspan="5" class="empty-state">هنوز هزینه‌ای با تعرفه پنل ثبت نشده است.</td></tr>';
+  const charges = d.charges || {};
   return `
-    <div class="card" style="margin-top:12px"><div style="padding:12px 14px 0"><b>ماه جاری (${esc(d.month)}) به تفکیک نوع سرویس</b></div>
-      <div class="table-wrap"><table><thead><tr><th>نوع</th><th>تراکنش</th><th>مصرف</th><th>درآمد (تومان)</th></tr></thead><tbody>${kinds}</tbody></table></div></div>
+    <div class="card" style="margin-top:12px"><div style="padding:12px 14px 0"><b>ماه جاری (${esc(d.month)}) به تفکیک پنل و نوع هزینه</b></div>
+      <div class="table-wrap"><table><thead><tr><th>پنل</th><th>ترافیک (تومان)</th><th>روز فعال (تومان)</th><th>ظرفیت کاربر (تومان)</th><th>مجموع</th></tr></thead><tbody>${panels}</tbody></table></div>
+      <div class="card-sub" style="padding:10px 14px">هزینه‌های خارج از تعرفه پنل: ترافیک ${fmt(charges.legacy)} تومان</div></div>
+    <div class="card" style="margin-top:12px"><div style="padding:12px 14px 0"><b>ماه جاری به تفکیک نوع سرویس</b></div>
+      <div class="table-wrap"><table><thead><tr><th>نوع</th><th>تراکنش</th><th>مصرف</th><th>هزینه (تومان)</th></tr></thead><tbody>${kinds}</tbody></table></div></div>
     <div class="card" style="margin-top:12px"><div style="padding:12px 14px 0"><b>۶ ماه اخیر</b></div>
-      <div class="table-wrap"><table><thead><tr><th>ماه</th><th>مصرف</th><th>درآمد (تومان)</th></tr></thead><tbody>${months}</tbody></table></div></div>`;
+      <div class="table-wrap"><table><thead><tr><th>ماه</th><th>مصرف</th><th>هزینه (تومان)</th></tr></thead><tbody>${months}</tbody></table></div></div>`;
 }
 
 async function renderSSHManagement() {
