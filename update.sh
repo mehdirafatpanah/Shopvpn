@@ -23,6 +23,9 @@ deactivate
 echo "🌍 موتور ترجمه محلی در آپدیت عادی اجرا نمی‌شود تا چند گیگابایت دانلود ناخواسته انجام نشود."
 echo "   برای نصب/آپدیت اختیاری ترجمه از منوی مدیریت، گزینه 31 استفاده کنید."
 
+echo "🎨 ساخت نسخه‌ی minify فایل‌های پنل وب..."
+bash admin_panel/build_assets.sh --if-stale || echo "  ⚠️ build_assets ناموفق بود (پنل از فایل‌های سورس استفاده می‌کند)"
+
 echo "🔄 ری‌استارت سرویس بات..."
 sudo systemctl restart "$SERVICE_NAME"
 if [ -f "/etc/systemd/system/${SERVICE_NAME}-sub.service" ]; then

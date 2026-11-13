@@ -256,6 +256,15 @@ class AdminSetExtraGateway(StatesGroup):
     waiting_value = State()
 
 
+class AdminCustomMenuButton(StatesGroup):
+    waiting_title = State()
+    waiting_url = State()
+    waiting_content = State()
+    waiting_new_title = State()
+    waiting_new_url = State()
+    waiting_new_content = State()
+
+
 class AdminPayCard(StatesGroup):
     waiting_number = State()
     waiting_holder = State()

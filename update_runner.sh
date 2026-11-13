@@ -40,7 +40,14 @@ extra_services() {
     done
 }
 
+build_assets() { # ساخت خودکار نسخه‌ی minify پنل وب؛ شکست آن هیچ‌وقت آپدیت را خراب نمی‌کند
+    [ -f admin_panel/build_assets.sh ] || return 0
+    log "build admin panel assets"
+    timeout 400 bash admin_panel/build_assets.sh --if-stale 2>&1 | tail -n 5 || log "WARN: build_assets failed (ignored)"
+}
+
 restart_all() {
+    build_assets
     for svc in $(extra_services); do
         log "restart $svc"
         $SUDO systemctl restart "$svc" || log "WARN: restart $svc failed"

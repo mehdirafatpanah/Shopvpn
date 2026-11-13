@@ -280,7 +280,38 @@ def main_menu_inline_kb(db, is_admin: bool, is_reseller: bool = False, is_main_b
         return InlineKeyboardButton(text=text, callback_data=f"mm:{key}", style=s)
 
     rows = [[_build_button(key, tr(text), style) for key, text, style in row] for row in item_rows]
+    if is_main_bot:
+        rows.extend(custom_menu_rows(db))
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def custom_menu_button(btn: dict):
+    """یک دکمه‌ی inline از روی ردیف custom_menu_buttons می‌سازد (فقط برای منوی شیشه‌ای)."""
+    s = btn.get("style") if btn.get("style") in ("primary", "success", "danger") else None
+    text = (btn.get("title") or "").strip()[:64]
+    if not text:
+        return None
+    if btn.get("kind") == "url":
+        url = (btn.get("url") or "").strip()
+        if not url:
+            return None
+        return InlineKeyboardButton(text=text, url=url, style=s)
+    if not btn.get("parts"):
+        return None
+    return InlineKeyboardButton(text=text, callback_data=f"cmb:{btn['id']}", style=s)
+
+
+def custom_menu_rows(db) -> list:
+    """ردیف‌های کلیدهای سفارشی فعال؛ با همان تنظیم تعداد ستون منوی اصلی (۱ یا ۲)."""
+    try:
+        items = db.cm_list(only_active=True)
+    except Exception:
+        return []
+    buttons = [b for b in (custom_menu_button(i) for i in items) if b is not None]
+    if not buttons:
+        return []
+    columns = _menu_columns(db) if db.get_menu_row_breaks() is None else 1
+    return _chunk_row(buttons, columns)
 
 
 def _show_commission_reseller_request(db, user_tg_id: int, is_main_bot: bool) -> bool:
@@ -3889,6 +3920,7 @@ def main_menu_settings_kb(db) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=inline_toggle, callback_data="adm_mm_toggle_inline")],
         [InlineKeyboardButton(text=tr(f"چیدمان فعلی: {columns} دکمه در هر ردیف"), callback_data="noop")],
         [InlineKeyboardButton(text=col_toggle, callback_data="adm_mm_toggle_columns")],
+        [InlineKeyboardButton(text=tr("🔘 کلیدهای سفارشی منوی شیشه‌ای"), callback_data="adm_cmb")],
         [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:appearance")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)

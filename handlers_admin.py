@@ -61,6 +61,7 @@ import abangateway_payment
 import blupal_payment
 import noapay_payment
 import extra_gateway_admin
+import custom_menu_buttons
 import extra_settings_schema
 import ai_support
 import ai_admin
@@ -17889,6 +17890,10 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     extra_gateway_admin.register(
         router, db, is_main_bot, admin_only, full_admin_only, deny_support, replace_admin_view,
         safe_edit, callback_id,
+    )
+
+    custom_menu_buttons.register(
+        router, db, is_main_bot, full_admin_only, deny_support, replace_admin_view, safe_edit,
     )
 
     import ssh_admin_bot
