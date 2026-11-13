@@ -9215,7 +9215,17 @@ def api_menu_layout_set(body: MenuLayoutBody, admin=Depends(require_permission("
     """مثل /settings/menu-order ولی علاوه بر ترتیب، چیدمان ردیف‌ها (کدام دکمه‌ها
     کنار هم و کدام‌ها در ردیف جدا قرار بگیرند) را هم ذخیره می‌کند - یعنی چیدمان
     آزاد (نه فقط بالا/پایین با تعداد ستون ثابت)."""
-    db.set_menu_order(body.order)
+    # منوی اصلی می‌تواند شامل دکمه‌های سفارشی (custom_menu:<id>) هم باشد.
+    # set_menu_order فقط کلیدهای ثابت را می‌پذیرد؛ بنابراین باید ترتیب دو نوع
+    # دکمه جداگانه ذخیره شود، وگرنه دکمه‌های سفارشی بعد از بارگذاری مجدد به
+    # انتهای فهرست برمی‌گردند.
+    db.set_menu_order([k for k in body.order if not str(k).startswith("custom_menu:")])
+    db.cm_set_order([
+        str(k).split(":", 1)[1]
+        for k in body.order
+        if str(k).startswith("custom_menu:")
+    ])
+    # شکست ردیف فعلاً فقط برای کلیدهای ثابت منوی اصلی پشتیبانی می‌شود.
     db.set_menu_row_breaks(body.breaks)
     _apply_menu_button_toggles(body.buttons)
     db.log_admin_action(admin["id"], "menu_order_change", f"چیدمان منوی ربات تغییر کرد (پنل وب - {admin['username']})", "setting", "menu_order")
