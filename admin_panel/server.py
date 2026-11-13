@@ -83,6 +83,7 @@ from service_alerts import send_service_alert_sync
 from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
 from stock_alerts import check_and_notify_low_stock
 import ai_support
+import web_assistant
 from renewal_engine import execute_renewal, RenewalError
 import leak_index
 from panel_capabilities import product_capabilities, normalize_user_limit, USER_LIMIT, node_capabilities, all_panels_support
@@ -2600,6 +2601,74 @@ def api_delete_ai_faq(item_id: int, admin=Depends(require_permission("settings")
     db.delete_ai_faq_item(item_id)
     db.log_admin_action(admin["id"], "ai_faq_delete", f"سوال متداول دستیار حذف شد (پنل وب - {admin['username']}).")
     return {"ok": True}
+
+
+class AssistantChatBody(BaseModel):
+    text: str
+    tab: Optional[str] = None
+    nav: Optional[list] = None
+
+
+class AssistantConfirmBody(BaseModel):
+    token: str
+
+
+async def _assistant_execute(action: str, admin: dict, p: dict):
+    async def call(fn, *args, **kwargs):
+        if asyncio.iscoroutinefunction(fn):
+            return await fn(*args, **kwargs)
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
+    if action == "block_user":
+        return await call(api_block_user, p["tg_id"], admin=admin)
+    if action == "unblock_user":
+        return await call(api_unblock_user, p["tg_id"], admin=admin)
+    if action == "adjust_wallet":
+        return await call(api_adjust_wallet, p["tg_id"], WalletAdjustBody(delta=p["delta"]), admin=admin)
+    if action == "message_user":
+        return await call(api_message_user, p["tg_id"], UserMessageBody(text=p["text"]), admin=admin)
+    if action == "approve_order":
+        return await call(api_approve_order, p["order_id"], admin=admin)
+    if action == "reject_order":
+        return await call(api_reject_order, p["order_id"], admin=admin)
+    if action == "approve_topup":
+        return await call(api_approve_topup, p["topup_id"], admin=admin)
+    if action == "reject_topup":
+        return await call(api_reject_topup, p["topup_id"], admin=admin)
+    if action == "toggle_product":
+        return await call(api_toggle_product, p["product_id"], admin=admin)
+    if action == "toggle_discount":
+        return await call(api_toggle_discount, p["code_id"], admin=admin)
+    if action == "create_discount":
+        return await call(api_add_discount, DiscountBody(**p), admin=admin)
+    if action == "toggle_panel_server":
+        return await call(api_toggle_panel_server, p["server_id"], admin=admin)
+    raise HTTPException(400, tr("اکشن نامعتبر است."))
+
+
+@app.post("/api/assistant/chat")
+async def api_assistant_chat(body: AssistantChatBody, admin=Depends(get_current_admin)):
+    return await web_assistant.chat(db, admin, body.text, body.tab, body.nav)
+
+
+@app.post("/api/assistant/reset")
+async def api_assistant_reset(admin=Depends(get_current_admin)):
+    web_assistant.reset(admin)
+    return {"ok": True}
+
+
+@app.post("/api/assistant/confirm")
+async def api_assistant_confirm(body: AssistantConfirmBody, admin=Depends(get_current_admin)):
+    taken = web_assistant.take_pending(admin, body.token)
+    if not taken:
+        raise HTTPException(400, tr("این درخواست منقضی شده یا قبلاً استفاده شده است."))
+    action, params, label = taken
+    await _assistant_execute(action, admin, params)
+    await asyncio.to_thread(
+        db.log_admin_action, admin["id"], "assistant_action",
+        f"{label} (دستیار هوشمند پنل وب - {admin['username']})",
+    )
+    return {"ok": True, "label": label}
 
 
 @app.get("/api/dashboard/servers-map")
