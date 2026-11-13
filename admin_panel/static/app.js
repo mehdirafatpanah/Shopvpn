@@ -405,6 +405,7 @@ const NAV_GROUPS = [
   { id: 'marketing', label: 'محصولات و بازاریابی', items: [
     { key: 'catalog', label: 'محصولات و بانک کانفیگ', icon: 'catalog', role: 'catalog',
       subs: [['products', 'محصولات'], ['categories', 'دسته‌بندی‌ها']] },
+    { key: 'payg', label: 'ساخت محصول به‌ازای مصرف', icon: 'revenue', role: 'payg' },
     { key: 'banners', label: 'بنرها', icon: 'banners', role: 'settings' },
   ] },
   { id: 'partners', label: 'نمایندگی‌ها', items: [
@@ -488,6 +489,7 @@ function hasPerm(perm) {
 }
 function canSee(navRole) {
   if (navRole === 'database') return ME?.role === 'owner' && !ME?.tenant;
+  if (navRole === 'payg') return !ME?.tenant && hasPerm('catalog');
   const rp = ME?.reseller_profile;
   if (navRole === 'reseller-self') return !!(ME?.tenant && rp);
   if (ME?.tenant && rp) {
@@ -1171,6 +1173,7 @@ async function renderPage(tab) {
       case 'subscriptions': return await renderSubscriptions();
       case 'user-groups': return await renderUserGroups();
       case 'catalog': return await renderCatalog();
+      case 'payg': return await renderPayg();
       case 'discounts': return await renderDiscounts();
       case 'tickets': return await renderTickets();
       case 'support': return await renderSupport();
@@ -8416,6 +8419,231 @@ async function stealthNodeSettingsModal(node, reload) {
       });
     }, { wide: true });
 }
+let paygTab = 'settings';
+const paygAcc = { offset: 0, q: '' };
+const PAYG_STATUS_FA = { active: 'فعال', suspended_admin: 'تعلیق مدیریتی', inactive: 'غیرفعال' };
+const PAYG_TIER_LABELS = ['تا ۵۰ گیگابایت', '۵۰ تا ۲۰۰ گیگابایت', '۲۰۰ تا ۵۰۰ گیگابایت', 'بیشتر از ۵۰۰ گیگابایت'];
+const paygGb = n => (Number(n || 0) / 1024 ** 3).toFixed(3);
+
+async function renderPayg() {
+  const tabs = [['settings', 'تنظیمات و تعرفه'], ['targets', 'پنل‌ها و نودها'], ['accounts', 'حساب‌ها'], ['report', 'گزارش']];
+  const bar = `<div class="toolbar" style="gap:8px;flex-wrap:wrap">${tabs.map(([k, l]) => `<button class="btn btn-sm ${paygTab === k ? 'btn-primary' : ''}" data-payg-tab="${k}">${l}</button>`).join('')}</div>`;
+  const body = paygTab === 'settings' ? await paygSettingsHtml()
+    : paygTab === 'targets' ? await paygTargetsHtml()
+    : paygTab === 'accounts' ? await paygAccountsHtml()
+    : await paygReportHtml();
+  setContent(bar + body);
+  $$('[data-payg-tab]', content()).forEach(b => b.addEventListener('click', () => { paygTab = b.dataset.paygTab; renderPayg().catch(handleErr); }));
+  if (paygTab === 'settings') paygBindSettings();
+  else if (paygTab === 'targets') paygBindTargets();
+  else if (paygTab === 'accounts') paygBindAccounts();
+}
+
+async function paygSettingsHtml() {
+  const d = await apiGet('/payg/overview');
+  window.__paygOverview = d;
+  const s = d.stats;
+  return `
+    <div class="stats-grid" style="margin:12px 0">
+      <div class="stat-card"><span class="label">حساب‌های فعال</span><span class="value">${fmt(s.active)}</span></div>
+      <div class="stat-card"><span class="label">تعلیق مدیریتی</span><span class="value">${fmt(s.suspended)}</span></div>
+      <div class="stat-card"><span class="label">فعال با موجودی صفر</span><span class="value">${fmt(s.zero_balance)}</span></div>
+      <div class="stat-card"><span class="label">مصرف این ماه</span><span class="value mono">${paygGb(s.month_used_bytes)} GB</span></div>
+      <div class="stat-card"><span class="label">درآمد این ماه</span><span class="value">${fmt(s.month_revenue)} تومان</span></div>
+    </div>
+    <div class="card" style="padding:14px">
+      <div class="form-grid">
+        <label class="field field-row"><span>فروش سرویس جدید پرداخت به‌ازای مصرف</span>${_swSpan('payg_enabled', d.enabled)}</label>
+        <div class="card-sub">با خاموش‌کردن، فقط ساخت سرویس جدید متوقف می‌شود؛ حساب‌های فعلی طبق تسویه ادامه می‌دهند.</div>
+        <b>تعرفه‌های پلکانی (تومان بر هر گیگابایت)</b>
+        ${PAYG_TIER_LABELS.map((l, i) => `<label class="field"><span>${l}</span><input class="input" type="number" min="1" dir="ltr" data-payg-rate="${i}" value="${Number(d.rates[i])}"></label>`).join('')}
+        <div class="card-sub">قیمت‌ها باید مثبت و نزولی باشند. نرخ جدید برای حساب‌های فعال از ابتدای ماه بعد اعمال می‌شود.</div>
+        <label class="field"><span>چرخه تسویه (ثانیه، ۶۰ تا ۸۶۴۰۰)</span><input class="input" type="number" min="60" max="86400" dir="ltr" id="payg-cycle" value="${Number(d.cycle_seconds)}"></label>
+        <label class="field"><span>حداکثر سرویس PayG برای هر کاربر</span><input class="input" type="number" min="1" max="100" dir="ltr" id="payg-max" value="${Number(d.max_services)}"></label>
+        <button class="btn btn-primary" id="payg-save-settings">ذخیره تنظیمات</button>
+      </div>
+    </div>`;
+}
+
+function paygBindSettings() {
+  const root = content();
+  _bindSwitches(root);
+  $('#payg-save-settings', root)?.addEventListener('click', async () => {
+    const rates = $$('[data-payg-rate]', root).map(el => parseInt(el.value, 10));
+    try {
+      await apiPost('/payg/settings', {
+        enabled: _swOn(root, 'payg_enabled'),
+        rates,
+        cycle_seconds: parseInt($('#payg-cycle', root).value, 10),
+        max_services: parseInt($('#payg-max', root).value, 10),
+      });
+      toast('تنظیمات PayG ذخیره شد');
+      renderPayg().catch(handleErr);
+    } catch (e) { handleErr(e); }
+  });
+}
+
+async function paygTargetsHtml() {
+  const d = await apiGet('/payg/overview');
+  window.__paygOverview = d;
+  const modeAll = d.mode === 'all';
+  const panelRows = d.panels.map(p => {
+    const load = p.max_services ? `${fmt(p.active_services)}/${fmt(p.max_services)} ظرفیت` : `${fmt(p.active_services)} سرویس`;
+    const state = !p.selected ? '<span class="chip">انتخاب نشده</span>'
+      : p.has_target ? `<span class="chip">🎯 ${fmt(p.target_count)} اینباند/گروه</span>`
+      : '<span class="chip">انتخاب‌شده (بدون اینباند مستقل)</span>';
+    return `<tr>
+      <td><b>${esc(p.name)}</b><div class="card-sub">${esc(p.panel_type || '')} · #${Number(p.id)}</div></td>
+      <td>${load}</td>
+      <td>${state}</td>
+      <td><button class="btn btn-sm" data-payg-target="${Number(p.id)}">${p.selected ? 'ویرایش' : 'افزودن'}</button></td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="4" class="empty-state">پنل فعالی ثبت نشده است.</td></tr>';
+  const nodeRows = d.ssh_nodes.map(n => `<label class="field field-row"><span>${esc(n.name)} · ${esc(n.host)}</span><input type="checkbox" data-payg-node="${Number(n.id)}" ${n.selected ? 'checked' : ''}></label>`).join('');
+  const protoRow = d.supported_protocols.map(p => `<label class="field-row" style="gap:6px"><span>${esc(String(p).toUpperCase())}</span><input type="checkbox" data-payg-proto="${esc(p)}" ${d.ssh_protocols.includes(p) ? 'checked' : ''}></label>`).join('');
+  return `
+    <div class="card" style="padding:14px;margin-top:12px">
+      <b>حالت ساخت سرویس</b>
+      <p class="card-sub">${modeAll
+        ? 'همه مقصدها + ساب اختصاصی: هر سرویس هم‌زمان روی همه پنل‌ها و نودهای انتخاب‌شده ساخته می‌شود، کاربر یک لینک ساب می‌گیرد و مصرف همه مقصدها جمع و صورتحساب می‌شود.'
+        : 'توزیع بار: هر سرویس روی یک پنل (کم‌بارترین) و فقط روی اینباندهای انتخاب‌شده‌ی همان پنل ساخته می‌شود.'}</p>
+      ${!d.dsub_enabled ? '<p class="card-sub" style="color:#FB7185">ساب اختصاصی خاموش است؛ حالت «همه مقصدها» بدون آن فعال نمی‌شود.</p>' : ''}
+      <button class="btn btn-sm" id="payg-toggle-mode">${modeAll ? 'تغییر به توزیع بار (یک پنل)' : 'تغییر به همه مقصدها + ساب اختصاصی'}</button>
+    </div>
+    <div class="card" style="margin-top:12px"><div style="padding:12px 14px 0"><b>پنل‌های VPN</b><p class="card-sub">برای هر پنل، اینباند یا گروه مخصوص PayG را جدا از محصولات عادی انتخاب کنید. پنل بدون اینباند انتخاب‌شده به PayG اضافه نمی‌شود (مگر پنلی که انتخاب مستقل ندارد).</p></div>
+      <div class="table-wrap"><table><thead><tr><th>پنل</th><th>بار</th><th>وضعیت در PayG</th><th>عملیات</th></tr></thead><tbody>${panelRows}</tbody></table></div></div>
+    <div class="card" style="padding:14px;margin-top:12px">
+      <b>نودهای SSH و پروتکل‌ها</b>
+      <p class="card-sub">فقط در حالت «همه مقصدها» استفاده می‌شود.</p>
+      ${nodeRows ? `<div style="display:grid;gap:7px;margin:8px 0">${nodeRows}</div><div style="display:flex;flex-wrap:wrap;gap:14px;margin:8px 0">${protoRow}</div><button class="btn btn-sm btn-primary" id="payg-save-ssh">ذخیره نودها و پروتکل‌ها</button>` : '<div class="card-sub">نود Linux فعالی ثبت نشده است.</div>'}
+    </div>
+    <div style="margin-top:12px"><button class="btn btn-danger btn-sm" id="payg-clear">پاک‌کردن همه انتخاب‌ها</button></div>`;
+}
+
+function paygBindTargets() {
+  const root = content();
+  $('#payg-toggle-mode', root)?.addEventListener('click', async () => {
+    const next = window.__paygOverview.mode === 'all' ? 'balance' : 'all';
+    try { await apiPost('/payg/mode', { mode: next }); renderPayg().catch(handleErr); } catch (e) { handleErr(e); }
+  });
+  $('#payg-save-ssh', root)?.addEventListener('click', async () => {
+    const node_ids = $$('[data-payg-node]:checked', root).map(el => Number(el.dataset.paygNode));
+    const protocols = $$('[data-payg-proto]:checked', root).map(el => el.dataset.paygProto);
+    try { await apiPut('/payg/ssh', { node_ids, protocols }); toast('ذخیره شد'); renderPayg().catch(handleErr); } catch (e) { handleErr(e); }
+  });
+  $('#payg-clear', root)?.addEventListener('click', async () => {
+    if (!confirm('همه پنل‌ها، اینباندها و نودهای انتخاب‌شده‌ی PayG پاک شود؟')) return;
+    try { await apiPost('/payg/clear', {}); toast('پاک شد'); renderPayg().catch(handleErr); } catch (e) { handleErr(e); }
+  });
+  $$('[data-payg-target]', root).forEach(btn => btn.addEventListener('click', () => paygOpenTargetModal(Number(btn.dataset.paygTarget))));
+}
+
+function paygOpenTargetModal(serverId) {
+  const panel = (window.__paygOverview?.panels || []).find(p => Number(p.id) === serverId);
+  openModal(`اینباند / گروه PayG: ${esc(panel?.name || '#' + serverId)}`, '<div class="card-sub">در حال دریافت اینباندها و گروه‌های پنل...</div>', async (el, close) => {
+    let info;
+    try { info = await apiGet(`/payg/targets/${serverId}`); } catch (e) { el.innerHTML = `<div class="form-error">${esc(e.message || 'خطا')}</div>`; return; }
+    const sel = new Set((info.selected || []).map(String));
+    const choices = info.choices || [];
+    el.innerHTML = `
+      ${choices.length ? `${targetSearchBoxHtml()}<div data-target-list style="display:grid;gap:7px;max-height:320px;overflow:auto;padding:9px;border:1px solid var(--border);border-radius:10px">${choices.map(c => `<label class="field-row"><span>${esc(String(c.label || c.value))}</span><input type="checkbox" data-payg-value="${esc(String(c.value))}" ${sel.has(String(c.value)) ? 'checked' : ''}></label>`).join('')}</div>`
+        : '<div class="card-sub">این پنل مقصد قابل انتخاب مستقل ندارد؛ فقط می‌توانید آن را به PayG اضافه یا از آن حذف کنید.</div>'}
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+        <button class="btn btn-primary" id="payg-target-save">${choices.length ? 'ذخیره انتخاب' : 'افزودن به PayG'}</button>
+        ${info.is_member ? '<button class="btn btn-danger" id="payg-target-remove">حذف این پنل از PayG</button>' : ''}
+      </div>
+      <p class="card-sub">این انتخاب فقط برای PayG است و روی محصولات و تنظیم کلی پنل اثری ندارد.</p>`;
+    bindTargetSearch(el);
+    $('#payg-target-save', el).addEventListener('click', async () => {
+      const values = $$('[data-payg-value]:checked', el).map(x => x.getAttribute('data-payg-value'));
+      try { await apiPut(`/payg/targets/${serverId}`, { values }); close(); toast('ذخیره شد'); renderPayg().catch(handleErr); } catch (e) { handleErr(e); }
+    });
+    $('#payg-target-remove', el)?.addEventListener('click', async () => {
+      try { await apiDelete(`/payg/targets/${serverId}`); close(); toast('پنل از PayG حذف شد'); renderPayg().catch(handleErr); } catch (e) { handleErr(e); }
+    });
+  }, { wide: true });
+}
+
+async function paygAccountsHtml() {
+  const q = encodeURIComponent(paygAcc.q);
+  const d = await apiGet(`/payg/accounts?offset=${paygAcc.offset}&limit=25&q=${q}`);
+  const rows = d.items.map(a => `<tr>
+    <td class="mono">${Number(a.user_id)}</td>
+    <td>${esc(PAYG_STATUS_FA[a.status] || a.status)}</td>
+    <td>${fmt(a.balance)}</td>
+    <td class="mono">${paygGb(a.month_used_bytes)} GB</td>
+    <td>${fmt(a.month_cost)}</td>
+    <td>${fmt(a.services)}</td>
+    <td><button class="btn btn-sm" data-payg-acc="${Number(a.user_id)}">جزئیات</button></td>
+  </tr>`).join('') || '<tr><td colspan="7" class="empty-state">حسابی پیدا نشد.</td></tr>';
+  const to = Math.min(d.offset + d.limit, d.total);
+  return `
+    <div class="toolbar" style="gap:8px;flex-wrap:wrap;margin-top:12px">
+      <input class="input" id="payg-acc-q" type="search" inputmode="numeric" dir="ltr" placeholder="جستجوی آیدی عددی کاربر" value="${esc(paygAcc.q)}" style="max-width:240px">
+      <button class="btn btn-sm" id="payg-acc-search">جستجو</button>
+      <span style="flex:1"></span>
+      <span class="card-sub">${d.total ? `${fmt(d.offset + 1)} تا ${fmt(to)} از ${fmt(d.total)}` : '۰ حساب'}</span>
+      <button class="btn btn-sm" id="payg-acc-prev" ${d.offset <= 0 ? 'disabled' : ''}>قبلی</button>
+      <button class="btn btn-sm" id="payg-acc-next" ${d.offset + d.limit >= d.total ? 'disabled' : ''}>بعدی</button>
+    </div>
+    <div class="card"><div class="table-wrap"><table>
+      <thead><tr><th>کاربر</th><th>وضعیت</th><th>کیف پول</th><th>مصرف ماه</th><th>هزینه ماه</th><th>سرویس</th><th></th></tr></thead>
+      <tbody>${rows}</tbody></table></div></div>`;
+}
+
+function paygBindAccounts() {
+  const root = content();
+  const go = () => renderPayg().catch(handleErr);
+  $('#payg-acc-search', root)?.addEventListener('click', () => { paygAcc.q = $('#payg-acc-q', root).value.trim(); paygAcc.offset = 0; go(); });
+  $('#payg-acc-q', root)?.addEventListener('keydown', e => { if (e.key === 'Enter') $('#payg-acc-search', root).click(); });
+  $('#payg-acc-prev', root)?.addEventListener('click', () => { paygAcc.offset = Math.max(0, paygAcc.offset - 25); go(); });
+  $('#payg-acc-next', root)?.addEventListener('click', () => { paygAcc.offset += 25; go(); });
+  $$('[data-payg-acc]', root).forEach(b => b.addEventListener('click', () => paygOpenAccountModal(Number(b.dataset.paygAcc))));
+}
+
+function paygOpenAccountModal(uid) {
+  openModal(`حساب PayG کاربر ${uid}`, '<div class="card-sub">در حال دریافت...</div>', async (el, close) => {
+    let d;
+    try { d = await apiGet(`/payg/accounts/${uid}`); } catch (e) { el.innerHTML = `<div class="form-error">${esc(e.message || 'خطا')}</div>`; return; }
+    const svcRows = d.services.map(s => `<tr><td>${esc(String(s.kind).toUpperCase())}</td><td class="mono" dir="ltr">${esc(s.service_id)}</td><td class="mono">${paygGb(s.used_bytes)} GB</td><td class="mono">${paygGb(s.billed_bytes)} GB</td><td>${esc(s.source || '—')}</td></tr>`).join('') || '<tr><td colspan="5" class="empty-state">سرویسی متصل نیست.</td></tr>';
+    const txRows = d.transactions.map(t => `<tr><td>${esc(String(t.kind).toUpperCase())}</td><td class="mono">${paygGb(t.used_bytes)} GB</td><td>${fmt(t.amount)}</td><td>${fmtDate(t.created_at)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty-state">تراکنشی ثبت نشده است.</td></tr>';
+    el.innerHTML = `
+      <div class="stats-grid" style="margin-bottom:12px">
+        <div class="stat-card"><span class="label">وضعیت</span><span class="value">${esc(PAYG_STATUS_FA[d.status] || d.status)}</span></div>
+        <div class="stat-card"><span class="label">کیف پول</span><span class="value">${fmt(d.balance)} تومان</span></div>
+        <div class="stat-card"><span class="label">مصرف ماه</span><span class="value mono">${paygGb(d.month_used_bytes)} GB</span></div>
+        <div class="stat-card"><span class="label">هزینه ماه</span><span class="value">${fmt(d.month_cost)} تومان</span></div>
+        <div class="stat-card"><span class="label">کل برداشت‌ها</span><span class="value">${fmt(d.total_spent)} تومان (${fmt(d.tx_count)})</span></div>
+        ${d.pool ? `<div class="stat-card"><span class="label">استخر</span><span class="value mono">${paygGb(d.pool.used_bytes)} / ${paygGb(d.pool.limit_bytes)} GB</span></div>` : ''}
+      </div>
+      <b>سرویس‌ها</b>
+      <div class="table-wrap"><table><thead><tr><th>نوع</th><th>شناسه</th><th>مصرف</th><th>تسویه‌شده</th><th>منبع آمار</th></tr></thead><tbody>${svcRows}</tbody></table></div>
+      <b style="display:block;margin-top:12px">۲۰ برداشت آخر</b>
+      <div class="table-wrap"><table><thead><tr><th>نوع</th><th>مصرف</th><th>مبلغ (تومان)</th><th>زمان</th></tr></thead><tbody>${txRows}</tbody></table></div>
+      <div style="margin-top:12px">${d.status === 'active'
+        ? '<button class="btn btn-danger" id="payg-acc-suspend">تعلیق دستی حساب</button>'
+        : '<button class="btn btn-primary" id="payg-acc-resume">فعال‌سازی مجدد حساب</button>'}</div>`;
+    $('#payg-acc-suspend', el)?.addEventListener('click', async () => {
+      if (!confirm('حساب PayG این کاربر تعلیق شود؟')) return;
+      try { await apiPost(`/payg/accounts/${uid}/suspend`, {}); close(); toast('حساب تعلیق شد'); renderPayg().catch(handleErr); } catch (e) { handleErr(e); }
+    });
+    $('#payg-acc-resume', el)?.addEventListener('click', async () => {
+      try { await apiPost(`/payg/accounts/${uid}/resume`, {}); close(); toast('حساب فعال شد'); renderPayg().catch(handleErr); } catch (e) { handleErr(e); }
+    });
+  }, { wide: true });
+}
+
+async function paygReportHtml() {
+  const d = await apiGet('/payg/report');
+  const kinds = d.kinds.map(k => `<tr><td>${esc(String(k.kind).toUpperCase())}</td><td>${fmt(k.tx)}</td><td class="mono">${paygGb(k.bytes)} GB</td><td>${fmt(k.amount)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty-state">هنوز تراکنشی ثبت نشده است.</td></tr>';
+  const months = d.months.map(m => `<tr><td class="mono">${esc(m.month)}</td><td class="mono">${paygGb(m.bytes)} GB</td><td>${fmt(m.amount)}</td></tr>`).join('') || '<tr><td colspan="3" class="empty-state">داده‌ای نیست.</td></tr>';
+  return `
+    <div class="card" style="margin-top:12px"><div style="padding:12px 14px 0"><b>ماه جاری (${esc(d.month)}) به تفکیک نوع سرویس</b></div>
+      <div class="table-wrap"><table><thead><tr><th>نوع</th><th>تراکنش</th><th>مصرف</th><th>درآمد (تومان)</th></tr></thead><tbody>${kinds}</tbody></table></div></div>
+    <div class="card" style="margin-top:12px"><div style="padding:12px 14px 0"><b>۶ ماه اخیر</b></div>
+      <div class="table-wrap"><table><thead><tr><th>ماه</th><th>مصرف</th><th>درآمد (تومان)</th></tr></thead><tbody>${months}</tbody></table></div></div>`;
+}
+
 async function renderSSHManagement() {
   const [d, panelServers] = await Promise.all([apiGet('/ssh/overview'), apiGet('/panel-servers').catch(() => [])]);
   const nodes = d.nodes || [], pools = d.pools || [], accounts = d.accounts || [];
