@@ -9075,34 +9075,13 @@ def api_menu_order_get(admin=Depends(require_permission("settings"))):
     row_breaks = db.get_menu_row_breaks()
     break_set = set(row_breaks) if row_breaks is not None else None
     result = []
-    for key in order:
-        meta = MENU_BUTTON_META.get(key)
-        if not meta:
-            continue
-        item = {
-            "key": key, "label": meta["label"], "admin_only": meta["admin_only"],
-            "togglable": meta["toggle_key"] is not None,
-            # این دو فیلد برای این‌است که تب «دکمه‌های ربات» بتواند متن/رنگ این
-            # دکمه‌ها را هم از همین‌جا (کنار ترتیب/فعال‌سازی) نمایش و ویرایش کند.
-            "has_text": bool(meta.get("has_text")),
-            "has_style": bool(meta.get("has_style")),
-        }
-        if meta["toggle_key"]:
-            item["enabled"] = settings.get(meta["toggle_key"], "1") == "1"
-        if meta.get("has_text"):
-            item["text"] = settings.get(key, meta.get("default_text") or "")
-        if meta.get("has_style"):
-            item["style"] = settings.get(f"{key}_style", "")
-        # break_before یعنی این دکمه یک ردیف تازه در منو شروع می‌کند (کنار دکمه‌ی
-        # قبلی‌اش قرار نمی‌گیرد). اگر کاربر هنوز چیدمان سفارشی نساخته باشد
-        # (break_set is None)، null برمی‌گردد تا فرانت‌اند بداند هنوز از حالت
-        # قدیمی «تعداد ستون ثابت» استفاده می‌شود.
-        item["break_before"] = (key in break_set) if break_set is not None else None
-        result.append(item)
-    # کلیدهای سفارشی منوی شیشه‌ای نیز در همین استودیوی چیدمان نمایش داده می‌شوند.
     try:
-        for custom in db.cm_list():
-            key = f"custom_menu:{custom['id']}"
+        customs = {f"custom_menu:{c['id']}": c for c in db.cm_list()}
+    except Exception:
+        customs = {}
+    for key in order:
+        custom = customs.get(key)
+        if custom is not None:
             result.append({
                 "key": key,
                 "label": custom.get("title") or "کلید سفارشی",
@@ -9113,7 +9092,7 @@ def api_menu_order_get(admin=Depends(require_permission("settings"))):
                 "has_style": True,
                 "text": custom.get("title") or "",
                 "style": custom.get("style") or "",
-                "break_before": True,
+                "break_before": (key in break_set) if break_set is not None else None,
                 "custom_menu": True,
                 "custom_kind": custom.get("kind") or "url",
                 "custom_url": custom.get("url") or "",
@@ -9122,8 +9101,24 @@ def api_menu_order_get(admin=Depends(require_permission("settings"))):
                     if part.get("type") == "text"
                 ),
             })
-    except Exception:
-        pass
+            continue
+        meta = MENU_BUTTON_META.get(key)
+        if not meta:
+            continue
+        item = {
+            "key": key, "label": meta["label"], "admin_only": meta["admin_only"],
+            "togglable": meta["toggle_key"] is not None,
+            "has_text": bool(meta.get("has_text")),
+            "has_style": bool(meta.get("has_style")),
+        }
+        if meta["toggle_key"]:
+            item["enabled"] = settings.get(meta["toggle_key"], "1") == "1"
+        if meta.get("has_text"):
+            item["text"] = settings.get(key, meta.get("default_text") or "")
+        if meta.get("has_style"):
+            item["style"] = settings.get(f"{key}_style", "")
+        item["break_before"] = (key in break_set) if break_set is not None else None
+        result.append(item)
     return result
 
 
@@ -9197,7 +9192,7 @@ class MenuOrderBody(BaseModel):
 
 @app.post("/api/settings/menu-order")
 def api_menu_order_set(body: MenuOrderBody, admin=Depends(require_permission("settings"))):
-    db.set_menu_order([k for k in body.order if not str(k).startswith("custom_menu:")])
+    db.set_menu_order(body.order)
     db.cm_set_order([str(k).split(":", 1)[1] for k in body.order if str(k).startswith("custom_menu:")])
     _apply_menu_button_toggles(body.buttons)
     db.log_admin_action(admin["id"], "menu_order_change", f"ترتیب منوی ربات تغییر کرد (پنل وب - {admin['username']})", "setting", "menu_order")
@@ -9219,7 +9214,7 @@ def api_menu_layout_set(body: MenuLayoutBody, admin=Depends(require_permission("
     # set_menu_order فقط کلیدهای ثابت را می‌پذیرد؛ بنابراین باید ترتیب دو نوع
     # دکمه جداگانه ذخیره شود، وگرنه دکمه‌های سفارشی بعد از بارگذاری مجدد به
     # انتهای فهرست برمی‌گردند.
-    db.set_menu_order([k for k in body.order if not str(k).startswith("custom_menu:")])
+    db.set_menu_order(body.order)
     db.cm_set_order([
         str(k).split(":", 1)[1]
         for k in body.order
@@ -9356,6 +9351,8 @@ def api_main_menu_display_set(body: MainMenuDisplayBody, admin=Depends(require_p
 
     db.set_setting("main_menu_reply_enabled", "1" if body.reply_enabled else "0")
     db.set_setting("main_menu_inline_enabled", "1" if body.inline_enabled else "0")
+    if str(body.columns) != (db.get_setting("main_menu_columns", "1") or "1"):
+        db.set_setting("main_menu_row_breaks", "")
     db.set_setting("main_menu_columns", str(body.columns))
     db.log_admin_action(
         admin["id"], "main_menu_display_change",
