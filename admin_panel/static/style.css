@@ -3218,3 +3218,97 @@ input,select,textarea{border-radius:9px}
 .dcc-all-clear b{ font-size:10.5px; }.dcc-all-clear small{ color:var(--text-muted); font-size:9px; line-height:1.6; }
 @media(max-width:1100px){.dcc-body{grid-template-columns:1fr}.dcc-shortcuts{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:640px){.sidebar{width: min(84vw,320px);}.dcc-heading{align-items:flex-start;flex-direction:column}.dcc-status{align-self:flex-start}.dcc-shortcuts{grid-template-columns:1fr 1fr}.dcc-shortcut{padding:9px 7px;gap:7px}.dcc-shortcut-icon{width:29px;height:29px;flex-basis:29px}.dcc-shortcut-copy b{font-size:10px}.dcc-shortcut-copy small{font-size:8.5px}.dashboard-command-center{padding:13px}.dcc-heading h3{font-size:15px}}
+
+/* =====================================================================
+   Mobile hardening — همه‌ی تم‌ها (enterprise / cyberpunk / streetops /
+   android / brutalist / bento)
+   مشکلات قبلی:
+   - کشوی منو height:100vh داشت؛ روی موبایل 100vh از ناحیه‌ی قابل‌دیدِ
+     مرورگر (با نوار آدرس) بلندتر است، پس پایین کشو (کارت کاربر + دکمه‌ی
+     «خروج») بیرون از صفحه می‌افتاد و دیده نمی‌شد.
+   - در تم bento دکمه‌ی خروج font-size:0 داشت و فقط یک آیکون کوچک بود.
+   - تاپ‌بار شلوغ بود (دکمه‌ی زبان پهن، عنوان صفحه بریده می‌شد).
+   - toast و مودال از ناحیه‌ی امن (safe-area) و ارتفاع واقعی گوشی بیرون می‌زدند.
+   این بلوک عمداً آخر فایل است تا روی همه‌ی تم‌ها غالب شود؛ ظاهر تم‌ها
+   (رنگ‌ها/فونت/شکل کارت‌ها) تغییری نمی‌کند.
+===================================================================== */
+@media (max-width:960px){
+  /* ---- کشوی منو: ارتفاع واقعی صفحه + فوتر همیشه قابل‌دیدن ---- */
+  html .sidebar{
+    height:100vh; height:100dvh; max-height:100dvh;
+    display:flex; flex-direction:column;
+    padding-top:max(16px, env(safe-area-inset-top));
+    padding-bottom:max(12px, env(safe-area-inset-bottom));
+    overflow:hidden;
+  }
+  html .sidebar .nav-tunnel{
+    flex:1 1 auto; min-height:0;
+    overflow-y:auto !important; overflow-x:hidden !important;
+    -webkit-overflow-scrolling:touch; overscroll-behavior:contain;
+  }
+  html .sidebar .sidebar-footer{
+    flex:0 0 auto; position:relative; z-index:1;
+    background:inherit; margin-top:8px;
+    padding-bottom:0;
+  }
+  html .sidebar .me-card{ padding-bottom:10px; }
+
+  /* ---- دکمه‌ی خروج: واضح، بزرگ (قابل لمس) و قرمزرنگ در همه‌ی تم‌ها ---- */
+  html .sidebar #logout-btn{
+    display:flex !important; align-items:center; justify-content:center; gap:8px;
+    width:100% !important; min-height:44px; padding:10px 12px !important;
+    font-size:13.5px !important; font-weight:700 !important; line-height:1.2;
+    color:#f87171 !important;
+    background:rgba(239,68,68,.12) !important;
+    border:1px solid rgba(239,68,68,.55) !important;
+    opacity:1 !important; visibility:visible !important;
+  }
+  html[data-mode="light"] .sidebar #logout-btn{ color:#b91c1c !important; background:rgba(239,68,68,.10) !important; }
+  html .sidebar #logout-btn .icon{ width:18px !important; height:18px !important; flex-shrink:0; }
+  html .sidebar #logout-btn span:last-child{ display:inline !important; }
+
+  /* bento: ریل باریک ۸۰ پیکسلی است؛ متن «خروج» زیر آیکون و کوچک‌تر */
+  html[data-theme="bento"] .sidebar #logout-btn{
+    flex-direction:column; gap:3px; font-size:10px !important; padding:8px 2px !important; border-radius:14px;
+  }
+  html[data-theme="bento"] .sidebar .me-card{ align-items:center; }
+
+  /* ---- تاپ‌بار ---- */
+  html .topbar{ padding-top:max(10px, env(safe-area-inset-top)); gap:8px; }
+  html .topbar-right{ min-width:0; flex:1 1 auto; }
+  html .page-heading{ min-width:0; }
+  html .page-heading h2, html .topbar h2{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  html .page-crumb{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  html .topbar-actions{ flex:0 0 auto; gap:6px; }
+  html .topbar-actions .btn{ padding-inline:10px; }
+  html .hamburger{ flex-shrink:0; min-width:40px; min-height:40px; }
+  .lang-name{ display:none; }
+
+  /* ---- Toast: عرض کامل، بالاتر از نوار پایین گوشی ---- */
+  .toast-root{
+    left:12px; right:12px; bottom:calc(12px + env(safe-area-inset-bottom)); z-index:200; align-items:stretch;
+  }
+  .toast{ max-width:100%; overflow-wrap:anywhere; }
+
+  /* ---- مودال‌ها: ارتفاع واقعی گوشی ---- */
+  .modal-backdrop{ padding:12px; align-items:flex-end; }
+  .modal, .modal.modal-lg{
+    max-height:90vh; max-height:calc(100dvh - 24px); max-width:100%;
+    border-radius:var(--radius) var(--radius) 0 0;
+    padding-bottom:max(20px, env(safe-area-inset-bottom));
+  }
+
+  /* ---- محتوا: جلوگیری از اسکرول افقی کل صفحه ---- */
+  html, body{ overflow-x:hidden; max-width:100%; }
+  .content{ min-width:0; padding-bottom:max(50px, calc(24px + env(safe-area-inset-bottom))); }
+  .main{ min-width:0; }
+  .card, .toolbar, .tabs{ max-width:100%; }
+  .table-wrap{ max-width:100%; -webkit-overflow-scrolling:touch; }
+  img, video, canvas{ max-width:100%; }
+  input, select, textarea{ font-size:16px; } /* جلوگیری از زوم خودکار iOS روی فوکوس */
+}
+
+@media (max-width:420px){
+  html .topbar-actions .live-dot{ display:none; }
+  html .topbar-actions .btn{ padding-inline:8px; }
+}

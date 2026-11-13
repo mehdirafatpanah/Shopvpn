@@ -3,7 +3,7 @@
 <html lang="fa" dir="rtl">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <title>پنل مدیریت ShopVPN</title>
 
 <!-- PWA: قابلیت نصب روی هوم‌اسکرین (اندروید + آیفون). href با ?b=... همان
@@ -68,12 +68,19 @@
     "اتصال زنده":"Live connection"
   };
   function lang(){ return localStorage.getItem("sv-lang") || "fa"; }
+  function setLangLabel(b,en){
+    b.textContent="";
+    const f=document.createElement("span"); f.textContent=en?"🇮🇷":"🇬🇧";
+    const n=document.createElement("span"); n.className="lang-name"; n.textContent=en?" فارسی":" English";
+    b.append(f,n);
+    b.setAttribute("aria-label",en?"فارسی":"English");
+  }
   function apply(){
     const en=lang()==="en";
     document.documentElement.lang=en?"en":"fa";
     document.documentElement.dir=en?"ltr":"rtl";
     document.body.classList.toggle("i18n-en",en);
-    document.querySelectorAll("[data-i18n-toggle]").forEach(b=>b.textContent=en?"🇮🇷 فارسی":"🇬🇧 English");
+    document.querySelectorAll("[data-i18n-toggle]").forEach(b=>setLangLabel(b,en));
     if(en){
       const w=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
       const nodes=[]; while(w.nextNode()) nodes.push(w.currentNode);
@@ -105,7 +112,7 @@
   window.addEventListener("DOMContentLoaded",function(){
     const b=document.createElement("button");
     b.type="button"; b.className="btn btn-ghost"; b.setAttribute("data-i18n-toggle","");
-    b.textContent=lang()==="en"?"🇮🇷 فارسی":"🇬🇧 English";
+    setLangLabel(b,lang()==="en");
     b.onclick=()=>window.ShopVPNShowLanguagePicker(b);
     const top=document.querySelector(".topbar-actions")||document.querySelector(".topbar");
     if(top) top.prepend(b);
