@@ -9099,6 +9099,31 @@ def api_menu_order_get(admin=Depends(require_permission("settings"))):
         # قدیمی «تعداد ستون ثابت» استفاده می‌شود.
         item["break_before"] = (key in break_set) if break_set is not None else None
         result.append(item)
+    # کلیدهای سفارشی منوی شیشه‌ای نیز در همین استودیوی چیدمان نمایش داده می‌شوند.
+    try:
+        for custom in db.cm_list():
+            key = f"custom_menu:{custom['id']}"
+            result.append({
+                "key": key,
+                "label": custom.get("title") or "کلید سفارشی",
+                "admin_only": False,
+                "togglable": True,
+                "enabled": bool(custom.get("is_active", 1)),
+                "has_text": True,
+                "has_style": True,
+                "text": custom.get("title") or "",
+                "style": custom.get("style") or "",
+                "break_before": True,
+                "custom_menu": True,
+                "custom_kind": custom.get("kind") or "url",
+                "custom_url": custom.get("url") or "",
+                "custom_content": "\\n\\n".join(
+                    str(part.get("text") or "") for part in (custom.get("parts") or [])
+                    if part.get("type") == "text"
+                ),
+            })
+    except Exception:
+        pass
     return result
 
 
@@ -9107,10 +9132,51 @@ class MenuButtonToggle(BaseModel):
     enabled: Optional[bool] = None
     text: Optional[str] = None
     style: Optional[str] = None
+    custom_kind: Optional[str] = None
+    custom_url: Optional[str] = None
+    custom_content: Optional[str] = None
 
 
 def _apply_menu_button_toggles(buttons: Optional[list[MenuButtonToggle]]):
     for btn in buttons or []:
+        if btn.key.startswith("custom_menu:"):
+            try:
+                custom_id = int(btn.key.split(":", 1)[1])
+                fields = {}
+                if btn.enabled is not None:
+                    fields["is_active"] = 1 if btn.enabled else 0
+                if btn.text is not None and btn.text.strip():
+                    fields["title"] = btn.text.strip()[:40]
+                if btn.style is not None and btn.style in ("", "primary", "success", "danger"):
+                    fields["style"] = btn.style
+                if btn.custom_kind is not None:
+                    if btn.custom_kind not in ("url", "content"):
+                        raise HTTPException(400, tr("نوع کلید نامعتبر است."))
+                    fields["kind"] = btn.custom_kind
+                if btn.custom_url is not None:
+                    url = btn.custom_url.strip()
+                    if re.fullmatch(r"@[A-Za-z0-9_]{4,32}", url):
+                        url = "https://t.me/" + url[1:]
+                    if url and not re.match(r"^(https?://|tg://)", url, re.I):
+                        url = "https://" + url
+                    if not url or len(url) > 512 or re.search(r"\\s", url) or not re.match(r"^(https?://|tg://)", url, re.I):
+                        raise HTTPException(400, tr("آدرس لینک نامعتبر است."))
+                    fields["url"] = url
+                if btn.custom_content is not None:
+                    current = db.cm_get(custom_id) or {}
+                    parts = current.get("parts") or []
+                    # Keep media parts; replace only text content.
+                    media = [p for p in parts if p.get("type") != "text"]
+                    content = btn.custom_content.strip()
+                    if len(content) > 4000:
+                        raise HTTPException(400, tr("متن پیام حداکثر ۴۰۰۰ نویسه باشد."))
+                    if content:
+                        media.insert(0, {"type": "text", "text": content, "entities": []})
+                    fields["parts"] = media
+                db.cm_update(custom_id, **fields)
+            except (ValueError, TypeError):
+                pass
+            continue
         meta = MENU_BUTTON_META.get(btn.key)
         if not meta:
             continue
@@ -9131,7 +9197,8 @@ class MenuOrderBody(BaseModel):
 
 @app.post("/api/settings/menu-order")
 def api_menu_order_set(body: MenuOrderBody, admin=Depends(require_permission("settings"))):
-    db.set_menu_order(body.order)
+    db.set_menu_order([k for k in body.order if not str(k).startswith("custom_menu:")])
+    db.cm_set_order([str(k).split(":", 1)[1] for k in body.order if str(k).startswith("custom_menu:")])
     _apply_menu_button_toggles(body.buttons)
     db.log_admin_action(admin["id"], "menu_order_change", f"ترتیب منوی ربات تغییر کرد (پنل وب - {admin['username']})", "setting", "menu_order")
     return {"ok": True}
