@@ -404,7 +404,8 @@ main::-webkit-scrollbar-thumb { background: var(--glass-brd); border-radius: 4px
 .cat-frame.loaded img { opacity: 1; }
 .cat-frame.failed { display: none; }
 .cat-frame-thumb { width: 52px; height: 52px; border-radius: 14px; }
-.cat-frame-hero { width: 100%; aspect-ratio: 16 / 9; border-radius: var(--radius-lg); margin-bottom: 12px; }
+.cat-frame-hero { width: 100%; height: auto; border-radius: var(--radius-lg); margin-bottom: 12px; }
+.cat-frame-hero img { height: auto; object-fit: contain; }
 
 /* ===================================================================
    Filter chips (تب سرویس‌ها)
