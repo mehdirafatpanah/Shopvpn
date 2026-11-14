@@ -563,9 +563,46 @@ function appendAIChatMessage(m) {
   box.scrollTop = box.scrollHeight;
 }
 
+let chatMetaState = { status: "open", ref_kind: null, ref_id: null, ref_label: "" };
+let chatMetaServices = [];
+
+function renderChatMeta() {
+  const meta = document.getElementById("chat-meta");
+  if (!meta) return;
+  const closed = chatMetaState.status === "closed";
+  const current = chatMetaState.ref_kind && chatMetaState.ref_id ? `${chatMetaState.ref_kind}:${chatMetaState.ref_id}` : "";
+  meta.innerHTML = `
+    ${closed ? `<div class="card" style="margin-bottom:10px"><p class="hint-text" style="margin:0 0 8px">🔒 این گفتگو بسته شده است. با ارسال پیام جدید یا دکمه‌ی زیر دوباره باز می‌شود.</p><button class="btn small" id="chat-reopen-btn" style="width:auto">🔓 باز کردن مجدد گفتگو</button></div>` : ""}
+    ${chatMetaServices.length ? `<select class="input" id="chat-service" style="margin-bottom:8px;direction:rtl;font-family:var(--font-body)">
+      <option value="">📦 سرویس مرتبط با سؤال (اختیاری)</option>
+      ${chatMetaServices.map((sv) => `<option value="${sv.kind}:${sv.id}" ${current === `${sv.kind}:${sv.id}` ? "selected" : ""}>${escHtml(sv.label)}</option>`).join("")}
+    </select>` : ""}
+    ${closed ? "" : `<button class="btn outline small" id="chat-close-btn" style="width:auto;margin-bottom:8px">🔒 بستن گفتگو</button>`}
+  `;
+  const reopen = document.getElementById("chat-reopen-btn");
+  if (reopen) reopen.onclick = async () => {
+    try { await api("/api/support/reopen", { method: "POST" }); chatMetaState.status = "open"; renderChatMeta(); } catch (e) { notify(e.message); }
+  };
+  const closeBtn = document.getElementById("chat-close-btn");
+  if (closeBtn) closeBtn.onclick = async () => {
+    if (!confirm("این گفتگو بسته شود؟ هر زمان پیام جدیدی بدهی دوباره باز می‌شود.")) return;
+    try { await api("/api/support/close", { method: "POST" }); chatMetaState.status = "closed"; renderChatMeta(); } catch (e) { notify(e.message); }
+  };
+}
+
+async function loadChatMeta() {
+  try {
+    const [st, services] = await Promise.all([api("/api/support/state"), api("/api/support/services")]);
+    chatMetaState = st;
+    chatMetaServices = services || [];
+  } catch (e) { return; }
+  renderChatMeta();
+}
+
 function renderSupportChat() {
   const body = document.getElementById("support-section-body");
   body.innerHTML = `
+    <div id="chat-meta"></div>
     <div class="chat-wrap">
       <div class="chat-messages" id="chat-messages">${skeleton(2)}</div>
       <form class="chat-input-row" id="chat-form">
@@ -585,12 +622,21 @@ function renderSupportChat() {
     if (!text) return;
     input.value = "";
     appendChatMessage({ sender: "user", message: text, created_at: new Date().toISOString() }, true);
+    const payload = { message: text };
+    const svcSel = document.getElementById("chat-service");
+    if (svcSel && svcSel.value) {
+      const [kind, id] = svcSel.value.split(":");
+      payload.service_kind = kind;
+      payload.service_id = Number(id);
+    }
     try {
-      await api("/api/support/messages", { method: "POST", body: JSON.stringify({ message: text }) });
+      await api("/api/support/messages", { method: "POST", body: JSON.stringify(payload) });
+      if (chatMetaState.status === "closed") { chatMetaState.status = "open"; renderChatMeta(); }
     } catch (e2) {
       notify("خطا: " + e2.message);
     }
   };
+  loadChatMeta();
 
   supportLastId = 0;
   document.getElementById("chat-messages").innerHTML = "";
@@ -658,6 +704,8 @@ async function renderTicketsList(body) {
     </div>
     <button class="btn" id="new-ticket-btn">🎫 ثبت تیکت جدید</button>
     <div class="card" id="new-ticket-form" style="display:none;margin-top:12px">
+      <select class="input" id="new-ticket-dept" style="display:none;margin-bottom:8px;direction:rtl;font-family:var(--font-body)"></select>
+      <select class="input" id="new-ticket-service" style="display:none;margin-bottom:8px;direction:rtl;font-family:var(--font-body)"></select>
       <input class="input" id="new-ticket-subject" type="text" placeholder="موضوع تیکت" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:8px" />
       <textarea class="input" id="new-ticket-message" rows="4" placeholder="توضیح مشکل یا سوال خود را بنویس..." style="direction:rtl;text-align:right;font-family:var(--font-body)"></textarea>
       <button class="btn" id="new-ticket-submit" style="margin-top:8px">ارسال تیکت</button>
@@ -669,15 +717,39 @@ async function renderTicketsList(body) {
       renderTicketsSection();
     };
   });
-  document.getElementById("new-ticket-btn").onclick = () => {
+  document.getElementById("new-ticket-btn").onclick = async () => {
     document.getElementById("new-ticket-form").style.display = "";
+    // دسته‌بندی‌ها (قابل ویرایش از پنل وب) و سرویس‌های خریداری‌شده برای اشاره‌ی اختیاری
+    try {
+      const [deps, services] = await Promise.all([api("/api/tickets/departments"), api("/api/support/services")]);
+      const deptSel = document.getElementById("new-ticket-dept");
+      if (deptSel && deps.length) {
+        deptSel.innerHTML = deps.map((d) => `<option value="${d.id}">🧩 ${escHtml(d.name)}</option>`).join("");
+        deptSel.style.display = "";
+      }
+      const svcSel = document.getElementById("new-ticket-service");
+      if (svcSel && services.length) {
+        svcSel.innerHTML = `<option value="">📦 سرویس مرتبط (اختیاری)</option>` +
+          services.map((sv) => `<option value="${sv.kind}:${sv.id}">${escHtml(sv.label)}</option>`).join("");
+        svcSel.style.display = "";
+      }
+    } catch (e) { /* فرم بدون این گزینه‌ها هم کار می‌کند */ }
   };
   document.getElementById("new-ticket-submit").onclick = async () => {
     const subject = document.getElementById("new-ticket-subject").value.trim();
     const message = document.getElementById("new-ticket-message").value.trim();
     if (!subject || !message) { notify("موضوع و متن پیام الزامی است."); return; }
+    const payload = { subject, message };
+    const deptSel = document.getElementById("new-ticket-dept");
+    if (deptSel && deptSel.style.display !== "none" && deptSel.value) payload.department_id = Number(deptSel.value);
+    const svcSel = document.getElementById("new-ticket-service");
+    if (svcSel && svcSel.value) {
+      const [kind, id] = svcSel.value.split(":");
+      payload.service_kind = kind;
+      payload.service_id = Number(id);
+    }
     try {
-      const t = await api("/api/tickets", { method: "POST", body: JSON.stringify({ subject, message }) });
+      const t = await api("/api/tickets", { method: "POST", body: JSON.stringify(payload) });
       tg.HapticFeedback.notificationOccurred("success");
       ticketView = { level: "thread", ticketId: t.id };
       renderTicketsSection();
@@ -696,10 +768,12 @@ async function renderTicketThread(body) {
   body.innerHTML = `
     <button class="btn outline small" id="back-to-tickets" style="width:auto;margin-bottom:12px">→ بازگشت به لیست تیکت‌ها</button>
     <div class="eyebrow" style="margin-top:0">${ticket.subject} <span class="hint-text" style="margin-right:6px">${TICKET_STATUS_LABEL[ticket.status] || ""}</span></div>
+    ${ticket.ref_label ? `<div class="hint-text" style="margin-top:0">📦 سرویس: ${escHtml(ticket.ref_label)}</div>` : ""}
     <div class="chat-wrap">
       <div class="chat-messages" id="ticket-messages"></div>
       ${closed
-        ? `<p class="hint-text" style="text-align:center">این تیکت بسته شده است.</p>`
+        ? `<p class="hint-text" style="text-align:center">این تیکت بسته شده است.</p>
+           <button class="btn small" id="reopen-ticket-btn" style="width:auto;margin:0 auto">🔓 باز کردن مجدد تیکت</button>`
         : `<form class="chat-input-row" id="ticket-form">
             <input type="text" id="ticket-input" placeholder="پاسخ خود را بنویسید..." autocomplete="off" />
             <button type="submit" class="chat-send-btn" aria-label="ارسال">
@@ -727,6 +801,14 @@ async function renderTicketThread(body) {
     box.appendChild(bubble);
   });
   box.scrollTop = box.scrollHeight;
+
+  const reopenBtn = document.getElementById("reopen-ticket-btn");
+  if (reopenBtn) reopenBtn.onclick = async () => {
+    try {
+      await api(`/api/tickets/${ticketId}/reopen`, { method: "POST" });
+      renderTicketsSection();
+    } catch (e) { notify(e.message); }
+  };
 
   if (!closed) {
     const form = document.getElementById("ticket-form");
@@ -882,10 +964,45 @@ async function renderResellerHome() {
   } catch (e) { content.innerHTML = errorState(e.message); }
 }
 
+function homeTileIcon(icons, key, fallbackHtml) {
+  const v = icons && icons[key];
+  if (!v) return fallbackHtml;
+  if (v.startsWith("data:image/")) return `<img class="q-img" src="${escHtml(v)}" alt="" />`;
+  return `<span class="q-emoji">${escHtml(v)}</span>`;
+}
+
+function openHomeLink(url) {
+  if (/^https?:\/\/(t|telegram)\.me\//i.test(url) && typeof tg.openTelegramLink === "function") {
+    tg.openTelegramLink(url);
+  } else if (/^https?:\/\//i.test(url) && typeof tg.openLink === "function") {
+    tg.openLink(url);
+  } else {
+    window.open(url, "_blank");
+  }
+}
+
+async function openCustomHomeButton(el) {
+  if (el.dataset.busy) return;
+  el.dataset.busy = "1";
+  try {
+    const r = await api(`/api/custom-buttons/${el.dataset.cm}/click`, { method: "POST" });
+    if (r.kind === "url") {
+      openHomeLink(r.url);
+    } else {
+      tg.HapticFeedback.notificationOccurred("success");
+      notify("پیام در چت ربات برایتان ارسال شد.");
+    }
+  } catch (e) {
+    notify(e.message);
+  } finally {
+    delete el.dataset.busy;
+  }
+}
+
 async function renderHome() {
   content.innerHTML = skeleton(3);
   try {
-    const [me, orders, customConfigs, expiring, referral, customBanners, testStatus] = await Promise.all([
+    const [me, orders, customConfigs, expiring, referral, customBanners, testStatus, homeCfg] = await Promise.all([
       api("/api/me"),
       api("/api/orders"),
       api("/api/custom-configs").catch(() => []),
@@ -893,7 +1010,39 @@ async function renderHome() {
       api("/api/referral").catch(() => null),
       api("/api/banners").catch(() => []),
       api("/api/test-config").catch(() => null),
+      api("/api/home-config").catch(() => ({ icons: {}, buttons: [] })),
     ]);
+    const homeIcons = (homeCfg && homeCfg.icons) || {};
+    const homeCustomBtns = (homeCfg && homeCfg.buttons) || [];
+    const homeTileHtml = {
+      store: `<div class="quick-item" data-nav="store"><span class="q-label">خرید سرویس جدید</span><span class="q-ic">${homeTileIcon(homeIcons, "store", ICON_STORE)}</span></div>`,
+      services: `<div class="quick-item" data-nav="services"><span class="q-label">سرویس‌های من</span><span class="q-ic">${homeTileIcon(homeIcons, "services", ICON_SHIELD)}</span></div>`,
+      wallet: `<div class="quick-item" data-nav="wallet"><span class="q-label">کیف پول</span><span class="q-ic">${homeTileIcon(homeIcons, "wallet", ICON_WALLET)}</span></div>`,
+      profile: `<div class="quick-item" data-nav="profile"><span class="q-label">حساب کاربری</span><span class="q-ic">${homeTileIcon(homeIcons, "profile", ICON_PROFILE)}</span></div>`,
+      test: canClaimTest ? `<div class="quick-item full" data-nav="test"><span class="q-label">🧪 دریافت اشتراک تست رایگان</span><span class="q-ic" style="font-size:20px">${homeTileIcon(homeIcons, "test", "🎁")}</span></div>` : "",
+      support: `<div class="quick-item full" data-nav="support"><span class="q-label">پشتیبانی</span><span class="q-ic">${homeTileIcon(homeIcons, "support", ICON_SUPPORT)}</span></div>`,
+      reseller: me.is_reseller_owner ? `<div class="quick-item full" data-nav="reseller"><span class="q-label">${me.reseller?.icon || '🥇'} مرکز نمایندگی ${escHtml(me.reseller?.title || 'نمایندگی')}</span><span class="q-ic">${homeTileIcon(homeIcons, "reseller", "🛡️")}</span></div>` : "",
+    };
+    homeCustomBtns.forEach((b, i) => {
+      homeTileHtml["cm:" + b.id] = `<div class="quick-item${homeCustomBtns.length % 2 === 1 && i === homeCustomBtns.length - 1 ? " full" : ""}" data-cm="${b.id}"><span class="q-label">${escHtml(b.title)}</span><span class="q-ic">${homeTileIcon(homeIcons, "cm:" + b.id, b.kind === "url" ? "🔗" : "💬")}</span></div>`;
+    });
+    // ترتیب کاشی‌ها از چیدمان منوی اصلی ربات می‌آید (قابل تغییر در ربات، پنل وب و ادمین مینی‌اپ)
+    const homeTileOrder = (homeCfg && Array.isArray(homeCfg.order) && homeCfg.order.length)
+      ? homeCfg.order : ["store", "services", "wallet", "profile", "test", "support", "reseller", ...homeCustomBtns.map((b) => "cm:" + b.id)];
+    let homeTilesHtml = homeTileOrder.map((k) => homeTileHtml[k] || "").join("");
+    // چیدمان ردیفی سفارشی ربات: هر ردیف دوتا‌دوتا چیده می‌شود و کاشی تنها تمام‌عرض می‌شود
+    if (homeCfg && Array.isArray(homeCfg.rows) && homeCfg.rows.length) {
+      const setFull = (html, full) => html.replace(/class="quick-item(?: full)?"/, `class="quick-item${full ? " full" : ""}"`);
+      homeTilesHtml = homeCfg.rows.map((row) => {
+        const present = row.filter((k) => homeTileHtml[k]);
+        const out = [];
+        for (let i = 0; i < present.length; i += 2) {
+          const pair = present.slice(i, i + 2);
+          pair.forEach((k) => out.push(setFull(homeTileHtml[k], pair.length === 1)));
+        }
+        return out.join("");
+      }).join("");
+    }
     // دکمه‌ی دریافت اشتراک تست فقط وقتی نمایش داده می‌شود که قابل دریافت باشد
     // (فعال، هنوز دریافت نشده، و پلن یا موجودی تست وجود دارد).
     const canClaimTest = !!(testStatus && testStatus.enabled && !testStatus.used &&
@@ -934,13 +1083,7 @@ async function renderHome() {
 
       <div class="eyebrow">دسترسی سریع</div>
       <div class="quick-grid">
-        <div class="quick-item" data-nav="store"><span class="q-label">خرید سرویس جدید</span><span class="q-ic">${ICON_STORE}</span></div>
-        <div class="quick-item" data-nav="services"><span class="q-label">سرویس‌های من</span><span class="q-ic">${ICON_SHIELD}</span></div>
-        <div class="quick-item" data-nav="wallet"><span class="q-label">کیف پول</span><span class="q-ic">${ICON_WALLET}</span></div>
-        <div class="quick-item" data-nav="profile"><span class="q-label">حساب کاربری</span><span class="q-ic">${ICON_PROFILE}</span></div>
-        ${canClaimTest ? `<div class="quick-item full" data-nav="test"><span class="q-label">🧪 دریافت اشتراک تست رایگان</span><span class="q-ic" style="font-size:20px;display:flex;align-items:center;justify-content:center">🎁</span></div>` : ""}
-        <div class="quick-item full" data-nav="support"><span class="q-label">پشتیبانی</span><span class="q-ic">${ICON_SUPPORT}</span></div>
-        ${me.is_reseller_owner ? `<div class="quick-item full" data-nav="reseller"><span class="q-label">${me.reseller?.icon || '🥇'} مرکز نمایندگی ${escHtml(me.reseller?.title || 'نمایندگی')}</span><span class="q-ic">🛡️</span></div>` : ''}
+        ${homeTilesHtml}
       </div>
 
       <div class="eyebrow">سرویس‌های من</div>
@@ -952,6 +1095,9 @@ async function renderHome() {
     `;
     content.querySelectorAll(".quick-item[data-nav]").forEach((el) => {
       el.onclick = () => switchTab(el.dataset.nav);
+    });
+    content.querySelectorAll(".quick-item[data-cm]").forEach((el) => {
+      el.onclick = () => openCustomHomeButton(el);
     });
     wirePromoCarousel(content);
     content.querySelectorAll("[data-svc-row]").forEach((el) => {
@@ -2378,6 +2524,32 @@ function renderCardAutoPendingState(box, invoice, successText, checkCardAutoStat
 // ---------------------------------------------------------------------------
 // تب فروشگاه
 // ---------------------------------------------------------------------------‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
+// عکس دسته/زیردسته: چون مسیر عکس نیاز به احراز هویت دارد، با fetch (هدر X-Init-Data) به‌صورت blob
+// گرفته و در حافظه کش می‌شود تا با رفت‌وآمد بین دسته‌ها دوباره دانلود نشود.
+const _catImgCache = {};
+async function loadCategoryImage(catId) {
+  const key = String(catId);
+  if (_catImgCache[key] === undefined) {
+    _catImgCache[key] = (async () => {
+      try {
+        const res = await fetch(withTenant(`/api/catalog/categories/${catId}/image`), { headers: { "X-Init-Data": initData } });
+        if (!res.ok) return null;
+        return URL.createObjectURL(await res.blob());
+      } catch (e) { return null; }
+    })();
+  }
+  return _catImgCache[key];
+}
+
+function hydrateCategoryImages(root) {
+  root.querySelectorAll("img[data-cat-img]").forEach(async (img) => {
+    const url = await loadCategoryImage(img.dataset.catImg);
+    const frame = img.closest(".cat-frame");
+    if (url) { img.src = url; img.onload = () => frame && frame.classList.add("loaded"); }
+    else if (frame) { frame.classList.add("failed"); }
+  });
+}
+
 let storeCategoryView = null; // null = دسته‌های اصلی، عدد = دسته‌ی انتخاب‌شده
 
 async function renderStore() {
@@ -2423,18 +2595,21 @@ async function renderStore() {
     });
     const products = selected ? selected.products : [];
     const title = selected ? selected.name : "یک دسته را انتخاب کنید";
-    const selectedDescription = selected && selected.description ? `<div class="hint-text" style="margin:4px 0 12px">${escHtml(selected.description)}</div>` : "";
+    const selectedDescription = selected && selected.description ? `<div class="hint-text" style="margin:4px 0 12px;white-space:pre-line;word-break:break-word">${escHtml(selected.description)}</div>` : "";
     const parentOfSelected = selected && selected.parent_id != null
       ? categories.find((c) => Number(c.id) === Number(selected.parent_id)) : null;
 
     content.innerHTML = `
       ${selected ? `<div class="list-row" id="store-back-row"><div class="list-row-main"><span class="list-row-ic">‹</span><div class="list-row-text"><span class="list-row-title">بازگشت ${parentOfSelected ? "به " + parentOfSelected.name : "به دسته‌بندی‌ها"}</span></div></div></div>` : `<div class="eyebrow">${title}</div>${buyGuideRow}${customConfigRow}`}
-      ${selected ? `<div class="eyebrow">${title}</div>${selectedDescription}` : ""}
+      ${selected && selected.has_image ? `<div class="cat-frame cat-frame-hero"><img data-cat-img="${selected.id}" alt="${escHtml(title)}" /></div>` : ""}
+      ${selected ? `<div class="eyebrow">${escHtml(title)}</div>${selectedDescription}` : ""}
       ${visibleCategories.map((c) => `
         <div class="list-row" data-cat="${c.id}" style="${c.button_color === "primary" ? "background:#2563eb;color:#fff;border-color:#2563eb;" : c.button_color === "success" ? "background:#16a34a;color:#fff;border-color:#16a34a;" : c.button_color === "danger" ? "background:#dc2626;color:#fff;border-color:#dc2626;" : ""}">
-          <div class="list-row-main"><div class="list-row-ic">🏬</div><div class="list-row-text">
-            <span class="list-row-title">${c.name}</span>
-            <span class="list-row-sub">${escHtml(c.description || (c.products.length + " محصول · " + categories.filter(x => Number(x.parent_id) === Number(c.id)).length + " زیردسته"))}</span>
+          <div class="list-row-main">${c.has_image
+            ? `<div class="cat-frame cat-frame-thumb"><img data-cat-img="${c.id}" alt="" loading="lazy" /></div>`
+            : `<div class="list-row-ic">🏬</div>`}<div class="list-row-text">
+            <span class="list-row-title">${escHtml(c.name)}</span>
+            <span class="list-row-sub" style="${c.description ? "white-space:normal;word-break:break-word;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden" : ""}">${c.description ? escHtml(c.description.replace(/\s+/g, " ")) : `<span class="cat-count">${c.products.length} محصول · ${categories.filter(x => Number(x.parent_id) === Number(c.id)).length} زیردسته</span>`}</span>
           </div></div><span class="list-row-chev">‹</span>
         </div>`).join("")}
       ${products.length ? `<div class="card"><h3><span class="ic">▣</span>محصولات ${title}</h3>
@@ -2444,6 +2619,7 @@ async function renderStore() {
       ${selected && !visibleCategories.length && !products.length ? `<div class="state-msg">در این دسته محصولی ثبت نشده است.</div>` : ""}
     `;
 
+    hydrateCategoryImages(content);
     const ccRow = document.getElementById("custom-config-entry-row");
     if (ccRow) ccRow.onclick = renderCustomConfigBuilder;
     const bgRow = document.getElementById("buy-guide-entry-row");
@@ -3089,6 +3265,7 @@ const ADMIN_TABS = [
   { key: "buttons", label: "🔘 دکمه‌های بات", fullOnly: true, seniorOnly: true },
   { key: "branding", label: "🎨 برندینگ", fullOnly: true, seniorOnly: true },
   { key: "banners", label: "🖼 بنرها", fullOnly: true, seniorOnly: true },
+  { key: "homeicons", label: "🏠 آیکون‌های خانه", fullOnly: true, seniorOnly: true },
   { key: "adminlog", label: "📜 لاگ ادمین", fullOnly: true, seniorOnly: true },
   { key: "backup", label: "🗄 بکاپ", fullOnly: true, ownerOnly: true },
 ];
@@ -3102,7 +3279,7 @@ const ADMIN_TAB_GROUPS = [
   { key: "catalog_panels", label: "📦 محصولات و پنل‌ها", tabs: ["catalog", "panels", "ssh"] },
   { key: "people", label: "👥 کاربران و نمایندگی", tabs: ["users", "resellers"] },
   { key: "support", label: "💬 پشتیبانی", tabs: ["livechat", "tickets"] },
-  { key: "appearance", label: "🎨 منو و برندینگ", tabs: ["menu", "buttons", "branding", "banners"] },
+  { key: "appearance", label: "🎨 منو و برندینگ", tabs: ["menu", "buttons", "branding", "banners", "homeicons"] },
   { key: "settings_group", label: "⚙️ تنظیمات", tabs: ["settings"] },
   { key: "system", label: "🗂 سیستم", tabs: ["adminlog", "backup"] },
 ];
@@ -3207,6 +3384,7 @@ async function renderAdmin() {
   else if (adminSection === "buttons") await renderAdminButtonsSection();
   else if (adminSection === "branding") await renderAdminBrandingSection();
   else if (adminSection === "banners") await renderAdminBannersSection();
+  else if (adminSection === "homeicons") await renderAdminHomeIconsSection();
   else if (adminSection === "catalog") await renderAdminCatalogSection();
   else if (adminSection === "panels") await renderAdminPanelsSection();
   else if (adminSection === "ssh") await renderAdminSshSection();
@@ -3946,6 +4124,102 @@ async function renderAdminBrandingSection() {
         await api("/api/admin/settings/theme", { method: "POST", body: JSON.stringify({ theme }) });
         tg.HapticFeedback.notificationOccurred("success");
         notify("تم ذخیره شد. برای دیدن تغییر، صفحه را دوباره باز کن.");
+      } catch (e) { errBox.textContent = e.message; }
+    };
+  } catch (e) {
+    body.innerHTML = errorState(e.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// تب مدیریت > آیکون‌های خانه (دکمه‌های دسترسی سریع + کلیدهای سفارشی بات)
+// ---------------------------------------------------------------------------
+let adminHomeIconItems = [];
+
+function adminHomeIconPreview(icon) {
+  if (!icon) return `<span class="hint-text" style="margin:0">پیش‌فرض</span>`;
+  if (icon.startsWith("data:image/")) return `<img src="${escHtml(icon)}" style="width:32px;height:32px;object-fit:contain;border-radius:6px" />`;
+  return `<span style="font-size:24px;line-height:1">${escHtml(icon)}</span>`;
+}
+
+function collectHomeIconEdits() {
+  document.querySelectorAll("[data-hicon-text]").forEach((el) => {
+    const it = adminHomeIconItems.find((x) => x.key === el.dataset.hiconText);
+    if (it && !String(it.icon || "").startsWith("data:image/")) it.icon = el.value.trim();
+  });
+}
+
+function renderAdminHomeIconList() {
+  const list = document.getElementById("home-icon-list");
+  list.innerHTML = adminHomeIconItems.map((it) => {
+    const isImg = String(it.icon || "").startsWith("data:image/");
+    return `
+      <div class="card" style="margin-bottom:8px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
+          <b>${escHtml(it.label)}${it.custom ? " 🔗" : ""}</b>
+          <span>${adminHomeIconPreview(it.icon)}</span>
+        </div>
+        ${isImg ? "" : `<input class="input" type="text" maxlength="16" placeholder="ایموجی دلخواه، مثلاً 🔥" data-hicon-text="${escHtml(it.key)}" value="${escHtml(it.icon || "")}" style="margin-bottom:8px" />`}
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <label class="btn small outline" style="cursor:pointer;margin:0">
+            🖼 آپلود تصویر
+            <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" data-hicon-file="${escHtml(it.key)}" style="display:none" />
+          </label>
+          <button type="button" class="btn small outline danger" data-hicon-reset="${escHtml(it.key)}">↩️ پیش‌فرض</button>
+        </div>
+      </div>`;
+  }).join("");
+  list.querySelectorAll("[data-hicon-file]").forEach((input) => {
+    input.onchange = async () => {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      const fd = new FormData();
+      fd.append("photo", file);
+      try {
+        collectHomeIconEdits();
+        const res = await apiUpload("/api/admin/home-icons/upload", fd);
+        const it = adminHomeIconItems.find((x) => x.key === input.dataset.hiconFile);
+        if (it) it.icon = res.image;
+        renderAdminHomeIconList();
+      } catch (e) { notify(e.message); }
+    };
+  });
+  list.querySelectorAll("[data-hicon-reset]").forEach((btn) => {
+    btn.onclick = () => {
+      collectHomeIconEdits();
+      const it = adminHomeIconItems.find((x) => x.key === btn.dataset.hiconReset);
+      if (it) it.icon = "";
+      renderAdminHomeIconList();
+    };
+  });
+}
+
+async function renderAdminHomeIconsSection() {
+  const body = document.getElementById("admin-section-body");
+  body.innerHTML = skeleton(3);
+  try {
+    const res = await api("/api/admin/home-icons");
+    adminHomeIconItems = res.items;
+    body.innerHTML = `
+      <div class="card">
+        <div class="eyebrow" style="margin-top:0">🏠 آیکون دکمه‌های صفحه اصلی</div>
+        <p class="hint-text">برای هر دکمه یک ایموجی بنویس یا یک تصویر (حداکثر ۲۵۶ کیلوبایت) آپلود کن. کلیدهای سفارشی ساخته‌شده در بات (🔗) هم اینجا آیکون می‌گیرند.</p>
+        <div class="field-error" id="home-icon-error"></div>
+        <button class="btn" id="home-icon-save">💾 ذخیره آیکون‌ها</button>
+      </div>
+      <div id="home-icon-list"></div>
+    `;
+    renderAdminHomeIconList();
+    document.getElementById("home-icon-save").onclick = async () => {
+      const errBox = document.getElementById("home-icon-error");
+      errBox.textContent = "";
+      collectHomeIconEdits();
+      const icons = {};
+      adminHomeIconItems.forEach((it) => { if (it.icon) icons[it.key] = it.icon; });
+      try {
+        await api("/api/admin/home-icons", { method: "POST", body: JSON.stringify({ icons }) });
+        tg.HapticFeedback.notificationOccurred("success");
+        notify("آیکون‌ها ذخیره شد.");
       } catch (e) { errBox.textContent = e.message; }
     };
   } catch (e) {
@@ -5455,15 +5729,62 @@ async function renderAdminCatalogSection() {
   }
 }
 
+let adminCatEditId = null;
+
+function adminCatParentOptions(cats, selfId, selectedParent) {
+  const blocked = new Set();
+  if (selfId != null) {
+    blocked.add(Number(selfId));
+    let grew = true;
+    while (grew) {
+      grew = false;
+      cats.forEach((c) => {
+        if (c.parent_id != null && blocked.has(Number(c.parent_id)) && !blocked.has(Number(c.id))) {
+          blocked.add(Number(c.id));
+          grew = true;
+        }
+      });
+    }
+  }
+  return `<option value="">— بدون والد (دسته اصلی) —</option>` + cats
+    .filter((c) => !blocked.has(Number(c.id)))
+    .map((c) => `<option value="${c.id}" ${selectedParent != null && Number(selectedParent) === Number(c.id) ? "selected" : ""}>${escHtml(c.name)}</option>`)
+    .join("");
+}
+
 async function renderAdminCategories(body) {
   const cats = await api("/api/admin/categories");
+  const editing = adminCatEditId == null ? null : cats.find((c) => Number(c.id) === Number(adminCatEditId));
+  if (adminCatEditId != null && !editing) adminCatEditId = null;
   body.innerHTML = `
+    ${editing ? `<div class="card" id="cat-edit-card">
+      <div class="eyebrow" style="margin-top:0">✏️ ویرایش «${escHtml(editing.name)}»</div>
+      <label class="field-label">نام</label>
+      <input class="input" id="cat-edit-name" type="text" maxlength="60" value="${escHtml(editing.raw_name || "")}" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:8px" />
+      <label class="field-label">دسته والد (برای ساخت یا انتقال زیردسته)</label>
+      <select class="input" id="cat-edit-parent" style="margin-bottom:8px">${adminCatParentOptions(cats, editing.id, editing.parent_id)}</select>
+      <label class="field-label">توضیحات (خالی = بدون توضیح)</label>
+      <textarea class="input" id="cat-edit-desc" maxlength="2000" rows="4" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:8px">${escHtml(editing.description || "")}</textarea>
+      <label class="field-label">عکس دسته (در قاب فروشگاه نمایش داده می‌شود)</label>
+      <div class="cat-frame cat-frame-hero" id="cat-edit-img-frame" style="${editing.has_image ? "" : "display:none;"}max-width:320px"><img id="cat-edit-img" alt="" /></div>
+      <input type="file" id="cat-edit-img-file" accept="image/jpeg,image/png,image/webp" style="display:none" />
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <button class="btn small outline" id="cat-edit-img-pick" type="button">🖼 ${editing.has_image ? "تغییر عکس" : "انتخاب عکس"}</button>
+        ${editing.has_image ? `<button class="btn small outline danger" id="cat-edit-img-del" type="button">🗑 حذف عکس</button>` : ""}
+      </div>
+      <div class="field-error" id="cat-edit-img-error"></div>
+      <div class="field-error" id="cat-edit-error"></div>
+      <div style="display:flex;gap:8px">
+        <button class="btn" id="cat-edit-save">💾 ذخیره</button>
+        <button class="btn outline" id="cat-edit-cancel">انصراف</button>
+      </div>
+    </div>` : ""}
     <div class="card">
       ${cats.length === 0 ? `<div class="hint-text" style="margin:0">هنوز دسته‌بندی‌ای ثبت نشده.</div>` : cats.map((c) => `
         <div class="admin-list-row">
           <div class="admin-list-row-main" data-open-cat="${c.id}" data-cat-name="${(c.name || "").replace(/"/g, "&quot;")}">
-            <span>${c.name}</span>
-            <span class="hint-text" style="margin:0">${c.product_count} محصول ${c.is_active ? "" : "· غیرفعال"}${c.description ? " · " + escHtml(c.description) : ""}</span>
+            <span>${escHtml(c.name)}</span>
+            <span class="hint-text" style="margin:0;white-space:normal;word-break:break-word"><span class="cat-count">${c.product_count} محصول</span> ${c.is_active ? "" : "· غیرفعال"}${c.has_image ? " · 🖼" : ""}${c.description ? " · " + escHtml(c.description.length > 80 ? c.description.slice(0, 80) + "…" : c.description) : ""}</span>
           </div>
           <div class="admin-list-row-actions">
             <select aria-label="رنگ دسته‌بندی" title="رنگ اختصاصی دسته‌بندی" data-color-cat="${c.id}" class="input" style="width:94px;padding:4px;font-size:12px">
@@ -5482,7 +5803,8 @@ async function renderAdminCategories(body) {
     <div class="card">
       <div class="eyebrow" style="margin-top:0">افزودن دسته‌بندی جدید</div>
       <input class="input" id="new-cat-name" type="text" placeholder="نام دسته‌بندی" style="direction:rtl;text-align:right;font-family:var(--font-body)" />
-      <textarea class="input" id="new-cat-description" placeholder="توضیحات دسته‌بندی (اختیاری)" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-top:8px"></textarea>
+      <select class="input" id="new-cat-parent" style="margin-top:8px">${adminCatParentOptions(cats, null, null)}</select>
+      <textarea class="input" id="new-cat-description" maxlength="2000" placeholder="توضیحات دسته‌بندی (اختیاری)" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-top:8px"></textarea>
       <button class="btn" id="new-cat-save" style="margin-top:8px">➕ افزودن</button>
     </div>
   `;
@@ -5503,18 +5825,73 @@ async function renderAdminCategories(body) {
     };
   });
   body.querySelectorAll("[data-edit-cat]").forEach((el) => {
-    el.onclick = async () => {
-      const cat = cats.find((c) => c.id === Number(el.dataset.editCat));
-      const name = prompt("نام جدید دسته‌بندی:", cat.name);
-      if (!name || !name.trim()) return;
-      const description = prompt("توضیحات دسته‌بندی (خالی = بدون توضیح):", cat.description || "");
-      if (description === null) return;
-      try {
-        await api(`/api/admin/categories/${cat.id}`, { method: "PATCH", body: JSON.stringify({ name: name.trim(), description: description.trim() }) });
-        renderAdmin();
-      } catch (e) { notify(e.message); }
+    el.onclick = () => {
+      adminCatEditId = Number(el.dataset.editCat);
+      renderAdmin();
     };
   });
+  const editCancel = document.getElementById("cat-edit-cancel");
+  if (editCancel) editCancel.onclick = () => { adminCatEditId = null; renderAdmin(); };
+  if (editing) {
+    const imgErr = document.getElementById("cat-edit-img-error");
+    const imgEl = document.getElementById("cat-edit-img");
+    const imgFrame = document.getElementById("cat-edit-img-frame");
+    if (editing.has_image && imgEl) {
+      fetch(withTenant(`/api/admin/categories/${editing.id}/image`), { headers: { "X-Init-Data": initData } })
+        .then((r) => (r.ok ? r.blob() : null))
+        .then((b) => { if (b) { imgEl.src = URL.createObjectURL(b); imgFrame.classList.add("loaded"); } else { imgFrame.style.display = "none"; } })
+        .catch(() => { imgFrame.style.display = "none"; });
+    }
+    const pick = document.getElementById("cat-edit-img-pick");
+    const fileInput = document.getElementById("cat-edit-img-file");
+    if (pick) pick.onclick = () => fileInput.click();
+    if (fileInput) fileInput.onchange = async () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) return;
+      imgErr.textContent = "";
+      if (file.size > 10 * 1024 * 1024) { imgErr.textContent = "حجم عکس نباید بیشتر از ۱۰ مگابایت باشد."; return; }
+      pick.disabled = true; pick.textContent = "در حال آپلود…";
+      try {
+        const fd = new FormData();
+        fd.append("photo", file);
+        await apiUpload(`/api/admin/categories/${editing.id}/image`, fd);
+        delete _catImgCache[String(editing.id)];
+        renderAdmin();
+      } catch (e) {
+        imgErr.textContent = e.message || "آپلود ناموفق بود.";
+        pick.disabled = false; pick.textContent = "🖼 انتخاب عکس";
+      }
+    };
+    const delBtn = document.getElementById("cat-edit-img-del");
+    if (delBtn) delBtn.onclick = async () => {
+      try {
+        await api(`/api/admin/categories/${editing.id}/image`, { method: "DELETE" });
+        delete _catImgCache[String(editing.id)];
+        renderAdmin();
+      } catch (e) { imgErr.textContent = e.message || "حذف ناموفق بود."; }
+    };
+  }
+  const editSave = document.getElementById("cat-edit-save");
+  if (editSave) editSave.onclick = async () => {
+    const errBox = document.getElementById("cat-edit-error");
+    errBox.textContent = "";
+    const name = document.getElementById("cat-edit-name").value.trim();
+    if (!name) { errBox.textContent = "نام دسته‌بندی نمی‌تواند خالی باشد."; return; }
+    const parentVal = document.getElementById("cat-edit-parent").value;
+    try {
+      await api(`/api/admin/categories/${editing.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          name,
+          parent_id: parentVal ? Number(parentVal) : null,
+          description: document.getElementById("cat-edit-desc").value.trim(),
+        }),
+      });
+      adminCatEditId = null;
+      tg.HapticFeedback.notificationOccurred("success");
+      renderAdmin();
+    } catch (e) { errBox.textContent = e.message; }
+  };
   body.querySelectorAll("[data-toggle-cat]").forEach((el) => {
     el.onclick = async () => {
       try {
@@ -5536,7 +5913,7 @@ async function renderAdminCategories(body) {
     const input = document.getElementById("new-cat-name");
     if (!input.value.trim()) return;
     try {
-      await api("/api/admin/categories", { method: "POST", body: JSON.stringify({ name: input.value.trim(), description: (document.getElementById("new-cat-description")?.value || "").trim() }) });
+      await api("/api/admin/categories", { method: "POST", body: JSON.stringify({ name: input.value.trim(), parent_id: Number(document.getElementById("new-cat-parent")?.value) || null, description: (document.getElementById("new-cat-description")?.value || "").trim() }) });
       renderAdmin();
     } catch (e) { notify(e.message); }
   };

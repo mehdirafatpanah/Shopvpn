@@ -516,6 +516,7 @@
     "فروشگاه":"Store",
     "پروفایل":"Profile",
     "کپی شد.":"Copied.",
+    "پیام در چت ربات برایتان ارسال شد.":"The message was sent to you in the bot chat.",
     "فعال تا":"Active until",
     "کارت‌ها":"Cards",
     "بازگشت":"Back",

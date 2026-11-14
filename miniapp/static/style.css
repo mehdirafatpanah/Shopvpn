@@ -281,6 +281,8 @@ main::-webkit-scrollbar-thumb { background: var(--glass-brd); border-radius: 4px
   color: var(--pink);
 }
 .quick-item .q-ic svg { width: 100%; height: 100%; }
+.quick-item .q-ic .q-img { width: 100%; height: 100%; object-fit: contain; border-radius: 6px; }
+.quick-item .q-ic .q-emoji { font-size: 20px; line-height: 1; }
 .quick-item.full { grid-column: 1 / -1; }
 
 /* ===================================================================
@@ -385,6 +387,24 @@ main::-webkit-scrollbar-thumb { background: var(--glass-brd); border-radius: 4px
 .list-row-title { font-size: 13.5px; font-weight: 700; color: var(--text); }
 .list-row-sub { font-size: 11.5px; color: var(--text-muted); }
 .list-row-chev { color: var(--text-muted); font-size: 16px; flex-shrink: 0; }
+
+/* رنگ فونت «تعداد محصولات/زیردسته» در کارت دسته‌ها (تغییر رنگ فقط از همین متغیر) */
+:root { --cat-count-color: #0ea5e9; }
+.cat-count { color: var(--cat-count-color); font-weight: 700; }
+.list-row[style*="color:#fff"] .cat-count { color: #fff; opacity: .92; }
+
+/* قاب عکس دسته و زیردسته */
+.cat-frame {
+  position: relative; overflow: hidden; flex-shrink: 0;
+  border: 2px solid var(--glass-brd);
+  background: linear-gradient(135deg, var(--pink), var(--violet));
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .18);
+}
+.cat-frame img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; transition: opacity .25s ease; }
+.cat-frame.loaded img { opacity: 1; }
+.cat-frame.failed { display: none; }
+.cat-frame-thumb { width: 52px; height: 52px; border-radius: 14px; }
+.cat-frame-hero { width: 100%; aspect-ratio: 16 / 9; border-radius: var(--radius-lg); margin-bottom: 12px; }
 
 /* ===================================================================
    Filter chips (تب سرویس‌ها)
