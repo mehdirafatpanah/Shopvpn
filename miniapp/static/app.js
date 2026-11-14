@@ -1014,6 +1014,10 @@ async function renderHome() {
     ]);
     const homeIcons = (homeCfg && homeCfg.icons) || {};
     const homeCustomBtns = (homeCfg && homeCfg.buttons) || [];
+    // دکمه‌ی دریافت اشتراک تست فقط وقتی نمایش داده می‌شود که قابل دریافت باشد
+    // (فعال، هنوز دریافت نشده، و پلن یا موجودی تست وجود دارد).
+    const canClaimTest = !!(testStatus && testStatus.enabled && !testStatus.used &&
+      ((testStatus.plans && testStatus.plans.length) || testStatus.available > 0));
     const homeTileHtml = {
       store: `<div class="quick-item" data-nav="store"><span class="q-label">خرید سرویس جدید</span><span class="q-ic">${homeTileIcon(homeIcons, "store", ICON_STORE)}</span></div>`,
       services: `<div class="quick-item" data-nav="services"><span class="q-label">سرویس‌های من</span><span class="q-ic">${homeTileIcon(homeIcons, "services", ICON_SHIELD)}</span></div>`,
@@ -1043,10 +1047,6 @@ async function renderHome() {
         return out.join("");
       }).join("");
     }
-    // دکمه‌ی دریافت اشتراک تست فقط وقتی نمایش داده می‌شود که قابل دریافت باشد
-    // (فعال، هنوز دریافت نشده، و پلن یا موجودی تست وجود دارد).
-    const canClaimTest = !!(testStatus && testStatus.enabled && !testStatus.used &&
-      ((testStatus.plans && testStatus.plans.length) || testStatus.available > 0));
     setHeaderWallet(me.wallet_credit);
     const active = orders.filter((o) => o.status === "approved" && !o.is_custom_config);
     const customCards = customConfigs.map((c) => ({
