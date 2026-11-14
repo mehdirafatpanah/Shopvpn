@@ -97,6 +97,43 @@ async def send_photo(
         return False
 
 
+async def upload_photo_get_file_id(
+    bot_token: str,
+    chat_id: int,
+    photo_bytes: bytes,
+    filename: str = "photo.jpg",
+    content_type: str = "image/jpeg",
+) -> str | None:
+    """عکس را یک‌بار برای ادمین می‌فرستد تا file_id تلگرام آن گرفته شود، سپس همان پیام را
+    پاک می‌کند. file_id مخصوص همین بات است و با پاک‌شدن پیام باطل نمی‌شود؛ ربات و مینی‌اپ
+    عکس دسته‌بندی را با همین file_id نشان می‌دهند. خروجی None یعنی ناموفق."""
+    if not bot_token or not chat_id:
+        return None
+    base = f"https://api.telegram.org/bot{bot_token}"
+    try:
+        form = aiohttp.FormData()
+        form.add_field("chat_id", str(chat_id))
+        form.add_field("disable_notification", "true")
+        form.add_field("photo", photo_bytes, filename=filename, content_type=content_type)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{base}/sendPhoto", data=form, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                data = await resp.json()
+            if not data.get("ok"):
+                logger.warning("آپلود عکس دسته‌بندی به تلگرام ناموفق بود: %s", data.get("description"))
+                return None
+            result = data["result"]
+            file_id = result["photo"][-1]["file_id"]
+            try:
+                await session.post(f"{base}/deleteMessage", json={"chat_id": chat_id, "message_id": result["message_id"]},
+                                   timeout=aiohttp.ClientTimeout(total=10))
+            except Exception:
+                pass
+            return file_id
+    except Exception:
+        logger.exception("آپلود عکس دسته‌بندی به تلگرام ناموفق بود")
+        return None
+
+
 async def send_voice(
     bot_token: str,
     chat_id: int,

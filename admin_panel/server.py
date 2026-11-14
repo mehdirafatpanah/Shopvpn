@@ -22,11 +22,12 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
 import time
 import tempfile
 from urllib.parse import quote
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
 from i18n import tr, set_language, reset_language, normalize_language, LANGUAGE_CATALOG
@@ -62,12 +63,16 @@ import button_registry
 import extra_gateway_registry
 import extra_settings_schema
 import bot_profile
-from admin_panel.security import hash_password, verify_password, create_session_token, verify_session_token
+from admin_panel.security import (
+    hash_password, verify_password, create_session_token, verify_session_token, refresh_session_token,
+    generate_totp_secret, verify_totp, totp_uri, generate_backup_codes, hash_backup_code,
+)
 from admin_panel import mobile_auth
 from asset_versioning import file_digest, static_version, ApiNoStoreMiddleware
 from admin_panel.telegram_notify import (
     send_message as tg_send,
     send_photo as tg_send_photo,
+    upload_photo_get_file_id as tg_upload_photo_get_file_id,
     send_voice as tg_send_voice,
     send_document as tg_send_document,
     fetch_telegram_file,
@@ -83,6 +88,7 @@ from service_alerts import send_service_alert_sync
 from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
 from stock_alerts import check_and_notify_low_stock
 import ai_support
+from db.tickets import PRIORITIES as TICKET_PRIORITIES, normalize_priority as ticket_priority, norm_search, search_tokens
 import web_assistant
 from renewal_engine import execute_renewal, RenewalError
 import leak_index
@@ -774,6 +780,7 @@ class LoginBody(BaseModel):
     username: str
     password: str
     b: Optional[str] = None  # اسلاگ نماینده؛ خالی/غایب یعنی بات اصلی
+    otp: Optional[str] = None
 
 
 async def _authenticate_via_mobile_token(bearer_token: str):
@@ -807,7 +814,91 @@ async def _authenticate_via_mobile_token(bearer_token: str):
     }
 
 
-async def get_current_admin(request: Request):
+SESSION_IDLE_SETTING = "web_session_idle_minutes"
+SESSION_IDLE_DEFAULT_MINUTES = 60
+SESSION_IDLE_MIN_MINUTES = 5
+SESSION_IDLE_MAX_MINUTES = 7 * 24 * 60
+SESSION_COOKIE_SECONDS = 12 * 3600
+SESSION_REFRESH_AFTER_SECONDS = 30
+
+OTP_MAX_FAILS = 5
+OTP_LOCK_SECONDS = 300
+_otp_state: Dict[str, Dict[str, float]] = {}
+_otp_lock = threading.Lock()
+
+
+def _session_idle_minutes(tenant) -> int:
+    raw = tenant.db.get_setting(SESSION_IDLE_SETTING, "")
+    if raw in ("", None):
+        return SESSION_IDLE_DEFAULT_MINUTES
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return SESSION_IDLE_DEFAULT_MINUTES
+    if value <= 0:
+        return 0
+    return max(SESSION_IDLE_MIN_MINUTES, min(value, SESSION_IDLE_MAX_MINUTES))
+
+
+def _otp_locked_seconds(key: str) -> int:
+    with _otp_lock:
+        st = _otp_state.get(key)
+        if not st:
+            return 0
+        remaining = int(st.get("locked_until", 0) - time.time())
+        if remaining <= 0 and st.get("locked_until"):
+            _otp_state.pop(key, None)
+            return 0
+        return max(0, remaining)
+
+
+def _otp_register_fail(key: str):
+    with _otp_lock:
+        st = _otp_state.setdefault(key, {"fails": 0, "locked_until": 0})
+        st["fails"] += 1
+        if st["fails"] >= OTP_MAX_FAILS:
+            st["locked_until"] = time.time() + OTP_LOCK_SECONDS
+            st["fails"] = 0
+
+
+def _otp_clear(key: str):
+    with _otp_lock:
+        _otp_state.pop(key, None)
+
+
+def _admin_totp_enabled(admin) -> bool:
+    keys = admin.keys() if hasattr(admin, "keys") else []
+    return "totp_enabled" in keys and bool(admin["totp_enabled"]) and bool(admin["totp_secret"])
+
+
+def _verify_second_factor(tenant_db, admin, code: str, rate_key: str) -> str:
+    """Return 'totp' or 'backup' on success; raise HTTPException otherwise."""
+    if _otp_locked_seconds(rate_key):
+        raise HTTPException(429, tr("تلاش‌های ناموفق زیاد بود؛ چند دقیقه بعد دوباره امتحان کنید."))
+    step = verify_totp(admin["totp_secret"], code, admin["totp_last_step"] or 0)
+    if step is not None:
+        tenant_db.set_web_admin_totp_last_step(admin["id"], step)
+        _otp_clear(rate_key)
+        return "totp"
+    if tenant_db.consume_web_admin_backup_code(admin["id"], hash_backup_code(code)):
+        _otp_clear(rate_key)
+        return "backup"
+    _otp_register_fail(rate_key)
+    raise HTTPException(401, tr("کد تأیید اشتباه است."))
+
+
+def _qr_data_uri(text: str) -> str:
+    try:
+        import io
+        import qrcode
+        buf = io.BytesIO()
+        qrcode.make(text, box_size=6, border=2).save(buf, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:
+        return ""
+
+
+async def get_current_admin(request: Request, response: Response):
     auth_header = request.headers.get("authorization", "")
     if auth_header.lower().startswith("bearer "):
         admin = await _authenticate_via_mobile_token(auth_header[7:].strip())
@@ -827,6 +918,23 @@ async def get_current_admin(request: Request):
     if not tenant:
         raise HTTPException(401, tr("پنل وب این نماینده دیگر فعال نیست."))
     _current_tenant.set(tenant)
+
+    idle_limit = await asyncio.to_thread(_session_idle_minutes, tenant)
+    now_ts = int(time.time())
+    last_active = int(payload.get("la") or now_ts)
+    if idle_limit and now_ts - last_active > idle_limit * 60:
+        raise HTTPException(401, tr("نشست به‌دلیل عدم فعالیت منقضی شد؛ دوباره وارد شوید."))
+    try:
+        client_idle = max(0, int(request.headers.get("x-idle-secs", "0")))
+    except ValueError:
+        client_idle = 0
+    active_at = now_ts - client_idle
+    if active_at - last_active >= SESSION_REFRESH_AFTER_SECONDS:
+        response.set_cookie(
+            COOKIE_NAME, refresh_session_token(ADMIN_PANEL_SECRET, payload, active_at),
+            httponly=True, samesite="lax",
+            max_age=max(60, int(payload.get("exp", now_ts)) - now_ts), path="/",
+        )
 
     admin = (await asyncio.to_thread(tenant.db.get_web_admin, payload["id"]))
     if not admin or not admin["is_active"]:
@@ -871,6 +979,8 @@ async def get_current_admin(request: Request):
         "tenant": tenant.slug,
         "language": await asyncio.to_thread(tenant.db.get_web_admin_language, admin["id"]),
         "reseller_profile": reseller_profile,
+        "totp_enabled": _admin_totp_enabled(admin),
+        "session_idle_minutes": idle_limit,
     }
 
 
@@ -970,6 +1080,34 @@ def api_login(body: LoginBody, response: Response, request: Request):
             throttle_key=f"login-fail:{tenant.slug}:{ip}", throttle_seconds=120,
         )
         raise HTTPException(401, tr("یوزرنیم یا پسورد اشتباه است."))
+    if _admin_totp_enabled(admin):
+        otp_code = (body.otp or "").strip()
+        if not otp_code:
+            return {"need_otp": True}
+        ip = _client_ip(request)
+        try:
+            factor = _verify_second_factor(tenant.db, admin, otp_code, f"{tenant.slug}:{admin['id']}")
+        except HTTPException as exc:
+            if exc.status_code == 401:
+                report_router.fire_and_forget_raw(
+                    tenant.bot_token, tenant.db, "login",
+                    report_router.format_event("کد دو مرحله‌ای اشتباه در ورود به پنل وب", [
+                        ("مدیر", report_router.code(admin["username"])),
+                        ("IP", report_router.code(ip)),
+                    ], icon="🚫", note="رمز درست بود ولی کد تأیید نادرست؛ اگر این تلاش از شما نیست، رمز را عوض کنید."),
+                    throttle_key=f"login-otp-fail:{tenant.slug}:{admin['id']}", throttle_seconds=120,
+                )
+            raise
+        if factor == "backup":
+            report_router.fire_and_forget_raw(
+                tenant.bot_token, tenant.db, "login",
+                report_router.format_event("ورود با کد پشتیبان دو مرحله‌ای", [
+                    ("مدیر", report_router.code(admin["username"])),
+                    ("IP", report_router.code(ip)),
+                    ("کدهای پشتیبان باقی‌مانده", str(tenant.db.count_web_admin_backup_codes(admin["id"]))),
+                ], icon="🔑"),
+                throttle_key=f"login-backup:{tenant.slug}:{admin['id']}", throttle_seconds=60,
+            )
     token = create_session_token(
         ADMIN_PANEL_SECRET, admin["id"], admin["username"], admin["role"], tenant=tenant.slug,
     )
@@ -3898,6 +4036,345 @@ async def api_admin_custom_config_delete(custom_config_id: int, admin=Depends(re
     return {"status": "ok"}
 
 
+# ======================================================================
+# مدیریت کامل کاربر و اشتراک در وب (معادل کامل منوی «مدیریت کاربر/کانفیگ»
+# ادمین در ربات: adm_user_* و adm_cfg_*). همه‌ی این مسیرها از همان توابع
+# دیتابیس/پروایدر استفاده می‌کنند که ربات استفاده می‌کند تا رفتار یکسان باشد.
+# ======================================================================
+
+def _fmt_gb_bytes(value_bytes) -> float:
+    return round((value_bytes or 0) / (1024 ** 3), 2)
+
+
+def _admin_cfg_server_or_409(cc):
+    server = db.get_panel_server(cc["panel_server_id"]) if cc["panel_server_id"] else None
+    if not server or not server["is_active"]:
+        raise HTTPException(409, tr("سرور پنل مربوط به این سرویس یافت نشد یا غیرفعال است."))
+    try:
+        from product_targets import apply_target_config
+        server = apply_target_config(server, cc["panel_target_config"])
+    except (KeyError, IndexError, TypeError, ImportError):
+        pass
+    return server
+
+
+@app.get("/api/users/{tg_id}/overview")
+def api_user_overview(tg_id: int, admin=Depends(get_current_admin)):
+    """آمار کامل کاربر (معادل «🔍 آمار کامل کاربر» ربات) + سهمیه‌ی تست."""
+    user = db.get_user(tg_id)
+    if not user:
+        raise HTTPException(404, tr("کاربر یافت نشد."))
+    stats = db.get_user_full_stats(tg_id)
+    stats = dict(stats)
+    stats["user"] = dict(stats["user"]) if stats.get("user") is not None else dict(user)
+    keys = user.keys()
+    override = user["test_limit_override"] if "test_limit_override" in keys else None
+    stats["test_limit_override"] = override
+    stats["test_limit_global"] = db.get_setting("test_max_per_user", "1")
+    stats["test_used"] = user["test_used"] if "test_used" in keys else 0
+    try:
+        import dedicated_sub
+        stats["dsub_enabled"] = bool(dedicated_sub.is_enabled(db))
+    except Exception:
+        stats["dsub_enabled"] = False
+    return stats
+
+
+class UserTestLimitBody(BaseModel):
+    value: Optional[int] = None  # None = پیروی از تنظیم عمومی
+
+
+@app.put("/api/users/{tg_id}/test-limit")
+async def api_user_test_limit(tg_id: int, body: UserTestLimitBody, admin=Depends(require_permission("users"))):
+    if body.value is not None and not 0 <= body.value <= 1000:
+        raise HTTPException(400, tr("عدد باید بین ۰ تا ۱۰۰۰ باشد."))
+    ok = await asyncio.to_thread(db.set_user_test_limit_override, tg_id, body.value)
+    if not ok:
+        raise HTTPException(404, tr("کاربر یافت نشد."))
+    await asyncio.to_thread(db.log_admin_action, admin["id"], "user_test_limit",
+                            f"user={tg_id}, limit={body.value} (پنل وب - {admin['username']})", "user", tg_id)
+    return {"ok": True, "value": body.value}
+
+
+class UserToggleAllBody(BaseModel):
+    enabled: Optional[bool] = None  # None = خودکار (اگر حتی یکی فعال باشد → غیرفعال‌کردن همه)
+
+
+@app.post("/api/users/{tg_id}/configs-toggle-all")
+async def api_user_configs_toggle_all(tg_id: int, body: UserToggleAllBody, admin=Depends(require_permission("users"))):
+    """فعال/غیرفعال‌سازی دسته‌جمعی سرویس‌های مستقیم-پنل (غیر تست) یک کاربر."""
+    if not await asyncio.to_thread(db.get_user, tg_id):
+        raise HTTPException(404, tr("کاربر یافت نشد."))
+    configs = await asyncio.to_thread(db.get_custom_configs_for_user, tg_id)
+    eligible = [cc for cc in configs if cc["source"] != "test" and cc["panel_server_id"]]
+    if not eligible:
+        raise HTTPException(400, tr("این کاربر هیچ سرویس مستقیم‌-پنلی (غیر تست) ندارد که بشود دسته‌جمعی فعال/غیرفعال کرد."))
+    enabled_count = sum(1 for cc in eligible if (cc["enabled"] if "enabled" in cc.keys() else 1) == 1)
+    new_enabled = body.enabled if body.enabled is not None else (enabled_count == 0)
+    ok_count, failed = 0, []
+    for cc in eligible:
+        current = (cc["enabled"] if "enabled" in cc.keys() else 1) == 1
+        name = cc["display_name"] or cc["username"]
+        if current == new_enabled:
+            ok_count += 1
+            continue
+        server = await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])
+        if not server or not server["is_active"]:
+            failed.append(f"{name} (سرور پنل یافت نشد/غیرفعال)")
+            continue
+        try:
+            await get_provider(server).set_enabled(cc["username"], new_enabled)
+        except PanelError as e:
+            failed.append(f"{name} ({e})")
+            continue
+        await asyncio.to_thread(db.set_custom_config_enabled, cc["id"], tg_id, new_enabled)
+        await asyncio.to_thread(db.add_custom_config_history, cc["id"], "toggle",
+                                f"{'فعال شد' if new_enabled else 'غیرفعال شد'} (دسته‌جمعی - پنل وب - {admin['username']})")
+        ok_count += 1
+    await asyncio.to_thread(db.log_admin_action, admin["id"], "user_bulk_toggle_configs",
+                            f"کاربر {tg_id} ← {'فعال' if new_enabled else 'غیرفعال'} ({ok_count}/{len(eligible)}) (پنل وب)",
+                            "user", tg_id)
+    return {"ok": True, "enabled": new_enabled, "done": ok_count, "total": len(eligible), "failed": failed}
+
+
+class UserDiscountBody(BaseModel):
+    kind: str  # percent | fixed
+    value: int
+    expiry_days: int = 0
+
+
+@app.post("/api/users/{tg_id}/discount-code")
+async def api_user_discount_code(tg_id: int, body: UserDiscountBody, admin=Depends(require_permission("users"))):
+    """کد تخفیف اختصاصی یک‌بارمصرف برای همین کاربر + ارسال آن به تلگرام او."""
+    if not await asyncio.to_thread(db.get_user, tg_id):
+        raise HTTPException(404, tr("کاربر یافت نشد."))
+    kind = (body.kind or "").lower()
+    if kind not in ("percent", "fixed"):
+        raise HTTPException(400, tr("نوع تخفیف باید percent یا fixed باشد."))
+    if body.value <= 0 or (kind == "percent" and body.value > 100):
+        raise HTTPException(400, tr("مقدار تخفیف نامعتبر است."))
+    if not 0 <= body.expiry_days <= 3650:
+        raise HTTPException(400, tr("تعداد روز انقضا نامعتبر است."))
+    percent = body.value if kind == "percent" else None
+    fixed = body.value if kind == "fixed" else None
+    expires_at = (datetime.utcnow() + timedelta(days=body.expiry_days)).isoformat() if body.expiry_days > 0 else None
+    pairs = await asyncio.to_thread(db.generate_bulk_discount_codes, [tg_id], percent, fixed, expires_at)
+    if not pairs:
+        raise HTTPException(500, tr("ساخت کد ناموفق بود؛ دوباره تلاش کنید."))
+    code = pairs[0][1]
+    value_txt = f"{percent}%" if percent else f"{fixed:,} تومان"
+    if expires_at:
+        from jalali import to_jalali_str
+        expiry_txt = f"تا {to_jalali_str(datetime.fromisoformat(expires_at))} معتبر است"
+    else:
+        expiry_txt = "بدون تاریخ انقضا"
+    text = ("🎁 یک کد تخفیف اختصاصی برای شما صادر شد!\n\n"
+            f"🎟 کد: {code}\n💰 تخفیف: {value_txt}\n⏳ {expiry_txt}\n\n"
+            "این کد فقط یک‌بار و فقط برای شما قابل استفاده است.")
+    sent = await tg_send(_bot_token(), tg_id, text)
+    await asyncio.to_thread(db.log_admin_action, admin["id"], "user_exclusive_discount",
+                            f"کاربر {tg_id} | کد «{code}» | تخفیف: {value_txt} (پنل وب - {admin['username']})", "user", tg_id)
+    return {"ok": True, "code": code, "value": value_txt, "sent": bool(sent)}
+
+
+@app.get("/api/users/{tg_id}/invoice-items")
+def api_user_invoice_items(tg_id: int, admin=Depends(get_current_admin)):
+    if not db.get_user(tg_id):
+        raise HTTPException(404, tr("کاربر یافت نشد."))
+    return db.get_user_invoice_items(tg_id)
+
+
+class UserInvoiceBody(BaseModel):
+    service_kind: Optional[str] = None
+    service_id: Optional[int] = None
+
+
+@app.post("/api/users/{tg_id}/invoice")
+async def api_user_send_invoice(tg_id: int, body: UserInvoiceBody, admin=Depends(require_permission("users"))):
+    """صدور فاکتور (کلی یا تکی) و ارسال آن در تلگرام کاربر، مثل «🧾 فاکتور» در ربات."""
+    import html as _html
+    items = await asyncio.to_thread(db.get_user_invoice_items, tg_id)
+    if body.service_kind and body.service_id is not None:
+        items = [x for x in items if x["service_kind"] == body.service_kind and int(x["service_id"]) == int(body.service_id)]
+    if not items:
+        raise HTTPException(404, tr("برای این کاربر سرویس خریداری‌شده‌ای جهت صدور فاکتور پیدا نشد."))
+    user = await asyncio.to_thread(db.get_user, tg_id)
+    total = sum(int(x.get("amount") or 0) for x in items)
+    code = f"SV-{tg_id}-{int(time.time())}"
+    lines = ["🧾 <b>فاکتور خدمات</b>", f"شماره فاکتور: <code>{code}</code>", f"شناسه مشتری: <code>{tg_id}</code>",
+             f"نام مشتری: {_html.escape((user['first_name'] or user['username'] or str(tg_id)) if user else str(tg_id))}",
+             "━━━━━━━━━━━━━━"]
+    for n, item in enumerate(items, 1):
+        name = _html.escape(str(item.get("service_name") or item.get("product_name") or "سرویس"))
+        det = []
+        if item.get("volume_gb") is not None:
+            det.append(f"{item['volume_gb']} GB")
+        if item.get("duration_days") is not None:
+            det.append(f"{item['duration_days']} روز")
+        lines.append(
+            f"{n}. <b>{name}</b>\nشناسه سرویس: <code>{item['service_kind']}:{item['service_id']}</code>\n"
+            f"سفارش: #{item.get('order_id') or '—'} | مبلغ: {int(item.get('amount') or 0):,} تومان"
+            + (f" | {' / '.join(det)}" if det else "")
+            + (f"\nتاریخ: {_html.escape(str(item.get('created_at') or '—'))}" if item.get("created_at") else "")
+            + (f" | انقضا: {_html.escape(str(item.get('expires_at')))}" if item.get("expires_at") else ""))
+    lines.extend(["━━━━━━━━━━━━━━", f"<b>جمع کل: {total:,} تومان</b>",
+                  "این فاکتور بر اساس سفارش‌های ثبت‌شده در سامانه صادر شده است."])
+    ok = await tg_send(_bot_token(), tg_id, "\n\n".join(lines), parse_mode="HTML")
+    if not ok:
+        raise HTTPException(502, tr("ارسال فاکتور ناموفق بود (شاید کاربر ربات را بلاک کرده)."))
+    await asyncio.to_thread(db.log_admin_action, admin["id"], "user_invoice",
+                            f"user={tg_id}, items={len(items)}, total={total} (پنل وب - {admin['username']})", "user", tg_id)
+    return {"ok": True, "items": len(items), "total": total}
+
+
+@app.get("/api/custom-configs/{custom_config_id}/detail")
+async def api_admin_custom_config_detail(custom_config_id: int, admin=Depends(get_current_admin)):
+    """جزئیات کامل یک سرویس + مصرف زنده از خود پنل + لینک ساب پنل/اختصاصی
+    (معادل صفحه‌ی «🛠 کانفیگ» ادمین در ربات)."""
+    cc = _admin_get_custom_config_or_404(custom_config_id)
+    keys = cc.keys()
+    server = (await asyncio.to_thread(db.get_panel_server, cc["panel_server_id"])) if cc["panel_server_id"] else None
+    owner = await asyncio.to_thread(db.get_user, cc["user_id"])
+    out = {
+        "id": cc["id"], "owner_id": cc["user_id"],
+        "owner_username": owner["username"] if owner else None,
+        "owner_name": owner["first_name"] if owner else None,
+        "username": cc["username"], "display_name": cc["display_name"] or cc["username"],
+        "is_test": cc["source"] == "test",
+        "enabled": (cc["enabled"] if "enabled" in keys else 1) == 1,
+        "auto_renew": (cc["auto_renew"] if "auto_renew" in keys else 0) == 1,
+        "volume_gb": cc["volume_gb"], "duration_days": cc["duration_days"],
+        "created_at": cc["created_at"], "expires_at": cc["expires_at"],
+        "order_id": cc["order_id"] if "order_id" in keys else None,
+        "start_on_first_use": bool(cc["start_on_first_use"]) if "start_on_first_use" in keys else False,
+        "panel_name": server["name"] if server else None,
+        "subscription_url": cc["subscription_url"],
+        "dsub_enabled": False, "dsub_link": None,
+        "in_quota_pool": False, "usage": None, "usage_error": None,
+    }
+    try:
+        import dedicated_sub
+        if dedicated_sub.is_enabled(db):
+            out["dsub_enabled"] = True
+            out["dsub_link"] = await asyncio.to_thread(dedicated_sub.link_for_config, db, cc["id"])
+    except Exception:
+        pass
+    try:
+        out["in_quota_pool"] = bool(await asyncio.to_thread(db.quota_pool_for_custom_config, cc["id"]))
+    except Exception:
+        pass
+    if server and server["is_active"]:
+        try:
+            usage = await asyncio.wait_for(get_provider(server).get_user_usage(cc["username"]), timeout=8)
+            limit = int(usage.get("data_limit_bytes") or 0)
+            used = int(usage.get("used_bytes") or 0)
+            out["usage"] = {"used_gb": _fmt_gb_bytes(used), "limit_gb": _fmt_gb_bytes(limit) if limit else None,
+                            "unlimited": not limit}
+        except Exception as e:
+            out["usage_error"] = str(e)[:200]
+    return out
+
+
+class AdminSvcAdjustBody(BaseModel):
+    volume_gb: float = 0
+    days: int = 0
+
+
+async def _admin_adjust_custom_config(custom_config_id: int, body: AdminSvcAdjustBody, admin, sign: int):
+    cc = _admin_get_custom_config_or_404(custom_config_id)
+    vol, days = float(body.volume_gb or 0), int(body.days or 0)
+    if vol < 0 or days < 0 or (vol == 0 and days == 0):
+        raise HTTPException(400, tr("حجم یا روز را به‌صورت عدد مثبت وارد کنید."))
+    if vol > 100000 or days > 3650:
+        raise HTTPException(400, tr("مقدار واردشده بیش از حد مجاز است."))
+    if await asyncio.to_thread(db.quota_pool_for_custom_config, cc["id"]):
+        raise HTTPException(409, tr("این سرویس ترکیبی VPN+SSH با سهمیه‌ی مشترک است؛ از بخش مربوط به سهمیه‌ی مشترک تغییر دهید."))
+    if vol and (cc["volume_gb"] or 0) <= 0:
+        raise HTTPException(400, tr("حجم این سرویس نامحدود است."))
+    if days:
+        if (cc["duration_days"] or 0) <= 0:
+            raise HTTPException(400, tr("مدت این سرویس نامحدود است."))
+        if sign < 0 and not cc["expires_at"]:
+            raise HTTPException(400, tr("این سرویس هنوز شروع نشده (On-hold)."))
+        if sign > 0 and cc["start_on_first_use"] and not cc["expires_at"]:
+            raise HTTPException(400, tr("این سرویس هنوز شروع نشده (On-hold)."))
+    server = await asyncio.to_thread(_admin_cfg_server_or_409, cc)
+    provider = get_provider(server)
+    if sign < 0:
+        if vol:
+            try:
+                usage = await asyncio.wait_for(provider.get_user_usage(cc["username"]), timeout=15)
+            except Exception as e:
+                raise HTTPException(502, tr(f"خواندن مصرف از پنل ناموفق بود: {e}"))
+            limit, used = int(usage.get("data_limit_bytes") or 0), int(usage.get("used_bytes") or 0)
+            if limit <= 0:
+                raise HTTPException(400, tr("حجم این سرویس روی پنل نامحدود است."))
+            max_reduce = min((limit - used) / (1024 ** 3), float(cc["volume_gb"] or 0))
+            if vol >= max_reduce:
+                raise HTTPException(400, tr(f"حداکثر کاهش مجاز کمتر از {max(max_reduce, 0):.2f} گیگ است (حجم باقیمانده کاربر)."))
+        if days:
+            try:
+                expires = datetime.fromisoformat(cc["expires_at"])
+            except (TypeError, ValueError):
+                raise HTTPException(400, tr("تاریخ انقضای این سرویس معتبر نیست."))
+            remaining = (expires - datetime.utcnow()).total_seconds() / 86400
+            max_reduce = min(remaining, float(cc["duration_days"] or 0))
+            if days >= max_reduce:
+                raise HTTPException(400, tr(f"حداکثر کاهش مجاز کمتر از {max(max_reduce, 0):.1f} روز است (زمان باقیمانده)."))
+    try:
+        await provider.update_user(cc["username"], add_volume_gb=sign * vol, add_days=sign * days,
+                                   reset_usage=False, preserve_remaining=False)
+    except PanelError as e:
+        raise HTTPException(502, tr(f"ناموفق بود: {e}"))
+    if sign > 0:
+        await asyncio.to_thread(db.apply_custom_config_renewal, cc["id"], vol, days)
+    else:
+        await asyncio.to_thread(db.apply_custom_config_reduction, cc["id"], vol, days)
+    parts = []
+    if vol:
+        parts.append(f"{'+' if sign > 0 else '-'}{vol:g} گیگ")
+    if days:
+        parts.append(f"{'+' if sign > 0 else '-'}{days} روز")
+    label = " ".join(parts)
+    await asyncio.to_thread(db.add_custom_config_history, cc["id"], "admin_extend" if sign > 0 else "admin_reduce",
+                            f"{label} (توسط ادمین {admin['id']} - پنل وب - {admin['username']})")
+    await asyncio.to_thread(db.log_admin_action, admin["id"],
+                            "custom_config_admin_extend" if sign > 0 else "custom_config_admin_reduce",
+                            f"سرویس «{cc['username']}» کاربر {cc['user_id']}: {label} (پنل وب)", "user", cc["user_id"])
+    fresh = db.get_custom_config_by_id(cc["id"])
+    return {"ok": True, "label": label, "volume_gb": fresh["volume_gb"], "duration_days": fresh["duration_days"],
+            "expires_at": fresh["expires_at"]}
+
+
+@app.post("/api/custom-configs/{custom_config_id}/extend")
+async def api_admin_custom_config_extend(custom_config_id: int, body: AdminSvcAdjustBody, admin=Depends(require_permission("users"))):
+    """افزودن حجم و/یا روز به سرویس (روی پنل VPN و دیتابیس)."""
+    return await _admin_adjust_custom_config(custom_config_id, body, admin, +1)
+
+
+@app.post("/api/custom-configs/{custom_config_id}/reduce")
+async def api_admin_custom_config_reduce(custom_config_id: int, body: AdminSvcAdjustBody, admin=Depends(require_permission("users"))):
+    """کاهش حجم و/یا روز سرویس؛ هرگز از مقدار باقیمانده‌ی کاربر بیشتر نمی‌شود."""
+    return await _admin_adjust_custom_config(custom_config_id, body, admin, -1)
+
+
+@app.post("/api/custom-configs/{custom_config_id}/dsub-regenerate")
+async def api_admin_custom_config_dsub_regen(custom_config_id: int, admin=Depends(require_permission("users"))):
+    cc = _admin_get_custom_config_or_404(custom_config_id)
+    import dedicated_sub
+    if not dedicated_sub.is_enabled(db):
+        raise HTTPException(409, tr("ساب اختصاصی روشن نیست."))
+    token = await asyncio.to_thread(db.ds_regenerate_token, cc["id"])
+    if not token:
+        raise HTTPException(500, tr("ساخت توکن ناموفق بود."))
+    await asyncio.to_thread(db.add_custom_config_history, cc["id"], "dsub_regen",
+                            f"توکن ساب اختصاصی تازه شد (توسط ادمین {admin['id']} - پنل وب - {admin['username']})")
+    await asyncio.to_thread(db.log_admin_action, admin["id"], "custom_config_dsub_regen",
+                            f"توکن ساب اختصاصی سرویس «{cc['username']}» کاربر {cc['user_id']} تازه شد (پنل وب)",
+                            "user", cc["user_id"])
+    return {"ok": True, "dsub_link": dedicated_sub.link_for_token(db, token)}
+
+
 # ------------------------------------------------------- reseller self-service --
 # پنل وب نماینده «مدیریت کاتالوگ» نیست؛ یک فضای عملیاتی شخصی است.
 # نماینده فقط موجودی‌ای را که مدیر به او داده مصرف می‌کند و هرگز به محصولات/پنل‌های
@@ -4188,6 +4665,7 @@ class CategoryBody(BaseModel):
     emoji: Optional[str] = None  # خالی = پیش‌فرض سراسری، "-" = بدون ایموجی
     product_emoji: Optional[str] = None
     button_color: Optional[str] = None  # خالی/default = پیش‌فرض، primary (آبی)، success (سبز)، danger (قرمز)
+    description: Optional[str] = None  # توضیح دسته/زیردسته که در بات و مینی‌اپ بالای منو نشان داده می‌شود
 
 
 def _body_fields_set(body) -> set:
@@ -4202,6 +4680,9 @@ def api_categories(admin=Depends(require_permission("catalog"))):
         path = paths.get(c["id"], c["name"])
         c["path"] = path
         c["depth"] = path.count(" › ")
+        media = db.get_category_description_media(c["id"])
+        c["has_image"] = any(it["type"] == "photo" for it in media)
+        c["media_count"] = len(media)
         out.append(c)
     return out
 
@@ -4210,8 +4691,13 @@ def api_categories(admin=Depends(require_permission("catalog"))):
 def api_add_category(body: CategoryBody, admin=Depends(require_permission("catalog"))):
     if not (body.name or "").strip():
         raise HTTPException(400, tr("نام دسته‌بندی نمی‌تواند خالی باشد."))
+    desc = (body.description or "").strip()
+    if len(desc) > 2000:
+        raise HTTPException(400, tr("توضیح دسته‌بندی حداکثر ۲۰۰۰ کاراکتر می‌تواند باشد."))
     try:
         cat_id = db.add_category(body.name.strip(), parent_id=body.parent_id)
+        if desc:
+            db.set_category_description(cat_id, desc)
     except ValueError as e:
         raise HTTPException(400, tr(str(e)))
     db.log_admin_action(admin["id"], "category_add", body.name, "category", cat_id)
@@ -4249,8 +4735,68 @@ def api_edit_category(cat_id: int, body: CategoryBody, admin=Depends(require_per
             db.set_category_button_color(cat_id, color)
         except ValueError as e:
             raise HTTPException(400, tr(str(e)))
+    if "description" in fields:
+        try:
+            db.set_category_description(cat_id, body.description or "")
+        except ValueError as e:
+            raise HTTPException(400, tr("توضیح دسته‌بندی حداکثر ۲۰۰۰ کاراکتر می‌تواند باشد."))
     db.log_admin_action(admin["id"], "category_edit", body.name, "category", cat_id)
     return {"ok": True}
+
+
+# عکس دسته/زیردسته: در همان ستون description_media (فقط یک عکسِ مدیریت‌شده از وب؛ سایر
+# رسانه‌هایی که از ربات اضافه شده‌اند دست‌نخورده می‌مانند) ذخیره می‌شود تا ربات هم همان را نشان دهد.
+def _tenant_owner_chat_id() -> int:
+    with db._get_conn() as conn:
+        row = conn.execute("SELECT telegram_id FROM admins WHERE role='owner' LIMIT 1").fetchone()
+    return int(row["telegram_id"]) if row else int(OWNER_ID)
+
+
+@app.post("/api/categories/{cat_id}/image")
+async def api_category_set_image(cat_id: int, photo: UploadFile = File(...), admin=Depends(require_permission("catalog"))):
+    import category_media
+    if not await asyncio.to_thread(db.get_category, cat_id):
+        raise HTTPException(404, tr("دسته‌بندی یافت نشد."))
+    ctype = (photo.content_type or "").lower()
+    if ctype not in ("image/jpeg", "image/png", "image/webp"):
+        raise HTTPException(400, tr("فقط تصویر JPG، PNG یا WEBP مجاز است."))
+    content = await photo.read()
+    if not content:
+        raise HTTPException(400, tr("فایل انتخاب‌شده خالی است."))
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(400, tr("حجم تصویر نباید بیشتر از ۱۰ مگابایت باشد."))
+    file_id = await tg_upload_photo_get_file_id(_bot_token(), _tenant_owner_chat_id(), content,
+                                                filename=photo.filename or "category.jpg", content_type=ctype)
+    if not file_id:
+        raise HTTPException(502, tr("آپلود تصویر در تلگرام ناموفق بود. ربات باید روشن باشد و مالک ربات را استارت کرده باشد."))
+    items = [it for it in await asyncio.to_thread(db.get_category_description_media, cat_id) if it["type"] != "photo"]
+    items = ([{"type": "photo", "file_id": file_id}] + items)[:category_media.MAX_ITEMS]
+    await asyncio.to_thread(db.set_category_description_media, cat_id, items)
+    await asyncio.to_thread(db.log_admin_action, admin["id"], "category_image", f"دسته‌بندی #{cat_id} (پنل وب - {admin['username']})", "category", cat_id)
+    return {"ok": True}
+
+
+@app.delete("/api/categories/{cat_id}/image")
+async def api_category_delete_image(cat_id: int, admin=Depends(require_permission("catalog"))):
+    if not await asyncio.to_thread(db.get_category, cat_id):
+        raise HTTPException(404, tr("دسته‌بندی یافت نشد."))
+    items = [it for it in await asyncio.to_thread(db.get_category_description_media, cat_id) if it["type"] != "photo"]
+    await asyncio.to_thread(db.set_category_description_media, cat_id, items)
+    await asyncio.to_thread(db.log_admin_action, admin["id"], "category_image_delete", f"دسته‌بندی #{cat_id} (پنل وب - {admin['username']})", "category", cat_id)
+    return {"ok": True}
+
+
+@app.get("/api/categories/{cat_id}/image")
+async def api_category_get_image(cat_id: int, admin=Depends(require_permission("catalog"))):
+    items = await asyncio.to_thread(db.get_category_description_media, cat_id)
+    photo = next((it for it in items if it["type"] == "photo"), None)
+    if not photo:
+        raise HTTPException(404, tr("برای این دسته‌بندی عکسی ثبت نشده است."))
+    result = await fetch_telegram_file(_bot_token(), photo["file_id"])
+    if not result:
+        raise HTTPException(502, tr("دریافت تصویر از تلگرام ناموفق بود."))
+    content, content_type = result
+    return Response(content=content, media_type=content_type, headers={"Cache-Control": "private, max-age=300"})
 
 
 class CategoryMoveBody(BaseModel):
@@ -4363,7 +4909,7 @@ async def api_panel_product_targets(server_id: int, admin=Depends(require_any_pe
 
 class PaygSettingsBody(BaseModel):
     enabled: Optional[bool] = None
-    rates: Optional[List[int]] = None
+    rate: Optional[int] = None
     cycle_seconds: Optional[int] = None
     max_services: Optional[int] = None
 
@@ -4374,6 +4920,26 @@ class PaygTargetBody(BaseModel):
 
 class PaygPanelCostsBody(BaseModel):
     entries: List[Dict[str, Any]] = []
+
+
+class AccountingConfigBody(BaseModel):
+    constants: Dict[str, Any] = {}
+    formulas: Dict[str, str] = {}
+    round_to: int = 1000
+    calc_mode: str = "precise"
+
+
+class AccountingNodeCostsBody(BaseModel):
+    entries: List[Dict[str, Any]] = []
+
+
+class AccountingSuggestBody(BaseModel):
+    kind: str
+    panels: List[Dict[str, Any]] = []
+    node_ids: List[int] = []
+    gb: float = 0
+    days: float = 0
+    users: float = 1
 
 
 class PaygModeBody(BaseModel):
@@ -4458,7 +5024,8 @@ def api_payg_overview(admin=Depends(require_permission("catalog")), _mt=Depends(
             (month,)).fetchone()["n"]
     return {
         "enabled": db.get_setting("payg_enabled", "1") == "1",
-        "rates": payg.get_rates(db),
+        "rate": payg.get_rates(db)[0],
+        "legacy_tiered": len(set(payg.get_rates(db))) > 1,
         "cycle_seconds": max(60, int(db.get_setting("payg_cycle_seconds", "600") or 600)),
         "max_services": int(db.get_setting("payg_max_services_per_user", "5") or 5),
         "mode": payg.get_payg_mode(db),
@@ -4482,12 +5049,12 @@ def api_payg_overview(admin=Depends(require_permission("catalog")), _mt=Depends(
 def api_payg_settings(body: PaygSettingsBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
     payg = _payg_prepare()
     changes = []
-    if body.rates is not None:
-        rates = [int(x) for x in body.rates]
-        if len(rates) != 4 or any(x <= 0 for x in rates) or rates != sorted(rates, reverse=True):
-            raise HTTPException(400, tr("هر چهار تعرفه باید مثبت و به‌ترتیب نزولی باشند."))
-        db.set_setting("payg_rates", json.dumps(rates))
-        changes.append("rates=" + "/".join(str(x) for x in rates))
+    if body.rate is not None:
+        rate = int(body.rate)
+        if not 1 <= rate <= 10**9:
+            raise HTTPException(400, tr("قیمت هر گیگ باید عددی مثبت باشد."))
+        db.set_setting("payg_rates", json.dumps([rate] * 4))
+        changes.append(f"rate={rate}")
     if body.cycle_seconds is not None:
         if not 60 <= int(body.cycle_seconds) <= 86400:
             raise HTTPException(400, tr("چرخه تسویه باید بین ۶۰ تا ۸۶۴۰۰ ثانیه باشد."))
@@ -4585,12 +5152,8 @@ async def api_payg_get_target(server_id: int, admin=Depends(require_permission("
     }
 
 
-@app.get("/api/payg/costs")
-async def api_payg_costs(admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
-    """Read live group/inbound choices and their independent cost rates."""
-    payg = _payg_prepare()
+async def _panel_cost_payload(configured: dict) -> dict:
     from product_targets import list_product_targets
-    configured = payg.get_panel_costs(db)
     result = []
     for server_row in db.get_panel_servers(active_only=True):
         server = dict(server_row)
@@ -4626,6 +5189,46 @@ async def api_payg_costs(admin=Depends(require_permission("catalog")), _mt=Depen
     return {"panels": result}
 
 
+
+
+@app.get("/api/payg/costs")
+async def api_payg_costs(admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    """Read live group/inbound choices and their independent sales tariffs."""
+    payg = _payg_prepare()
+    return await _panel_cost_payload(payg.get_panel_costs(db))
+
+
+@app.get("/api/accounting/panel-costs")
+async def api_accounting_panel_costs(admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    import accounting
+    return await _panel_cost_payload(accounting.panel_costs(db))
+
+
+@app.put("/api/accounting/panel-costs/{server_id}")
+async def api_accounting_save_panel_costs(server_id: int, body: PaygPanelCostsBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    import accounting
+    server = db.get_panel_server(server_id)
+    if not server:
+        raise HTTPException(404, tr("پنل یافت نشد."))
+    from product_targets import list_product_targets
+    try:
+        info = await list_product_targets(server)
+        allowed = {"*"} | {str(x.get("value")) for x in (info.get("choices") or []) if isinstance(x, dict) and x.get("value") not in (None, "")}
+        if any(str(x.get("target_key", "")) not in allowed for x in body.entries if isinstance(x, dict)):
+            raise ValueError("یکی از گروه‌ها یا اینباندهای انتخاب‌شده معتبر نیست؛ فهرست مقصدها را دوباره بارگذاری کنید.")
+        saved = accounting.save_panel_costs(db, server_id, body.entries)
+    except ValueError as exc:
+        raise HTTPException(400, tr(str(exc)))
+    db.log_admin_action(admin["id"], "accounting_panel_costs_change", f"panel={server_id} targets={len(saved)} (پنل وب - {admin['username']})", "setting", "accounting")
+    return {"ok": True, "count": len(saved)}
+
+
+@app.get("/api/accounting/suggest-tariff/{server_id}")
+def api_accounting_suggest_tariff(server_id: int, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    import accounting
+    return {"rates": accounting.suggest_tariff(db, server_id)}
+
+
 @app.put("/api/payg/costs/{server_id}")
 async def api_payg_save_costs(server_id: int, body: PaygPanelCostsBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
     payg = _payg_prepare()
@@ -4645,6 +5248,66 @@ async def api_payg_save_costs(server_id: int, body: PaygPanelCostsBody, admin=De
     db.log_admin_action(admin["id"], "payg_panel_costs_change",
                         f"panel={server_id} targets={len(saved)} (پنل وب - {admin['username']})", "setting", "payg")
     return {"ok": True, "count": len(saved)}
+
+
+@app.get("/api/accounting/config")
+def api_accounting_config(admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    import accounting
+    return accounting.get_config(db)
+
+
+@app.put("/api/accounting/config")
+def api_accounting_save_config(body: AccountingConfigBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    import accounting
+    try:
+        cfg = accounting.save_config(db, body.dict())
+    except ValueError as exc:
+        raise HTTPException(400, tr(str(exc)))
+    db.log_admin_action(admin["id"], "accounting_formulas_change", f"(پنل وب - {admin['username']})", "setting", "accounting")
+    return cfg
+
+
+@app.get("/api/accounting/node-costs")
+def api_accounting_node_costs(admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    import accounting
+    costs = accounting.get_node_costs(db)
+    nodes = []
+    for node in db.list_ssh_nodes(active_only=True):
+        row = dict(node)
+        if row.get("node_type") != "linux":
+            continue
+        nodes.append({"id": int(row["id"]), "name": row.get("name") or f"#{row['id']}",
+                      **{f: int((costs.get(str(row["id"])) or {}).get(f, 0) or 0) for f in accounting.RATE_FIELDS}})
+    return {"nodes": nodes}
+
+
+@app.put("/api/accounting/node-costs")
+def api_accounting_save_node_costs(body: AccountingNodeCostsBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    import accounting
+    try:
+        saved = accounting.save_node_costs(db, body.entries)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, tr(str(exc)))
+    db.log_admin_action(admin["id"], "accounting_node_costs_change", f"nodes={len(saved)} (پنل وب - {admin['username']})", "setting", "accounting")
+    return {"ok": True, "count": len(saved)}
+
+
+@app.post("/api/accounting/suggest")
+def api_accounting_suggest(body: AccountingSuggestBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    import accounting
+    try:
+        return accounting.suggest(db, body.kind, body.panels, body.node_ids, body.gb, body.days, body.users)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(400, tr(str(exc)))
+
+
+@app.get("/api/accounting/suggest-payg")
+def api_accounting_suggest_payg(admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    import accounting
+    try:
+        return accounting.suggest_payg_rate(db)
+    except ValueError as exc:
+        raise HTTPException(400, tr(str(exc)))
 
 
 @app.post("/api/payg/mode")
@@ -5529,13 +6192,140 @@ def api_delete_discount(code_id: int, admin=Depends(require_permission("discount
 # ------------------------------------------------------------------ tickets --
 
 
+def _ticket_view(t: dict, deps: dict = None) -> dict:
+    """فیلدهای نمایشی مشترک تیکت (اولویت، دسته‌بندی، سرویس مرتبط) برای پنل وب."""
+    t["priority"] = ticket_priority(t.get("priority"))
+    t["ref_label"] = t.get("ref_label") or ""
+    dep_id = t.get("department_id")
+    if deps is None:
+        dep = row_to_dict(db.get_ticket_department(dep_id)) if dep_id else None
+        t["department_name"] = (dep or {}).get("name") or ""
+    else:
+        t["department_name"] = deps.get(dep_id, "") if dep_id else ""
+    return t
+
+
+_TICKET_SORTS = {
+    "updated_desc", "updated_asc", "created_desc", "created_asc",
+    "priority_desc", "priority_asc", "unread_first", "messages_desc", "id_desc", "id_asc", "user",
+}
+_SUPPORT_SORTS = {
+    "last_desc", "last_asc", "unread_first", "priority_desc", "priority_asc", "name", "messages_desc",
+}
+_PRIORITY_RANK = {"low": 0, "medium": 1, "high": 2}
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _clean_date(value: Optional[str]) -> str:
+    value = (value or "").strip()
+    return value if _DATE_RE.match(value) else ""
+
+
+def _in_date_range(value, date_from: str, date_to: str) -> bool:
+    day = str(value or "")[:10]
+    if date_from and day < date_from:
+        return False
+    if date_to and day > date_to:
+        return False
+    return True
+
+
+def _pick_sort(requested: Optional[str], allowed: set, configured: str, fallback: str) -> str:
+    """ترتیب درخواستی؛ اگر خالی/نامعتبر بود ترتیب پیش‌فرضِ تنظیم‌شده در پنل وب، و در نهایت fallback."""
+    if requested in allowed:
+        return requested
+    return configured if configured in allowed else fallback
+
+
+def _search_in_messages_enabled() -> bool:
+    return db.get_setting("ticket_search_in_messages", "1") != "0"
+
+
+def _sort_ticket_rows(rows: list, sort: str) -> list:
+    upd = lambda t: str(t.get("updated_at") or "")
+    crt = lambda t: str(t.get("created_at") or "")
+    if sort == "updated_asc":
+        return sorted(rows, key=upd)
+    if sort == "created_desc":
+        return sorted(rows, key=crt, reverse=True)
+    if sort == "created_asc":
+        return sorted(rows, key=crt)
+    if sort == "priority_desc":
+        return sorted(rows, key=lambda t: (_PRIORITY_RANK[t["priority"]], upd(t)), reverse=True)
+    if sort == "priority_asc":
+        return sorted(rows, key=lambda t: (_PRIORITY_RANK[t["priority"]], upd(t)))
+    if sort == "unread_first":
+        return sorted(rows, key=lambda t: (t.get("unread", 0), upd(t)), reverse=True)
+    if sort == "messages_desc":
+        return sorted(rows, key=lambda t: (t.get("messages_count", 0), upd(t)), reverse=True)
+    if sort == "id_desc":
+        return sorted(rows, key=lambda t: t["id"], reverse=True)
+    if sort == "id_asc":
+        return sorted(rows, key=lambda t: t["id"])
+    if sort == "user":
+        return sorted(rows, key=lambda t: norm_search(t.get("username") or t.get("user_name") or t["user_id"]))
+    return sorted(rows, key=upd, reverse=True)
+
+
 @app.get("/api/tickets")
-def api_tickets(status: Optional[str] = None, admin=Depends(get_current_admin)):
+def api_tickets(status: Optional[str] = None, priority: Optional[str] = None, q: Optional[str] = None,
+                department_id: Optional[str] = None, service: Optional[str] = None,
+                unread: Optional[int] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
+                sort: Optional[str] = None, admin=Depends(get_current_admin)):
+    """لیست تیکت‌ها با جستجو (نام‌کاربری، نام، آیدی، شماره‌ی تیکت، موضوع، دسته، سرویس، متن پیام‌ها)،
+    فیلتر (وضعیت، اولویت، دسته، سرویس مرتبط، خوانده‌نشده، بازه‌ی تاریخ ایجاد) و ترتیب‌بندی."""
     tickets = rows_to_list(db.get_all_tickets(status))
+    deps = {d["id"]: d["name"] for d in db.list_ticket_departments(False)}
+    names = db.get_user_names([t["user_id"] for t in tickets])
+    stats = db.get_ticket_message_stats()
+    date_from, date_to = _clean_date(date_from), _clean_date(date_to)
+    sort = _pick_sort(sort, _TICKET_SORTS, db.get_setting("tickets_default_sort", "updated_desc"), "updated_desc")
+    tokens = search_tokens(q)
+    exact_ids = {}
+    for w in norm_search(q).split():
+        word = w.lstrip("@#")
+        if w.startswith("#") and word.isdigit():
+            exact_ids[word] = int(word)
+    body_hits = [set() if tok in exact_ids else db.find_ticket_ids_by_text(tok) for tok in tokens] \
+        if tokens and _search_in_messages_enabled() else []
+    out = []
     for t in tickets:
-        user = row_to_dict(db.get_user(t["user_id"]))
-        t["username"] = user["username"] if user else None
-    return tickets
+        if priority and ticket_priority(t.get("priority")) != priority:
+            continue
+        dep_id = t.get("department_id")
+        if department_id == "none":
+            if dep_id:
+                continue
+        elif department_id and str(dep_id or "") != str(department_id):
+            continue
+        if service == "yes" and not t.get("ref_label"):
+            continue
+        if service == "no" and t.get("ref_label"):
+            continue
+        if not _in_date_range(t.get("created_at"), date_from, date_to):
+            continue
+        st = stats.get(t["id"], {})
+        if unread and not st.get("unread"):
+            continue
+        info = names.get(t["user_id"], {})
+        t["username"] = info.get("username") or None
+        t["user_name"] = info.get("first_name") or ""
+        t["messages_count"] = st.get("total", 0)
+        t["unread"] = st.get("unread", 0)
+        t["last_sender"] = st.get("last_sender", "")
+        _ticket_view(t, deps)
+        if tokens:
+            hay = norm_search(" ".join(str(x) for x in (
+                f"#{t['id']}", t["id"], t["user_id"], t["username"] or "", t["user_name"], t.get("subject") or "",
+                t["department_name"], t["ref_label"])))
+            if not all(
+                (t["id"] == exact_ids[tok]) if tok in exact_ids
+                else (tok in hay or (i < len(body_hits) and t["id"] in body_hits[i]))
+                for i, tok in enumerate(tokens)
+            ):
+                continue
+        out.append(t)
+    return _sort_ticket_rows(out, sort)
 
 
 @app.get("/api/tickets/{ticket_id}/messages")
@@ -5543,7 +6333,7 @@ def api_ticket_messages(ticket_id: int, admin=Depends(get_current_admin)):
     ticket = db.get_ticket(ticket_id)
     if not ticket:
         raise HTTPException(404, tr("یافت نشد."))
-    return {"ticket": dict(ticket), "messages": rows_to_list(db.get_ticket_messages(ticket_id))}
+    return {"ticket": _ticket_view(dict(ticket)), "messages": rows_to_list(db.get_ticket_messages(ticket_id))}
 
 
 class TicketReplyBody(BaseModel):
@@ -5555,6 +6345,8 @@ async def api_ticket_reply(ticket_id: int, body: TicketReplyBody, admin=Depends(
     ticket = (await asyncio.to_thread(db.get_ticket, ticket_id))
     if not ticket:
         raise HTTPException(404, tr("یافت نشد."))
+    if ticket["status"] == "closed":
+        raise HTTPException(400, tr("این تیکت بسته است؛ برای پاسخ‌دادن ابتدا آن را باز کنید."))
     (await asyncio.to_thread(db.claim_ticket_if_open, ticket_id, admin["id"]))
     (await asyncio.to_thread(db.add_ticket_message, ticket_id, "admin", body.message))
     await notify_user(ticket["user_id"], f"📩 پاسخ پشتیبانی برای تیکت «{ticket['subject']}»:\n\n{body.message}")
@@ -5563,9 +6355,120 @@ async def api_ticket_reply(ticket_id: int, body: TicketReplyBody, admin=Depends(
 
 
 @app.post("/api/tickets/{ticket_id}/close")
-def api_ticket_close(ticket_id: int, admin=Depends(require_permission("tickets"))):
+async def api_ticket_close(ticket_id: int, admin=Depends(require_permission("tickets"))):
+    ticket = db.get_ticket(ticket_id)
+    if not ticket:
+        raise HTTPException(404, tr("یافت نشد."))
     db.close_ticket(ticket_id)
     db.log_admin_action(admin["id"], "ticket_close", f"تیکت #{ticket_id} (پنل وب - {admin['username']})", "ticket", ticket_id)
+    await notify_user(ticket["user_id"], f"🔒 تیکت #{ticket_id} «{ticket['subject']}» توسط پشتیبانی بسته شد.\nاگر هنوز مشکل دارید، از بخش «تیکت‌های من» می‌توانید آن را دوباره باز کنید.")
+    return {"ok": True}
+
+
+@app.post("/api/tickets/{ticket_id}/reopen")
+async def api_ticket_reopen(ticket_id: int, admin=Depends(require_permission("tickets"))):
+    ticket = db.get_ticket(ticket_id)
+    if not ticket:
+        raise HTTPException(404, tr("یافت نشد."))
+    changed = db.reopen_ticket(ticket_id)
+    if changed:
+        db.log_admin_action(admin["id"], "ticket_reopen", f"تیکت #{ticket_id} (پنل وب - {admin['username']})", "ticket", ticket_id)
+        await notify_user(ticket["user_id"], f"🔓 تیکت #{ticket_id} «{ticket['subject']}» دوباره باز شد.")
+    return {"ok": True, "changed": changed}
+
+
+class TicketPriorityBody(BaseModel):
+    priority: str
+
+
+@app.post("/api/tickets/{ticket_id}/priority")
+def api_ticket_priority(ticket_id: int, body: TicketPriorityBody, admin=Depends(require_permission("tickets"))):
+    if body.priority not in TICKET_PRIORITIES:
+        raise HTTPException(400, tr("اولویت نامعتبر است."))
+    if not db.get_ticket(ticket_id):
+        raise HTTPException(404, tr("یافت نشد."))
+    db.set_ticket_priority(ticket_id, body.priority)
+    db.log_admin_action(admin["id"], "ticket_priority", f"تیکت #{ticket_id} → {body.priority} (پنل وب - {admin['username']})", "ticket", ticket_id)
+    return {"ok": True}
+
+
+class TicketDepartmentMoveBody(BaseModel):
+    department_id: Optional[int] = None
+
+
+@app.post("/api/tickets/{ticket_id}/department")
+def api_ticket_move_department(ticket_id: int, body: TicketDepartmentMoveBody, admin=Depends(require_permission("tickets"))):
+    if not db.get_ticket(ticket_id):
+        raise HTTPException(404, tr("یافت نشد."))
+    if body.department_id is not None and not db.get_ticket_department(body.department_id):
+        raise HTTPException(404, tr("دسته‌بندی یافت نشد."))
+    db.set_ticket_department(ticket_id, body.department_id)
+    db.log_admin_action(admin["id"], "ticket_department", f"تیکت #{ticket_id} → دسته {body.department_id} (پنل وب - {admin['username']})", "ticket", ticket_id)
+    return {"ok": True}
+
+
+@app.delete("/api/tickets/{ticket_id}")
+def api_ticket_delete(ticket_id: int, admin=Depends(require_permission("tickets"))):
+    if not db.delete_ticket(ticket_id):
+        raise HTTPException(404, tr("یافت نشد."))
+    db.log_admin_action(admin["id"], "ticket_delete", f"تیکت #{ticket_id} (پنل وب - {admin['username']})", "ticket", ticket_id)
+    return {"ok": True}
+
+
+@app.post("/api/tickets/delete-closed")
+def api_tickets_delete_closed(admin=Depends(require_permission("tickets"))):
+    count = db.delete_closed_tickets()
+    db.log_admin_action(admin["id"], "ticket_delete_closed", f"{count} تیکت بسته حذف شد (پنل وب - {admin['username']})", "ticket", 0)
+    return {"ok": True, "count": count}
+
+
+# -------------------------------------------------- ticket categories --------
+
+
+class TicketDepartmentBody(BaseModel):
+    name: Optional[str] = None
+    is_active: Optional[bool] = None
+    sort_order: Optional[int] = None
+
+
+def _department_view(d) -> dict:
+    row = dict(d)
+    row["ticket_count"] = db.count_tickets_in_department(row["id"])
+    return row
+
+
+@app.get("/api/ticket-departments")
+def api_ticket_departments(admin=Depends(get_current_admin)):
+    return [_department_view(d) for d in db.list_ticket_departments(False)]
+
+
+@app.post("/api/ticket-departments")
+def api_ticket_department_create(body: TicketDepartmentBody, admin=Depends(require_permission("tickets"))):
+    try:
+        dep_id = db.create_ticket_department(body.name or "", body.sort_order)
+    except ValueError as exc:
+        raise HTTPException(400, tr(str(exc)))
+    db.log_admin_action(admin["id"], "ticket_department_create", f"{body.name} (پنل وب - {admin['username']})", "ticket_department", dep_id)
+    return {"ok": True, "id": dep_id}
+
+
+@app.put("/api/ticket-departments/{department_id}")
+def api_ticket_department_update(department_id: int, body: TicketDepartmentBody, admin=Depends(require_permission("tickets"))):
+    try:
+        found = db.update_ticket_department(department_id, name=body.name, is_active=body.is_active, sort_order=body.sort_order)
+    except ValueError as exc:
+        raise HTTPException(400, tr(str(exc)))
+    if not found:
+        raise HTTPException(404, tr("دسته‌بندی یافت نشد."))
+    db.log_admin_action(admin["id"], "ticket_department_edit", f"دسته #{department_id} (پنل وب - {admin['username']})", "ticket_department", department_id)
+    return {"ok": True}
+
+
+@app.delete("/api/ticket-departments/{department_id}")
+def api_ticket_department_delete(department_id: int, admin=Depends(require_permission("tickets"))):
+    if not db.delete_ticket_department(department_id):
+        raise HTTPException(404, tr("دسته‌بندی یافت نشد."))
+    db.log_admin_action(admin["id"], "ticket_department_delete", f"دسته #{department_id} (پنل وب - {admin['username']})", "ticket_department", department_id)
     return {"ok": True}
 
 
@@ -5652,19 +6555,75 @@ def _support_lock_label(assigned_admin_id):
     return f"ادمین تلگرام #{assigned_admin_id}"
 
 
+def _sort_support_rows(rows: list, sort: str) -> list:
+    last = lambda c: str(c.get("last_at") or "")
+    if sort == "last_asc":
+        return sorted(rows, key=last)
+    if sort == "priority_desc":
+        return sorted(rows, key=lambda c: (_PRIORITY_RANK[c["priority"]], last(c)), reverse=True)
+    if sort == "priority_asc":
+        return sorted(rows, key=lambda c: (_PRIORITY_RANK[c["priority"]], last(c)))
+    if sort == "unread_first":
+        return sorted(rows, key=lambda c: (c.get("unread", 0), last(c)), reverse=True)
+    if sort == "messages_desc":
+        return sorted(rows, key=lambda c: (c.get("messages_count", 0), last(c)), reverse=True)
+    if sort == "name":
+        return sorted(rows, key=lambda c: norm_search(c.get("user_name") or c.get("user_username") or c["user_id"]))
+    return sorted(rows, key=last, reverse=True)
+
+
 @app.get("/api/support/conversations")
-def api_support_conversations(admin=Depends(get_current_admin)):
+def api_support_conversations(status: Optional[str] = None, priority: Optional[str] = None, q: Optional[str] = None,
+                              unread: Optional[int] = None, assigned: Optional[str] = None,
+                              service: Optional[str] = None, last_sender: Optional[str] = None,
+                              date_from: Optional[str] = None, date_to: Optional[str] = None,
+                              sort: Optional[str] = None, admin=Depends(get_current_admin)):
+    """لیست چت‌های زنده با جستجو (نام‌کاربری، نام، آیدی، سرویس مرتبط، متن پیام‌ها)،
+    فیلتر (وضعیت، اولویت، خوانده‌نشده، قفل/پاسخ‌دهنده، سرویس مرتبط، آخرین فرستنده، بازه‌ی آخرین پیام) و ترتیب‌بندی."""
     my_lock_id = -admin["id"]
     is_owner = admin["role"] == "owner"
     convs = rows_to_list(db.list_support_conversations())
+    names = db.get_user_names([c["user_id"] for c in convs])
+    date_from, date_to = _clean_date(date_from), _clean_date(date_to)
+    sort = _pick_sort(sort, _SUPPORT_SORTS, db.get_setting("support_default_sort", "last_desc"), "last_desc")
+    tokens = search_tokens(q)
+    body_hits = [db.find_support_user_ids_by_text(tok) for tok in tokens] if tokens and _search_in_messages_enabled() else []
+    out = []
     for c in convs:
-        user = row_to_dict(db.get_user(c["user_id"]))
-        c["user_name"] = (user["first_name"] if user else "") or ""
-        c["user_username"] = (user["username"] if user else "") or ""
-        assigned = c.get("assigned_admin_id")
-        c["locked_by"] = _support_lock_label(assigned)
-        c["locked_for_me"] = bool(assigned) and assigned != my_lock_id and not is_owner
-    return convs
+        c["status"] = c.get("status") or "open"
+        if status and c["status"] != status:
+            continue
+        if priority and c["priority"] != priority:
+            continue
+        if unread and not c.get("unread"):
+            continue
+        assigned_id = c.get("assigned_admin_id")
+        if assigned == "mine" and assigned_id != my_lock_id:
+            continue
+        if assigned == "other" and (not assigned_id or assigned_id == my_lock_id):
+            continue
+        if assigned == "free" and assigned_id:
+            continue
+        if service == "yes" and not c.get("ref_label"):
+            continue
+        if service == "no" and c.get("ref_label"):
+            continue
+        if last_sender in ("user", "admin") and c.get("last_sender") != last_sender:
+            continue
+        if not _in_date_range(c.get("last_at"), date_from, date_to):
+            continue
+        info = names.get(c["user_id"], {})
+        c["user_name"] = info.get("first_name") or ""
+        c["user_username"] = info.get("username") or ""
+        c["locked_by"] = _support_lock_label(assigned_id)
+        c["locked_for_me"] = bool(assigned_id) and assigned_id != my_lock_id and not is_owner
+        if tokens:
+            hay = norm_search(" ".join(str(x) for x in (
+                c["user_id"], c["user_name"], c["user_username"], c.get("ref_label") or "", c.get("last_message") or "")))
+            if not all(tok in hay or (i < len(body_hits) and c["user_id"] in body_hits[i]) for i, tok in enumerate(tokens)):
+                continue
+        out.append(c)
+    return _sort_support_rows(out, sort)
 
 
 @app.get("/api/support/{user_id}/messages")
@@ -5678,6 +6637,7 @@ def api_support_messages(user_id: int, since_id: int = 0, admin=Depends(get_curr
     assigned = conv["assigned_admin_id"] if conv else None
     my_lock_id = -admin["id"]
     is_owner = admin["role"] == "owner"
+    state = db.get_support_conversation_state(user_id)
     return {
         "user": {
             "user_id": user_id,
@@ -5685,6 +6645,9 @@ def api_support_messages(user_id: int, since_id: int = 0, admin=Depends(get_curr
             "user_username": (user["username"] if user else "") or "",
             "locked_by": _support_lock_label(assigned),
             "locked_for_me": bool(assigned) and assigned != my_lock_id and not is_owner,
+            "status": state["status"],
+            "priority": state["priority"],
+            "ref_label": state["ref_label"],
         },
         "messages": [
             {"id": m["id"], "sender": m["sender"], "message": m["message"], "created_at": m["created_at"]}
@@ -5707,6 +6670,8 @@ async def api_support_send(user_id: int, body: SupportReplyBody, admin=Depends(g
         raise HTTPException(400, tr("پیام نمی‌تواند خالی باشد."))
     if len(text) > 2000:
         raise HTTPException(400, tr("پیام بیش از حد طولانی است."))
+    if (await asyncio.to_thread(db.get_support_conversation_state, user_id))["status"] == "closed":
+        raise HTTPException(400, tr("این گفتگو بسته است؛ برای پاسخ‌دادن ابتدا آن را باز کنید."))
 
     # قفل مکالمه: چون ادمین‌های وب آیدی تلگرام ندارند، با -admin_id در همان
     # ستون assigned_admin_id ذخیره می‌شود (که با آیدی‌های واقعی تلگرام تداخل ندارد).
@@ -5726,6 +6691,61 @@ async def api_support_send(user_id: int, body: SupportReplyBody, admin=Depends(g
     await notify_user(user_id, f"💬 پشتیبانی:\n\n{text}")
     (await asyncio.to_thread(db.log_admin_action, admin["id"], "support_reply", f"پاسخ چت زنده به کاربر {user_id} (پنل وب - {admin['username']})", "user", user_id))
     return {"ok": True, "id": msg_id}
+
+
+def _assert_support_unlocked(user_id: int, admin) -> None:
+    """ادمین غیرمالک نمی‌تواند چتی را که روی ادمین دیگری قفل است مدیریت کند."""
+    conv = db.get_support_conversation(user_id)
+    assigned = conv["assigned_admin_id"] if conv else None
+    if assigned and assigned != -admin["id"] and admin["role"] != "owner":
+        raise HTTPException(403, tr(f"این گفتگو در اختیار {_support_lock_label(assigned)} است."))
+
+
+@app.post("/api/support/{user_id}/close")
+async def api_support_close(user_id: int, admin=Depends(require_permission("tickets"))):
+    if not db.get_user(user_id):
+        raise HTTPException(404, tr("کاربر یافت نشد."))
+    _assert_support_unlocked(user_id, admin)
+    db.set_support_status(user_id, "closed")
+    db.mark_support_read_by_admin(user_id)
+    db.log_admin_action(admin["id"], "support_close", f"بستن چت زنده کاربر {user_id} (پنل وب - {admin['username']})", "user", user_id)
+    await notify_user(user_id, "🔒 گفتگوی پشتیبانی بسته شد.\nاگر هنوز سؤالی دارید، کافی است پیام جدیدی بفرستید تا گفتگو دوباره باز شود.")
+    return {"ok": True}
+
+
+@app.post("/api/support/{user_id}/reopen")
+async def api_support_reopen(user_id: int, admin=Depends(require_permission("tickets"))):
+    if not db.get_user(user_id):
+        raise HTTPException(404, tr("کاربر یافت نشد."))
+    _assert_support_unlocked(user_id, admin)
+    db.set_support_status(user_id, "open")
+    db.log_admin_action(admin["id"], "support_reopen", f"بازکردن چت زنده کاربر {user_id} (پنل وب - {admin['username']})", "user", user_id)
+    await notify_user(user_id, "🔓 گفتگوی پشتیبانی دوباره باز شد.")
+    return {"ok": True}
+
+
+class SupportPriorityBody(BaseModel):
+    priority: str
+
+
+@app.post("/api/support/{user_id}/priority")
+def api_support_priority(user_id: int, body: SupportPriorityBody, admin=Depends(require_permission("tickets"))):
+    if body.priority not in TICKET_PRIORITIES:
+        raise HTTPException(400, tr("اولویت نامعتبر است."))
+    if not db.get_user(user_id):
+        raise HTTPException(404, tr("کاربر یافت نشد."))
+    _assert_support_unlocked(user_id, admin)
+    db.set_support_priority(user_id, body.priority)
+    db.log_admin_action(admin["id"], "support_priority", f"چت زنده کاربر {user_id} → {body.priority} (پنل وب - {admin['username']})", "user", user_id)
+    return {"ok": True}
+
+
+@app.delete("/api/support/{user_id}")
+def api_support_delete(user_id: int, admin=Depends(require_permission("tickets"))):
+    _assert_support_unlocked(user_id, admin)
+    count = db.delete_support_conversation(user_id)
+    db.log_admin_action(admin["id"], "support_delete", f"حذف چت زنده کاربر {user_id} ({count} پیام) (پنل وب - {admin['username']})", "user", user_id)
+    return {"ok": True, "deleted_messages": count}
 
 
 # -------------------------------------------------------------- resellers --
@@ -9394,11 +10414,17 @@ class WebAdminCreateBody(BaseModel):
     permissions: Optional[list] = None
 
 
+_WEB_ADMIN_HIDDEN_FIELDS = ("password_hash", "totp_secret", "totp_backup_codes", "totp_last_step")
+
+
 @app.get("/api/web-admins")
 def api_web_admins(admin=Depends(require_owner)):
     rows = rows_to_list(db.list_web_admins())
     for r in rows:
         r["permissions"] = db.get_web_admin_permissions(r)
+        r["totp_enabled"] = bool(r.get("totp_enabled")) and bool(r.get("totp_secret"))
+        for field in _WEB_ADMIN_HIDDEN_FIELDS:
+            r.pop(field, None)
     return rows
 
 
@@ -9608,6 +10634,137 @@ def api_change_my_username(body: MyUsernameBody, admin=Depends(get_current_admin
         "web_admin", admin["id"],
     )
     return {"ok": True, "username": new_username}
+
+
+class TwoFAPasswordBody(BaseModel):
+    current_password: str
+
+
+class TwoFACodeBody(BaseModel):
+    code: str
+
+
+class TwoFAConfirmBody(BaseModel):
+    current_password: str
+    code: str
+
+
+def _require_password(row, password: str):
+    if not verify_password(password or "", row["password_hash"]):
+        raise HTTPException(400, tr("پسورد فعلی اشتباه است."))
+
+
+def _twofa_rate_key(admin) -> str:
+    tenant = _current_tenant.get()
+    return f"{tenant.slug}:{admin['id']}"
+
+
+@app.get("/api/me/2fa")
+def api_my_2fa_status(admin=Depends(get_current_admin)):
+    row = db.get_web_admin(admin["id"])
+    enabled = _admin_totp_enabled(row)
+    return {
+        "enabled": enabled,
+        "backup_codes_left": db.count_web_admin_backup_codes(admin["id"]) if enabled else 0,
+    }
+
+
+@app.post("/api/me/2fa/setup")
+def api_my_2fa_setup(body: TwoFAPasswordBody, admin=Depends(get_current_admin)):
+    row = db.get_web_admin(admin["id"])
+    _require_password(row, body.current_password)
+    if _admin_totp_enabled(row):
+        raise HTTPException(400, tr("تأیید دو مرحله‌ای از قبل فعال است."))
+    secret = generate_totp_secret()
+    db.set_web_admin_totp_pending(admin["id"], secret)
+    tenant = _current_tenant.get()
+    account = row["username"] + (f"@{tenant.slug}" if tenant.slug else "")
+    uri = totp_uri(secret, account)
+    return {"secret": secret, "uri": uri, "qr": _qr_data_uri(uri)}
+
+
+@app.post("/api/me/2fa/enable")
+def api_my_2fa_enable(body: TwoFACodeBody, admin=Depends(get_current_admin)):
+    row = db.get_web_admin(admin["id"])
+    if _admin_totp_enabled(row) or not row["totp_secret"]:
+        raise HTTPException(400, tr("ابتدا مرحله‌ی راه‌اندازی را انجام دهید."))
+    key = _twofa_rate_key(admin)
+    if _otp_locked_seconds(key):
+        raise HTTPException(429, tr("تلاش‌های ناموفق زیاد بود؛ چند دقیقه بعد دوباره امتحان کنید."))
+    step = verify_totp(row["totp_secret"], body.code, 0)
+    if step is None:
+        _otp_register_fail(key)
+        raise HTTPException(400, tr("کد تأیید اشتباه است."))
+    _otp_clear(key)
+    plain, hashed = generate_backup_codes()
+    db.enable_web_admin_totp(admin["id"], hashed, step)
+    db.log_admin_action(admin["id"], "web_admin_2fa_enable", f"{row['username']}", "webadmin", admin["id"])
+    return {"ok": True, "backup_codes": plain}
+
+
+@app.post("/api/me/2fa/disable")
+def api_my_2fa_disable(body: TwoFAConfirmBody, admin=Depends(get_current_admin)):
+    row = db.get_web_admin(admin["id"])
+    _require_password(row, body.current_password)
+    if not _admin_totp_enabled(row):
+        db.clear_web_admin_totp(admin["id"])
+        return {"ok": True}
+    _verify_second_factor(db, row, body.code, _twofa_rate_key(admin))
+    db.clear_web_admin_totp(admin["id"])
+    db.log_admin_action(admin["id"], "web_admin_2fa_disable", f"{row['username']}", "webadmin", admin["id"])
+    return {"ok": True}
+
+
+@app.post("/api/me/2fa/backup-codes")
+def api_my_2fa_backup_codes(body: TwoFAConfirmBody, admin=Depends(get_current_admin)):
+    row = db.get_web_admin(admin["id"])
+    _require_password(row, body.current_password)
+    if not _admin_totp_enabled(row):
+        raise HTTPException(400, tr("تأیید دو مرحله‌ای فعال نیست."))
+    _verify_second_factor(db, row, body.code, _twofa_rate_key(admin))
+    plain, hashed = generate_backup_codes()
+    db.set_web_admin_backup_codes(admin["id"], hashed)
+    db.log_admin_action(admin["id"], "web_admin_2fa_backup_regen", f"{row['username']}", "webadmin", admin["id"])
+    return {"ok": True, "backup_codes": plain}
+
+
+@app.post("/api/web-admins/{admin_id}/2fa/reset")
+def api_reset_web_admin_2fa(admin_id: int, admin=Depends(require_owner)):
+    if admin_id == admin["id"]:
+        raise HTTPException(400, tr("برای حساب خودتان از بخش امنیت حساب استفاده کنید."))
+    target = db.get_web_admin(admin_id)
+    if not target:
+        raise HTTPException(404, tr("حساب پیدا نشد."))
+    db.clear_web_admin_totp(admin_id)
+    db.log_admin_action(admin["id"], "web_admin_2fa_reset", f"{target['username']}", "webadmin", admin_id)
+    return {"ok": True}
+
+
+class SessionSettingsBody(BaseModel):
+    idle_minutes: int
+
+
+@app.get("/api/security/session")
+def api_get_session_settings(admin=Depends(require_owner)):
+    tenant = _current_tenant.get()
+    return {
+        "idle_minutes": _session_idle_minutes(tenant),
+        "default_minutes": SESSION_IDLE_DEFAULT_MINUTES,
+        "min_minutes": SESSION_IDLE_MIN_MINUTES,
+        "max_minutes": SESSION_IDLE_MAX_MINUTES,
+    }
+
+
+@app.post("/api/security/session")
+def api_set_session_settings(body: SessionSettingsBody, admin=Depends(require_owner)):
+    minutes = int(body.idle_minutes)
+    if minutes != 0 and not SESSION_IDLE_MIN_MINUTES <= minutes <= SESSION_IDLE_MAX_MINUTES:
+        raise HTTPException(
+            400, tr(f"مقدار باید ۰ (غیرفعال) یا بین {SESSION_IDLE_MIN_MINUTES} تا {SESSION_IDLE_MAX_MINUTES} دقیقه باشد."),
+        )
+    db.set_setting(SESSION_IDLE_SETTING, str(minutes))
+    db.log_admin_action(admin["id"], "web_session_idle_set", f"{minutes} min", "setting", SESSION_IDLE_SETTING)
+    return {"ok": True, "idle_minutes": minutes}
 
 
 # ------------------------------------------------------------------ static --
