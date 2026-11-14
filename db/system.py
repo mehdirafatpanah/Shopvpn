@@ -357,6 +357,20 @@ class SystemMixin:
     def set_banners(self, banners: list):
         self.set_setting("miniapp_banners", json.dumps(banners, ensure_ascii=False))
 
+    def get_home_icons(self) -> dict:
+        raw = self.get_setting("miniapp_home_icons", "")
+        try:
+            data = json.loads(raw) if raw else {}
+        except (ValueError, TypeError):
+            data = {}
+        if not isinstance(data, dict):
+            return {}
+        return {str(k): str(v) for k, v in data.items() if isinstance(v, str) and v}
+
+    def set_home_icons(self, icons: dict):
+        clean = {str(k): str(v) for k, v in (icons or {}).items() if isinstance(v, str) and v}
+        self.set_setting("miniapp_home_icons", json.dumps(clean, ensure_ascii=False))
+
     # -----------------------------------------------------------------------
     # کاربران
     # -----------------------------------------------------------------------
@@ -791,6 +805,58 @@ class SystemMixin:
                 "UPDATE web_admins SET last_login=? WHERE id=?", (datetime.utcnow().isoformat(), admin_id)
             )
 
+
+    def set_web_admin_totp_pending(self, admin_id: int, secret: str):
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE web_admins SET totp_secret=?, totp_enabled=0, totp_backup_codes=NULL, totp_last_step=0 WHERE id=?",
+                (secret, admin_id),
+            )
+
+    def enable_web_admin_totp(self, admin_id: int, backup_hashes: list, last_step: int = 0):
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE web_admins SET totp_enabled=1, totp_backup_codes=?, totp_last_step=? WHERE id=? AND totp_secret IS NOT NULL",
+                (json.dumps(backup_hashes), int(last_step), admin_id),
+            )
+
+    def clear_web_admin_totp(self, admin_id: int):
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE web_admins SET totp_secret=NULL, totp_enabled=0, totp_backup_codes=NULL, totp_last_step=0 WHERE id=?",
+                (admin_id,),
+            )
+
+    def set_web_admin_totp_last_step(self, admin_id: int, step: int):
+        with self._get_conn() as conn:
+            conn.execute("UPDATE web_admins SET totp_last_step=? WHERE id=?", (int(step), admin_id))
+
+    def set_web_admin_backup_codes(self, admin_id: int, backup_hashes: list):
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE web_admins SET totp_backup_codes=? WHERE id=?", (json.dumps(backup_hashes), admin_id)
+            )
+
+    def consume_web_admin_backup_code(self, admin_id: int, code_hash: str) -> bool:
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT totp_backup_codes FROM web_admins WHERE id=?", (admin_id,)).fetchone()
+            try:
+                codes = json.loads((row["totp_backup_codes"] if row else None) or "[]")
+            except (ValueError, TypeError):
+                codes = []
+            if code_hash not in codes:
+                return False
+            codes.remove(code_hash)
+            conn.execute("UPDATE web_admins SET totp_backup_codes=? WHERE id=?", (json.dumps(codes), admin_id))
+            return True
+
+    def count_web_admin_backup_codes(self, admin_id: int) -> int:
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT totp_backup_codes FROM web_admins WHERE id=?", (admin_id,)).fetchone()
+        try:
+            return len(json.loads((row["totp_backup_codes"] if row else None) or "[]"))
+        except (ValueError, TypeError):
+            return 0
 
     def is_full_web_admin(self, role: str) -> bool:
         return role in ("owner", "admin", "mid")

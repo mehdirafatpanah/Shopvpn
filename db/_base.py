@@ -1590,7 +1590,11 @@ class DatabaseBase:
                     is_active INTEGER DEFAULT 1,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     last_login TEXT,
-                    language_code TEXT DEFAULT 'fa'
+                    language_code TEXT DEFAULT 'fa',
+                    totp_secret TEXT,
+                    totp_enabled INTEGER DEFAULT 0,
+                    totp_backup_codes TEXT,
+                    totp_last_step INTEGER DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_web_admins_username ON web_admins(username);
 
@@ -2077,6 +2081,18 @@ class DatabaseBase:
             ("channel_posts", "kind", "TEXT DEFAULT 'post'"),
             ("channel_posts", "poll_json", "TEXT"),
             ("tickets", "department_id", "INTEGER"),
+            # اولویت (low|medium|high) و اشاره به یکی از سرویس‌های خریداری‌شده‌ی کاربر
+            # برای تیکت و چت زنده + وضعیت باز/بسته‌ی چت زنده
+            ("tickets", "priority", "TEXT DEFAULT 'medium'"),
+            ("tickets", "ref_kind", "TEXT"),
+            ("tickets", "ref_id", "INTEGER"),
+            ("tickets", "ref_label", "TEXT"),
+            ("support_conversations", "status", "TEXT DEFAULT 'open'"),
+            ("support_conversations", "priority", "TEXT DEFAULT 'medium'"),
+            ("support_conversations", "ref_kind", "TEXT"),
+            ("support_conversations", "ref_id", "INTEGER"),
+            ("support_conversations", "ref_label", "TEXT"),
+            ("support_conversations", "closed_at", "TEXT"),
             ("orders", "quantity", "INTEGER DEFAULT 1"),
             ("orders", "config_name", "TEXT"),
             ("configs", "order_id", "INTEGER"),
@@ -2230,6 +2246,10 @@ class DatabaseBase:
             # نکند، ادمین دوم پیام «توسط ادمین دیگری در حال بررسی است» می‌بیند.
             ("reseller_requests", "claimed_by", "INTEGER"),
             ("web_admins", "permissions", "TEXT"),
+            ("web_admins", "totp_secret", "TEXT"),
+            ("web_admins", "totp_enabled", "INTEGER DEFAULT 0"),
+            ("web_admins", "totp_backup_codes", "TEXT"),
+            ("web_admins", "totp_last_step", "INTEGER DEFAULT 0"),
             ("admin_logs", "record_type", "TEXT"),
             ("admin_logs", "record_id", "TEXT"),
             # حذف کانفیگ/سفارش توسط خود کاربر (از منوی «سفارش‌های من» در بات یا

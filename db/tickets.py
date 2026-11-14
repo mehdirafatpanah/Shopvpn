@@ -5,6 +5,30 @@ import time
 from .constants import *
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 
+PRIORITIES = ("low", "medium", "high")
+
+
+def normalize_priority(value) -> str:
+    """اولویت تیکت/چت زنده: low (کم) | medium (متوسط) | high (زیاد)؛ مقدار نامعتبر = medium."""
+    value = str(value or "").strip().lower()
+    return value if value in PRIORITIES else "medium"
+
+
+_FA_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+
+def norm_search(text) -> str:
+    """نرمال‌سازی متن برای جستجو: ارقام فارسی/عربی، ی/ک عربی، نیم‌فاصله و حروف بزرگ/کوچک."""
+    s = str(text or "").translate(_FA_DIGITS)
+    s = s.replace("ي", "ی").replace("ى", "ی").replace("ك", "ک").replace("ـ", "").replace("\u200c", " ")
+    return " ".join(s.casefold().split())
+
+
+def search_tokens(text) -> list:
+    """کلمات جستجو؛ @ و # ابتدای هر کلمه حذف می‌شود تا «@user» و «#12» هم کار کنند."""
+    return [t for t in (w.lstrip("@#") for w in norm_search(text).split()) if t]
+
+
 class TicketsMixin:
     def add_support_message(self, user_id: int, sender: str, message: str) -> int:
         """sender باید 'user' یا 'admin' باشد."""
@@ -14,11 +38,21 @@ class TicketsMixin:
                 "VALUES (?, ?, ?, ?, ?)",
                 (user_id, sender, message, 1 if sender == "user" else 0, 1 if sender == "admin" else 0),
             )
-            conn.execute(
-                "INSERT INTO support_conversations (user_id, updated_at) VALUES (?, CURRENT_TIMESTAMP) "
-                "ON CONFLICT(user_id) DO UPDATE SET updated_at=CURRENT_TIMESTAMP",
-                (user_id,),
-            )
+            if sender == "user":
+                # پیام جدید کاربر روی چت بسته‌شده، آن را خودکار دوباره باز می‌کند.
+                conn.execute(
+                    "INSERT INTO support_conversations (user_id, updated_at, status) "
+                    "VALUES (?, CURRENT_TIMESTAMP, 'open') "
+                    "ON CONFLICT(user_id) DO UPDATE SET updated_at=CURRENT_TIMESTAMP, "
+                    "status='open', closed_at=NULL",
+                    (user_id,),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO support_conversations (user_id, updated_at) VALUES (?, CURRENT_TIMESTAMP) "
+                    "ON CONFLICT(user_id) DO UPDATE SET updated_at=CURRENT_TIMESTAMP",
+                    (user_id,),
+                )
             return cur.lastrowid
 
 
@@ -358,7 +392,7 @@ class TicketsMixin:
         """لیست مکالمات چت زنده برای تب «پشتیبانی زنده» در پنل ادمین، جدیدترین اول."""
         with self._get_conn() as conn:
             rows = conn.execute(
-                "SELECT user_id, MAX(id) AS last_id, MAX(created_at) AS last_at, "
+                "SELECT user_id, MAX(id) AS last_id, MAX(created_at) AS last_at, COUNT(*) AS total, "
                 "SUM(CASE WHEN sender='user' AND is_read_by_admin=0 THEN 1 ELSE 0 END) AS unread "
                 "FROM support_messages GROUP BY user_id ORDER BY last_at DESC"
             ).fetchall()
@@ -369,18 +403,120 @@ class TicketsMixin:
                     (r["user_id"],),
                 ).fetchone()
                 conv = conn.execute(
-                    "SELECT assigned_admin_id FROM support_conversations WHERE user_id=?", (r["user_id"],)
+                    "SELECT assigned_admin_id, status, priority, ref_kind, ref_id, ref_label "
+                    "FROM support_conversations WHERE user_id=?", (r["user_id"],)
                 ).fetchone()
                 result.append({
                     "user_id": r["user_id"],
                     "last_at": r["last_at"],
                     "unread": r["unread"] or 0,
+                    "messages_count": r["total"] or 0,
                     "last_message": last_msg["message"] if last_msg else "",
                     "last_sender": last_msg["sender"] if last_msg else "",
                     "assigned_admin_id": conv["assigned_admin_id"] if conv else None,
+                    "status": (conv["status"] if conv and conv["status"] else "open"),
+                    "priority": normalize_priority(conv["priority"] if conv else None),
+                    "ref_kind": conv["ref_kind"] if conv else None,
+                    "ref_id": conv["ref_id"] if conv else None,
+                    "ref_label": (conv["ref_label"] if conv else None) or "",
                 })
             return result
 
+
+    # --- وضعیت / اولویت / سرویس مرتبط / حذف چت زنده (فقط از پنل وب مدیریت می‌شود) ---
+
+    def get_support_conversation_state(self, user_id: int) -> dict:
+        """وضعیت فعلی چت زنده‌ی یک کاربر؛ اگر هنوز ردیفی نباشد مقادیر پیش‌فرض."""
+        conv = self.get_support_conversation(user_id)
+        return {
+            "status": (conv["status"] if conv and conv["status"] else "open"),
+            "priority": normalize_priority(conv["priority"] if conv else None),
+            "ref_kind": conv["ref_kind"] if conv else None,
+            "ref_id": conv["ref_id"] if conv else None,
+            "ref_label": (conv["ref_label"] if conv else None) or "",
+            "assigned_admin_id": conv["assigned_admin_id"] if conv else None,
+        }
+
+    def set_support_status(self, user_id: int, status: str) -> None:
+        status = "closed" if status == "closed" else "open"
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO support_conversations (user_id, status, closed_at, updated_at) "
+                "VALUES (?, ?, CASE WHEN ?='closed' THEN CURRENT_TIMESTAMP ELSE NULL END, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(user_id) DO UPDATE SET status=excluded.status, closed_at=excluded.closed_at, "
+                "updated_at=CURRENT_TIMESTAMP",
+                (user_id, status, status),
+            )
+
+    def set_support_priority(self, user_id: int, priority: str) -> None:
+        priority = normalize_priority(priority)
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO support_conversations (user_id, priority, updated_at) "
+                "VALUES (?, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(user_id) DO UPDATE SET priority=excluded.priority",
+                (user_id, priority),
+            )
+
+    def set_support_reference(self, user_id: int, ref_kind, ref_id, ref_label) -> None:
+        """سرویس خریداری‌شده‌ای که کاربر در چت زنده به آن اشاره کرده (None = حذف اشاره)."""
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO support_conversations (user_id, ref_kind, ref_id, ref_label, updated_at) "
+                "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(user_id) DO UPDATE SET ref_kind=excluded.ref_kind, ref_id=excluded.ref_id, "
+                "ref_label=excluded.ref_label",
+                (user_id, ref_kind, ref_id, ref_label),
+            )
+
+    def delete_support_conversation(self, user_id: int) -> int:
+        """کل چت زنده‌ی کاربر (پیام‌ها + ردیف مکالمه) را حذف می‌کند؛ تعداد پیام‌های حذف‌شده را برمی‌گرداند."""
+        with self._get_conn() as conn:
+            cur = conn.execute("DELETE FROM support_messages WHERE user_id=?", (user_id,))
+            conn.execute("DELETE FROM support_conversations WHERE user_id=?", (user_id,))
+            return cur.rowcount or 0
+
+    def list_user_support_services(self, user_id: int, limit: int = 30) -> list:
+        """سرویس‌های خریداری‌شده‌ی کاربر برای اشاره در تیکت/چت زنده.
+        هر آیتم: {kind: 'custom'|'bank', id, label}. کانفیگ‌های تست/هدیه حذف می‌شوند."""
+        items = []
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT cc.id AS id, COALESCE(NULLIF(cc.display_name,''), cc.username) AS name, "
+                "cc.status AS status, p.name AS product_name "
+                "FROM custom_configs cc LEFT JOIN orders o ON o.id=cc.order_id "
+                "LEFT JOIN products p ON p.id=o.product_id "
+                "WHERE cc.user_id=? AND COALESCE(cc.source,'') NOT IN ('test','welcome_gift','gift') "
+                "ORDER BY cc.id DESC LIMIT ?",
+                (int(user_id), int(limit)),
+            ).fetchall()
+            for r in rows:
+                label = str(r["name"] or f"#{r['id']}")
+                if r["product_name"]:
+                    label += f" — {r['product_name']}"
+                items.append({"kind": "custom", "id": int(r["id"]), "label": label[:120]})
+            rows = conn.execute(
+                "SELECT cf.id AS id, p.name AS product_name FROM configs cf "
+                "LEFT JOIN products p ON p.id=cf.product_id "
+                "WHERE cf.assigned_user_id=? ORDER BY cf.id DESC LIMIT ?",
+                (int(user_id), int(limit)),
+            ).fetchall()
+            for r in rows:
+                items.append({"kind": "bank", "id": int(r["id"]),
+                              "label": f"{r['product_name'] or 'سرویس'} (#{r['id']})"[:120]})
+        return items[: int(limit)]
+
+    def resolve_support_service_ref(self, user_id: int, kind, ref_id):
+        """اعتبارسنجی اشاره به سرویس: فقط سرویسی که واقعاً مال همین کاربر است پذیرفته می‌شود.
+        خروجی (kind, id, label) یا (None, None, None)."""
+        try:
+            ref_id = int(ref_id)
+        except (TypeError, ValueError):
+            return None, None, None
+        for item in self.list_user_support_services(user_id, limit=200):
+            if item["kind"] == kind and item["id"] == ref_id:
+                return item["kind"], item["id"], item["label"]
+        return None, None, None
 
     def count_tickets_by_status(self, status: str) -> int:
         with self._get_read_conn() as conn:
@@ -421,6 +557,10 @@ class TicketsMixin:
 
 
     def ensure_ticket_departments(self):
+        # دسته‌بندی‌های پیش‌فرض فقط یک بار ساخته می‌شوند تا اگر مدیر یکی را از پنل وب
+        # حذف کرد، با فراخوانی بعدی دوباره برنگردد.
+        if self.get_setting("ticket_departments_seeded", "") == "1":
+            return
         defaults = [("فروش", 10), ("فنی", 20), ("مالی", 30), ("عمومی", 40)]
         with self._get_conn() as conn:
             for name, order in defaults:
@@ -428,6 +568,68 @@ class TicketsMixin:
                     "INSERT OR IGNORE INTO ticket_departments(name, sort_order, is_active) VALUES (?, ?, 1)",
                     (name, order),
                 )
+        self.set_setting("ticket_departments_seeded", "1")
+
+    def create_ticket_department(self, name: str, sort_order: int = None) -> int:
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("نام دسته‌بندی نمی‌تواند خالی باشد.")
+        self.ensure_ticket_departments()
+        with self._get_conn() as conn:
+            if conn.execute("SELECT 1 FROM ticket_departments WHERE name=?", (name,)).fetchone():
+                raise ValueError("دسته‌بندی‌ای با این نام وجود دارد.")
+            if sort_order is None:
+                row = conn.execute("SELECT COALESCE(MAX(sort_order), 0) AS m FROM ticket_departments").fetchone()
+                sort_order = int(row["m"] or 0) + 10
+            cur = conn.execute(
+                "INSERT INTO ticket_departments(name, sort_order, is_active) VALUES (?, ?, 1)",
+                (name, int(sort_order)),
+            )
+            return cur.lastrowid
+
+    def update_ticket_department(self, department_id: int, name: str = None,
+                                 is_active: bool = None, sort_order: int = None) -> bool:
+        self.ensure_ticket_departments()
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT * FROM ticket_departments WHERE id=?", (department_id,)).fetchone()
+            if not row:
+                return False
+            fields, params = [], []
+            if name is not None:
+                name = name.strip()
+                if not name:
+                    raise ValueError("نام دسته‌بندی نمی‌تواند خالی باشد.")
+                dup = conn.execute(
+                    "SELECT 1 FROM ticket_departments WHERE name=? AND id<>?", (name, department_id)
+                ).fetchone()
+                if dup:
+                    raise ValueError("دسته‌بندی‌ای با این نام وجود دارد.")
+                fields.append("name=?"); params.append(name)
+            if is_active is not None:
+                fields.append("is_active=?"); params.append(1 if is_active else 0)
+            if sort_order is not None:
+                fields.append("sort_order=?"); params.append(int(sort_order))
+            if fields:
+                params.append(department_id)
+                conn.execute(f"UPDATE ticket_departments SET {', '.join(fields)} WHERE id=?", params)
+            return True
+
+    def count_tickets_in_department(self, department_id: int) -> int:
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM tickets WHERE department_id=?", (department_id,)
+            ).fetchone()[0]
+
+    def delete_ticket_department(self, department_id: int) -> bool:
+        """دسته‌بندی را حذف می‌کند؛ تیکت‌های قبلی آن بدون دسته‌بندی می‌مانند (حذف نمی‌شوند)."""
+        self.ensure_ticket_departments()
+        with self._get_conn() as conn:
+            if not conn.execute("SELECT 1 FROM ticket_departments WHERE id=?", (department_id,)).fetchone():
+                return False
+            conn.execute("UPDATE tickets SET department_id=NULL WHERE department_id=?", (department_id,))
+            conn.execute("DELETE FROM ticket_department_admins WHERE department_id=?", (department_id,))
+            conn.execute("DELETE FROM ticket_departments WHERE id=?", (department_id,))
+            return True
 
 
     def list_ticket_departments(self, active_only=True):
@@ -478,15 +680,18 @@ class TicketsMixin:
         return sorted(ids)
 
 
-    def create_ticket(self, user_id: int, subject: str, first_message: str, department_id: int = None) -> int:
+    def create_ticket(self, user_id: int, subject: str, first_message: str, department_id: int = None,
+                      ref_kind: str = None, ref_id: int = None, ref_label: str = None,
+                      priority: str = "medium") -> int:
         self.ensure_ticket_departments()
         if department_id is None:
             deps = self.list_ticket_departments()
             department_id = deps[0]["id"] if deps else None
         with self._get_conn() as conn:
             cur = conn.execute(
-                "INSERT INTO tickets (user_id, subject, status, department_id) VALUES (?, ?, 'open', ?)",
-                (user_id, subject, department_id),
+                "INSERT INTO tickets (user_id, subject, status, department_id, priority, ref_kind, ref_id, ref_label) "
+                "VALUES (?, ?, 'open', ?, ?, ?, ?, ?)",
+                (user_id, subject, department_id, normalize_priority(priority), ref_kind, ref_id, ref_label),
             )
             ticket_id = cur.lastrowid
             conn.execute(
@@ -510,6 +715,62 @@ class TicketsMixin:
                     "SELECT * FROM tickets WHERE status=? ORDER BY updated_at DESC", (status,)
                 ).fetchall()
             return conn.execute("SELECT * FROM tickets ORDER BY updated_at DESC").fetchall()
+
+
+    def get_user_names(self, user_ids) -> dict:
+        """نام‌کاربری و نام کاربران به‌صورت دسته‌ای: {telegram_id: {username, first_name}}."""
+        ids = sorted({int(i) for i in user_ids if i is not None})
+        out = {}
+        with self._get_conn() as conn:
+            for i in range(0, len(ids), 500):
+                chunk = ids[i:i + 500]
+                marks = ",".join("?" * len(chunk))
+                for r in conn.execute(
+                    f"SELECT telegram_id, username, first_name FROM users WHERE telegram_id IN ({marks})", chunk
+                ).fetchall():
+                    out[r["telegram_id"]] = {"username": r["username"] or "", "first_name": r["first_name"] or ""}
+        return out
+
+    def get_ticket_message_stats(self) -> dict:
+        """آمار پیام هر تیکت: {ticket_id: {total, unread, last_sender}} (unread = پیام‌های خوانده‌نشده‌ی کاربر برای ادمین)."""
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT ticket_id, COUNT(*) AS total, "
+                "SUM(CASE WHEN sender='user' AND is_read_by_admin=0 THEN 1 ELSE 0 END) AS unread "
+                "FROM ticket_messages GROUP BY ticket_id"
+            ).fetchall()
+            stats = {r["ticket_id"]: {"total": r["total"] or 0, "unread": r["unread"] or 0, "last_sender": ""} for r in rows}
+            last = conn.execute(
+                "SELECT m.ticket_id, m.sender FROM ticket_messages m "
+                "JOIN (SELECT MAX(id) AS mid FROM ticket_messages GROUP BY ticket_id) x ON m.id = x.mid"
+            ).fetchall()
+            for r in last:
+                if r["ticket_id"] in stats:
+                    stats[r["ticket_id"]]["last_sender"] = r["sender"]
+        return stats
+
+    def _ids_by_message_text(self, table: str, column: str, term: str, limit: int = 5000) -> set:
+        raw = str(term or "").strip()
+        if not raw:
+            return set()
+        variants = {raw, norm_search(raw), raw.replace("ی", "ي").replace("ک", "ك")}
+        variants.discard("")
+        esc = lambda v: v.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        clause = " OR ".join("message LIKE ? ESCAPE '\\'" for _ in variants)
+        params = [f"%{esc(v)}%" for v in variants]
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                f"SELECT DISTINCT {column} FROM {table} WHERE {clause} LIMIT ?", params + [limit]
+            ).fetchall()
+        return {r[0] for r in rows}
+
+    def find_ticket_ids_by_text(self, term: str, limit: int = 5000) -> set:
+        """شناسه‌ی تیکت‌هایی که متن یکی از پیام‌هایشان شامل term است."""
+        return self._ids_by_message_text("ticket_messages", "ticket_id", term, limit)
+
+    def find_support_user_ids_by_text(self, term: str, limit: int = 5000) -> set:
+        """شناسه‌ی کاربرانی که متن یکی از پیام‌های چت زنده‌شان شامل term است."""
+        return self._ids_by_message_text("support_messages", "user_id", term, limit)
 
 
     def get_ticket(self, ticket_id: int):
@@ -586,6 +847,49 @@ class TicketsMixin:
                 "UPDATE tickets SET status='closed', updated_at=CURRENT_TIMESTAMP WHERE id=?", (ticket_id,)
             )
 
+
+    def reopen_ticket(self, ticket_id: int) -> bool:
+        """تیکت بسته را دوباره باز می‌کند (برای مدیر در پنل وب و برای خود کاربر)."""
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "UPDATE tickets SET status='open', updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='closed'",
+                (ticket_id,),
+            )
+            return (cur.rowcount or 0) > 0
+
+    def set_ticket_priority(self, ticket_id: int, priority: str) -> None:
+        with self._get_conn() as conn:
+            conn.execute("UPDATE tickets SET priority=? WHERE id=?", (normalize_priority(priority), ticket_id))
+
+    def set_ticket_department(self, ticket_id: int, department_id) -> None:
+        with self._get_conn() as conn:
+            conn.execute("UPDATE tickets SET department_id=? WHERE id=?", (department_id, ticket_id))
+
+    def delete_ticket(self, ticket_id: int) -> bool:
+        """تیکت را همراه با همه‌ی پیام‌هایش برای همیشه حذف می‌کند."""
+        with self._get_conn() as conn:
+            if not conn.execute("SELECT 1 FROM tickets WHERE id=?", (ticket_id,)).fetchone():
+                return False
+            conn.execute("DELETE FROM ticket_messages WHERE ticket_id=?", (ticket_id,))
+            self._ensure_ticket_group_table(conn)
+            conn.execute("DELETE FROM ticket_group_messages WHERE ticket_id=?", (ticket_id,))
+            conn.execute("DELETE FROM tickets WHERE id=?", (ticket_id,))
+            return True
+
+    def delete_closed_tickets(self) -> int:
+        """همه‌ی تیکت‌های بسته‌شده را حذف می‌کند و تعدادشان را برمی‌گرداند."""
+        with self._get_conn() as conn:
+            ids = [r["id"] for r in conn.execute("SELECT id FROM tickets WHERE status='closed'").fetchall()]
+            if not ids:
+                return 0
+            self._ensure_ticket_group_table(conn)
+            for i in range(0, len(ids), 500):
+                chunk = ids[i:i + 500]
+                marks = ",".join("?" * len(chunk))
+                conn.execute(f"DELETE FROM ticket_messages WHERE ticket_id IN ({marks})", chunk)
+                conn.execute(f"DELETE FROM ticket_group_messages WHERE ticket_id IN ({marks})", chunk)
+                conn.execute(f"DELETE FROM tickets WHERE id IN ({marks})", chunk)
+            return len(ids)
 
     def mark_ticket_read_by_user(self, ticket_id: int):
         with self._get_conn() as conn:
