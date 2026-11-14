@@ -10,6 +10,9 @@
   "firebase_sender_id",
   "master_sub_link",
   "netmap_locations",
+  "support_default_sort",
+  "ticket_search_in_messages",
+  "tickets_default_sort",
   "web_3d_auto_lite",
   "web_3d_mobile",
   "web_3d_mode"

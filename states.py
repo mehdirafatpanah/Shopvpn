@@ -43,6 +43,7 @@ class ContactFlow(StatesGroup):
 
 class TicketFlow(StatesGroup):
     waiting_department = State()
+    waiting_service = State()
     waiting_subject = State()
     waiting_message = State()
 

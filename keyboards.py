@@ -1276,6 +1276,7 @@ def contact_reply_kb(user_tg_id) -> InlineKeyboardMarkup:
 # ---------------------------------------------------------------------------
 
 TICKET_STATUS_LABELS = {"open": "🟢 باز", "answered": "🟡 پاسخ داده‌شده", "closed": "🔴 بسته‌شده"}
+TICKET_PRIORITY_LABELS = {"low": "🟢 کم", "medium": "🟡 متوسط", "high": "🔴 زیاد"}
 
 
 SUPPORT_CONTACT_METHODS = [
@@ -1711,11 +1712,29 @@ def tickets_list_kb(tickets) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def ticket_services_kb(services, prefix: str = "ticket_svc", skip_text: str = "⏭ بدون اشاره به سرویس خاص",
+                       cancel_callback: str = "ticket_cancel") -> InlineKeyboardMarkup:
+    """انتخاب اختیاری یکی از سرویس‌های خریداری‌شده برای تیکت/چت زنده.
+    callback: {prefix}:{kind}:{id} یا {prefix}:skip"""
+    rows = []
+    for item in services:
+        label = str(item["label"])
+        if len(label) > 40:
+            label = label[:40] + "…"
+        rows.append([InlineKeyboardButton(text=f"📦 {label}", callback_data=f"{prefix}:{item['kind']}:{item['id']}")])
+    if prefix == "ticket_svc":
+        rows.append([InlineKeyboardButton(text=tr(skip_text), callback_data=f"{prefix}:skip")])
+    rows.append([InlineKeyboardButton(text=tr("❌ لغو"), callback_data=cancel_callback)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def ticket_thread_kb(ticket_id: int, is_closed: bool, back_callback: str = "tickets_mine") -> InlineKeyboardMarkup:
     rows = []
     if not is_closed:
         rows.append([InlineKeyboardButton(text=tr("✉️ ارسال پیام در این تیکت"), callback_data=f"ticket_reply:{ticket_id}")])
         rows.append([InlineKeyboardButton(text=tr("🔒 بستن تیکت"), callback_data=f"ticket_close:{ticket_id}")])
+    else:
+        rows.append([InlineKeyboardButton(text=tr("🔓 باز کردن مجدد تیکت"), callback_data=f"ticket_reopen:{ticket_id}")])
     rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت به لیست تیکت‌ها"), callback_data=back_callback)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

@@ -110,6 +110,7 @@ CUSTOM_SETTING_KEYS = {
     "store_name",
     "miniapp_banner_text",
     "miniapp_banners",
+    "miniapp_home_icons",
 }
 
 # JSON/object fields used by Mini App/Admin Panel banners. Keep this explicit so

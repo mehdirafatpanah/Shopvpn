@@ -2369,3 +2369,13 @@ EXTRA_PHRASES.update({
     'فروش پنل فقط برای بات اصلی و به\u200cصورت بانک موجودی مجاز است.': 'Panel sale is only allowed on the main bot as a stock bank.',
     'هیچ خط معتبری پیدا نشد. فرمت: آدرس | یوزر | پسورد | توضیحات': 'No valid line found. Format: address | username | password | notes',
 })
+
+EXTRA_PHRASES.update({
+    'این گزینه دیگر در دسترس نیست.': 'This option is no longer available.',
+    'این گزینه فقط داخل تلگرام در دسترس است.': 'This option is only available inside Telegram.',
+    'ارسال پیام ناموفق بود؛ ابتدا ربات را استارت کنید.': 'Sending the message failed; please start the bot first.',
+    'آیکون باید یک ایموجی کوتاه یا یک تصویر باشد.': 'The icon must be a short emoji or an image.',
+    'تصویر آیکون نامعتبر یا بیش از حد بزرگ است.': 'The icon image is invalid or too large.',
+    'فقط فایل PNG، JPG، WEBP یا GIF پذیرفته می\u200cشود.': 'Only PNG, JPG, WEBP or GIF files are accepted.',
+    'حجم آیکون نباید بیشتر از ۲۵۶ کیلوبایت باشد.': 'The icon must not be larger than 256 KB.',
+})
