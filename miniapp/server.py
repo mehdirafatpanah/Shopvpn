@@ -87,6 +87,7 @@ import ai_support
 import buy_guide
 import receipt_ai_check
 import report_router
+from md_utils import escape_md
 import dedicated_sub
 import card_to_card_payment
 from asset_versioning import static_version, ApiNoStoreMiddleware
@@ -1448,6 +1449,34 @@ async def api_create_custom_config(body: CustomConfigPurchase, auth=Depends(requ
 
 
 
+def _category_photo_file_id(db, cat_id) -> Optional[str]:
+    """file_id عکس دسته/زیردسته (همان عکسی که از ربات یا پنل وب ثبت شده)؛ بدون عکس: None."""
+    try:
+        for it in db.get_category_description_media(int(cat_id)):
+            if it.get("type") == "photo" and it.get("file_id"):
+                return it["file_id"]
+    except Exception:
+        logging.getLogger("miniapp.catalog").exception("خواندن عکس دسته %s ناموفق بود.", cat_id)
+    return None
+
+
+@app.get("/api/catalog/categories/{cat_id}/image")
+async def api_catalog_category_image(cat_id: int, auth=Depends(get_verified_user)):
+    """عکس دسته/زیردسته برای نمایش در قاب فروشگاه مینی‌اپ (فقط دسته‌های فعال)."""
+    _, db, tenant = auth
+    cat = await asyncio.to_thread(db.get_category, cat_id)
+    if not cat or not cat["is_active"]:
+        raise HTTPException(status_code=404, detail=tr("دسته‌بندی یافت نشد."))
+    file_id = await asyncio.to_thread(_category_photo_file_id, db, cat_id)
+    if not file_id:
+        raise HTTPException(status_code=404, detail=tr("برای این دسته‌بندی عکسی ثبت نشده است."))
+    result = await _tg_fetch_file(tenant.bot_token, file_id)
+    if not result:
+        raise HTTPException(status_code=502, detail=tr("دریافت تصویر از تلگرام ناموفق بود."))
+    content, content_type = result
+    return Response(content=content, media_type=content_type, headers={"Cache-Control": "private, max-age=3600"})
+
+
 @app.get("/api/catalog")
 def api_catalog(auth=Depends(get_verified_user)):
     tg_id, db, _ = auth
@@ -1461,6 +1490,7 @@ def api_catalog(auth=Depends(get_verified_user)):
             "name": c["name"],
             "description": c["description"] if "description" in c.keys() else "",
             "button_color": c["button_color"] if "button_color" in c.keys() else None,
+            "has_image": _category_photo_file_id(db, c["id"]) is not None,
             "products": [
                 {
                     "id": p["id"],
@@ -1972,6 +2002,37 @@ def api_support_messages(since_id: int = 0, auth=Depends(get_verified_user)):
 
 class SupportMessageCreate(BaseModel):
     message: str
+    service_kind: Optional[str] = None
+    service_id: Optional[int] = None
+
+
+@app.get("/api/support/services")
+def api_support_services(auth=Depends(get_verified_user)):
+    """سرویس‌های خریداری‌شده‌ی کاربر برای اشاره‌ی اختیاری در چت زنده و تیکت."""
+    tg_id, db, _ = auth
+    return db.list_user_support_services(tg_id, 30)
+
+
+@app.get("/api/support/state")
+def api_support_state(auth=Depends(get_verified_user)):
+    tg_id, db, _ = auth
+    state = db.get_support_conversation_state(tg_id)
+    return {"status": state["status"], "ref_kind": state["ref_kind"], "ref_id": state["ref_id"],
+            "ref_label": state["ref_label"]}
+
+
+@app.post("/api/support/close")
+def api_support_close_mine(auth=Depends(get_verified_user)):
+    tg_id, db, _ = auth
+    db.set_support_status(tg_id, "closed")
+    return {"status": "closed"}
+
+
+@app.post("/api/support/reopen")
+def api_support_reopen_mine(auth=Depends(get_verified_user)):
+    tg_id, db, _ = auth
+    db.set_support_status(tg_id, "open")
+    return {"status": "open"}
 
 
 @app.post("/api/support/messages")
@@ -1983,14 +2044,29 @@ async def api_support_send(body: SupportMessageCreate, auth=Depends(get_verified
     if len(text) > 2000:
         raise HTTPException(status_code=400, detail=tr("پیام بیش از حد طولانی است."))
 
-    msg_id = db.add_support_message(tg_id, "user", text)
+    prev_state = db.get_support_conversation_state(tg_id)
+    was_closed = prev_state["status"] == "closed"
+    msg_id = db.add_support_message(tg_id, "user", text)  # پیام کاربر، چت بسته را خودکار باز می‌کند
+
+    # اشاره‌ی اختیاری به سرویس خریداری‌شده (فقط سرویسِ خودِ کاربر پذیرفته می‌شود)
+    ref_label = prev_state["ref_label"]
+    if body.service_kind and body.service_id is not None:
+        kind, ref_id, label = db.resolve_support_service_ref(tg_id, body.service_kind, body.service_id)
+        if kind:
+            db.set_support_reference(tg_id, kind, ref_id, label)
+            ref_label = label
+    elif was_closed:
+        db.set_support_reference(tg_id, None, None, None)
+        ref_label = ""
 
     user = db.get_user(tg_id)
     caption = (
         f"📩 پیام جدید از کاربر (مینی‌اپ)\n"
         f"👤 {(user['first_name'] if user else '') or ''} (@{(user['username'] if user else '') or '---'})\n"
-        f"🆔 `{tg_id}`\n\n"
-        f"✉️ {text}"
+        f"🆔 `{tg_id}`\n"
+        + ("🔓 این گفتگو قبلاً بسته شده بود و دوباره باز شد.\n" if was_closed else "")
+        + (f"📦 سرویس: {escape_md(ref_label)}\n" if ref_label else "")
+        + f"\n✉️ {text}"
     )
     reply_markup = {
         "inline_keyboard": [[{"text": "↩️ پاسخ", "callback_data": f"reply_user:{tg_id}"}]]
@@ -2022,6 +2098,9 @@ async def api_support_send(body: SupportMessageCreate, auth=Depends(get_verified
 class TicketCreate(BaseModel):
     subject: str
     message: str
+    department_id: Optional[int] = None
+    service_kind: Optional[str] = None
+    service_id: Optional[int] = None
 
 
 class TicketMessageCreate(BaseModel):
@@ -2033,7 +2112,16 @@ def _ticket_to_dict(t):
         "id": t["id"], "subject": t["subject"], "status": t["status"],
         "claimed_by": t["claimed_by"],
         "created_at": t["created_at"], "updated_at": t["updated_at"],
+        "priority": (t["priority"] if "priority" in t.keys() else None) or "medium",
+        "ref_label": (t["ref_label"] if "ref_label" in t.keys() else None) or "",
     }
+
+
+@app.get("/api/tickets/departments")
+def api_ticket_departments_public(auth=Depends(get_verified_user)):
+    """دسته‌بندی‌های فعال تیکت (قابل ویرایش از پنل وب) برای فرم ثبت تیکت."""
+    _, db, _ = auth
+    return [{"id": d["id"], "name": d["name"]} for d in db.list_ticket_departments(True)]
 
 
 @app.get("/api/tickets")
@@ -2052,14 +2140,26 @@ async def api_create_ticket(body: TicketCreate, auth=Depends(get_verified_user))
     if len(subject) > 150 or len(message) > 2000:
         raise HTTPException(status_code=400, detail=tr("متن وارد شده بیش از حد طولانی است."))
 
-    ticket_id = db.create_ticket(tg_id, subject, message)
+    department_id = None
+    if body.department_id is not None:
+        dep = db.get_ticket_department(body.department_id)
+        if not dep or not dep["is_active"]:
+            raise HTTPException(status_code=400, detail=tr("این دسته‌بندی در دسترس نیست."))
+        department_id = dep["id"]
+    ref_kind = ref_id = ref_label = None
+    if body.service_kind and body.service_id is not None:
+        ref_kind, ref_id, ref_label = db.resolve_support_service_ref(tg_id, body.service_kind, body.service_id)
+
+    ticket_id = db.create_ticket(tg_id, subject, message, department_id,
+                                 ref_kind=ref_kind, ref_id=ref_id, ref_label=ref_label)
 
     user = db.get_user(tg_id)
     caption = (
         f"🎫 تیکت جدید #{ticket_id}\n"
         f"👤 {(user['first_name'] if user else '') or ''} (@{(user['username'] if user else '') or '---'})\n"
-        f"🆔 `{tg_id}`\n\n"
-        f"📌 {subject}\n✉️ {message}"
+        f"🆔 `{tg_id}`\n"
+        + (f"📦 سرویس: {escape_md(ref_label)}\n" if ref_label else "")
+        + f"\n📌 {subject}\n✉️ {message}"
     )
     admin_ids = db.list_admins()
     async with aiohttp.ClientSession() as session:
@@ -2136,6 +2236,33 @@ def api_close_my_ticket(ticket_id: int, auth=Depends(get_verified_user)):
         raise HTTPException(status_code=404, detail=tr("تیکت یافت نشد."))
     db.close_ticket(ticket_id)
     return {"status": "ok"}
+
+
+@app.post("/api/tickets/{ticket_id}/reopen")
+async def api_reopen_my_ticket(ticket_id: int, auth=Depends(get_verified_user)):
+    """کاربر تیکتی را که بسته (خودش یا پشتیبانی) دوباره باز می‌کند."""
+    tg_id, db, tenant = auth
+    ticket = db.get_ticket(ticket_id)
+    if not ticket or ticket["user_id"] != tg_id:
+        raise HTTPException(status_code=404, detail=tr("تیکت یافت نشد."))
+    changed = db.reopen_ticket(ticket_id)
+    if changed:
+        user = db.get_user(tg_id)
+        caption = (
+            f"🔓 تیکت #{ticket_id} ({ticket['subject']}) توسط کاربر دوباره باز شد.\n"
+            f"👤 {(user['first_name'] if user else '') or ''} (@{(user['username'] if user else '') or '---'})"
+        )
+        admin_ids = [ticket["claimed_by"]] if ticket["claimed_by"] else db.list_admins()
+        async with aiohttp.ClientSession() as session:
+            for admin_id in admin_ids:
+                try:
+                    await session.post(
+                        f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+                        json={"chat_id": admin_id, "text": caption},
+                    )
+                except Exception:
+                    pass
+    return _ticket_to_dict(db.get_ticket(ticket_id))
 
 
 async def send_photo_to_admins(db: Database, bot_token: str, caption: str, reply_markup: str,
@@ -5057,6 +5184,133 @@ def api_admin_save_banners(body: BannersUpdate, auth=Depends(require_senior_admi
 
 
 # ---------------------------------------------------------------------------
+# آیکون دکمه‌های دسترسی سریع خانه + کلیدهای سفارشی بات در مینی‌اپ
+# ---------------------------------------------------------------------------
+
+HOME_TILE_LABELS = {
+    "store": "خرید سرویس جدید",
+    "services": "سرویس‌های من",
+    "wallet": "کیف پول",
+    "profile": "حساب کاربری",
+    "test": "دریافت اشتراک تست رایگان",
+    "support": "پشتیبانی",
+    "reseller": "مرکز نمایندگی",
+}
+MAX_HOME_ICON_BYTES = 256 * 1024
+_HOME_ICON_DATA_RE = re.compile(r"^data:image/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$")
+
+
+class HomeIconsUpdate(BaseModel):
+    icons: Dict[str, str]
+
+
+def _clean_home_icon(value: str, label: str) -> str:
+    v = (value or "").strip()
+    if not v:
+        return ""
+    if v.startswith("data:image/"):
+        if not _HOME_ICON_DATA_RE.match(v) or len(v) > int(MAX_HOME_ICON_BYTES * 1.4):
+            raise HTTPException(status_code=400, detail=tr("تصویر آیکون نامعتبر یا بیش از حد بزرگ است."))
+        return v
+    if len(v) > 16 or "<" in v or ">" in v:
+        raise HTTPException(status_code=400, detail=tr("آیکون باید یک ایموجی کوتاه یا یک تصویر باشد."))
+    return v
+
+
+def _home_icon_items(db, tenant) -> list:
+    icons = db.get_home_icons()
+    items = [{"key": k, "label": label, "icon": icons.get(k, "")} for k, label in HOME_TILE_LABELS.items()]
+    if not tenant.tenant_id:
+        for b in db.cm_list():
+            key = f"cm:{b['id']}"
+            items.append({"key": key, "label": b["title"], "icon": icons.get(key, ""), "custom": True})
+    return items
+
+
+@app.get("/api/home-config")
+def api_home_config(auth=Depends(get_verified_user)):
+    """آیکون‌های سفارشی دکمه‌های خانه و کلیدهای سفارشی فعال بات (فقط بات اصلی)."""
+    _, db, tenant = auth
+    buttons = []
+    if not tenant.tenant_id:
+        for b in db.cm_list(only_active=True):
+            if b["kind"] == "url" and not (b.get("url") or "").strip():
+                continue
+            if b["kind"] == "content" and not b.get("parts"):
+                continue
+            if not (b.get("title") or "").strip():
+                continue
+            buttons.append({"id": b["id"], "title": b["title"], "kind": b["kind"], "style": b.get("style") or ""})
+    import home_tiles
+    customized = bool((db.get_setting("menu_order", "") or "").strip())
+    order = home_tiles.tile_order(db.get_menu_order(), [b["id"] for b in buttons], customized)
+    rows = home_tiles.tile_rows(db.get_menu_order(), [b["id"] for b in buttons], db.get_menu_row_breaks())
+    return {"icons": db.get_home_icons(), "buttons": buttons, "order": order, "rows": rows}
+
+
+@app.post("/api/custom-buttons/{button_id}/click")
+async def api_custom_button_click(button_id: int, auth=Depends(require_joined)):
+    tg_id, db, tenant = auth
+    if tenant.tenant_id:
+        raise HTTPException(status_code=404, detail=tr("این گزینه دیگر در دسترس نیست."))
+    btn = await asyncio.to_thread(db.cm_get, button_id)
+    if not btn or not btn["is_active"]:
+        raise HTTPException(status_code=404, detail=tr("این گزینه دیگر در دسترس نیست."))
+    if btn["kind"] == "url":
+        url = (btn.get("url") or "").strip()
+        if not url:
+            raise HTTPException(status_code=404, detail=tr("این گزینه دیگر در دسترس نیست."))
+        await asyncio.to_thread(db.cm_add_click, button_id)
+        return {"status": "ok", "kind": "url", "url": url}
+    if not btn.get("parts"):
+        raise HTTPException(status_code=404, detail=tr("این گزینه دیگر در دسترس نیست."))
+    if web_auth.is_email_account(db, tg_id):
+        raise HTTPException(status_code=400, detail=tr("این گزینه فقط داخل تلگرام در دسترس است."))
+    import custom_menu_buttons
+    await asyncio.to_thread(db.cm_add_click, button_id)
+    bot = Bot(token=tenant.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    try:
+        sent = await custom_menu_buttons.send_parts(bot, tg_id, btn["parts"])
+    finally:
+        await bot.session.close()
+    if sent <= 0:
+        raise HTTPException(status_code=502, detail=tr("ارسال پیام ناموفق بود؛ ابتدا ربات را استارت کنید."))
+    return {"status": "ok", "kind": "content", "sent": sent}
+
+
+@app.get("/api/admin/home-icons")
+def api_admin_get_home_icons(auth=Depends(require_senior_admin)):
+    _, db, tenant = auth
+    return {"items": _home_icon_items(db, tenant)}
+
+
+@app.post("/api/admin/home-icons")
+def api_admin_save_home_icons(body: HomeIconsUpdate, auth=Depends(require_senior_admin)):
+    _, db, tenant = auth
+    items = {it["key"]: it for it in _home_icon_items(db, tenant)}
+    clean = {}
+    for key, value in body.icons.items():
+        item = items.get(key)
+        if item is None:
+            continue
+        icon = _clean_home_icon(value, item["label"])
+        if icon:
+            clean[key] = icon
+    db.set_home_icons(clean)
+    return {"status": "ok", "items": _home_icon_items(db, tenant)}
+
+
+@app.post("/api/admin/home-icons/upload")
+async def api_admin_upload_home_icon(photo: UploadFile = File(...), auth=Depends(require_senior_admin)):
+    if photo.content_type not in ("image/png", "image/jpeg", "image/webp", "image/gif"):
+        raise HTTPException(status_code=400, detail=tr("فقط فایل PNG، JPG، WEBP یا GIF پذیرفته می‌شود."))
+    data = await photo.read()
+    if len(data) > MAX_HOME_ICON_BYTES:
+        raise HTTPException(status_code=400, detail=tr("حجم آیکون نباید بیشتر از ۲۵۶ کیلوبایت باشد."))
+    return {"status": "ok", "image": f"data:{photo.content_type};base64,{base64.b64encode(data).decode('ascii')}"}
+
+
+# ---------------------------------------------------------------------------
 # مدیریت (فقط ادمین) - دسته‌بندی‌ها و محصولات
 # ---------------------------------------------------------------------------
 
@@ -5129,12 +5383,62 @@ def api_admin_list_categories(auth=Depends(require_senior_admin)):
     for c in cats:
         products = db.get_products(c["id"], active_only=False)
         result.append({
-            "id": c["id"], "name": paths.get(c["id"], c["name"]), "is_active": bool(c["is_active"]),
+            "id": c["id"], "name": paths.get(c["id"], c["name"]), "raw_name": c["name"], "is_active": bool(c["is_active"]),
             "parent_id": c["parent_id"], "product_count": len(products),
             "button_color": c["button_color"] if "button_color" in c.keys() else None,
             "description": c["description"] if "description" in c.keys() else "",
+            "has_image": _category_photo_file_id(db, c["id"]) is not None,
         })
     return result
+
+
+@app.get("/api/admin/categories/{cat_id}/image")
+async def api_admin_category_image(cat_id: int, auth=Depends(require_senior_admin)):
+    _, db, tenant = auth
+    file_id = await asyncio.to_thread(_category_photo_file_id, db, cat_id)
+    if not file_id:
+        raise HTTPException(status_code=404, detail=tr("برای این دسته‌بندی عکسی ثبت نشده است."))
+    result = await _tg_fetch_file(tenant.bot_token, file_id)
+    if not result:
+        raise HTTPException(status_code=502, detail=tr("دریافت تصویر از تلگرام ناموفق بود."))
+    content, content_type = result
+    return Response(content=content, media_type=content_type, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/admin/categories/{cat_id}/image")
+async def api_admin_set_category_image(cat_id: int, photo: UploadFile = File(...), auth=Depends(require_senior_admin)):
+    """ثبت عکس دسته/زیردسته؛ در همان description_media ذخیره می‌شود تا ربات و پنل وب هم همان را ببینند."""
+    import category_media
+    from admin_panel.telegram_notify import upload_photo_get_file_id as _tg_upload_photo
+    tg_id, db, tenant = auth
+    if not await asyncio.to_thread(db.get_category, cat_id):
+        raise HTTPException(status_code=404, detail=tr("دسته‌بندی یافت نشد."))
+    ctype = (photo.content_type or "").lower()
+    if ctype not in ("image/jpeg", "image/png", "image/webp"):
+        raise HTTPException(status_code=400, detail=tr("فقط تصویر JPG، PNG یا WEBP مجاز است."))
+    content = await photo.read()
+    if not content:
+        raise HTTPException(status_code=400, detail=tr("فایل انتخاب‌شده خالی است."))
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail=tr("حجم تصویر نباید بیشتر از ۱۰ مگابایت باشد."))
+    file_id = await _tg_upload_photo(tenant.bot_token, tg_id, content,
+                                     filename=photo.filename or "category.jpg", content_type=ctype)
+    if not file_id:
+        raise HTTPException(status_code=502, detail=tr("آپلود تصویر در تلگرام ناموفق بود. ربات باید روشن باشد و شما آن را استارت کرده باشید."))
+    items = [it for it in await asyncio.to_thread(db.get_category_description_media, cat_id) if it["type"] != "photo"]
+    items = ([{"type": "photo", "file_id": file_id}] + items)[:category_media.MAX_ITEMS]
+    await asyncio.to_thread(db.set_category_description_media, cat_id, items)
+    return {"status": "ok"}
+
+
+@app.delete("/api/admin/categories/{cat_id}/image")
+async def api_admin_delete_category_image(cat_id: int, auth=Depends(require_senior_admin)):
+    _, db, _ = auth
+    if not await asyncio.to_thread(db.get_category, cat_id):
+        raise HTTPException(status_code=404, detail=tr("دسته‌بندی یافت نشد."))
+    items = [it for it in await asyncio.to_thread(db.get_category_description_media, cat_id) if it["type"] != "photo"]
+    await asyncio.to_thread(db.set_category_description_media, cat_id, items)
+    return {"status": "ok"}
 
 
 @app.post("/api/admin/categories")
