@@ -291,15 +291,23 @@ function drawHeroNet(canvas) {
 }
 
 /* ============================================================== api === */
+let LAST_USER_INPUT = Date.now();
+function idleHeaders(extra) {
+  return Object.assign({ 'X-Idle-Secs': String(Math.max(0, Math.floor((Date.now() - LAST_USER_INPUT) / 1000))) }, extra || {});
+}
 async function api(path, opts = {}) {
   const res = await fetch('/api' + path, {
     method: opts.method || 'GET',
     credentials: 'include',
-    headers: opts.body ? { 'Content-Type': 'application/json' } : undefined,
+    headers: idleHeaders(opts.body ? { 'Content-Type': 'application/json' } : undefined),
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   const isAuthEndpoint = path === '/login' || path === '/setup';
-  if (res.status === 401 && !isAuthEndpoint) { showLogin(); throw new Error('unauthorized'); }
+  if (res.status === 401 && !isAuthEndpoint) {
+    const d401 = await res.json().catch(() => ({}));
+    showLogin(typeof d401.detail === 'string' && d401.detail.includes('عدم فعالیت') ? d401.detail : '');
+    throw new Error('unauthorized');
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) { const err = new Error(formatApiError(data.detail)); err.status = res.status; throw err; }
   return data;
@@ -321,6 +329,7 @@ async function apiMultipart(path, formData) {
   const res = await fetch('/api' + path, {
     method: 'POST',
     credentials: 'include',
+    headers: idleHeaders(),
     body: formData,
   });
   const isAuthEndpoint = path === '/login' || path === '/setup';
@@ -392,6 +401,10 @@ const NAV_GROUPS = [
     { key: 'orders', label: 'سفارش‌ها', icon: 'orders', role: 'any', subs: _ORDER_SUBS },
     { key: 'topups', label: 'شارژ کیف پول', icon: 'topups', role: 'any', subs: _ORDER_SUBS },
     { key: 'discounts', label: 'کدهای تخفیف', icon: 'discounts', role: 'discounts' },
+  ] },
+  { id: 'accounting', label: 'حسابداری', items: [
+    { key: 'accounting', label: 'حسابداری', icon: 'topups', role: 'payg',
+      subs: [['costs', 'قیمت تمام‌شده'], ['formulas', 'فرمول‌ها و قیمت‌گذاری']] },
   ] },
   { id: 'customers', label: 'مشتریان و پشتیبانی', items: [
     { key: 'users', label: 'کاربران', icon: 'users', role: 'any' },
@@ -481,7 +494,7 @@ const SECTION_PAGES = {
   ],
   account: [
     { key: 'appearance', label: '🎨 ظاهر پنل', match: ['تم پنل'] },
-    { key: 'security', label: '🔐 امنیت حساب', match: ['تغییر پسورد'] },
+    { key: 'security', label: '🔐 امنیت حساب', match: ['تغییر پسورد', 'احراز هویت دو مرحله‌ای', 'زمان انقضای نشست', 'مدیریت 2FA'] },
   ],
 };
 function hasPerm(perm) {
@@ -843,9 +856,50 @@ async function boot_setup() {
   });
 }
 
-function showLogin() {
+function resetLoginOtp() {
+  const f = $('#login-otp-field');
+  if (f) f.remove();
+}
+
+function ensureLoginOtpField() {
+  if ($('#login-otp')) return;
+  const label = document.createElement('label');
+  label.className = 'field';
+  label.id = 'login-otp-field';
+  label.innerHTML = '<span>کد تأیید دو مرحله‌ای (یا کد پشتیبان)</span><input type="text" id="login-otp" inputmode="text" autocomplete="one-time-code" maxlength="16" required>';
+  $('#login-error').before(label);
+  $('#login-otp').focus();
+}
+
+function showLogin(message) {
   $('#app').hidden = true;
   $('#login-screen').hidden = false;
+  resetLoginOtp();
+  const errBox = $('#login-error');
+  if (errBox) {
+    if (message) { errBox.textContent = message; errBox.hidden = false; } else { errBox.hidden = true; }
+  }
+}
+
+let IDLE_WATCH_STARTED = false;
+function startIdleWatcher() {
+  if (IDLE_WATCH_STARTED) return;
+  IDLE_WATCH_STARTED = true;
+  let lastMove = 0;
+  const mark = () => { LAST_USER_INPUT = Date.now(); };
+  ['pointerdown', 'keydown', 'touchstart', 'wheel'].forEach(ev => window.addEventListener(ev, mark, { passive: true, capture: true }));
+  window.addEventListener('mousemove', () => { const t = Date.now(); if (t - lastMove > 5000) { lastMove = t; mark(); } }, { passive: true });
+  const check = async () => {
+    if (!ME || $('#app').hidden) return;
+    const minutes = Number(ME.session_idle_minutes || 0);
+    if (!minutes) return;
+    if (Date.now() - LAST_USER_INPUT < minutes * 60000) return;
+    try { await apiPost('/logout'); } catch (e) {}
+    ME = null;
+    showLogin('نشست به‌دلیل عدم فعالیت منقضی شد؛ دوباره وارد شوید.');
+  };
+  setInterval(check, 15000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
 }
 
 function showApp() {
@@ -856,6 +910,8 @@ function showApp() {
   $('#me-avatar').textContent = ME.username.slice(0, 2).toUpperCase();
   tickClock();
   setInterval(tickClock, 1000);
+  LAST_USER_INPUT = Date.now();
+  startIdleWatcher();
   startNotificationPolling();
   const pushBtn = $('#push-toggle-btn');
   if (pushBtn) pushBtn.addEventListener('click', openPushSettingsModal);
@@ -1132,11 +1188,16 @@ $('#login-form').addEventListener('submit', async e => {
   btn.disabled = true; btn.textContent = 'در حال ورود...';
   window.__svLoginPending = true;
   try {
-    await apiPost('/login', {
+    const loginPayload = {
       username: $('#login-username').value.trim(),
       password: $('#login-password').value,
       b: tenantParam(),
-    });
+    };
+    const otpInput = $('#login-otp');
+    if (otpInput) loginPayload.otp = otpInput.value.trim();
+    const loginRes = await apiPost('/login', loginPayload);
+    if (loginRes && loginRes.need_otp) { ensureLoginOtpField(); return; }
+    resetLoginOtp();
     ME = await apiGet('/me');
     if (ME.language) localStorage.setItem('sv-lang', ME.language);
     applyResellerTierChrome();
@@ -1175,6 +1236,7 @@ async function renderPage(tab) {
       case 'user-groups': return await renderUserGroups();
       case 'catalog': return await renderCatalog();
       case 'payg': return await renderPayg();
+      case 'accounting': return await renderAccounting();
       case 'discounts': return await renderDiscounts();
       case 'tickets': return await renderTickets();
       case 'support': return await renderSupport();
@@ -3568,7 +3630,8 @@ function openSubscriptionManager(it) {
   let subBtns = '';
   if (canManage) {
     if (it.kind === 'custom' && !it.is_test) {
-      subBtns = act('toggle', it.state === 'disabled' ? '✅ فعال‌سازی' : '⏸ غیرفعال‌سازی')
+      subBtns = act('manage', '⚙️ مدیریت کامل (حجم/روز، مصرف زنده، ساب اختصاصی)', 'btn-primary')
+        + act('toggle', it.state === 'disabled' ? '✅ فعال‌سازی' : '⏸ غیرفعال‌سازی')
         + act('rename', '✏️ تغییر نام')
         + (it.duration_days > 0 ? act('autorenew', it.auto_renew ? '🔁 خاموش‌کردن تمدید خودکار' : '🔁 روشن‌کردن تمدید خودکار') : '')
         + act('transfer', '📤 انتقال به کاربر دیگر')
@@ -3576,7 +3639,7 @@ function openSubscriptionManager(it) {
         + act('history', '🕘 تاریخچه')
         + act('delete', '🗑 حذف', 'btn-danger');
     } else if (it.kind === 'custom') {
-      subBtns = act('history', '🕘 تاریخچه') + act('delete', '🗑 حذف', 'btn-danger');
+      subBtns = act('manage', '⚙️ جزئیات و مدیریت', 'btn-primary') + act('history', '🕘 تاریخچه') + act('delete', '🗑 حذف', 'btn-danger');
     } else if (it.kind === 'bank') {
       subBtns = act('toggle', it.state === 'disabled' ? '✅ فعال‌سازی' : '⏸ غیرفعال‌سازی')
         + act('history', '🕘 فعالیت‌ها')
@@ -3636,6 +3699,7 @@ async function runSubscriptionAction(it, action, close) {
     return true;
   }
   if (it.kind === 'custom') {
+    if (action === 'manage') { close(); openServiceManagerModal(Number(id), () => renderSubscriptions()); return false; }
     if (action === 'toggle') { await apiPost(`/custom-configs/${id}/toggle`); return true; }
     if (action === 'rename') {
       const newName = prompt('نام جدید کانفیگ (فقط حروف انگلیسی، عدد و آندرلاین، ۳ تا ۲۰ کاراکتر):');
@@ -3817,6 +3881,7 @@ async function showUserDetail(tgId) {
   const services = await apiGet(`/users/${tgId}/custom-configs`).catch(() => []);
   const bankConfigs = await apiGet(`/users/${tgId}/configs`).catch(() => []);
   const refs = await apiGet(`/users/${tgId}/referrals`).catch(() => ({ items: [], total: 0, pending_bonus_count: 0, bonus_amount: 0 }));
+  const ov = await apiGet(`/users/${tgId}/overview`).catch(() => null);
   const isSenior = hasPerm('users');
   const u = d.user;
   const displayName = u.username ? '@' + u.username : (u.first_name || tgId);
@@ -3852,6 +3917,9 @@ async function showUserDetail(tgId) {
     <div class="ud-stats">
       ${statCards.map(s => `<div class="ud-stat"><span>${s.label}</span><b class="mono">${s.val}</b></div>`).join('')}
     </div>
+
+    ${ov ? renderUserOverviewStats(ov) : ''}
+    ${isSenior ? renderUserAdminOps(u) : ''}
 
     ${isSenior ? `<div class="form-row" style="margin:16px 0">
       <input class="input" id="wallet-delta" type="number" placeholder="مبلغ (مثبت=افزایش، منفی=کاهش)">
@@ -3923,6 +3991,7 @@ async function showUserDetail(tgId) {
       try { await apiPost(`/users/${tgId}/message`, { text }); toast('پیام ارسال شد.'); input.value = ''; }
       catch (e) { handleErr(e); }
     });
+    if (isSenior) wireUserAdminOps(body, tgId, close, ov);
     if (isSenior) wireUserServiceActions(body, tgId, close);
     if (isSenior) wireUserBankConfigActions(body, tgId, close);
     const makeResellerBtn = $('#ud-make-reseller', body);
@@ -3942,6 +4011,227 @@ async function showUserDetail(tgId) {
       } catch (e) { handleErr(e); }
     });
   }, { wide: true });
+}
+
+/* ====================================================================
+   مدیریت کامل کاربر و اشتراک (معادل منوی «مدیریت کاربر/کانفیگ» ادمین در
+   ربات): آمار کامل، فعال/غیرفعال‌سازی دسته‌جمعی، سهمیه‌ی تست، کد تخفیف
+   اختصاصی، فاکتور، و برای هر سرویس: مصرف زنده، افزودن/کاهش حجم و روز،
+   توکن جدید ساب اختصاصی، قطع دسترسی، انتقال، تغییر نام، تمدید خودکار،
+   تاریخچه و حذف. همه روی همان توابع دیتابیس/پروایدر ربات اجرا می‌شوند.
+   ==================================================================== */
+function renderUserOverviewStats(ov) {
+  const statusLabel = { blocked: '🚫 مسدود', active: '🟢 دارای سرویس فعال', expired: '🟡 سرویس‌های منقضی', none: '⚪️ بدون سابقه‌ی سرویس' };
+  const cards = [
+    ['وضعیت', statusLabel[ov.status] || ov.status || '—'],
+    ['سفارش‌های تاییدشده', `${fmt(ov.approved_orders)} (${fmt(ov.total_spent)} تومان)`],
+    ['سفارش‌های در انتظار', fmt(ov.pending_orders)],
+    ['سفارش‌های ردشده', fmt(ov.rejected_orders)],
+    ['مجموع شارژ تاییدشده', `${fmt(ov.total_topup)} تومان`],
+    ['کانفیگ فعال', fmt(ov.active_configs)],
+    ['سهمیه‌ی تست', `${ov.test_limit_override === null || ov.test_limit_override === undefined ? 'پیش‌فرض عمومی (' + esc(String(ov.test_limit_global)) + ')' : fmt(ov.test_limit_override)} · دریافت‌شده: ${fmt(ov.test_used || 0)}`],
+  ];
+  return `<div class="ud-stats">${cards.map(([k, v]) => `<div class="ud-stat"><span>${k}</span><b class="mono">${v}</b></div>`).join('')}</div>`;
+}
+
+function renderUserAdminOps(u) {
+  const b = (id, label, cls = '') => `<button class="btn btn-sm ${cls}" data-uops="${id}">${label}</button>`;
+  return `<h4 class="ud-section-title">عملیات مدیریتی کاربر</h4>
+    <div style="display:flex;flex-wrap:wrap;gap:8px">
+      ${u.is_blocked ? b('unblock', '✅ آنبلاک کاربر') : b('block', '🚫 بلاک کاربر', 'btn-danger')}
+      ${b('toggle-all', '⏻ فعال/غیرفعال‌سازی همه‌ی سرویس‌ها')}
+      ${b('test-limit', '🧪 سهمیه‌ی کانفیگ تست')}
+      ${b('discount', '🎁 کد تخفیف اختصاصی')}
+      ${b('invoice', '🧾 فاکتور کلی سرویس‌ها')}
+      ${b('invoice-one', '🧾 فاکتور تکی')}
+    </div>`;
+}
+
+function wireUserAdminOps(body, tgId, close, ov) {
+  const refresh = () => { close(); showUserDetail(tgId); };
+  $$('[data-uops]', body).forEach(btn => btn.addEventListener('click', async () => {
+    const op = btn.dataset.uops;
+    try {
+      if (op === 'block') { if (!confirm('این کاربر مسدود شود؟')) return; await apiPost(`/users/${tgId}/block`); toast('کاربر مسدود شد.'); refresh(); }
+      else if (op === 'unblock') { await apiPost(`/users/${tgId}/unblock`); toast('رفع مسدودیت شد.'); refresh(); }
+      else if (op === 'toggle-all') {
+        if (!confirm('همه‌ی سرویس‌های مستقیم-پنل (غیر تست) این کاربر روی پنل‌های مربوطه فعال/غیرفعال می‌شوند (اگر حتی یکی فعال باشد، همه غیرفعال می‌شوند). ادامه می‌دهید؟')) return;
+        const r = await apiPost(`/users/${tgId}/configs-toggle-all`, {});
+        toast(`${fmt(r.done)} از ${fmt(r.total)} سرویس ${r.enabled ? 'فعال' : 'غیرفعال'} شد.`, !!(r.failed && r.failed.length));
+        if (r.failed && r.failed.length) alert('موارد ناموفق:\n' + r.failed.slice(0, 20).join('\n'));
+        refresh();
+      }
+      else if (op === 'test-limit') {
+        const cur = ov && ov.test_limit_override !== null && ov.test_limit_override !== undefined ? ov.test_limit_override : 'پیش‌فرض';
+        const raw = prompt(`سهمیه‌ی فعلی: ${cur} — سهمیه‌ی عمومی: ${ov ? ov.test_limit_global : '?'}\nعدد ۰ تا ۱۰۰۰ را وارد کنید. برای بازگشت به سهمیه‌ی عمومی «-» یا «پیش‌فرض» بنویسید.`);
+        if (raw === null) return;
+        const t = raw.trim().replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d));
+        let value;
+        if (t === '-' || t === 'پیش‌فرض' || t.toLowerCase() === 'default') value = null;
+        else if (/^\d+$/.test(t) && Number(t) <= 1000) value = Number(t);
+        else { toast('عدد صحیح بین ۰ تا ۱۰۰۰ یا «پیش‌فرض» وارد کنید.', true); return; }
+        await apiPut(`/users/${tgId}/test-limit`, { value });
+        toast('سهمیه‌ی تست کاربر به‌روزرسانی شد.');
+        refresh();
+      }
+      else if (op === 'discount') openUserDiscountModal(tgId);
+      else if (op === 'invoice') {
+        if (!confirm('فاکتور کلی همه‌ی سرویس‌های این کاربر در تلگرام او ارسال شود؟')) return;
+        const r = await apiPost(`/users/${tgId}/invoice`, {});
+        toast(`فاکتور ارسال شد (${fmt(r.items)} سرویس، جمع ${fmt(r.total)} تومان).`);
+      }
+      else if (op === 'invoice-one') openUserInvoicePicker(tgId);
+    } catch (e) { handleErr(e); }
+  }));
+}
+
+function openUserDiscountModal(tgId) {
+  openModal(`کد تخفیف اختصاصی برای کاربر ${tgId}`, `
+    <div class="form-grid">
+      <label class="field"><span>نوع تخفیف</span>
+        <select class="input" id="ud-disc-kind"><option value="percent">درصدی</option><option value="fixed">مبلغ ثابت (تومان)</option></select></label>
+      <label class="field"><span>مقدار</span><input class="input" id="ud-disc-value" type="number" min="1" placeholder="مثلاً 20 یا 50000"></label>
+      <label class="field"><span>انقضا (روز دیگر؛ ۰ = بدون انقضا)</span><input class="input" id="ud-disc-days" type="number" min="0" value="0"></label>
+      <div class="hint-text">یک کد یک‌بارمصرف فقط برای همین کاربر ساخته و همان لحظه در تلگرام او ارسال می‌شود.</div>
+      <button class="btn btn-primary" id="ud-disc-go">ساخت و ارسال کد</button>
+    </div>`, (body, close) => {
+    $('#ud-disc-go', body).addEventListener('click', async () => {
+      const value = Number($('#ud-disc-value', body).value);
+      const expiry_days = Number($('#ud-disc-days', body).value || 0);
+      if (!value || value <= 0) { toast('مقدار تخفیف را وارد کنید.', true); return; }
+      try {
+        const r = await apiPost(`/users/${tgId}/discount-code`, { kind: $('#ud-disc-kind', body).value, value, expiry_days });
+        toast(r.sent ? `کد «${r.code}» ساخته و برای کاربر ارسال شد.` : `کد «${r.code}» ساخته شد ولی ارسال آن به کاربر ناموفق بود.`, !r.sent);
+        close();
+      } catch (e) { handleErr(e); }
+    });
+  });
+}
+
+async function openUserInvoicePicker(tgId) {
+  const items = await apiGet(`/users/${tgId}/invoice-items`);
+  if (!items.length) { toast('برای این کاربر سرویس خریداری‌شده‌ای جهت صدور فاکتور نیست.', true); return; }
+  openModal(`صدور فاکتور تکی — کاربر ${tgId}`, `<div class="table-wrap"><table><thead><tr><th>سرویس</th><th>سفارش</th><th>مبلغ</th><th></th></tr></thead><tbody>
+    ${items.map((it, i) => `<tr><td>${esc(it.service_name || it.product_name || 'سرویس')}<div class="mono" style="opacity:.7;font-size:12px">${esc(it.service_kind)}:${it.service_id}</div></td>
+      <td class="mono">#${it.order_id || '—'}</td><td class="mono">${fmt(it.amount || 0)}</td>
+      <td><button class="btn btn-sm btn-primary" data-inv="${i}">ارسال فاکتور</button></td></tr>`).join('')}
+  </tbody></table></div>`, (body) => {
+    $$('[data-inv]', body).forEach(b => b.addEventListener('click', async () => {
+      const it = items[Number(b.dataset.inv)];
+      try {
+        await apiPost(`/users/${tgId}/invoice`, { service_kind: it.service_kind, service_id: it.service_id });
+        toast('فاکتور برای کاربر ارسال شد.');
+      } catch (e) { handleErr(e); }
+    }));
+  }, { wide: true });
+}
+
+/* صفحه‌ی مدیریت یک سرویس مستقیم-پنل (معادل «🛠 کانفیگ» ادمین در ربات).
+   onChange بعد از هر عملیاتی که داده را تغییر می‌دهد فراخوانی می‌شود. */
+async function openServiceManagerModal(ccId, onChange, shared) {
+  shared = shared || { changed: false, reopening: false };
+  let d;
+  try { d = await apiGet(`/custom-configs/${ccId}/detail`); } catch (e) { handleErr(e); return; }
+  const ownerLabel = d.owner_username ? '@' + d.owner_username : (d.owner_name || d.owner_id);
+  const usage = d.usage
+    ? `${fmt(d.usage.used_gb)} گیگ از ${d.usage.unlimited ? 'نامحدود' : fmt(d.usage.limit_gb) + ' گیگ'}`
+    : (d.usage_error ? `<span class="hint-text">خواندن مصرف ناموفق: ${esc(d.usage_error)}</span>` : '—');
+  const rows = [
+    ['آیدی سرویس', `${d.id}${d.is_test ? ' (🧪 تست)' : ''}`],
+    ['مالک', `${esc(ownerLabel)} <span class="mono">(${d.owner_id})</span>`],
+    ['وضعیت', `<span class="badge ${d.enabled ? 'badge-approved' : 'badge-rejected'}">${d.enabled ? 'فعال' : 'غیرفعال'}</span>${d.duration_days > 0 ? (d.auto_renew ? ' · تمدید خودکار فعال' : ' · تمدید خودکار خاموش') : ' · نامحدود'}`],
+    ['حجم / مدت', `${d.volume_gb ? fmt(d.volume_gb) + ' گیگ' : 'نامحدود'} / ${d.duration_days > 0 ? fmt(d.duration_days) + ' روز' : 'نامحدود'}`],
+    ['مصرف زنده از پنل', usage],
+    ['انقضا', `${d.expires_at ? fmtDate(d.expires_at) : '—'}${d.start_on_first_use && !d.expires_at ? ' (On-hold؛ شروع از اولین اتصال)' : ''}`],
+    ['پنل / یوزرنیم روی پنل', `${esc(d.panel_name || '—')} / <span class="mono">${esc(d.username)}</span>`],
+    ['سفارش / ساخت', `${d.order_id ? '#' + d.order_id : '—'} / ${d.created_at ? fmtDate(d.created_at) : '—'}`],
+  ];
+  const linkField = (label, v, id) => v ? `<label class="field"><span>${label}</span><div style="display:flex;gap:6px"><input class="input mono" readonly dir="ltr" value="${esc(v)}" id="${id}"><button class="btn btn-sm" data-sv-copy="${id}">کپی</button></div></label>` : '';
+  const a = (act, label, cls = '') => `<button class="btn btn-sm ${cls}" data-sv="${act}">${label}</button>`;
+  const manage = !d.is_test;
+  const bd = openModal(`مدیریت سرویس «${esc(d.display_name)}»`, `
+    <div class="table-wrap"><table><tbody>${rows.map(([k, v]) => `<tr><th style="width:36%">${k}</th><td>${v}</td></tr>`).join('')}</tbody></table></div>
+    ${linkField('ساب پنل', d.subscription_url, 'sv-sub')}
+    ${linkField('ساب اختصاصی', d.dsub_link, 'sv-dsub')}
+    <h4 class="ud-section-title">حجم و زمان</h4>
+    ${d.in_quota_pool ? '<div class="hint-text">این سرویس ترکیبی VPN+SSH با سهمیه‌ی مشترک است؛ حجم/زمان از بخش سهمیه‌ی مشترک تغییر می‌کند.</div>' : `
+    <div class="form-row" style="flex-wrap:wrap;gap:8px;align-items:flex-end">
+      <label class="field" style="min-width:140px"><span>حجم (گیگ)</span><input class="input" id="sv-vol" type="number" min="0" step="0.5" placeholder="مثلاً 10"></label>
+      <label class="field" style="min-width:140px"><span>روز</span><input class="input" id="sv-days" type="number" min="0" step="1" placeholder="مثلاً 30"></label>
+      <button class="btn btn-sm btn-primary" data-sv="extend">➕ افزودن</button>
+      <button class="btn btn-sm" data-sv="reduce">➖ کاهش</button>
+    </div>`}
+    <h4 class="ud-section-title">عملیات سرویس</h4>
+    <div style="display:flex;flex-wrap:wrap;gap:8px">
+      ${manage ? a('toggle', d.enabled ? '🔴 غیرفعال کردن' : '🟢 فعال کردن')
+        + a('rename', '✏️ تغییر نام')
+        + (d.duration_days > 0 ? a('autorenew', d.auto_renew ? '⏸ خاموش‌کردن تمدید خودکار' : '🔁 روشن‌کردن تمدید خودکار') : '')
+        + a('transfer', '👤 انتقال به کاربر دیگر')
+        + (d.dsub_enabled ? a('dsub', '♻️ توکن جدید ساب اختصاصی') : '')
+        + a('cut', '✂️ قطع دسترسی و لینک جدید') : (d.dsub_enabled ? a('dsub', '♻️ توکن جدید ساب اختصاصی') : '')}
+      ${a('history', '🕒 تاریخچه')}
+      ${a('invoice', '🧾 فاکتور این سرویس')}
+      ${a('user', '👤 پروفایل کاربر')}
+      ${manage ? a('delete', '🗑 حذف کامل', 'btn-danger') : ''}
+    </div>`, (body, close) => {
+    $$('[data-sv-copy]', body).forEach(b => b.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText($('#' + b.dataset.svCopy, body).value); toast('کپی شد.'); } catch (e) { toast('کپی ناموفق بود.', true); }
+    }));
+    const done = (msg) => { toast(msg || 'انجام شد.'); shared.changed = true; shared.reopening = true; close(); shared.reopening = false; openServiceManagerModal(ccId, onChange, shared); };
+    $$('[data-sv]', body).forEach(btn => btn.addEventListener('click', async () => {
+      const act = btn.dataset.sv;
+      try {
+        if (act === 'extend' || act === 'reduce') {
+          const volume_gb = Number($('#sv-vol', body).value || 0);
+          const days = Number($('#sv-days', body).value || 0);
+          if (!(volume_gb > 0) && !(days > 0)) { toast('حجم یا روز را وارد کنید.', true); return; }
+          if (act === 'reduce' && !confirm('حجم/روز واردشده از سرویس کم می‌شود. ادامه می‌دهید؟')) return;
+          const r = await apiPost(`/custom-configs/${ccId}/${act}`, { volume_gb, days });
+          done(`${r.label} اعمال شد.`);
+        }
+        else if (act === 'toggle') { await apiPost(`/custom-configs/${ccId}/toggle`); done(); }
+        else if (act === 'rename') {
+          const newName = prompt('نام جدید کانفیگ (فقط حروف انگلیسی، عدد و آندرلاین، ۳ تا ۲۰ کاراکتر):');
+          if (!newName) return;
+          await apiPost(`/custom-configs/${ccId}/rename`, { new_name: newName }); done();
+        }
+        else if (act === 'autorenew') { await apiPost(`/custom-configs/${ccId}/auto-renew`, { enabled: !d.auto_renew }); done(); }
+        else if (act === 'transfer') {
+          const targetId = prompt('آی‌دی عددی تلگرام کاربر مقصد:');
+          if (!targetId || !/^\d+$/.test(targetId.trim())) { if (targetId) toast('آی‌دی عددی نامعتبر است.', true); return; }
+          if (!confirm('این عملیات غیرقابل بازگشت است. ادامه می‌دهید؟')) return;
+          await apiPost(`/custom-configs/${ccId}/transfer`, { target_telegram_id: parseInt(targetId.trim(), 10) });
+          toast('انتقال انجام شد.'); shared.changed = true; close();
+        }
+        else if (act === 'dsub') {
+          if (!confirm('لینک اختصاصی قبلی باطل و لینک جدید ساخته می‌شود. ادامه می‌دهید؟')) return;
+          await apiPost(`/custom-configs/${ccId}/dsub-regenerate`); done('توکن جدید ساخته شد.');
+        }
+        else if (act === 'cut') {
+          if (!confirm('لینک فعلی از کار می‌افتد و لینک جدیدی با همان حجم/زمان باقی‌مانده صادر می‌شود. ادامه می‌دهید؟')) return;
+          await apiPost(`/custom-configs/${ccId}/cut-access`); done();
+        }
+        else if (act === 'history') {
+          const hist = await apiGet(`/custom-configs/${ccId}/history`);
+          openModal('تاریخچه‌ی سرویس', hist.length
+            ? `<div class="table-wrap"><table><thead><tr><th>رویداد</th><th>جزئیات</th><th>تاریخ</th></tr></thead><tbody>${hist.map(r => `<tr><td>${esc(SVC_EVENT_LABEL[r.event_type] || r.event_type)}</td><td>${esc(r.detail || '-')}</td><td class="mono">${fmtDate(r.created_at)}</td></tr>`).join('')}</tbody></table></div>`
+            : `<div class="empty-state">${svg('empty')}<div>تاریخچه‌ای ثبت نشده.</div></div>`);
+        }
+        else if (act === 'invoice') {
+          await apiPost(`/users/${d.owner_id}/invoice`, { service_kind: 'custom', service_id: d.id });
+          toast('فاکتور برای کاربر ارسال شد.');
+        }
+        else if (act === 'user') { shared.changed = false; close(); showUserDetail(Number(d.owner_id)); }
+        else if (act === 'delete') {
+          if (!confirm('این سرویس برای همیشه از پنل VPN و از این کاربر حذف می‌شود و غیرقابل بازگشت است. ادامه می‌دهید؟')) return;
+          await apiDelete(`/custom-configs/${ccId}`);
+          toast('سرویس حذف شد.'); shared.changed = true; close();
+        }
+      } catch (e) { handleErr(e); }
+    }));
+  }, { wide: true });
+  const origRemove = bd.remove.bind(bd);
+  bd.remove = () => { origRemove(); if (shared.changed && !shared.reopening && onChange) { shared.changed = false; onChange(); } };
 }
 
 /* نماینده‌کردن مستقیم یک کاربر بر اساس سطح‌های نمایندگی (برنزی، نقره‌ای، طلایی، VIP) */
@@ -4111,6 +4401,7 @@ function renderUserServices(services, isSenior) {
       <td><span class="badge ${c.enabled ? 'badge-approved' : 'badge-rejected'}">${c.enabled ? 'فعال' : 'غیرفعال'}</span></td>
       <td>${c.duration_days > 0 ? (c.auto_renew ? 'فعال' : 'غیرفعال') : '—'}</td>
       ${isSenior && !c.is_test ? `<td style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn btn-sm btn-primary" data-svc-action="manage" data-svc-id="${c.id}">⚙️ مدیریت کامل</button>
         <button class="btn btn-sm" data-svc-action="toggle" data-svc-id="${c.id}">${c.enabled ? 'غیرفعال کردن' : 'فعال کردن'}</button>
         <button class="btn btn-sm" data-svc-action="rename" data-svc-id="${c.id}">تغییر نام</button>
         ${c.duration_days > 0 ? `<button class="btn btn-sm" data-svc-action="autorenew" data-svc-id="${c.id}" data-svc-state="${c.auto_renew ? 1 : 0}">تمدید خودکار</button>` : ''}
@@ -4118,7 +4409,7 @@ function renderUserServices(services, isSenior) {
         <button class="btn btn-sm" data-svc-action="cut" data-svc-id="${c.id}">قطع دسترسی</button>
         <button class="btn btn-sm" data-svc-action="history" data-svc-id="${c.id}">تاریخچه</button>
         <button class="btn btn-sm btn-danger" data-svc-action="delete" data-svc-id="${c.id}">حذف</button>
-      </td>` : (isSenior ? '<td>—</td>' : '')}
+      </td>` : (isSenior ? `<td><button class="btn btn-sm btn-primary" data-svc-action="manage" data-svc-id="${c.id}">⚙️ مدیریت</button></td>` : '')}
     </tr>
   `).join('')}
   </tbody></table></div>`;
@@ -4171,6 +4462,7 @@ const SVC_EVENT_LABEL = {
   purchase: 'خرید', renewal: 'تمدید', toggle: 'فعال/غیرفعال',
   auto_renew_toggle: 'تمدید خودکار', rename: 'تغییر نام', transfer: 'انتقال',
   cut_access: 'قطع دسترسی', auto_renew: 'تمدید خودکار (خودکار انجام‌شده)',
+  admin_extend: 'افزودن حجم/زمان (ادمین)', admin_reduce: 'کاهش حجم/زمان (ادمین)', dsub_regen: 'توکن جدید ساب اختصاصی',
 };
 
 function wireUserServiceActions(body, tgId, close) {
@@ -4179,6 +4471,10 @@ function wireUserServiceActions(body, tgId, close) {
       const action = el.dataset.svcAction;
       const id = el.dataset.svcId;
       try {
+        if (action === 'manage') {
+          openServiceManagerModal(Number(id), () => { close(); showUserDetail(tgId); });
+          return;
+        }
         if (action === 'toggle') {
           await apiPost(`/custom-configs/${id}/toggle`);
         } else if (action === 'rename') {
@@ -4353,14 +4649,33 @@ function openCategoryCreateModal(categories, presetParent = null) {
   openModal(presetParent ? 'زیردسته‌ی جدید' : 'دسته‌بندی جدید', `
     <div class="form-grid"><input class="input" id="cat-new-name" placeholder="نام دسته‌بندی">
     <select class="input" id="cat-new-parent">${catParentOptionsHtml(categories, presetParent, null)}</select>
+    <label class="field"><span>📝 توضیح دسته (اختیاری؛ در بات و مینی‌اپ بالای منو نشان داده می‌شود، حداکثر ۲۰۰۰ کاراکتر)</span>
+      <textarea class="input" id="cat-new-desc" rows="3" maxlength="2000"></textarea></label>
+    <label class="field"><span>🖼 عکس دسته (اختیاری؛ JPG/PNG/WEBP تا ۱۰ مگابایت)</span>
+      <input class="input" id="cat-new-image" type="file" accept="image/jpeg,image/png,image/webp"></label>
     <button class="btn btn-primary" id="cat-new-save">ثبت</button></div>`, (b, close) => {
     $('#cat-new-save', b).addEventListener('click', async () => {
       const name = $('#cat-new-name', b).value.trim();
       if (!name) return toast('نام دسته‌بندی را وارد کنید.', true);
       const parent = Number($('#cat-new-parent', b).value) || null;
-      try { await apiPost('/categories', { name, parent_id: parent }); toast('اضافه شد.'); close(); renderCatalog(); } catch (e) { handleErr(e); }
+      const description = $('#cat-new-desc', b).value.trim();
+      const file = $('#cat-new-image', b).files[0];
+      try {
+        const r = await apiPost('/categories', { name, parent_id: parent, description });
+        let imgErr = null;
+        if (file) { try { await catUploadImage(r.id, file); } catch (e) { imgErr = e; } }
+        toast(imgErr ? `دسته ساخته شد ولی آپلود عکس ناموفق بود: ${imgErr.message}` : 'اضافه شد.', !!imgErr);
+        close(); renderCatalog();
+      } catch (e) { handleErr(e); }
     });
   });
+}
+// عکس دسته/زیردسته (روی file_id تلگرام ذخیره می‌شود تا ربات هم همان را نشان دهد)
+async function catUploadImage(catId, file) {
+  if (file.size > 10 * 1024 * 1024) throw new Error('حجم تصویر نباید بیشتر از ۱۰ مگابایت باشد.');
+  const fd = new FormData();
+  fd.append('photo', file);
+  await apiMultipart(`/categories/${catId}/image`, fd);
 }
 // رنگ دکمه‌ی دسته‌بندی در بات/مینی‌اپ (خالی = پیش‌فرض)
 const CAT_COLOR_OPTIONS = [['', '⚪ پیش‌فرض', ''], ['primary', '🔵 آبی', '#2563eb'], ['success', '🟢 سبز', '#16a34a'], ['danger', '🔴 قرمز', '#dc2626']];
@@ -4402,7 +4717,17 @@ function wireCategoryActions(body, categories, basePath = '/categories') {
       ${basePath === '/categories' ? `
       <label class="field"><span>😀 ایموجی دکمه‌ی دسته در بات (خالی = پیش‌فرض، - = بدون ایموجی)</span><input class="input" id="cat-edit-emoji" maxlength="16" value="${esc(cat.emoji || '')}"></label>
       <label class="field"><span>🏷 ایموجی محصولات این دسته در بات (خالی = پیش‌فرض، - = بدون ایموجی)</span><input class="input" id="cat-edit-prod-emoji" maxlength="16" value="${esc(cat.product_emoji || '')}"></label>
-      <label class="field"><span>🎨 رنگ دکمه‌ی این دسته (در بات و مینی‌اپ)</span>${catColorSelectHtml(cat, 'id="cat-edit-color"')}</label>` : ''}
+      <label class="field"><span>🎨 رنگ دکمه‌ی این دسته (در بات و مینی‌اپ)</span>${catColorSelectHtml(cat, 'id="cat-edit-color"')}</label>
+      <label class="field"><span>📝 توضیح دسته (در بات و مینی‌اپ بالای منو نشان داده می‌شود؛ خالی = بدون توضیح)</span>
+        <textarea class="input" id="cat-edit-desc" rows="3" maxlength="2000">${esc(cat.description || '')}</textarea></label>
+      <div class="field"><span>🖼 عکس دسته</span>
+        <div id="cat-edit-img-wrap" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          ${cat.has_image ? `<img id="cat-edit-img" src="/api/categories/${cat.id}/image?t=${Date.now()}" alt="" style="max-width:140px;max-height:100px;border-radius:8px;border:1px solid var(--border,#333)">
+          <button class="btn btn-sm btn-danger" type="button" id="cat-edit-img-del">حذف عکس</button>` : '<span class="hint-text">عکسی ثبت نشده.</span>'}
+        </div>
+        <input class="input" id="cat-edit-image" type="file" accept="image/jpeg,image/png,image/webp" style="margin-top:8px">
+        <span class="hint-text">انتخاب فایل جدید هنگام «ذخیره» جایگزین عکس فعلی می‌شود.</span>
+      </div>` : ''}
       <button class="btn btn-primary" id="cat-edit-save">ذخیره</button></div>`, (b, close) => {
       $('#cat-edit-save', b).addEventListener('click', async () => {
         const name = $('#cat-edit-name', b).value.trim();
@@ -4413,8 +4738,19 @@ function wireCategoryActions(body, categories, basePath = '/categories') {
           payload.emoji = $('#cat-edit-emoji', b).value.trim();
           payload.product_emoji = $('#cat-edit-prod-emoji', b).value.trim();
           payload.button_color = $('#cat-edit-color', b).value;
+          payload.description = $('#cat-edit-desc', b).value.trim();
         }
-        try { await apiPut(`${basePath}/${cat.id}`, payload); toast('ویرایش شد.'); close(); reload(); } catch (e) { handleErr(e); }
+        try {
+          await apiPut(`${basePath}/${cat.id}`, payload);
+          const file = basePath === '/categories' ? $('#cat-edit-image', b).files[0] : null;
+          if (file) await catUploadImage(cat.id, file);
+          toast('ویرایش شد.'); close(); reload();
+        } catch (e) { handleErr(e); }
+      });
+      const delImg = $('#cat-edit-img-del', b);
+      if (delImg) delImg.addEventListener('click', async () => {
+        if (!confirm('عکس این دسته حذف شود؟')) return;
+        try { await apiDelete(`/categories/${cat.id}/image`); toast('عکس حذف شد.'); close(); reload(); } catch (e) { handleErr(e); }
       });
     });
   }));
@@ -4632,6 +4968,7 @@ function collectRenewRules(b) {
 
 function wireProductProvisionToggle(b) {
   wireRenewRules(b);
+  wireProductPriceSuggest(b);
   $$('input[name="prod-source"]', b).forEach(r => r.addEventListener('change', () => {
     const df = $('#prod-direct-fields', b);
     const srcVal = $('input[name="prod-source"]:checked', b).value;
@@ -5958,16 +6295,139 @@ function renderDiscountsBrutalist(codes, categories, products) {
 }
 
 /* ============================================================= support === */
-async function renderSupport() {
+const PRIORITY_LABEL = { low: 'کم', medium: 'متوسط', high: 'زیاد' };
+const PRIORITY_KIND = { low: 'ok', medium: 'pending', high: 'no' };
+const PRIORITY_BADGE_CLASS = { low: 'badge-approved', medium: 'badge-pending', high: 'badge-rejected' };
+function normPriority(p) { p = String(p || '').toLowerCase(); return PRIORITY_LABEL[p] ? p : 'medium'; }
+function priorityBadge(p) { p = normPriority(p); return `<span class="badge ${PRIORITY_BADGE_CLASS[p]}">${PRIORITY_LABEL[p]}</span>`; }
+function priorityOptions(sel) { return Object.keys(PRIORITY_LABEL).map(k => `<option value="${k}" ${k === sel ? 'selected' : ''}>${PRIORITY_LABEL[k]}</option>`).join(''); }
+
+const SUPPORT_FILTER_DEFAULTS = { q: '', status: '', priority: '', unread: '', assigned: '', service: '', last_sender: '', date_from: '', date_to: '', sort: '' };
+const TICKETS_FILTER_DEFAULTS = { q: '', priority: '', department_id: '', service: '', unread: '', date_from: '', date_to: '', sort: '' };
+let supportFilters = { ...SUPPORT_FILTER_DEFAULTS };
+let ticketsFilters = { ...TICKETS_FILTER_DEFAULTS };
+const listFilterOpen = {};
+
+function filtersQs(f) {
+  return Object.entries(f).filter(([, v]) => v !== '' && v != null).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
+}
+
+const SUPPORT_SORT_OPTIONS = [['', 'پیش‌فرض (طبق تنظیمات)'], ['last_desc', 'آخرین پیام: جدیدترین'], ['last_asc', 'آخرین پیام: قدیمی‌ترین'],
+  ['unread_first', 'خوانده‌نشده‌ها اول'], ['priority_desc', 'اولویت: زیاد به کم'], ['priority_asc', 'اولویت: کم به زیاد'],
+  ['messages_desc', 'بیشترین تعداد پیام'], ['name', 'نام کاربر (الفبایی)']];
+const TICKETS_SORT_OPTIONS = [['', 'پیش‌فرض (طبق تنظیمات)'], ['updated_desc', 'بروزرسانی: جدیدترین'], ['updated_asc', 'بروزرسانی: قدیمی‌ترین'],
+  ['created_desc', 'ایجاد: جدیدترین'], ['created_asc', 'ایجاد: قدیمی‌ترین'], ['unread_first', 'خوانده‌نشده‌ها اول'],
+  ['priority_desc', 'اولویت: زیاد به کم'], ['priority_asc', 'اولویت: کم به زیاد'], ['messages_desc', 'بیشترین تعداد پیام'],
+  ['id_desc', 'شماره‌ی تیکت: نزولی'], ['id_asc', 'شماره‌ی تیکت: صعودی'], ['user', 'نام کاربر (الفبایی)']];
+const PRIORITY_FILTER_OPTIONS = [['', 'همه'], ...Object.keys(PRIORITY_LABEL).map(k => [k, PRIORITY_LABEL[k]])];
+const YES_NO_SERVICE_OPTIONS = [['', 'همه'], ['yes', 'دارد'], ['no', 'ندارد']];
+const UNREAD_OPTIONS = [['', 'همه'], ['1', 'فقط خوانده‌نشده']];
+
+function listFilterToolbar(cfg) {
+  const f = cfg.filters;
+  const fieldHtml = fl => {
+    const val = f[fl.key] == null ? '' : f[fl.key];
+    if (fl.type === 'date') {
+      return `<label class="card-sub" style="display:flex;gap:4px;align-items:center">${fl.label} <input type="date" class="input" data-k="${fl.key}" value="${esc(val)}" style="width:auto"></label>`;
+    }
+    return `<label class="card-sub" style="display:flex;gap:4px;align-items:center">${fl.label} <select class="input" data-k="${fl.key}" style="width:auto">${fl.options.map(([v, l]) => `<option value="${esc(v)}" ${String(v) === String(val) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>`;
+  };
+  const advActive = cfg.adv.some(fl => (f[fl.key] || '') !== '');
+  const anyActive = Object.keys(cfg.defaults).some(k => (f[k] || '') !== '');
+  const bar = document.createElement('div');
+  bar.id = cfg.id;
+  bar.style.cssText = 'display:flex;flex-direction:column;gap:8px;margin:0 0 12px';
+  bar.innerHTML = `
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <input class="input" type="search" data-k="q" placeholder="${esc(cfg.placeholder)}" value="${esc(f.q)}" style="flex:1;min-width:220px">
+      ${cfg.main.map(fieldHtml).join('')}
+      ${fieldHtml({ key: 'sort', label: 'ترتیب:', options: cfg.sort })}
+      ${anyActive ? '<button class="btn btn-sm" data-act="clear">✖ پاک‌کردن فیلترها</button>' : ''}
+    </div>
+    <details ${advActive || listFilterOpen[cfg.id] ? 'open' : ''}>
+      <summary class="card-sub" style="cursor:pointer">فیلتر پیشرفته${advActive ? ' (فعال)' : ''}</summary>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">${cfg.adv.map(fieldHtml).join('')}</div>
+    </details>
+    <div class="card-sub">${fmt(cfg.total)} مورد${anyActive ? ' (فیلتر شده)' : ''}</div>`;
+  const details = $('details', bar);
+  details.addEventListener('toggle', () => { listFilterOpen[cfg.id] = details.open; });
+  let timer = null;
+  $$('[data-k]', bar).forEach(el => {
+    const k = el.dataset.k;
+    if (k === 'q') {
+      el.addEventListener('input', () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => { f.q = el.value.trim(); cfg.onChange(true); }, 350);
+      });
+    } else {
+      el.addEventListener('change', () => { f[k] = el.value; cfg.onChange(false); });
+    }
+  });
+  const clear = $('[data-act="clear"]', bar);
+  if (clear) clear.addEventListener('click', () => { Object.assign(f, cfg.defaults); cfg.onChange(false); });
+  return bar;
+}
+
+function restoreSearchFocus(bar, keep) {
+  if (!keep) return;
+  const el = $('[data-k="q"]', bar);
+  if (!el) return;
+  el.focus();
+  el.setSelectionRange(el.value.length, el.value.length);
+}
+
+async function fetchSupportConvs() {
+  const qs = filtersQs(supportFilters);
+  return apiGet(`/support/conversations${qs ? '?' + qs : ''}`);
+}
+
+function supportConvBadgesHtml(c) {
+  return `${c.status === 'closed' ? ' <span class="badge badge-rejected">بسته</span>' : ''} ${priorityBadge(c.priority)}`;
+}
+
+function injectSupportToolbar(total, keepFocus) {
+  const host = content();
+  if (!host) return;
+  const bar = listFilterToolbar({
+    id: 'support-toolbar',
+    filters: supportFilters,
+    defaults: SUPPORT_FILTER_DEFAULTS,
+    placeholder: '🔎 جستجو: نام‌کاربری، نام، آیدی، سرویس یا متن پیام‌ها...',
+    main: [
+      { key: 'status', label: 'وضعیت:', options: [['', 'همه'], ['open', 'باز'], ['closed', 'بسته']] },
+      { key: 'priority', label: 'اولویت:', options: PRIORITY_FILTER_OPTIONS },
+    ],
+    adv: [
+      { key: 'unread', label: 'پیام جدید:', options: UNREAD_OPTIONS },
+      { key: 'last_sender', label: 'آخرین پیام از:', options: [['', 'همه'], ['user', 'کاربر (منتظر پاسخ)'], ['admin', 'ادمین']] },
+      { key: 'assigned', label: 'پاسخ‌دهنده:', options: [['', 'همه'], ['mine', 'من'], ['other', 'ادمین دیگر (قفل)'], ['free', 'بدون پاسخ‌دهنده']] },
+      { key: 'service', label: 'سرویس مرتبط:', options: YES_NO_SERVICE_OPTIONS },
+      { key: 'date_from', label: 'آخرین پیام از تاریخ:', type: 'date' },
+      { key: 'date_to', label: 'تا تاریخ:', type: 'date' },
+    ],
+    sort: SUPPORT_SORT_OPTIONS,
+    total,
+    onChange: keep => renderSupport(keep),
+  });
+  host.prepend(bar);
+  restoreSearchFocus(bar, keepFocus);
+}
+
+async function renderSupport(keepFocus) {
   stopSupportPoll();
-  const convs = await apiGet('/support/conversations');
+  const convs = await fetchSupportConvs();
+  await renderSupportThemed(convs);
+  injectSupportToolbar(convs.length, keepFocus === true);
+}
+
+async function renderSupportThemed(convs) {
   if (loadTheme().theme === 'brutalist') return renderSupportBrutalist(convs);
   if (loadTheme().theme === 'bento') return renderSupportBento(convs);
   setContent(`
     <div class="card"><div class="table-wrap"><table>
       <thead><tr><th>کاربر</th><th>آخرین پیام</th><th>زمان</th><th></th></tr></thead>
       <tbody>${convs.map(c => `<tr>
-        <td>${esc(c.user_name || c.user_username || ('#' + c.user_id))}${c.unread ? ` <span class="badge badge-pending">${c.unread}</span>` : ''}${c.locked_for_me ? ` <span class="badge badge-rejected" title="${esc(c.locked_by || '')}">🔒</span>` : ''}</td>
+        <td>${esc(c.user_name || c.user_username || ('#' + c.user_id))}${c.unread ? ` <span class="badge badge-pending">${c.unread}</span>` : ''}${c.locked_for_me ? ` <span class="badge badge-rejected" title="${esc(c.locked_by || '')}">🔒</span>` : ''}${supportConvBadgesHtml(c)}${c.ref_label ? `<div class="card-sub" style="font-size:11px">📦 ${esc(c.ref_label)}</div>` : ''}</td>
         <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.last_sender === 'admin' ? '↩ ' : ''}${esc(c.last_message || '')}</td>
         <td class="mono">${fmtDate(c.last_at)}</td>
         <td><button class="btn btn-sm" data-open="${c.user_id}">مشاهده</button></td>
@@ -5977,7 +6437,7 @@ async function renderSupport() {
   $$('[data-open]', content()).forEach(b => b.addEventListener('click', () => showSupportChat(Number(b.dataset.open))));
   SUPPORT_POLL_TIMER = setInterval(async () => {
     if (CURRENT_TAB !== 'support') return stopSupportPoll();
-    try { const fresh = await apiGet('/support/conversations'); renderSupportRows(fresh); } catch (e) { /* silent */ }
+    try { const fresh = await fetchSupportConvs(); renderSupportRows(fresh); } catch (e) { /* silent */ }
   }, 5000);
 }
 
@@ -5985,7 +6445,7 @@ function renderSupportRows(convs) {
   const tbody = $('table tbody', content());
   if (!tbody) return;
   tbody.innerHTML = convs.map(c => `<tr>
-    <td>${esc(c.user_name || c.user_username || ('#' + c.user_id))}${c.unread ? ` <span class="badge badge-pending">${c.unread}</span>` : ''}${c.locked_for_me ? ` <span class="badge badge-rejected" title="${esc(c.locked_by || '')}">🔒</span>` : ''}</td>
+    <td>${esc(c.user_name || c.user_username || ('#' + c.user_id))}${c.unread ? ` <span class="badge badge-pending">${c.unread}</span>` : ''}${c.locked_for_me ? ` <span class="badge badge-rejected" title="${esc(c.locked_by || '')}">🔒</span>` : ''}${supportConvBadgesHtml(c)}${c.ref_label ? `<div class="card-sub" style="font-size:11px">📦 ${esc(c.ref_label)}</div>` : ''}</td>
     <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.last_sender === 'admin' ? '↩ ' : ''}${esc(c.last_message || '')}</td>
     <td class="mono">${fmtDate(c.last_at)}</td>
     <td><button class="btn btn-sm" data-open="${c.user_id}">مشاهده</button></td>
@@ -6002,7 +6462,7 @@ function renderSupportBento(convs) {
   $$('[data-open]', content()).forEach(b => b.addEventListener('click', () => showSupportChat(Number(b.dataset.open))));
   SUPPORT_POLL_TIMER = setInterval(async () => {
     if (CURRENT_TAB !== 'support') return stopSupportPoll();
-    try { const fresh = await apiGet('/support/conversations'); renderSupportRowsBento(fresh); } catch (e) { /* silent */ }
+    try { const fresh = await fetchSupportConvs(); renderSupportRowsBento(fresh); } catch (e) { /* silent */ }
   }, 5000);
 }
 
@@ -6022,9 +6482,11 @@ function supportInboxRowsHtmlBento(convs) {
       ${bnAvatar((c.user_name || c.user_username || '؟').trim().charAt(0), i)}
       <div class="bn-row-main">
         <span class="bn-row-title">${esc(c.user_name || c.user_username || ('#' + c.user_id))}${c.locked_for_me ? ' 🔒' : ''}</span>
-        <span class="bn-row-sub">${c.last_sender === 'admin' ? '↩ ' : ''}${esc(c.last_message || '')}</span>
+        <span class="bn-row-sub">${c.last_sender === 'admin' ? '↩ ' : ''}${esc(c.last_message || '')}${c.ref_label ? ' · 📦 ' + esc(c.ref_label) : ''}</span>
       </div>
       <div class="bn-row-trail">
+        ${c.status === 'closed' ? bnPill('بسته', 'no') : ''}
+        ${bnPill('اولویت ' + PRIORITY_LABEL[normPriority(c.priority)], PRIORITY_KIND[normPriority(c.priority)])}
         ${c.unread ? bnPill(c.unread, 'no') : ''}
         <span class="bn-row-sub mono">${fmtDate(c.last_at)}</span>
         <button class="bn-btn bn-btn-ghost" data-open="${c.user_id}">مشاهده</button>
@@ -6075,7 +6537,7 @@ function renderSupportBrutalist(convs) {
   $$('[data-open]', content()).forEach(b => b.addEventListener('click', () => showSupportChat(Number(b.dataset.open))));
   SUPPORT_POLL_TIMER = setInterval(async () => {
     if (CURRENT_TAB !== 'support') return stopSupportPoll();
-    try { const fresh = await apiGet('/support/conversations'); renderSupportRowsBrutalist(fresh); } catch (e) { /* silent */ }
+    try { const fresh = await fetchSupportConvs(); renderSupportRowsBrutalist(fresh); } catch (e) { /* silent */ }
   }, 5000);
 }
 function supportInboxRowsHtml(convs) {
@@ -6084,10 +6546,10 @@ function supportInboxRowsHtml(convs) {
       <div class="bru-inbox-avatar mono">${esc((c.user_name || c.user_username || '#').trim().charAt(0).toUpperCase())}</div>
       <div class="bru-inbox-main">
         <div class="bru-inbox-name">${esc(c.user_name || c.user_username || ('#' + c.user_id))}${c.locked_for_me ? ` <span title="${esc(c.locked_by || '')}">🔒</span>` : ''}</div>
-        <div class="bru-inbox-msg">${c.last_sender === 'admin' ? '↩ ' : ''}${esc(c.last_message || '')}</div>
+        <div class="bru-inbox-msg">${c.last_sender === 'admin' ? '↩ ' : ''}${esc(c.last_message || '')}${c.ref_label ? ' · 📦 ' + esc(c.ref_label) : ''}</div>
       </div>
       <div class="bru-inbox-meta">
-        <span class="mono">${fmtDate(c.last_at)}</span>
+        <span class="mono">${c.status === 'closed' ? '🔒 بسته · ' : ''}${PRIORITY_LABEL[normPriority(c.priority)]} · ${fmtDate(c.last_at)}</span>
         ${c.unread ? `<span class="bru-inbox-badge">${c.unread}</span>` : ''}
       </div>
       <button class="btn btn-sm" data-open="${c.user_id}">مشاهده</button>
@@ -6113,23 +6575,40 @@ async function showSupportChat(userId) {
   lastId = d.messages.length ? d.messages[d.messages.length - 1].id : 0;
   const title = d.user.user_name || d.user.user_username || `#${userId}`;
   const locked = d.user.locked_for_me;
+  const canAct = hasPerm('tickets');
+  const closed = d.user.status === 'closed';
   let pollTimer = null;
   const bubble = m => `<div style="align-self:${m.sender === 'admin' ? 'flex-end' : 'flex-start'};max-width:80%;background:${m.sender === 'admin' ? 'var(--signal-dim)' : 'var(--panel-2)'};padding:8px 12px;border-radius:9px;font-size:13px">
         ${esc(m.message)}<div class="card-sub" style="font-size:10px;margin-top:3px">${fmtDate(m.created_at)}</div>
       </div>`;
   const modal = openModal(`چت با ${esc(title)}`, `
+    <div class="card-sub" style="margin-bottom:8px;line-height:2">
+      ${closed ? '<span class="badge badge-rejected">بسته</span>' : '<span class="badge badge-approved">باز</span>'}
+      ${priorityBadge(d.user.priority)}
+      ${d.user.ref_label ? `<br>📦 سرویس مرتبط: <b>${esc(d.user.ref_label)}</b>` : ''}
+    </div>
+    ${canAct ? `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+      <span class="card-sub">اولویت:</span>
+      <select class="input" id="sc-priority" style="width:auto" ${locked ? 'disabled' : ''}>${priorityOptions(normPriority(d.user.priority))}</select>
+      ${closed
+        ? `<button class="btn btn-sm btn-primary" id="sc-reopen" ${locked ? 'disabled' : ''}>🔓 باز کردن گفتگو</button>`
+        : `<button class="btn btn-sm" id="sc-close" ${locked ? 'disabled' : ''}>🔒 بستن گفتگو</button>`}
+      <button class="btn btn-sm btn-danger" id="sc-delete" ${locked ? 'disabled' : ''}>🗑 حذف گفتگو</button>
+    </div>` : ''}
     <div id="sc-log" style="display:flex;flex-direction:column;gap:8px;max-height:320px;overflow-y:auto;margin-bottom:12px">
       ${d.messages.map(bubble).join('') || '<span class="card-sub">پیامی نیست</span>'}
     </div>
     ${locked ? `<div class="card-sub" style="color:var(--danger,#ff6b52);margin-bottom:8px">🔒 این گفتگو در حال حاضر توسط ${esc(d.user.locked_by || 'ادمین دیگری')} پاسخ داده می‌شود.</div>` : ''}
+    ${closed ? `<div class="card-sub" style="margin-bottom:8px">این گفتگو بسته است؛ برای پاسخ‌دادن ابتدا آن را باز کن (با پیام جدید کاربر هم خودکار باز می‌شود).</div>` : ''}
     <div style="display:flex;gap:8px">
-      <input class="input" id="sc-input" placeholder="پاسخ..." style="flex:1" ${locked ? 'disabled' : ''}>
-      <button class="btn btn-primary" id="sc-send" ${locked ? 'disabled' : ''}>ارسال</button>
+      <input class="input" id="sc-input" placeholder="پاسخ..." style="flex:1" ${locked || closed ? 'disabled' : ''}>
+      <button class="btn btn-primary" id="sc-send" ${locked || closed ? 'disabled' : ''}>ارسال</button>
     </div>
   `, (body, close) => {
     const log = $('#sc-log', body);
     const input = $('#sc-input', body);
     log.scrollTop = log.scrollHeight;
+    const reopenModal = () => { clearInterval(pollTimer); close(); showSupportChat(userId); };
     const send = async () => {
       const text = input.value.trim();
       if (!text) return;
@@ -6142,6 +6621,25 @@ async function showSupportChat(userId) {
     };
     $('#sc-send', body).addEventListener('click', send);
     input.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+
+    const prio = $('#sc-priority', body);
+    if (prio) prio.addEventListener('change', async () => {
+      try { await apiPost(`/support/${userId}/priority`, { priority: prio.value }); toast('اولویت تغییر کرد.'); } catch (e) { handleErr(e); }
+    });
+    const closeBtn = $('#sc-close', body);
+    if (closeBtn) closeBtn.addEventListener('click', async () => {
+      if (!confirm('این گفتگو بسته شود؟ با پیام جدید کاربر دوباره باز می‌شود.')) return;
+      try { await apiPost(`/support/${userId}/close`); toast('گفتگو بسته شد.'); reopenModal(); } catch (e) { handleErr(e); }
+    });
+    const reopenBtn = $('#sc-reopen', body);
+    if (reopenBtn) reopenBtn.addEventListener('click', async () => {
+      try { await apiPost(`/support/${userId}/reopen`); toast('گفتگو دوباره باز شد.'); reopenModal(); } catch (e) { handleErr(e); }
+    });
+    const delBtn = $('#sc-delete', body);
+    if (delBtn) delBtn.addEventListener('click', async () => {
+      if (!confirm('کل این گفتگو (همه‌ی پیام‌ها) برای همیشه حذف شود؟')) return;
+      try { await apiDelete(`/support/${userId}`); toast('گفتگو حذف شد.'); clearInterval(pollTimer); close(); renderSupport(); } catch (e) { handleErr(e); }
+    });
 
     pollTimer = setInterval(async () => {
       try {
@@ -6160,8 +6658,18 @@ async function showSupportChat(userId) {
 /* ============================================================= tickets === */
 let ticketsStatusFilter = '';
 const TICKETS_STATUS_LABEL = { '': 'همه', open: 'باز', answered: 'پاسخ‌داده‌شده', closed: 'بسته' };
-async function renderTickets() {
-  const tickets = await apiGet(`/tickets${ticketsStatusFilter ? '?status=' + ticketsStatusFilter : ''}`);
+async function loadTicketDeps() {
+  try { return await apiGet('/ticket-departments'); } catch (e) { return []; }
+}
+
+async function renderTickets(keepFocus) {
+  const qs = filtersQs({ status: ticketsStatusFilter, ...ticketsFilters });
+  const [tickets, deps] = await Promise.all([apiGet(`/tickets${qs ? '?' + qs : ''}`), loadTicketDeps()]);
+  renderTicketsRows(tickets);
+  injectTicketsToolbar(tickets.length, deps, keepFocus === true);
+}
+
+function renderTicketsRows(tickets) {
   if (loadTheme().theme === 'brutalist') return renderTicketsBrutalist(tickets);
   if (loadTheme().theme === 'bento') return renderTicketsBento(tickets);
   setContent(`
@@ -6169,13 +6677,17 @@ async function renderTickets() {
       ${[['', 'همه'], ['open', 'باز'], ['answered', 'پاسخ‌داده‌شده'], ['closed', 'بسته']].map(([v, l]) => `<button class="tab-btn ${v === ticketsStatusFilter ? 'active' : ''}" data-s="${v}">${l}</button>`).join('')}
     </div>
     <div class="card"><div class="table-wrap"><table>
-      <thead><tr><th>#</th><th>کاربر</th><th>موضوع</th><th>وضعیت</th><th>آخرین بروزرسانی</th><th></th></tr></thead>
+      <thead><tr><th>#</th><th>کاربر</th><th>موضوع</th><th>دسته</th><th>سرویس</th><th>اولویت</th><th>وضعیت</th><th>پیام‌ها</th><th>آخرین بروزرسانی</th><th></th></tr></thead>
       <tbody>${tickets.map(t => `<tr>
-        <td class="mono">#${t.id}</td><td>${esc(t.username || t.user_id)}</td><td>${esc(t.subject)}</td>
+        <td class="mono">#${t.id}</td><td>${esc(t.username || t.user_name || t.user_id)}${t.unread ? ` <span class="badge badge-pending">${t.unread}</span>` : ''}</td><td>${esc(t.subject)}</td>
+        <td>${esc(t.department_name || '—')}</td>
+        <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.ref_label || '—')}</td>
+        <td>${priorityBadge(t.priority)}</td>
         <td>${{ open: '<span class="badge badge-pending">باز</span>', answered: '<span class="badge badge-approved">پاسخ‌داده‌شده</span>', closed: '<span class="badge badge-rejected">بسته</span>' }[t.status] || t.status}</td>
+        <td class="mono">${fmt(t.messages_count || 0)}</td>
         <td class="mono">${fmtDate(t.updated_at)}</td>
         <td><button class="btn btn-sm" data-open="${t.id}">مشاهده</button></td>
-      </tr>`).join('') || '<tr><td colspan="6" class="empty-state">تیکتی نیست</td></tr>'}</tbody>
+      </tr>`).join('') || '<tr><td colspan="10" class="empty-state">تیکتی نیست</td></tr>'}</tbody>
     </table></div></div>
   `);
   $$('.tab-btn', content()).forEach(b => b.addEventListener('click', () => { ticketsStatusFilter = b.dataset.s; renderTickets(); }));
@@ -6195,9 +6707,10 @@ function renderTicketsBento(tickets) {
           ${bnAvatar((t.username || '؟').trim().charAt(0), i)}
           <div class="bn-row-main">
             <span class="bn-row-title">${esc(t.subject)}</span>
-            <span class="bn-row-sub">${esc(t.username || t.user_id)} · ${fmtDate(t.updated_at)}</span>
+            <span class="bn-row-sub">${esc(t.username || t.user_id)} · ${fmtDate(t.updated_at)}${t.department_name ? ' · 🧩 ' + esc(t.department_name) : ''}${t.ref_label ? ' · 📦 ' + esc(t.ref_label) : ''}</span>
           </div>
           <div class="bn-row-trail">
+            ${bnPill('اولویت ' + PRIORITY_LABEL[normPriority(t.priority)], PRIORITY_KIND[normPriority(t.priority)])}
             ${bnPill(TICKETS_STATUS_LABEL[t.status] || t.status, t.status === 'open' ? 'pending' : t.status === 'answered' ? 'ok' : 'no')}
             <button class="bn-btn bn-btn-ghost" data-open="${t.id}">مشاهده</button>
           </div>
@@ -6243,6 +6756,9 @@ function renderTicketsBrutalist(tickets) {
           <div class="bru-ticket-body">
             <div class="bru-ticket-row"><span>کاربر</span><b>${esc(t.username || t.user_id)}</b></div>
             <div class="bru-ticket-row" style="flex-direction:column;align-items:flex-start;gap:2px"><span>موضوع</span><b style="white-space:normal">${esc(t.subject)}</b></div>
+            <div class="bru-ticket-row"><span>اولویت</span><b>${PRIORITY_LABEL[normPriority(t.priority)]}</b></div>
+            ${t.department_name ? `<div class="bru-ticket-row"><span>دسته</span><b>${esc(t.department_name)}</b></div>` : ''}
+            ${t.ref_label ? `<div class="bru-ticket-row"><span>سرویس</span><b style="white-space:normal">${esc(t.ref_label)}</b></div>` : ''}
             <div class="bru-ticket-row"><span>بروزرسانی</span><b class="mono">${fmtDate(t.updated_at)}</b></div>
           </div>
           <div class="bru-ticket-actions">
@@ -6256,20 +6772,133 @@ function renderTicketsBrutalist(tickets) {
   $$('[data-open]', content()).forEach(b => b.addEventListener('click', () => showTicket(Number(b.dataset.open))));
 }
 
+function injectTicketsToolbar(total, deps, keepFocus) {
+  const host = content();
+  if (!host) return;
+  const canAct = hasPerm('tickets');
+  const filterBar = listFilterToolbar({
+    id: 'tickets-filter-toolbar',
+    filters: ticketsFilters,
+    defaults: TICKETS_FILTER_DEFAULTS,
+    placeholder: '🔎 جستجو: نام‌کاربری، نام، آیدی، شماره‌ی تیکت، موضوع، دسته، سرویس یا متن پیام‌ها...',
+    main: [{ key: 'priority', label: 'اولویت:', options: PRIORITY_FILTER_OPTIONS }],
+    adv: [
+      { key: 'department_id', label: 'دسته‌بندی:', options: [['', 'همه'], ['none', 'بدون دسته'], ...(deps || []).map(d => [String(d.id), d.name])] },
+      { key: 'unread', label: 'پیام جدید:', options: UNREAD_OPTIONS },
+      { key: 'service', label: 'سرویس مرتبط:', options: YES_NO_SERVICE_OPTIONS },
+      { key: 'date_from', label: 'ایجاد از تاریخ:', type: 'date' },
+      { key: 'date_to', label: 'تا تاریخ:', type: 'date' },
+    ],
+    sort: TICKETS_SORT_OPTIONS,
+    total,
+    onChange: keep => renderTickets(keep),
+  });
+  const bar = document.createElement('div');
+  bar.id = 'tickets-toolbar';
+  bar.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 12px';
+  bar.innerHTML = canAct ? `<button class="btn btn-sm" id="tk-manage-deps">🧩 مدیریت دسته‌بندی‌ها</button>
+    <button class="btn btn-sm btn-danger" id="tk-delete-closed">🗑 حذف همه‌ی تیکت‌های بسته</button>` : '';
+  host.prepend(bar);
+  host.prepend(filterBar);
+  restoreSearchFocus(filterBar, keepFocus);
+  const manage = $('#tk-manage-deps', bar);
+  if (manage) manage.addEventListener('click', showTicketDepartments);
+  const del = $('#tk-delete-closed', bar);
+  if (del) del.addEventListener('click', async () => {
+    if (!confirm('همه‌ی تیکت‌های بسته‌شده (با تمام پیام‌هایشان) برای همیشه حذف شوند؟')) return;
+    try { const r = await apiPost('/tickets/delete-closed'); toast(`${fmt(r.count)} تیکت بسته حذف شد.`); renderTickets(); } catch (e) { handleErr(e); }
+  });
+}
+
+/* مدیریت دسته‌بندی (موضوع) تیکت‌ها: افزودن، ویرایش نام، ترتیب، فعال/غیرفعال و حذف */
+async function showTicketDepartments() {
+  let deps;
+  try { deps = await apiGet('/ticket-departments'); } catch (e) { handleErr(e); return; }
+  const rowsHtml = d => `
+    <tr data-dep="${d.id}">
+      <td><input class="input dep-name" value="${esc(d.name)}" style="min-width:120px"></td>
+      <td><input class="input dep-order mono" type="number" value="${Number(d.sort_order || 0)}" style="width:80px"></td>
+      <td class="mono">${fmt(d.ticket_count || 0)}</td>
+      <td><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" class="dep-active" ${d.is_active ? 'checked' : ''}> فعال</label></td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-sm btn-primary dep-save">ذخیره</button>
+        <button class="btn btn-sm btn-danger dep-del">حذف</button>
+      </td>
+    </tr>`;
+  openModal('🧩 دسته‌بندی‌های تیکت', `
+    <p class="card-sub" style="margin:0 0 10px">این دسته‌ها هنگام ثبت تیکت به کاربر نشان داده می‌شوند. دسته‌ی غیرفعال دیگر قابل انتخاب نیست ولی تیکت‌های قبلی‌اش می‌مانند. با حذف یک دسته، تیکت‌هایش بدون دسته می‌شوند (حذف نمی‌شوند).</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>نام</th><th>ترتیب</th><th>تعداد تیکت</th><th>وضعیت</th><th></th></tr></thead>
+      <tbody id="dep-rows">${deps.map(rowsHtml).join('') || '<tr><td colspan="5" class="empty-state">دسته‌ای نیست</td></tr>'}</tbody>
+    </table></div>
+    <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+      <input class="input" id="dep-new-name" placeholder="نام دسته‌ی جدید..." style="flex:1;min-width:160px">
+      <button class="btn btn-primary" id="dep-add">➕ افزودن</button>
+    </div>
+  `, (body, close) => {
+    const reload = () => { close(); showTicketDepartments(); };
+    $('#dep-add', body).addEventListener('click', async () => {
+      const name = $('#dep-new-name', body).value.trim();
+      if (!name) return toast('نام دسته را وارد کن.', true);
+      try { await apiPost('/ticket-departments', { name }); toast('دسته اضافه شد.'); reload(); } catch (e) { handleErr(e); }
+    });
+    $$('tr[data-dep]', body).forEach(tr => {
+      const id = tr.dataset.dep;
+      $('.dep-save', tr).addEventListener('click', async () => {
+        try {
+          await apiPut(`/ticket-departments/${id}`, {
+            name: $('.dep-name', tr).value.trim(),
+            sort_order: Number($('.dep-order', tr).value || 0),
+            is_active: $('.dep-active', tr).checked,
+          });
+          toast('ذخیره شد.');
+        } catch (e) { handleErr(e); }
+      });
+      $('.dep-del', tr).addEventListener('click', async () => {
+        if (!confirm('این دسته حذف شود؟ تیکت‌های آن بدون دسته می‌شوند.')) return;
+        try { await apiDelete(`/ticket-departments/${id}`); toast('دسته حذف شد.'); reload(); } catch (e) { handleErr(e); }
+      });
+    });
+  }, { wide: true });
+}
+
 async function showTicket(ticketId) {
   const d = await apiGet(`/tickets/${ticketId}/messages`);
   const canAct = hasPerm('tickets');
-  openModal(`تیکت: ${esc(d.ticket.subject)}`, `
+  const t = d.ticket;
+  const closed = t.status === 'closed';
+  let deps = [];
+  if (canAct) { try { deps = await apiGet('/ticket-departments'); } catch (e) { /* بدون جابه‌جایی دسته */ } }
+  const statusBadge = { open: '<span class="badge badge-pending">باز</span>', answered: '<span class="badge badge-approved">پاسخ‌داده‌شده</span>', closed: '<span class="badge badge-rejected">بسته</span>' }[t.status] || esc(t.status);
+  openModal(`تیکت #${t.id}: ${esc(t.subject)}`, `
+    <div class="card-sub" style="margin-bottom:10px;line-height:2">
+      کاربر: <b class="mono">${esc(t.user_id)}</b> · ${statusBadge} · ${priorityBadge(t.priority)}
+      ${t.department_name ? ` · 🧩 ${esc(t.department_name)}` : ''}
+      ${t.ref_label ? `<br>📦 سرویس مرتبط: <b>${esc(t.ref_label)}</b>` : ''}
+    </div>
+    ${canAct ? `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+      <span class="card-sub">اولویت:</span>
+      <select class="input" id="ticket-priority" style="width:auto">${priorityOptions(normPriority(t.priority))}</select>
+      <span class="card-sub">دسته:</span>
+      <select class="input" id="ticket-dept" style="width:auto"><option value="">— بدون دسته —</option>${deps.map(x => `<option value="${x.id}" ${x.id === t.department_id ? 'selected' : ''}>${esc(x.name)}${x.is_active ? '' : ' (غیرفعال)'}</option>`).join('')}</select>
+    </div>` : ''}
     <div style="display:flex;flex-direction:column;gap:8px;max-height:280px;overflow-y:auto;margin-bottom:12px">
       ${d.messages.map(m => `<div style="background:${m.sender === 'admin' ? 'var(--signal-dim)' : 'var(--panel-2)'};padding:8px 12px;border-radius:9px;font-size:13px">
         <strong style="font-size:11px;color:var(--text-muted)">${m.sender === 'admin' ? 'ادمین' : 'کاربر'}</strong><br>${esc(m.message)}
       </div>`).join('') || '<span class="card-sub">پیامی نیست</span>'}
     </div>
-    ${canAct && d.ticket.status !== 'closed' ? `
+    ${canAct && !closed ? `
       <textarea class="input" id="ticket-reply" rows="2" placeholder="پاسخ..."></textarea>
       <div class="modal-actions">
         <button class="btn btn-primary" id="ticket-send">ارسال پاسخ</button>
-        <button class="btn btn-danger" id="ticket-close-btn">بستن تیکت</button>
+        <button class="btn" id="ticket-close-btn">🔒 بستن تیکت</button>
+        <button class="btn btn-danger" id="ticket-delete-btn">🗑 حذف تیکت</button>
+      </div>` : ''}
+    ${canAct && closed ? `
+      <div class="card-sub" style="margin-bottom:6px">این تیکت بسته است؛ برای پاسخ‌دادن ابتدا آن را دوباره باز کن.</div>
+      <div class="modal-actions">
+        <button class="btn btn-primary" id="ticket-reopen-btn">🔓 باز کردن مجدد تیکت</button>
+        <button class="btn btn-danger" id="ticket-delete-btn">🗑 حذف تیکت</button>
       </div>` : ''}
   `, (body, close) => {
     const send = $('#ticket-send', body);
@@ -6282,7 +6911,24 @@ async function showTicket(ticketId) {
     if (closeBtn) closeBtn.addEventListener('click', async () => {
       try { await apiPost(`/tickets/${ticketId}/close`); toast('تیکت بسته شد.'); close(); renderTickets(); } catch (e) { handleErr(e); }
     });
-  });
+    const reopenBtn = $('#ticket-reopen-btn', body);
+    if (reopenBtn) reopenBtn.addEventListener('click', async () => {
+      try { await apiPost(`/tickets/${ticketId}/reopen`); toast('تیکت دوباره باز شد.'); close(); await renderTickets(); showTicket(ticketId); } catch (e) { handleErr(e); }
+    });
+    const delBtn = $('#ticket-delete-btn', body);
+    if (delBtn) delBtn.addEventListener('click', async () => {
+      if (!confirm(`تیکت #${ticketId} با تمام پیام‌هایش برای همیشه حذف شود؟`)) return;
+      try { await apiDelete(`/tickets/${ticketId}`); toast('تیکت حذف شد.'); close(); renderTickets(); } catch (e) { handleErr(e); }
+    });
+    const prio = $('#ticket-priority', body);
+    if (prio) prio.addEventListener('change', async () => {
+      try { await apiPost(`/tickets/${ticketId}/priority`, { priority: prio.value }); toast('اولویت تغییر کرد.'); renderTickets(); } catch (e) { handleErr(e); }
+    });
+    const dept = $('#ticket-dept', body);
+    if (dept) dept.addEventListener('change', async () => {
+      try { await apiPost(`/tickets/${ticketId}/department`, { department_id: dept.value ? Number(dept.value) : null }); toast('دسته‌بندی تغییر کرد.'); renderTickets(); } catch (e) { handleErr(e); }
+    });
+  }, { wide: true });
 }
 
 /* =========================================================== broadcast === */
@@ -8423,22 +9069,21 @@ async function stealthNodeSettingsModal(node, reload) {
 let paygTab = 'settings';
 const paygAcc = { offset: 0, q: '' };
 const PAYG_STATUS_FA = { active: 'فعال', suspended_admin: 'تعلیق مدیریتی', inactive: 'غیرفعال' };
-const PAYG_TIER_LABELS = ['تا ۵۰ گیگابایت', '۵۰ تا ۲۰۰ گیگابایت', '۲۰۰ تا ۵۰۰ گیگابایت', 'بیشتر از ۵۰۰ گیگابایت'];
 const paygGb = n => (Number(n || 0) / 1024 ** 3).toFixed(3);
 
 async function renderPayg() {
-  const tabs = [['settings', 'تنظیمات'], ['targets', 'پنل‌ها و نودها'], ['costs', 'قیمت تمام‌شده'], ['accounts', 'حساب‌ها'], ['report', 'گزارش']];
+  const tabs = [['settings', 'تنظیمات'], ['targets', 'پنل‌ها و نودها'], ['costs', 'تعرفه فروش'], ['accounts', 'حساب‌ها'], ['report', 'گزارش']];
   const bar = `<div class="toolbar" style="gap:8px;flex-wrap:wrap">${tabs.map(([k, l]) => `<button class="btn btn-sm ${paygTab === k ? 'btn-primary' : ''}" data-payg-tab="${k}">${l}</button>`).join('')}</div>`;
   const body = paygTab === 'settings' ? await paygSettingsHtml()
     : paygTab === 'targets' ? await paygTargetsHtml()
-    : paygTab === 'costs' ? await paygCostsHtml()
+    : paygTab === 'costs' ? await paygCostsHtml('payg')
     : paygTab === 'accounts' ? await paygAccountsHtml()
     : await paygReportHtml();
   setContent(bar + body);
   $$('[data-payg-tab]', content()).forEach(b => b.addEventListener('click', () => { paygTab = b.dataset.paygTab; renderPayg().catch(handleErr); }));
   if (paygTab === 'settings') paygBindSettings();
   else if (paygTab === 'targets') paygBindTargets();
-  else if (paygTab === 'costs') paygBindCosts();
+  else if (paygTab === 'costs') paygBindCosts('payg');
   else if (paygTab === 'accounts') paygBindAccounts();
 }
 
@@ -8458,9 +9103,11 @@ async function paygSettingsHtml() {
       <div class="form-grid">
         <label class="field field-row"><span>فروش سرویس جدید پرداخت به‌ازای مصرف</span>${_swSpan('payg_enabled', d.enabled)}</label>
         <div class="card-sub">با خاموش‌کردن، فقط ساخت سرویس جدید متوقف می‌شود؛ حساب‌های فعلی طبق تسویه ادامه می‌دهند.</div>
-        <b>تعرفه عمومی جایگزین (تومان بر هر گیگابایت)</b><div class="card-sub">برای سرویس‌های قدیمی یا مقصدهایی که تعرفه پنلی ندارند؛ تعرفه VPNهای دارای قیمت تمام‌شده از بخش «قیمت تمام‌شده» هر پنل خوانده می‌شود.</div>
-        ${PAYG_TIER_LABELS.map((l, i) => `<label class="field"><span>${l}</span><input class="input" type="number" min="1" dir="ltr" data-payg-rate="${i}" value="${Number(d.rates[i])}"></label>`).join('')}
-        <div class="card-sub">قیمت‌ها باید مثبت و نزولی باشند. نرخ جدید برای حساب‌های فعال از ابتدای ماه بعد اعمال می‌شود.</div>
+        <b>تعرفه عمومی جایگزین (تومان بر هر گیگابایت)</b><div class="card-sub">برای سرویس‌های قدیمی یا مقصدهایی که تعرفه پنلی ندارند؛ تعرفه VPNهای دارای تعرفه فروش از تب «تعرفه فروش» همین صفحه خوانده می‌شود.</div>
+        <label class="field"><span>قیمت ثابت هر گیگابایت (تومان)</span><input class="input" type="number" min="1" dir="ltr" id="payg-rate" value="${Number(d.rate)}"></label>
+        ${d.legacy_tiered ? '<div class="card-sub" style="color:var(--danger,#c0392b)">هنوز تعرفه پلکانی قبلی فعال است؛ با ذخیره‌ی قیمت ثابت جایگزین می‌شود.</div>' : ''}
+        <div><button class="btn btn-sm" id="payg-suggest-tiers" type="button">💡 پیشنهاد قیمت از فرمول حسابداری</button> <span class="card-sub" id="payg-suggest-note"></span></div>
+        <div class="card-sub">نرخ جدید برای حساب‌های فعال از ابتدای ماه بعد اعمال می‌شود.</div>
         <label class="field"><span>چرخه تسویه (ثانیه، ۶۰ تا ۸۶۴۰۰)</span><input class="input" type="number" min="60" max="86400" dir="ltr" id="payg-cycle" value="${Number(d.cycle_seconds)}"></label>
         <label class="field"><span>حداکثر سرویس PayG برای هر کاربر</span><input class="input" type="number" min="1" max="100" dir="ltr" id="payg-max" value="${Number(d.max_services)}"></label>
         <button class="btn btn-primary" id="payg-save-settings">ذخیره تنظیمات</button>
@@ -8471,12 +9118,19 @@ async function paygSettingsHtml() {
 function paygBindSettings() {
   const root = content();
   _bindSwitches(root);
+  $('#payg-suggest-tiers', root)?.addEventListener('click', async () => {
+    try {
+      const r = await apiGet('/accounting/suggest-payg');
+      $('#payg-rate', root).value = r.rate;
+      $('#payg-suggest-note', root).textContent = `بر اساس بالاترین قیمت تمام‌شده‌ی هر گیگ (${fmt(r.cost_gb)} تومان). برای اعمال، ذخیره را بزنید.`;
+    } catch (e) { handleErr(e); }
+  });
   $('#payg-save-settings', root)?.addEventListener('click', async () => {
-    const rates = $$('[data-payg-rate]', root).map(el => parseInt(el.value, 10));
+    const rate = parseInt($('#payg-rate', root).value, 10);
     try {
       await apiPost('/payg/settings', {
         enabled: _swOn(root, 'payg_enabled'),
-        rates,
+        rate,
         cycle_seconds: parseInt($('#payg-cycle', root).value, 10),
         max_services: parseInt($('#payg-max', root).value, 10),
       });
@@ -8567,8 +9221,18 @@ function paygOpenTargetModal(serverId) {
   }, { wide: true });
 }
 
-async function paygCostsHtml() {
-  const d = await apiGet('/payg/costs');
+const COST_MODES = {
+  payg: { api: '/payg/costs', modal: 'تعرفه فروش', title: 'تعرفه فروش مستقل هر پنل و مقصد', rerender: () => renderPayg(),
+    intro: 'برای هر گروه یا اینباند، بهای فروش هر گیگ ترافیک مصرف‌شده، هر روز فعال‌بودن سرویس و هر کاربر ظرفیت را جداگانه تعیین کنید؛ این مبلغ از کیف پول مشتری PayG کم می‌شود. مقدار صفر یعنی آن جزء هزینه ندارد. اگر سرویس چند مقصد انتخاب کند، بالاترین تعرفه مقصدهای انتخاب‌شده مبناست؛ پلن شخصی بدون انتخاب مقصد نیز از تعرفه پیش‌فرض و در نبود آن از بالاترین تعرفه مقصدهای پنل استفاده می‌کند.' },
+  acct: { api: '/accounting/panel-costs', modal: 'قیمت تمام‌شده', title: 'قیمت تمام‌شده‌ی واقعی هر پنل و مقصد', rerender: () => renderAccounting(),
+    intro: 'هزینه‌ی واقعی شما برای هر گیگ، هر روز فعال و هر کاربر. این مقادیر فقط مبنای پیشنهاد قیمت و گزارش‌های حسابداری هستند و روی مبلغی که از مشتری کم می‌شود اثری ندارند. مقدار صفر یعنی آن جزء هزینه ندارد.' },
+};
+let costMode = 'payg';
+
+async function paygCostsHtml(mode = 'payg') {
+  costMode = mode;
+  const M = COST_MODES[mode];
+  const d = await apiGet(M.api);
   window.__paygCosts = d;
   const cards = (d.panels || []).map(p => `
     <div class="card" style="padding:14px;margin-top:12px">
@@ -8580,15 +9244,17 @@ async function paygCostsHtml() {
       ${(p.rows || []).map(r => `<tr><td>${esc(r.label)}</td><td>${fmt(r.gb_rate)} تومان</td><td>${fmt(r.day_rate)} تومان</td><td>${fmt(r.user_rate)} تومان</td></tr>`).join('') || '<tr><td colspan="4">مقصدی یافت نشد.</td></tr>'}
       </tbody></table></div>
     </div>`).join('') || '<div class="empty-state">پنل فعالی وجود ندارد.</div>';
-  return `<div class="card" style="padding:14px;margin-top:12px"><b>تعرفه مستقل هر پنل و مقصد</b><p class="card-sub">برای هر گروه یا اینباند، بهای هر گیگ ترافیک مصرف‌شده، هر روز فعال‌بودن سرویس و هر کاربر ظرفیت را جداگانه تعیین کنید. مقدار صفر یعنی آن جزء هزینه ندارد. اگر سرویس چند مقصد انتخاب کند، بالاترین تعرفه مقصدهای انتخاب‌شده مبناست؛ پلن شخصی بدون انتخاب مقصد نیز از تعرفه پیش‌فرض و در نبود آن از بالاترین تعرفه مقصدهای پنل استفاده می‌کند.</p></div>${cards}`;
+  return `<div class="card" style="padding:14px;margin-top:12px"><b>${M.title}</b><p class="card-sub">${M.intro}</p></div>${cards}`;
 }
 
-function paygBindCosts() {
+function paygBindCosts(mode = 'payg') {
+  const M = COST_MODES[mode];
   $$('[data-payg-cost-edit]', content()).forEach(btn => btn.addEventListener('click', () => {
     const panel = (window.__paygCosts?.panels || []).find(x => Number(x.id) === Number(btn.dataset.paygCostEdit));
     if (!panel) return;
     const rows = panel.rows || [];
-    const html = `<p class="card-sub">تعرفه‌ها به تومان هستند. هزینه کاربر بر اساس ظرفیت اکانت و فقط یک‌بار محاسبه خواهد شد.</p>
+    const html = `<p class="card-sub">مبالغ به تومان هستند. هزینه کاربر بر اساس ظرفیت اکانت و فقط یک‌بار محاسبه خواهد شد.</p>
+      ${mode === 'payg' ? '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px"><button class="btn btn-sm" type="button" id="payg-cost-suggest">💡 پیشنهاد از فرمول حسابداری</button><span class="card-sub" id="payg-cost-suggest-note"></span></div>' : ''}
       <div style="display:grid;gap:12px;max-height:60vh;overflow:auto;padding:2px">
       ${rows.map((r,i) => `<div class="card" style="padding:10px"><b>${esc(r.label)}</b><input type="hidden" data-cost-key value="${esc(r.target_key)}">
         <div class="form-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-top:8px">
@@ -8596,19 +9262,178 @@ function paygBindCosts() {
           <label class="field"><span>هر روز فعال (تومان)</span><input class="input" type="number" min="0" step="1" data-cost-day value="${Number(r.day_rate||0)}"></label>
           <label class="field"><span>هر کاربر (تومان)</span><input class="input" type="number" min="0" step="1" data-cost-user value="${Number(r.user_rate||0)}"></label>
         </div></div>`).join('')}
-      </div><button class="btn btn-primary" id="payg-cost-save" style="margin-top:12px">ذخیره تعرفه‌های این پنل</button>`;
-    openModal(`قیمت تمام‌شده · ${esc(panel.name)}`, html, (el, close) => {
+      </div><button class="btn btn-primary" id="payg-cost-save" style="margin-top:12px">ذخیره این پنل</button>`;
+    openModal(`${M.modal} · ${esc(panel.name)}`, html, (el, close) => {
+      $('#payg-cost-suggest', el)?.addEventListener('click', async () => {
+        try {
+          const r = await apiGet(`/accounting/suggest-tariff/${Number(panel.id)}`);
+          let hit = 0;
+          $$('[data-cost-key]', el).forEach(key => {
+            const v = r.rates[key.value]; if (!v) return;
+            const card = key.closest('.card');
+            $('[data-cost-gb]', card).value = v.gb_rate; $('[data-cost-day]', card).value = v.day_rate; $('[data-cost-user]', card).value = v.user_rate; hit++;
+          });
+          $('#payg-cost-suggest-note', el).textContent = hit ? `برای ${fmt(hit)} مقصد پر شد؛ برای اعمال ذخیره را بزنید.` : 'برای این پنل قیمت تمام‌شده‌ای در حسابداری ثبت نشده است.';
+        } catch (e) { handleErr(e); }
+      });
       $('#payg-cost-save', el).addEventListener('click', async e => {
         const button=e.currentTarget; button.disabled=true;
         const entries = $$('[data-cost-key]', el).map((key, i) => {
           const card=key.closest('.card');
           return {target_key:key.value, gb_rate:Math.max(0, Number($('[data-cost-gb]',card).value||0)), day_rate:Math.max(0, Number($('[data-cost-day]',card).value||0)), user_rate:Math.max(0, Number($('[data-cost-user]',card).value||0))};
         });
-        try { await apiPut(`/payg/costs/${Number(panel.id)}`, {entries}); toast('تعرفه‌های پنل ذخیره شد'); close(); renderPayg().catch(handleErr); }
+        try { await apiPut(`${M.api}/${Number(panel.id)}`, {entries}); toast('ذخیره شد'); close(); M.rerender().catch(handleErr); }
         catch(err){handleErr(err);button.disabled=false;}
       });
     }, {wide:true});
   }));
+}
+
+const ACCT_KIND_LABELS = { panel: 'محصول متصل به پنل / نود', personal: 'کانفیگ شخصی', multi_plan: 'چندپلنی (چند پنل)', multi_node: 'چندنودی (پنل + نود)', payg_gb: 'مصرفی: هر گیگ', payg_day: 'مصرفی: هر روز فعال', payg_user: 'مصرفی: هر کاربر' };
+const ACCT_VAR_HELP = [['gb', 'حجم (GB)'], ['days', 'مدت (روز)'], ['users', 'ظرفیت کاربر'], ['panels', 'تعداد پنل'], ['nodes', 'تعداد نود'], ['cost_gb', 'هزینه هر گیگ'], ['cost_day', 'هزینه هر روز'], ['cost_user', 'هزینه هر کاربر']];
+
+async function renderAccounting() {
+  const sub = navSubGet('accounting') || 'costs';
+  const tabs = [['costs', 'قیمت تمام‌شده'], ['formulas', 'فرمول‌ها و قیمت‌گذاری']];
+  const bar = `<div class="toolbar" style="gap:8px;flex-wrap:wrap">${tabs.map(([k, l]) => `<button class="btn btn-sm ${sub === k ? 'btn-primary' : ''}" data-acct-tab="${k}">${l}</button>`).join('')}</div>`;
+  const body = sub === 'formulas' ? await acctFormulasHtml() : (await paygCostsHtml('acct')) + (await acctNodeCostsHtml());
+  setContent(bar + body);
+  $$('[data-acct-tab]', content()).forEach(b => b.addEventListener('click', () => goTo('accounting', b.dataset.acctTab)));
+  if (sub === 'formulas') acctBindFormulas(); else { paygBindCosts('acct'); acctBindNodeCosts(); }
+}
+
+async function acctNodeCostsHtml() {
+  const d = await apiGet('/accounting/node-costs').catch(() => ({ nodes: [] }));
+  if (!(d.nodes || []).length) return '';
+  const rows = d.nodes.map(n => `<tr data-acct-node="${Number(n.id)}"><td>${esc(n.name)}</td>
+    <td><input class="input" type="number" min="0" dir="ltr" data-nc="gb_rate" value="${Number(n.gb_rate)}"></td>
+    <td><input class="input" type="number" min="0" dir="ltr" data-nc="day_rate" value="${Number(n.day_rate)}"></td>
+    <td><input class="input" type="number" min="0" dir="ltr" data-nc="user_rate" value="${Number(n.user_rate)}"></td></tr>`).join('');
+  return `<div class="card" style="padding:14px;margin-top:12px"><b>قیمت تمام‌شده نودهای SSH</b>
+    <p class="card-sub">برای پیشنهاد قیمت محصولات SSH و چندنودی استفاده می‌شود و روی مبلغ فروش اثری ندارد. مقدار صفر یعنی آن جزء هزینه ندارد.</p>
+    <div class="table-wrap"><table><thead><tr><th>نود</th><th>هر گیگ</th><th>هر روز</th><th>هر کاربر</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <button class="btn btn-primary" id="acct-node-save" style="margin-top:10px">ذخیره هزینه نودها</button></div>`;
+}
+
+function acctBindNodeCosts() {
+  $('#acct-node-save', content())?.addEventListener('click', async e => {
+    const btn = e.currentTarget; btn.disabled = true;
+    const entries = $$('[data-acct-node]', content()).map(tr => ({ node_id: Number(tr.dataset.acctNode),
+      gb_rate: Number($('[data-nc="gb_rate"]', tr).value || 0), day_rate: Number($('[data-nc="day_rate"]', tr).value || 0), user_rate: Number($('[data-nc="user_rate"]', tr).value || 0) }));
+    try { await apiPut('/accounting/node-costs', { entries }); toast('هزینه نودها ذخیره شد'); }
+    catch (err) { handleErr(err); }
+    btn.disabled = false;
+  });
+}
+
+async function acctFormulasHtml() {
+  const [cfg, panels] = await Promise.all([apiGet('/accounting/config'), apiGet('/panel-servers-lite').catch(() => [])]);
+  window.__acctCfg = cfg;
+  const constRows = Object.entries(cfg.constants || {}).map(([k, v]) => acctConstRowHtml(k, v)).join('');
+  const kinds = Object.keys(ACCT_KIND_LABELS);
+  return `
+    <div class="card" style="padding:14px;margin-top:12px"><b>متغیرهای قابل استفاده در فرمول</b>
+      <p class="card-sub" style="direction:ltr;text-align:left">${ACCT_VAR_HELP.map(([k, l]) => `<code>${k}</code> = ${esc(l)}`).join(' · ')}</p>
+      <p class="card-sub">توابع: <code>min max ceil floor round abs</code> و شرط <code>a if gb > 50 else b</code>. هزینه‌ها از «قیمت تمام‌شده» می‌آیند؛ در محصولات چندپنلی/چندنودی مجموع مقصدها و در بقیه بالاترین هزینه‌ی مقصدهای انتخابی استفاده می‌شود.</p></div>
+    <div class="card" style="padding:14px;margin-top:12px"><b>ثابت‌ها</b>
+      <p class="card-sub">هر ثابت (مثل margin درصد سود) با نام خودش در فرمول‌ها قابل استفاده است.</p>
+      <div id="acct-consts" style="display:grid;gap:8px">${constRows}</div>
+      <button class="btn btn-sm" id="acct-const-add" style="margin-top:8px">+ افزودن ثابت</button>
+      <div class="form-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:12px">
+        <label class="field"><span>گرد کردن قیمت به بالا (تومان)</span><input class="input" type="number" min="1" dir="ltr" id="acct-round" value="${Number(cfg.round_to)}"></label>
+        <label class="field"><span>روش محاسبه‌ی قیمت</span><select class="input" id="acct-mode">
+          <option value="precise" ${cfg.calc_mode !== 'average' ? 'selected' : ''}>دقیق (بالاترین هزینه)</option>
+          <option value="average" ${cfg.calc_mode === 'average' ? 'selected' : ''}>میانگین هزینه‌ها</option></select></label>
+      </div>
+      <p class="card-sub">وقتی یک محصول چند اینباند یا چند پنل (توزیع بار) دارد: «دقیق» بالاترین هزینه را مبنا می‌گیرد تا هرگز زیر قیمت تمام‌شده نفروشید؛ «میانگین» میانگین هزینه‌ها را. محصولات «همه‌ی مقصدها» همیشه جمع هزینه‌ها هستند.</p>
+    </div>
+    <div class="card" style="padding:14px;margin-top:12px"><b>فرمول هر نوع محصول</b>
+      <div style="display:grid;gap:10px;margin-top:8px">${kinds.map(k => `<label class="field"><span>${ACCT_KIND_LABELS[k]}</span><input class="input" dir="ltr" data-acct-formula="${k}" value="${esc(cfg.formulas[k])}"></label>`).join('')}</div>
+      <button class="btn btn-primary" id="acct-save" style="margin-top:12px">ذخیره فرمول‌ها</button></div>
+    <div class="card" style="padding:14px;margin-top:12px"><b>ماشین‌حساب پیشنهاد قیمت</b>
+      <div class="form-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:8px">
+        <label class="field"><span>نوع</span><select class="input" id="acct-calc-kind">${['panel', 'personal'].map(k => `<option value="${k}">${ACCT_KIND_LABELS[k]}</option>`).join('')}</select></label>
+        <label class="field"><span>پنل</span><select class="input" id="acct-calc-panel">${(panels || []).map(p => `<option value="${Number(p.id)}">${esc(p.name)}</option>`).join('')}</select></label>
+        <label class="field"><span>حجم (GB)</span><input class="input" type="number" min="0" dir="ltr" id="acct-calc-gb" value="30"></label>
+        <label class="field"><span>مدت (روز)</span><input class="input" type="number" min="0" dir="ltr" id="acct-calc-days" value="30"></label>
+        <label class="field"><span>ظرفیت کاربر</span><input class="input" type="number" min="1" dir="ltr" id="acct-calc-users" value="1"></label>
+      </div>
+      <button class="btn btn-sm" id="acct-calc-run" style="margin-top:10px">محاسبه</button>
+      <div class="card-sub" id="acct-calc-out" style="margin-top:8px"></div></div>`;
+}
+
+function acctConstRowHtml(k, v) {
+  return `<div class="form-row" data-acct-const><input class="input" dir="ltr" data-acct-cname placeholder="نام (انگلیسی)" value="${esc(k)}"><input class="input" type="number" step="any" dir="ltr" data-acct-cval placeholder="مقدار" value="${Number(v)}"><button class="btn btn-sm btn-danger" type="button" data-acct-cdel>حذف</button></div>`;
+}
+
+function acctBindFormulas() {
+  const root = content();
+  const bindDel = () => $$('[data-acct-cdel]', root).forEach(b => { b.onclick = () => b.closest('[data-acct-const]').remove(); });
+  bindDel();
+  $('#acct-const-add', root).addEventListener('click', () => { $('#acct-consts', root).insertAdjacentHTML('beforeend', acctConstRowHtml('', 0)); bindDel(); });
+  $('#acct-save', root).addEventListener('click', async e => {
+    const btn = e.currentTarget; btn.disabled = true;
+    const constants = {};
+    $$('[data-acct-const]', root).forEach(row => { const n = $('[data-acct-cname]', row).value.trim(); if (n) constants[n] = Number($('[data-acct-cval]', row).value || 0); });
+    const formulas = {};
+    $$('[data-acct-formula]', root).forEach(el => { formulas[el.dataset.acctFormula] = el.value.trim(); });
+    const body = { constants, formulas, round_to: parseInt($('#acct-round', root).value, 10) || 1000, calc_mode: $('#acct-mode', root).value };
+    try { await apiPut('/accounting/config', body); toast('فرمول‌ها ذخیره شد'); }
+    catch (err) { handleErr(err); }
+    btn.disabled = false;
+  });
+  $('#acct-calc-run', root).addEventListener('click', async () => {
+    const out = $('#acct-calc-out', root);
+    const panelId = Number($('#acct-calc-panel', root).value || 0);
+    if (!panelId) { out.textContent = 'پنل فعالی وجود ندارد.'; return; }
+    try {
+      const r = await apiPost('/accounting/suggest', { kind: $('#acct-calc-kind', root).value, panels: [{ id: panelId, targets: [] }], node_ids: [],
+        gb: Number($('#acct-calc-gb', root).value || 0), days: Number($('#acct-calc-days', root).value || 0), users: Number($('#acct-calc-users', root).value || 1) });
+      out.innerHTML = `قیمت پیشنهادی: <b>${fmt(r.price)} تومان</b> (قبل از گرد کردن ${fmt(r.raw)})`;
+    } catch (err) { out.textContent = err.message || 'خطا'; }
+  });
+}
+
+function acctSuggestInput(b) {
+  if ($('input[name="prod-source"]:checked', b)?.value !== 'direct') return { error: 'پیشنهاد قیمت فقط برای محصول با اتصال مستقیم به پنل یا نود ممکن است.' };
+  if ($('#prod-volume-unlimited', b)?.checked) return { error: 'برای پیشنهاد قیمت، حجم مشخص وارد کنید.' };
+  const gb = Number($('#prod-volume', b)?.value || 0);
+  if (!(gb > 0)) return { error: 'ابتدا حجم محصول را وارد کنید.' };
+  const days = $('#prod-duration-unlimited', b)?.checked ? 0 : Number($('#prod-duration', b)?.value || 30);
+  const users = Math.max(1, Number($('#prod-base-users', b)?.value || 1));
+  const target = $('#prod-target-type', b)?.value || 'vpn';
+  const panels = []; const node_ids = [];
+  let kind = 'panel';
+  if (target === 'multi') {
+    const map = readMultiPanelTargetConfigs(b);
+    $$('.prod-multi-panel:checked', b).forEach(c => panels.push({ id: Number(c.value), targets: map[String(c.value)] || [] }));
+    $$('.prod-multi-node:checked', b).forEach(c => node_ids.push(Number(c.value)));
+    kind = node_ids.length ? 'multi_node' : 'multi_plan';
+  } else {
+    if (target !== 'ssh') panels.push({ id: Number($('#prod-server', b)?.value || 0), targets: readProductTargetValues(b) || [] });
+    if (target === 'ssh' || target === 'both') node_ids.push(Number($('#prod-ssh-node', b)?.value || 0));
+    if (target === 'both') kind = 'multi_node';
+  }
+  if (!panels.every(p => p.id) || !node_ids.every(Boolean) || !(panels.length + node_ids.length)) return { error: 'ابتدا پنل یا نود محصول را انتخاب کنید.' };
+  return { body: { kind, panels, node_ids, gb, days, users } };
+}
+
+function wireProductPriceSuggest(b) {
+  const priceEl = $('#prod-price', b) || $('#pe-price', b);
+  if (!priceEl || $('#acct-suggest-btn', b)) return;
+  const row = priceEl.closest('.form-row') || priceEl.parentElement;
+  row.insertAdjacentHTML('afterend', '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn btn-sm" type="button" id="acct-suggest-btn">💡 پیشنهاد قیمت</button><span class="card-sub" id="acct-suggest-note"></span></div>');
+  $('#acct-suggest-btn', b).addEventListener('click', async () => {
+    const note = $('#acct-suggest-note', b);
+    const input = acctSuggestInput(b);
+    if (input.error) { note.textContent = input.error; return; }
+    try {
+      const r = await apiPost('/accounting/suggest', input.body);
+      priceEl.value = r.price;
+      priceEl.dispatchEvent(new Event('input', { bubbles: true }));
+      note.textContent = `هزینه: ${fmt(r.costs.gb_rate)}/GB · ${fmt(r.costs.day_rate)}/روز · ${fmt(r.costs.user_rate)}/کاربر → ${fmt(r.price)} تومان`;
+    } catch (err) { note.textContent = err.message || 'خطا در محاسبه'; }
+  });
 }
 
 async function paygAccountsHtml() {
@@ -13033,6 +13858,20 @@ async function renderAccount() {
         <button class="btn btn-primary" id="acc-save">تغییر پسورد</button>
       </div>
     </div>
+
+    <div class="card" id="acc-2fa-card" style="max-width:420px;margin-top:18px">
+      <div class="card-head"><h3>احراز هویت دو مرحله‌ای (2FA)</h3></div>
+      <div class="form-grid" id="acc-2fa-body"><div class="loading">در حال بارگذاری...</div></div>
+    </div>
+    ${ME.role === 'owner' ? `
+    <div class="card" id="acc-session-card" style="max-width:420px;margin-top:18px">
+      <div class="card-head"><h3>زمان انقضای نشست (عدم فعالیت)</h3></div>
+      <div class="form-grid" id="acc-session-body"><div class="loading">در حال بارگذاری...</div></div>
+    </div>
+    <div class="card" id="acc-2fa-admins-card" style="max-width:520px;margin-top:18px">
+      <div class="card-head"><h3>مدیریت 2FA ادمین‌ها</h3></div>
+      <div id="acc-2fa-admins-body"><div class="loading">در حال بارگذاری...</div></div>
+    </div>` : ''}
   `);
   $$('.theme-card', content()).forEach(card => card.addEventListener('click', () => {
     const id = card.dataset.themeId;
@@ -13058,6 +13897,115 @@ async function renderAccount() {
       $('#acc-cur').value = ''; $('#acc-new').value = '';
     } catch (e) { handleErr(e); }
   });
+  renderAccount2FA();
+  if (ME.role === 'owner') { renderAccountSession(); renderAccount2FAAdmins(); }
+}
+
+async function renderAccount2FA() {
+  const body = $('#acc-2fa-body');
+  if (!body) return;
+  let st;
+  try { st = await apiGet('/me/2fa'); } catch (e) { body.innerHTML = ''; handleErr(e); return; }
+  ME.totp_enabled = !!st.enabled;
+  if (!st.enabled) {
+    body.innerHTML = `
+      <span class="card-sub">با فعال‌سازی، هنگام ورود علاوه بر پسورد، کد ۶ رقمی اپ Google Authenticator / Authy / Microsoft Authenticator هم لازم است.</span>
+      <input class="input" id="tfa-pass" type="password" autocomplete="current-password" placeholder="پسورد فعلی">
+      <button class="btn btn-primary" id="tfa-start">شروع فعال‌سازی</button>`;
+    $('#tfa-start').addEventListener('click', async () => {
+      try {
+        const r = await apiPost('/me/2fa/setup', { current_password: $('#tfa-pass').value });
+        body.innerHTML = `
+          <span class="card-sub">۱) QR را در اپ احراز هویت اسکن کن یا کلید زیر را دستی وارد کن. ۲) کد ۶ رقمی نمایش‌داده‌شده را وارد کن.</span>
+          ${r.qr ? `<img src="${r.qr}" alt="QR" style="width:200px;height:200px;background:#fff;padding:6px;border-radius:8px;align-self:center">` : ''}
+          <input class="input mono" id="tfa-secret" readonly dir="ltr" value="${esc(r.secret)}">
+          <input class="input" id="tfa-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" dir="ltr" placeholder="کد ۶ رقمی">
+          <button class="btn btn-primary" id="tfa-enable">تأیید و فعال‌سازی</button>`;
+        $('#tfa-secret').addEventListener('focus', e => e.target.select());
+        $('#tfa-enable').addEventListener('click', async () => {
+          try {
+            const res = await apiPost('/me/2fa/enable', { code: $('#tfa-code').value });
+            ME.totp_enabled = true;
+            showBackupCodes(body, res.backup_codes);
+          } catch (e) { handleErr(e); }
+        });
+      } catch (e) { handleErr(e); }
+    });
+    return;
+  }
+  body.innerHTML = `
+    <span class="card-sub">وضعیت: <b>فعال</b> · کدهای پشتیبان باقی‌مانده: <b>${Number(st.backup_codes_left || 0)}</b></span>
+    <input class="input" id="tfa-pass" type="password" autocomplete="current-password" placeholder="پسورد فعلی">
+    <input class="input" id="tfa-code" type="text" autocomplete="one-time-code" maxlength="16" dir="ltr" placeholder="کد ۶ رقمی یا کد پشتیبان">
+    <button class="btn btn-primary" id="tfa-regen">ساخت کدهای پشتیبان جدید</button>
+    <button class="btn btn-danger" id="tfa-disable">غیرفعال‌سازی 2FA</button>`;
+  const creds = () => ({ current_password: $('#tfa-pass').value, code: $('#tfa-code').value });
+  $('#tfa-regen').addEventListener('click', async () => {
+    try {
+      const res = await apiPost('/me/2fa/backup-codes', creds());
+      showBackupCodes(body, res.backup_codes);
+    } catch (e) { handleErr(e); }
+  });
+  $('#tfa-disable').addEventListener('click', async () => {
+    if (!confirm('تأیید دو مرحله‌ای غیرفعال شود؟')) return;
+    try {
+      await apiPost('/me/2fa/disable', creds());
+      ME.totp_enabled = false;
+      toast('2FA غیرفعال شد.');
+      renderAccount2FA();
+    } catch (e) { handleErr(e); }
+  });
+}
+
+function showBackupCodes(body, codes) {
+  const list = (codes || []).join('\n');
+  body.innerHTML = `
+    <span class="card-sub"><b>کدهای پشتیبان</b> را همین حالا جای امنی ذخیره کن. هر کد فقط یک‌بار قابل استفاده است و بعد از بستن این بخش دیگر نمایش داده نمی‌شود.</span>
+    <textarea class="input mono" id="tfa-codes" rows="${Math.max(4, (codes || []).length)}" readonly dir="ltr">${esc(list)}</textarea>
+    <button class="btn" id="tfa-copy">کپی کدها</button>
+    <button class="btn btn-primary" id="tfa-done">ذخیره کردم</button>`;
+  $('#tfa-copy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(list); toast('کپی شد.'); } catch (e) { $('#tfa-codes').select(); toast('کپی دستی انجام بده.', true); }
+  });
+  $('#tfa-done').addEventListener('click', () => renderAccount2FA());
+}
+
+async function renderAccountSession() {
+  const body = $('#acc-session-body');
+  if (!body) return;
+  let st;
+  try { st = await apiGet('/security/session'); } catch (e) { body.innerHTML = ''; handleErr(e); return; }
+  body.innerHTML = `
+    <span class="card-sub">اگر کاربر در این مدت هیچ فعالیتی در پنل نداشته باشد، خودکار خارج می‌شود. مقدار ۰ یعنی غیرفعال. بازه‌ی مجاز: ${st.min_minutes} تا ${st.max_minutes} دقیقه. این تنظیم برای همه‌ی ادمین‌های همین پنل اعمال می‌شود.</span>
+    <input class="input" id="sess-minutes" type="number" min="0" max="${st.max_minutes}" value="${st.idle_minutes}" dir="ltr" placeholder="دقیقه (پیش‌فرض ${st.default_minutes})">
+    <button class="btn btn-primary" id="sess-save">ذخیره</button>`;
+  $('#sess-save').addEventListener('click', async () => {
+    try {
+      const r = await apiPost('/security/session', { idle_minutes: parseInt($('#sess-minutes').value, 10) || 0 });
+      ME.session_idle_minutes = r.idle_minutes;
+      LAST_USER_INPUT = Date.now();
+      toast('ذخیره شد.');
+    } catch (e) { handleErr(e); }
+  });
+}
+
+async function renderAccount2FAAdmins() {
+  const body = $('#acc-2fa-admins-body');
+  if (!body) return;
+  let admins;
+  try { admins = await apiGet('/web-admins'); } catch (e) { body.innerHTML = ''; handleErr(e); return; }
+  body.innerHTML = `<div class="table-wrap"><table class="table"><thead><tr><th>یوزرنیم</th><th>نقش</th><th>2FA</th><th></th></tr></thead><tbody>${admins.map(a => `
+    <tr>
+      <td class="mono">${esc(a.username)}</td>
+      <td>${esc(ROLE_LABEL[a.role] || a.role)}</td>
+      <td>${a.totp_enabled ? 'فعال' : 'غیرفعال'}</td>
+      <td>${a.totp_enabled && a.id !== ME.id ? `<button class="btn btn-sm btn-danger" data-reset-2fa="${a.id}">ریست 2FA</button>` : ''}</td>
+    </tr>`).join('')}</tbody></table></div>
+    <span class="card-sub">ریست 2FA برای ادمینی است که دستگاه و کدهای پشتیبانش را از دست داده؛ بعد از ریست می‌تواند دوباره فعالش کند.</span>`;
+  $$('[data-reset-2fa]', body).forEach(b => b.addEventListener('click', async () => {
+    if (!confirm('2FA این ادمین ریست شود؟')) return;
+    try { await apiPost(`/web-admins/${b.dataset.reset2fa}/2fa/reset`); toast('2FA ریست شد.'); renderAccount2FAAdmins(); } catch (e) { handleErr(e); }
+  }));
 }
 
 /* ============================================== assistant (دستیار هوشمند) === */
