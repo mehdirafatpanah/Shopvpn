@@ -2609,7 +2609,7 @@ async function renderStore() {
             ? `<div class="cat-frame cat-frame-thumb"><img data-cat-img="${c.id}" alt="" loading="lazy" /></div>`
             : `<div class="list-row-ic">🏬</div>`}<div class="list-row-text">
             <span class="list-row-title">${escHtml(c.name)}</span>
-            <span class="list-row-sub" style="${c.description ? "white-space:normal;word-break:break-word;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden" : ""}">${c.description ? escHtml(c.description.replace(/\s+/g, " ")) : `<span class="cat-count">${c.products.length} محصول · ${categories.filter(x => Number(x.parent_id) === Number(c.id)).length} زیردسته</span>`}</span>
+            <span class="list-row-sub"><span class="cat-count">${c.products.length} محصول · ${categories.filter(x => Number(x.parent_id) === Number(c.id)).length} زیردسته</span></span>
           </div></div><span class="list-row-chev">‹</span>
         </div>`).join("")}
       ${products.length ? `<div class="card"><h3><span class="ic">▣</span>محصولات ${title}</h3>
