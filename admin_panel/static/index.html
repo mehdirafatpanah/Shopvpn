@@ -3,7 +3,7 @@
 <html lang="fa" dir="rtl">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>پنل مدیریت ShopVPN</title>
 
 <!-- PWA: قابلیت نصب روی هوم‌اسکرین (اندروید + آیفون). href با ?b=... همان
@@ -37,7 +37,7 @@
   // رنگ نوار وضعیت اندروید / آدرس‌بار مرورگر و اسپلش‌اسکرین PWA را با
   // تم و حالت روشن/تیره‌ی فعلی هماهنگ می‌کند (مهم‌ترین مورد: تم اندروید
   // که برخلاف بقیه‌ی تم‌ها به‌صورت پیش‌فرض روشنه)
-  var themeColors = { enterprise: { light: '#F7F9FC', dark: '#0B1220' }, android: { light: '#FEF7FF', dark: '#141218' } };
+  var themeColors = { enterprise: { light: '#F7F9FC', dark: '#0B1220' }, android: { light: '#FEF7FF', dark: '#141218' }, glassops: { light: '#0F172A', dark: '#0F172A' } };
   var tc = (themeColors[theme] && themeColors[theme][mode]) || '#0B0C14';
   var metaTag = document.querySelector('meta[name="theme-color"]');
   if (metaTag) metaTag.setAttribute('content', tc);

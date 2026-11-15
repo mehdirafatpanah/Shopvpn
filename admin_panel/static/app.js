@@ -66,6 +66,15 @@ const THEMES = [
     defaultMode: 'light',
     swatch: ['#6750A4', '#EADDFF', '#1D1B20'],
   },
+  {
+    id: 'glassops',
+    name: 'Glass Ops',
+    desc: 'شیشه‌ای تیره با تمرکز بر کارهای فوری؛ کنتراست بالا و هدف‌های لمسی بزرگ',
+    ready: true,
+    supportsMode: false,
+    defaultMode: 'dark',
+    swatch: ['#0F172A', '#22C55E', '#1B2336'],
+  },
 ];
 const DEFAULT_THEME = 'enterprise';
 
