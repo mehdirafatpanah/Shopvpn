@@ -73,6 +73,8 @@ from admin_panel.telegram_notify import (
     send_message as tg_send,
     send_photo as tg_send_photo,
     upload_photo_get_file_id as tg_upload_photo_get_file_id,
+    upload_media_get_file_id as tg_upload_media_get_file_id,
+    send_saved_part as tg_send_saved_part,
     send_voice as tg_send_voice,
     send_document as tg_send_document,
     fetch_telegram_file,
@@ -9313,7 +9315,7 @@ class ExtraSettingsBody(BaseModel):
 @app.get("/api/settings/extra")
 def api_get_extra_settings(admin=Depends(require_permission("settings"))):
     return {
-        "groups": extra_settings_schema.groups_for("web"),
+        "groups": extra_settings_schema.groups_for("web", db),
         "values": extra_settings_schema.load_values(db, "web"),
     }
 
@@ -10752,6 +10754,348 @@ def api_custom_menu_button_delete(button_id: int, admin=Depends(require_permissi
     db.log_admin_action(admin["id"], "cmb_delete", f"دکمه‌ی سفارشی #{button_id}: {btn.get('title', '')} حذف شد (پنل وب - {admin['username']})",
                         "setting", "custom_menu")
     return {"ok": True}
+
+
+CM_MEDIA_KINDS = ("photo", "video", "animation", "voice", "audio", "document", "sticker", "video_note")
+CM_NO_CAPTION = ("sticker", "video_note")
+CM_MAX_PARTS = 10
+CM_MAX_PART_TEXT = 4096
+CM_MAX_CAPTION = 1024
+CM_MAX_UPLOAD = 50 * 1024 * 1024
+CM_STYLES = ("", "primary", "success", "danger")
+CM_MIME_RULES = {
+    "photo": ("image/jpeg", "image/png", "image/webp"),
+    "video": ("video/",),
+    "animation": ("video/", "image/gif"),
+    "voice": ("audio/ogg", "audio/opus"),
+    "audio": ("audio/",),
+    "sticker": ("image/webp", "video/webm"),
+    "video_note": ("video/",),
+}
+
+
+def _cm_get_or_404(button_id: int) -> dict:
+    btn = db.cm_get(button_id)
+    if not btn:
+        raise HTTPException(404, tr("این کلید دیگر وجود ندارد."))
+    return btn
+
+
+def _cm_content_or_400(button_id: int) -> dict:
+    btn = _cm_get_or_404(button_id)
+    if btn["kind"] != "content":
+        raise HTTPException(400, tr("این کلید از نوع لینک است؛ ابتدا نوع آن را به «پیام» تغییر بده."))
+    return btn
+
+
+def _cm_part_or_404(parts: list, index: int) -> dict:
+    if index < 0 or index >= len(parts):
+        raise HTTPException(404, tr("این پیام دیگر وجود ندارد."))
+    return parts[index]
+
+
+def _cm_deliverable(btn: dict) -> bool:
+    return bool(btn.get("url")) if btn.get("kind") == "url" else bool(btn.get("parts"))
+
+
+def _cm_public(btn: dict, detail: bool = False) -> dict:
+    parts = btn.get("parts") or []
+    summary: dict = {}
+    for p in parts:
+        summary[p.get("type")] = summary.get(p.get("type"), 0) + 1
+    out = {
+        "id": btn["id"], "key": f"custom_menu:{btn['id']}", "title": btn.get("title") or "",
+        "style": btn.get("style") or "", "kind": btn.get("kind") or "url", "url": btn.get("url") or "",
+        "is_active": bool(btn.get("is_active")), "clicks": int(btn.get("clicks") or 0),
+        "parts_count": len(parts), "summary": summary, "deliverable": _cm_deliverable(btn),
+    }
+    if detail:
+        out["parts"] = [
+            {"index": i, "type": p.get("type"), "text": p.get("text") or "",
+             "has_file": bool(p.get("file_id")), "rich": bool(p.get("entities"))}
+            for i, p in enumerate(parts)
+        ]
+    return out
+
+
+def _cm_log(admin: dict, action: str, detail: str) -> None:
+    db.log_admin_action(admin["id"], action, f"{detail} (پنل وب - {admin['username']})", "setting", "custom_menu")
+
+
+@app.get("/api/custom-menu")
+def api_cm_list(admin=Depends(require_permission("settings")), _mt=Depends(require_main_tenant)):
+    by_key = {f"custom_menu:{b['id']}": b for b in db.cm_list()}
+    return {
+        "items": [_cm_public(by_key[k]) for k in db.get_menu_order() if k in by_key],
+        "inline_enabled": db.get_setting("main_menu_inline_enabled", "0") == "1",
+        "limits": {"buttons": CM_MAX_BUTTONS, "parts": CM_MAX_PARTS, "title": CM_MAX_TITLE,
+                   "text": CM_MAX_PART_TEXT, "caption": CM_MAX_CAPTION, "upload_mb": CM_MAX_UPLOAD // (1024 * 1024)},
+    }
+
+
+@app.get("/api/custom-menu/{button_id}")
+def api_cm_get(button_id: int, admin=Depends(require_permission("settings")), _mt=Depends(require_main_tenant)):
+    return _cm_public(_cm_get_or_404(button_id), detail=True)
+
+
+class CmCreateBody(BaseModel):
+    title: str
+    kind: str = "url"
+    url: str = ""
+    style: str = ""
+    content: str = ""
+
+
+@app.post("/api/custom-menu")
+def api_cm_create(body: CmCreateBody, admin=Depends(require_permission("settings")), _mt=Depends(require_main_tenant)):
+    title = (body.title or "").strip()
+    if not title or len(title) > CM_MAX_TITLE:
+        raise HTTPException(400, tr(f"متن دکمه باید بین ۱ تا {CM_MAX_TITLE} نویسه باشد."))
+    if body.kind not in ("url", "content"):
+        raise HTTPException(400, tr("نوع کلید نامعتبر است."))
+    if body.style not in CM_STYLES:
+        raise HTTPException(400, tr("رنگ دکمه نامعتبر است."))
+    if db.cm_count() >= CM_MAX_BUTTONS:
+        raise HTTPException(400, tr(f"حداکثر {CM_MAX_BUTTONS} دکمه‌ی سفارشی مجاز است."))
+    url, parts = "", []
+    if body.kind == "url":
+        url = _cm_clean_url(body.url)
+    else:
+        content = (body.content or "").strip()
+        if len(content) > CM_MAX_PART_TEXT:
+            raise HTTPException(400, tr(f"متن پیام حداکثر {CM_MAX_PART_TEXT} نویسه باشد."))
+        if content:
+            parts = [{"type": "text", "text": content, "entities": []}]
+    new_id = db.cm_create(title, body.kind, url, parts, body.style)
+    if not parts and body.kind == "content":
+        db.cm_update(new_id, is_active=0)
+    _cm_log(admin, "cmb_create", f"دکمه‌ی سفارشی #{new_id}: {title}")
+    return _cm_public(db.cm_get(new_id), detail=True)
+
+
+class CmUpdateBody(BaseModel):
+    title: Optional[str] = None
+    style: Optional[str] = None
+    is_active: Optional[bool] = None
+    kind: Optional[str] = None
+    url: Optional[str] = None
+
+
+@app.put("/api/custom-menu/{button_id}")
+def api_cm_update(button_id: int, body: CmUpdateBody, admin=Depends(require_permission("settings")),
+                  _mt=Depends(require_main_tenant)):
+    btn = _cm_get_or_404(button_id)
+    fields: dict = {}
+    if body.title is not None:
+        title = body.title.strip()
+        if not title or len(title) > CM_MAX_TITLE:
+            raise HTTPException(400, tr(f"متن دکمه باید بین ۱ تا {CM_MAX_TITLE} نویسه باشد."))
+        fields["title"] = title
+    if body.style is not None:
+        if body.style not in CM_STYLES:
+            raise HTTPException(400, tr("رنگ دکمه نامعتبر است."))
+        fields["style"] = body.style
+    kind = body.kind or btn["kind"]
+    if kind not in ("url", "content"):
+        raise HTTPException(400, tr("نوع کلید نامعتبر است."))
+    if kind != btn["kind"]:
+        if kind == "url":
+            fields.update(kind="url", url=_cm_clean_url(body.url or ""), parts=[])
+        else:
+            fields.update(kind="content", url="")
+    elif kind == "url" and body.url is not None:
+        fields["url"] = _cm_clean_url(body.url)
+    merged = {**btn, **fields}
+    if body.is_active is not None:
+        if body.is_active and not _cm_deliverable(merged):
+            raise HTTPException(400, tr("این کلید هنوز محتوایی ندارد؛ اول لینک یا پیام آن را ثبت کن."))
+        fields["is_active"] = 1 if body.is_active else 0
+    elif not _cm_deliverable(merged):
+        fields["is_active"] = 0
+    if fields:
+        db.cm_update(button_id, **fields)
+        _cm_log(admin, "cmb_edit", f"دکمه‌ی سفارشی #{button_id} ویرایش شد")
+    return _cm_public(db.cm_get(button_id), detail=True)
+
+
+@app.delete("/api/custom-menu/{button_id}")
+def api_cm_delete(button_id: int, admin=Depends(require_permission("settings")), _mt=Depends(require_main_tenant)):
+    return api_custom_menu_button_delete(button_id, admin)
+
+
+class CmMoveBody(BaseModel):
+    direction: str
+
+
+@app.post("/api/custom-menu/{button_id}/move")
+def api_cm_move(button_id: int, body: CmMoveBody, admin=Depends(require_permission("settings")),
+                _mt=Depends(require_main_tenant)):
+    if body.direction not in ("up", "down"):
+        raise HTTPException(400, tr("جهت نامعتبر است."))
+    _cm_get_or_404(button_id)
+    order = db.get_menu_order()
+    slots = [i for i, k in enumerate(order) if k.startswith("custom_menu:")]
+    customs = [order[i] for i in slots]
+    i = customs.index(f"custom_menu:{button_id}")
+    j = i - 1 if body.direction == "up" else i + 1
+    if 0 <= j < len(customs):
+        customs[i], customs[j] = customs[j], customs[i]
+        for slot, key in zip(slots, customs):
+            order[slot] = key
+        db.set_menu_order(order)
+        db.cm_set_order([int(k.split(":", 1)[1]) for k in customs])
+        _cm_log(admin, "cmb_edit", f"ترتیب دکمه‌ی سفارشی #{button_id} تغییر کرد")
+    return {"ok": True}
+
+
+class CmTextBody(BaseModel):
+    text: str
+
+
+def _cm_check_text(text: str, kind: str) -> str:
+    text = (text or "").strip()
+    if kind == "text" and not text:
+        raise HTTPException(400, tr("متن پیام نمی‌تواند خالی باشد."))
+    if kind in CM_NO_CAPTION and text:
+        raise HTTPException(400, tr("این نوع پیام کپشن ندارد."))
+    limit = CM_MAX_PART_TEXT if kind == "text" else CM_MAX_CAPTION
+    if len(text) > limit:
+        raise HTTPException(400, tr(f"حداکثر {limit} نویسه مجاز است."))
+    return text
+
+
+@app.post("/api/custom-menu/{button_id}/parts/text")
+def api_cm_part_add_text(button_id: int, body: CmTextBody, admin=Depends(require_permission("settings")),
+                         _mt=Depends(require_main_tenant)):
+    btn = _cm_content_or_400(button_id)
+    parts = list(btn["parts"])
+    if len(parts) >= CM_MAX_PARTS:
+        raise HTTPException(400, tr(f"حداکثر {CM_MAX_PARTS} پیام مجاز است."))
+    parts.append({"type": "text", "text": _cm_check_text(body.text, "text"), "entities": []})
+    db.cm_update(button_id, parts=parts)
+    _cm_log(admin, "cmb_edit", f"پیام متنی به دکمه‌ی سفارشی #{button_id} اضافه شد")
+    return _cm_public(db.cm_get(button_id), detail=True)
+
+
+def _cm_check_media(kind: str, content_type: str, filename: str) -> None:
+    rules = CM_MIME_RULES.get(kind)
+    if rules is None:
+        return
+    ctype = (content_type or "").lower()
+    if any(ctype.startswith(r) for r in rules):
+        return
+    if kind == "sticker" and (filename or "").lower().endswith(".tgs"):
+        return
+    raise HTTPException(400, tr("فرمت فایل با نوع پیام انتخاب‌شده سازگار نیست."))
+
+
+@app.post("/api/custom-menu/{button_id}/parts/media")
+async def api_cm_part_add_media(
+    button_id: int, file: UploadFile = File(...), kind: str = Form(...), caption: str = Form(""),
+    admin=Depends(require_permission("settings")), _mt=Depends(require_main_tenant),
+):
+    btn = await asyncio.to_thread(_cm_content_or_400, button_id)
+    if len(btn["parts"]) >= CM_MAX_PARTS:
+        raise HTTPException(400, tr(f"حداکثر {CM_MAX_PARTS} پیام مجاز است."))
+    if kind not in CM_MEDIA_KINDS:
+        raise HTTPException(400, tr("نوع پیام نامعتبر است."))
+    caption = _cm_check_text(caption, kind)
+    filename = file.filename or "file"
+    _cm_check_media(kind, file.content_type, filename)
+    data = await file.read(CM_MAX_UPLOAD + 1)
+    if not data:
+        raise HTTPException(400, tr("فایل انتخاب‌شده خالی است."))
+    if len(data) > CM_MAX_UPLOAD:
+        raise HTTPException(400, tr(f"حجم فایل نباید بیشتر از {CM_MAX_UPLOAD // (1024 * 1024)} مگابایت باشد."))
+    file_id = await tg_upload_media_get_file_id(
+        _bot_token(), _tenant_owner_chat_id(), kind, data, filename=filename,
+        content_type=file.content_type or "application/octet-stream",
+    )
+    if not file_id:
+        raise HTTPException(502, tr("آپلود فایل در تلگرام ناموفق بود. ربات باید روشن باشد و مالک ربات را استارت کرده باشد."))
+    fresh = await asyncio.to_thread(_cm_content_or_400, button_id)
+    parts = list(fresh["parts"])
+    if len(parts) >= CM_MAX_PARTS:
+        raise HTTPException(400, tr(f"حداکثر {CM_MAX_PARTS} پیام مجاز است."))
+    parts.append({"type": kind, "file_id": file_id, "text": caption, "entities": []})
+    await asyncio.to_thread(db.cm_update, button_id, parts=parts)
+    await asyncio.to_thread(_cm_log, admin, "cmb_edit", f"پیام {kind} به دکمه‌ی سفارشی #{button_id} اضافه شد")
+    return _cm_public(await asyncio.to_thread(db.cm_get, button_id), detail=True)
+
+
+@app.put("/api/custom-menu/{button_id}/parts/{index}")
+def api_cm_part_edit(button_id: int, index: int, body: CmTextBody, admin=Depends(require_permission("settings")),
+                     _mt=Depends(require_main_tenant)):
+    parts = list(_cm_content_or_400(button_id)["parts"])
+    part = _cm_part_or_404(parts, index)
+    text = _cm_check_text(body.text, part.get("type"))
+    if text != (part.get("text") or ""):
+        parts[index] = {**part, "text": text, "entities": []}
+        db.cm_update(button_id, parts=parts)
+        _cm_log(admin, "cmb_edit", f"پیام {index + 1} دکمه‌ی سفارشی #{button_id} ویرایش شد")
+    return _cm_public(db.cm_get(button_id), detail=True)
+
+
+@app.delete("/api/custom-menu/{button_id}/parts/{index}")
+def api_cm_part_delete(button_id: int, index: int, admin=Depends(require_permission("settings")),
+                       _mt=Depends(require_main_tenant)):
+    btn = _cm_content_or_400(button_id)
+    parts = list(btn["parts"])
+    _cm_part_or_404(parts, index)
+    parts.pop(index)
+    fields = {"parts": parts}
+    if not parts:
+        fields["is_active"] = 0
+    db.cm_update(button_id, **fields)
+    _cm_log(admin, "cmb_edit", f"پیام {index + 1} دکمه‌ی سفارشی #{button_id} حذف شد")
+    return _cm_public(db.cm_get(button_id), detail=True)
+
+
+@app.post("/api/custom-menu/{button_id}/parts/{index}/move")
+def api_cm_part_move(button_id: int, index: int, body: CmMoveBody, admin=Depends(require_permission("settings")),
+                     _mt=Depends(require_main_tenant)):
+    if body.direction not in ("up", "down"):
+        raise HTTPException(400, tr("جهت نامعتبر است."))
+    parts = list(_cm_content_or_400(button_id)["parts"])
+    _cm_part_or_404(parts, index)
+    j = index - 1 if body.direction == "up" else index + 1
+    if 0 <= j < len(parts):
+        parts[index], parts[j] = parts[j], parts[index]
+        db.cm_update(button_id, parts=parts)
+        _cm_log(admin, "cmb_edit", f"ترتیب پیام‌های دکمه‌ی سفارشی #{button_id} تغییر کرد")
+    return _cm_public(db.cm_get(button_id), detail=True)
+
+
+@app.get("/api/custom-menu/{button_id}/parts/{index}/file")
+async def api_cm_part_file(button_id: int, index: int, admin=Depends(require_permission("settings")),
+                           _mt=Depends(require_main_tenant)):
+    btn = await asyncio.to_thread(_cm_get_or_404, button_id)
+    part = _cm_part_or_404(btn["parts"], index)
+    if not part.get("file_id"):
+        raise HTTPException(404, tr("این پیام فایل ندارد."))
+    result = await fetch_telegram_file(_bot_token(), part["file_id"])
+    if not result:
+        raise HTTPException(502, tr("دریافت فایل از تلگرام ناموفق بود."))
+    content, content_type = result
+    return Response(content=content, media_type=content_type,
+                    headers={"Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff"})
+
+
+@app.post("/api/custom-menu/{button_id}/preview")
+async def api_cm_preview(button_id: int, admin=Depends(require_owner), _mt=Depends(require_main_tenant)):
+    btn = await asyncio.to_thread(_cm_content_or_400, button_id)
+    parts = btn["parts"]
+    if not parts:
+        raise HTTPException(400, tr("محتوایی برای پیش‌نمایش نیست."))
+    chat_id = _tenant_owner_chat_id()
+    sent = 0
+    for part in parts:
+        if await tg_send_saved_part(_bot_token(), chat_id, part):
+            sent += 1
+        await asyncio.sleep(0.05)
+    if not sent:
+        raise HTTPException(502, tr("ارسال پیش‌نمایش ناموفق بود. مالک ربات باید ربات را استارت کرده باشد."))
+    return {"ok": True, "sent": sent, "total": len(parts)}
 
 
 # ------------------------------------------------ بخش «مینی‌اپ» شخصی‌سازی وب --

@@ -162,7 +162,90 @@ async def send_voice(
 _RECEIPT_CONTENT_TYPES = {
     "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
     "webp": "image/webp", "gif": "image/gif", "pdf": "application/pdf",
+    "mp4": "video/mp4", "webm": "video/webm", "ogg": "audio/ogg", "oga": "audio/ogg",
+    "mp3": "audio/mpeg", "m4a": "audio/mp4",
 }
+
+_MEDIA_METHODS = {
+    "photo": "sendPhoto", "video": "sendVideo", "animation": "sendAnimation", "voice": "sendVoice",
+    "audio": "sendAudio", "document": "sendDocument", "sticker": "sendSticker", "video_note": "sendVideoNote",
+}
+_NO_CAPTION_KINDS = ("sticker", "video_note")
+
+
+def _media_file_id(kind: str, result: dict) -> str | None:
+    node = result.get(kind)
+    if kind == "photo":
+        node = node[-1] if node else None
+    elif kind == "animation" and not node:
+        node = result.get("document")
+    return node.get("file_id") if isinstance(node, dict) else None
+
+
+async def upload_media_get_file_id(
+    bot_token: str,
+    chat_id: int,
+    kind: str,
+    data: bytes,
+    filename: str = "file",
+    content_type: str = "application/octet-stream",
+) -> str | None:
+    """فایل را یک‌بار برای چت داده‌شده می‌فرستد تا file_id بات گرفته شود و سپس پیام را پاک می‌کند."""
+    method = _MEDIA_METHODS.get(kind)
+    if not bot_token or not chat_id or not method:
+        return None
+    base = f"https://api.telegram.org/bot{bot_token}"
+    try:
+        form = aiohttp.FormData()
+        form.add_field("chat_id", str(chat_id))
+        form.add_field("disable_notification", "true")
+        form.add_field(kind, data, filename=filename, content_type=content_type)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{base}/{method}", data=form, timeout=aiohttp.ClientTimeout(total=120)) as resp:
+                payload = await resp.json()
+            if not payload.get("ok"):
+                logger.warning("آپلود رسانه (%s) به تلگرام ناموفق بود: %s", kind, payload.get("description"))
+                return None
+            result = payload["result"]
+            file_id = _media_file_id(kind, result)
+            try:
+                await session.post(f"{base}/deleteMessage", json={"chat_id": chat_id, "message_id": result["message_id"]},
+                                   timeout=aiohttp.ClientTimeout(total=10))
+            except Exception:
+                pass
+            return file_id
+    except Exception:
+        logger.exception("آپلود رسانه (%s) به تلگرام ناموفق بود", kind)
+        return None
+
+
+async def send_saved_part(bot_token: str, chat_id: int, part: dict) -> bool:
+    """یک بخش ذخیره‌شده‌ی پیام (متن یا رسانه با file_id) را با Bot API خام می‌فرستد."""
+    kind = part.get("type")
+    if not bot_token or not chat_id:
+        return False
+    if kind == "text":
+        method = "sendMessage"
+        payload = {"chat_id": chat_id, "text": part.get("text") or "…"}
+        if part.get("entities"):
+            payload["entities"] = part["entities"]
+    elif kind in _MEDIA_METHODS and part.get("file_id"):
+        method = _MEDIA_METHODS[kind]
+        payload = {"chat_id": chat_id, kind: part["file_id"]}
+        if kind not in _NO_CAPTION_KINDS and part.get("text"):
+            payload["caption"] = part["text"]
+            if part.get("entities"):
+                payload["caption_entities"] = part["entities"]
+    else:
+        return False
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"https://api.telegram.org/bot{bot_token}/{method}", json=payload,
+                                    timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                return resp.status == 200
+    except Exception:
+        logger.exception("ارسال بخش پیام (%s) به %s ناموفق بود", kind, chat_id)
+        return False
 
 
 async def fetch_telegram_file(bot_token: str, file_id: str):
