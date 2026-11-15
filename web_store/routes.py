@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """مسیرهای API مخصوص سایت فروش وب: ورود، کاتالوگ، سرویس‌ها، QR و ادغام حساب."""
+import base64
+import hashlib
 import re
 
 from fastapi import APIRouter
@@ -43,6 +45,7 @@ def _web_main_only(tenant: Tenant):
 
 
 _HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+_LOGO_DATA_RE = re.compile(r"^data:image/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$")
 
 
 def _web_brand_settings(db: Database) -> dict:
@@ -53,6 +56,10 @@ def _web_brand_settings(db: Database) -> dict:
     logo = _get("web_store_logo")
     if not re.match(r"^https://", logo, re.I):
         logo = ""
+    # لوگوی آپلودشده از پنل ادمین (اولویت بالاتر از آدرس HTTPS)؛ از همین دامنه سرو می‌شود.
+    uploaded = _get("web_store_logo_data")
+    if _LOGO_DATA_RE.match(uploaded):
+        logo = "/api/web/brand-logo?v=" + hashlib.sha1(uploaded.encode("ascii")).hexdigest()[:10]
     color = _get("web_store_primary_color")
     if color and not color.startswith("#"):
         color = "#" + color
@@ -103,6 +110,21 @@ def _web_catalog_payload(db: Database) -> list:
             categories.append({"id": c["id"], "name": paths.get(c["id"], c["name"]),
                                "description": c["description"] if "description" in c.keys() else "", "products": products})
     return categories
+
+
+@router.get("/api/web/brand-logo")
+def api_web_brand_logo(tenant: Tenant = Depends(get_tenant)):
+    """لوگوی آپلودشده‌ی فروشگاه وب (عمومی، قابل کش)."""
+    uri = (tenant.db.get_setting("web_store_logo_data", "") or "").strip()
+    m = _LOGO_DATA_RE.match(uri)
+    if not m:
+        raise HTTPException(status_code=404, detail="no logo")
+    try:
+        raw = base64.b64decode(uri.split(",", 1)[1], validate=True)
+    except Exception:
+        raise HTTPException(status_code=404, detail="no logo")
+    return Response(content=raw, media_type="image/" + m.group(1),
+                    headers={"Cache-Control": "public, max-age=300", "X-Content-Type-Options": "nosniff"})
 
 
 @router.get("/api/web/catalog")
