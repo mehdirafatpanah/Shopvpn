@@ -20,7 +20,7 @@
 <meta property="og:url" content="{{CANON}}">
 <meta property="og:image" content="{{OG_IMAGE}}">
 <meta name="twitter:card" content="summary_large_image">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23070A1A'/%3E%3Cpath d='M12 44C24 12 40 52 52 20' fill='none' stroke='%2335E6CB' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="icon" href="{{FAVICON}}">
 <script src="/assets/boot.js?v={{ASSET_VERSION}}" defer></script>
 <link rel="stylesheet" href="/assets/app.css?v={{ASSET_VERSION}}">
 <link rel="stylesheet" href="/assets/network-map.css?v={{ASSET_VERSION}}">
@@ -31,6 +31,8 @@
 <body>
 <a class="skip" href="#view" data-i18n="skip">رفتن به محتوا</a>
 <div class="aurora" aria-hidden="true"><i></i><i></i></div>
+
+<div id="siteNotice" class="notice" role="status" hidden></div>
 
 <header class="top">
   <div class="wrap top-in">
@@ -68,6 +70,10 @@
       <a id="supportLink" href="#/terms" target="_blank" rel="noopener" hidden data-i18n="support">پشتیبانی</a>
       <a id="botLink" href="#/" target="_blank" rel="noopener" hidden data-i18n="bot">ربات تلگرام</a>
     </nav>
+    <div class="foot-meta" id="footMeta" hidden>
+      <span id="footCopy"></span>
+      <span class="foot-social" id="footSocial"></span>
+    </div>
   </div>
 </footer>
 
