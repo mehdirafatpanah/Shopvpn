@@ -6421,9 +6421,22 @@ async function fetchSupportConvs() {
   return apiGet(`/support/conversations${qs ? '?' + qs : ''}`);
 }
 
-function supportConvBadgesHtml(c) {
-  return `${c.status === 'closed' ? ' <span class="badge badge-rejected">بسته</span>' : ''} ${priorityBadge(c.priority)}`;
+function supportStatusBadge(status) {
+  return status === 'closed' ? '<span class="badge badge-rejected">بسته</span>' : '<span class="badge badge-pending">باز</span>';
 }
+
+function supportRowHtml(c) {
+  return `<tr>
+    <td>${esc(c.user_name || c.user_username || ('#' + c.user_id))}${c.unread ? ` <span class="badge badge-pending">${c.unread}</span>` : ''}${c.locked_for_me ? ` <span class="badge badge-rejected" title="${esc(c.locked_by || '')}">🔒</span>` : ''}${c.ref_label ? `<div class="card-sub" style="font-size:11px">📦 ${esc(c.ref_label)}</div>` : ''}</td>
+    <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.last_sender === 'admin' ? '↩ ' : ''}${esc(c.last_message || '')}</td>
+    <td>${priorityBadge(c.priority)}</td>
+    <td>${supportStatusBadge(c.status)}</td>
+    <td class="mono">${fmtDate(c.last_at)}</td>
+    <td><button class="btn btn-sm" data-open="${c.user_id}">مشاهده</button></td>
+  </tr>`;
+}
+
+const SUPPORT_EMPTY_ROW = '<tr><td colspan="6" class="empty-state">گفتگویی نیست</td></tr>';
 
 function injectSupportToolbar(total, keepFocus) {
   const host = content();
@@ -6465,13 +6478,8 @@ async function renderSupportThemed(convs) {
   if (loadTheme().theme === 'bento') return renderSupportBento(convs);
   setContent(`
     <div class="card"><div class="table-wrap"><table>
-      <thead><tr><th>کاربر</th><th>آخرین پیام</th><th>زمان</th><th></th></tr></thead>
-      <tbody>${convs.map(c => `<tr>
-        <td>${esc(c.user_name || c.user_username || ('#' + c.user_id))}${c.unread ? ` <span class="badge badge-pending">${c.unread}</span>` : ''}${c.locked_for_me ? ` <span class="badge badge-rejected" title="${esc(c.locked_by || '')}">🔒</span>` : ''}${supportConvBadgesHtml(c)}${c.ref_label ? `<div class="card-sub" style="font-size:11px">📦 ${esc(c.ref_label)}</div>` : ''}</td>
-        <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.last_sender === 'admin' ? '↩ ' : ''}${esc(c.last_message || '')}</td>
-        <td class="mono">${fmtDate(c.last_at)}</td>
-        <td><button class="btn btn-sm" data-open="${c.user_id}">مشاهده</button></td>
-      </tr>`).join('') || '<tr><td colspan="4" class="empty-state">گفتگویی نیست</td></tr>'}</tbody>
+      <thead><tr><th>کاربر</th><th>آخرین پیام</th><th>اولویت</th><th>وضعیت</th><th>زمان</th><th></th></tr></thead>
+      <tbody>${convs.map(supportRowHtml).join('') || SUPPORT_EMPTY_ROW}</tbody>
     </table></div></div>
   `);
   $$('[data-open]', content()).forEach(b => b.addEventListener('click', () => showSupportChat(Number(b.dataset.open))));
@@ -6484,12 +6492,7 @@ async function renderSupportThemed(convs) {
 function renderSupportRows(convs) {
   const tbody = $('table tbody', content());
   if (!tbody) return;
-  tbody.innerHTML = convs.map(c => `<tr>
-    <td>${esc(c.user_name || c.user_username || ('#' + c.user_id))}${c.unread ? ` <span class="badge badge-pending">${c.unread}</span>` : ''}${c.locked_for_me ? ` <span class="badge badge-rejected" title="${esc(c.locked_by || '')}">🔒</span>` : ''}${supportConvBadgesHtml(c)}${c.ref_label ? `<div class="card-sub" style="font-size:11px">📦 ${esc(c.ref_label)}</div>` : ''}</td>
-    <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.last_sender === 'admin' ? '↩ ' : ''}${esc(c.last_message || '')}</td>
-    <td class="mono">${fmtDate(c.last_at)}</td>
-    <td><button class="btn btn-sm" data-open="${c.user_id}">مشاهده</button></td>
-  </tr>`).join('') || '<tr><td colspan="4" class="empty-state">گفتگویی نیست</td></tr>';
+  tbody.innerHTML = convs.map(supportRowHtml).join('') || SUPPORT_EMPTY_ROW;
   $$('[data-open]', tbody).forEach(b => b.addEventListener('click', () => showSupportChat(Number(b.dataset.open))));
 }
 
@@ -6525,7 +6528,7 @@ function supportInboxRowsHtmlBento(convs) {
         <span class="bn-row-sub">${c.last_sender === 'admin' ? '↩ ' : ''}${esc(c.last_message || '')}${c.ref_label ? ' · 📦 ' + esc(c.ref_label) : ''}</span>
       </div>
       <div class="bn-row-trail">
-        ${c.status === 'closed' ? bnPill('بسته', 'no') : ''}
+        ${bnPill(c.status === 'closed' ? 'بسته' : 'باز', c.status === 'closed' ? 'no' : 'pending')}
         ${bnPill('اولویت ' + PRIORITY_LABEL[normPriority(c.priority)], PRIORITY_KIND[normPriority(c.priority)])}
         ${c.unread ? bnPill(c.unread, 'no') : ''}
         <span class="bn-row-sub mono">${fmtDate(c.last_at)}</span>
@@ -6589,7 +6592,7 @@ function supportInboxRowsHtml(convs) {
         <div class="bru-inbox-msg">${c.last_sender === 'admin' ? '↩ ' : ''}${esc(c.last_message || '')}${c.ref_label ? ' · 📦 ' + esc(c.ref_label) : ''}</div>
       </div>
       <div class="bru-inbox-meta">
-        <span class="mono">${c.status === 'closed' ? '🔒 بسته · ' : ''}${PRIORITY_LABEL[normPriority(c.priority)]} · ${fmtDate(c.last_at)}</span>
+        <span class="mono">${c.status === 'closed' ? '🔒 بسته' : 'باز'} · ${PRIORITY_LABEL[normPriority(c.priority)]} · ${fmtDate(c.last_at)}</span>
         ${c.unread ? `<span class="bru-inbox-badge">${c.unread}</span>` : ''}
       </div>
       <button class="btn btn-sm" data-open="${c.user_id}">مشاهده</button>
@@ -12210,6 +12213,7 @@ function bsModeBarHtml(g) {
         <label class="bs-switch-row"><span class="switch" data-bs-mm="reply" data-on="${BS.mm.reply ? '1' : '0'}"><i></i></span><span>منوی پایین فعال</span></label>
         <label class="bs-switch-row"><span class="switch" data-bs-mm="inline" data-on="${BS.mm.inline ? '1' : '0'}"><i></i></span><span>منوی شیشه‌ای فعال</span></label>
         <button type="button" class="btn btn-sm btn-primary" data-bs-cm-new>➕ دکمه سفارشی جدید</button>
+        <button type="button" class="btn btn-sm" data-bs-cm-manage>🔘 مدیریت کامل کلیدهای سفارشی</button>
       </div>`;
   }
   if (bsIsAdminItems(g)) {
@@ -12252,18 +12256,8 @@ function bsInspectorHtml(g) {
     <label class="bs-field"><span>متن دکمه</span>
       <input class="input" id="bs-text" type="text" value="${esc(it.text || '')}" placeholder="متن دکمه"></label>` : '';
   const customEditor = it.custom_menu ? `
-    <label class="bs-field"><span>نوع کلید سفارشی</span>
-      <select class="input" id="bs-custom-kind">
-        <option value="url" ${it.custom_kind === 'url' ? 'selected' : ''}>🔗 لینک</option>
-        <option value="content" ${it.custom_kind === 'content' ? 'selected' : ''}>💬 پیام</option>
-      </select></label>
-    ${it.custom_kind === 'url' ? `
-      <label class="bs-field"><span>آدرس لینک</span>
-        <input class="input" id="bs-custom-url" type="url" dir="ltr" value="${esc(it.custom_url || '')}" placeholder="https://example.com"></label>` : `
-      <label class="bs-field"><span>متن پیام ارسالی</span>
-        <textarea class="input" id="bs-custom-content" rows="5" placeholder="متن پیام">${esc(it.custom_content || '')}</textarea>
-        <small class="card-sub">پیام‌های رسانه‌ای قبلی حفظ می‌شوند؛ این بخش متن پیام را ویرایش می‌کند.</small></label>`}
-  ` : '';
+    <div class="bs-field"><span>${it.custom_kind === 'url' ? '🔗 کلید لینک' : '💬 کلید پیام'}</span>
+      <button type="button" class="btn btn-sm" data-bs-cm-manage="${esc(String(it.key).split(':')[1])}">✏️ ویرایش کامل (پیام‌ها، رسانه، لینک)</button></div>` : '';
   const toggle = it.togglable ? `
     <div class="bs-field bs-inline"><span>نمایش در ربات</span>
       <span class="switch" data-bs-act="toggle" data-on="${it.enabled ? '1' : '0'}"><i></i></span></div>` : '';
@@ -12586,9 +12580,6 @@ async function bsSaveAll() {
           enabled: i.togglable ? !!i.enabled : undefined,
           text: i.has_text ? i.text : undefined,
           style: i.has_style ? i.style : undefined,
-          custom_kind: i.custom_menu ? i.custom_kind : undefined,
-          custom_url: i.custom_menu && i.custom_kind === 'url' ? i.custom_url : undefined,
-          custom_content: i.custom_menu && i.custom_kind === 'content' ? i.custom_content : undefined,
         }));
         if (BS.dirty.has(gk)) await apiPost('/settings/menu-layout', { order: bsFlatOrder(g), breaks: bsBreaks(g), buttons });
         else await apiPost('/settings/menu-order', { order: bsFlatOrder(g), buttons });
@@ -12629,7 +12620,7 @@ function bsCustomMenuNew() {
       <input class="input" id="cmn-url" dir="ltr" placeholder="https://t.me/yourchannel"></label>
     <label class="bs-field" id="cmn-content-wrap" style="display:none"><span>متن پیامی که با لمس دکمه ارسال می‌شود</span>
       <textarea class="input" id="cmn-content" rows="5" maxlength="4000"></textarea>
-      <small class="card-sub">برای پیام رسانه‌ای (عکس، ویدیو، ویس و ...) بعد از ساخت دکمه، محتوا را از داخل ربات اضافه کن.</small></label>
+      <small class="card-sub">برای چند پیام یا رسانه‌ی (عکس، ویدیو، ویس و ...) بعد از ساخت دکمه، «ویرایش کامل» را بزن.</small></label>
     <div class="bs-field"><span>رنگ دکمه</span>
       <div class="bs-swatches" id="cmn-styles">${(BS.styleOptions.length ? BS.styleOptions : [{ value: '', label: 'پیش‌فرض' }]).map((o, i) =>
         `<button type="button" class="bs-sw st-${esc(o.value)}${i === 0 ? ' on' : ''}" data-cmn-style="${esc(o.value)}" title="${esc(BS_STYLE_LABEL[o.value] || o.label)}"></button>`).join('')}</div></div>
@@ -12678,6 +12669,339 @@ async function bsCustomMenuDelete() {
   } catch (e) { handleErr(e); }
 }
 
+/* ------------------------------------------- مدیریت کامل کلیدهای سفارشی منوی شیشه‌ای -- */
+const CM_TYPE_LABEL = { text: '📝 متن', photo: '🖼 عکس', video: '🎬 ویدیو', animation: '🎞 گیف', voice: '🎙 ویس', audio: '🎵 موزیک', document: '📄 فایل', sticker: '😀 استیکر', video_note: '⭕ ویدیو‌مسیج' };
+const CM_MEDIA_KINDS = ['photo', 'video', 'animation', 'voice', 'audio', 'document', 'sticker', 'video_note'];
+const CM_NO_CAPTION = ['sticker', 'video_note'];
+const CMG = { items: [], limits: {}, inline: false, view: 'list', id: null, detail: null, dirty: false, root: null, newStyle: '' };
+
+function cmGuessKind(file) {
+  const t = (file.type || '').toLowerCase();
+  const n = (file.name || '').toLowerCase();
+  if (t === 'image/gif') return 'animation';
+  if (t.startsWith('image/')) return 'photo';
+  if (t.startsWith('video/')) return 'video';
+  if (t === 'audio/ogg' || n.endsWith('.oga') || n.endsWith('.opus')) return 'voice';
+  if (t.startsWith('audio/')) return 'audio';
+  return 'document';
+}
+
+function cmSummary(it) {
+  if (it.kind === 'url') return it.url || '—';
+  const parts = Object.entries(it.summary || {}).map(([k, n]) => `${(CM_TYPE_LABEL[k] || k).replace(/^\S+\s/, '')} ×${n}`);
+  return parts.join('، ') || 'بدون پیام';
+}
+
+function cmSwatchesHtml(current) {
+  const opts = BS.styleOptions.length ? BS.styleOptions : [{ value: '', label: 'پیش‌فرض' }];
+  return `<div class="bs-swatches">${opts.map(o => `<button type="button" class="bs-sw st-${esc(o.value)}${(current || '') === o.value ? ' on' : ''}" data-cm-style="${esc(o.value)}" title="${esc(BS_STYLE_LABEL[o.value] || o.label)}"></button>`).join('')}</div>`;
+}
+
+async function cmReloadList() {
+  const d = await apiGet('/custom-menu');
+  CMG.items = d.items;
+  CMG.limits = d.limits;
+  CMG.inline = d.inline_enabled;
+}
+
+async function cmReloadDetail() {
+  CMG.detail = await apiGet(`/custom-menu/${CMG.id}`);
+}
+
+function cmListHtml() {
+  const L = CMG.limits;
+  const rows = CMG.items.map((it, i) => `
+    <div class="cm-row" data-cm-id="${it.id}">
+      <div class="cm-row-move">
+        <button type="button" class="btn btn-sm" data-cm-act="up" ${i === 0 ? 'disabled' : ''}>🔼</button>
+        <button type="button" class="btn btn-sm" data-cm-act="down" ${i === CMG.items.length - 1 ? 'disabled' : ''}>🔽</button>
+      </div>
+      <div class="cm-row-main">
+        <b dir="auto">${it.kind === 'url' ? '🔗' : '💬'} ${esc(it.title)}</b>${it.style ? ` <i class="bs-sw st-${esc(it.style)} cm-dot"></i>` : ''}
+        <div class="card-sub" dir="auto">${esc(cmSummary(it))} · ${it.clicks} کلیک${it.deliverable ? '' : ' · ⚠️ بدون محتوا (به کاربران نشان داده نمی‌شود)'}</div>
+      </div>
+      <span class="switch" data-cm-act="toggle" data-on="${it.is_active ? '1' : '0'}"><i></i></span>
+      <button type="button" class="btn btn-sm" data-cm-act="edit">✏️ ویرایش</button>
+      <button type="button" class="btn btn-sm btn-danger" data-cm-act="del">🗑</button>
+    </div>`).join('') || '<div class="empty-state">هنوز کلید سفارشی‌ای نساخته‌ای.</div>';
+  return `
+    <p class="card-sub">این کلیدها فقط در «منوی شیشه‌ای بالا» نمایش داده می‌شوند و در منوی پایین (Reply) دیده نمی‌شوند. هر کلید یا یک لینک را باز می‌کند، یا یک یا چند پیام (متن، عکس، ویدیو، ویس، استیکر، فایل و ...) برای کاربر می‌فرستد.</p>
+    ${CMG.inline ? '' : '<div class="cm-warn">⚠️ منوی شیشه‌ای فعلاً غیرفعال است؛ تا فعال نکنی این کلیدها به کاربران نشان داده نمی‌شوند.</div>'}
+    <div class="cm-list">${rows}</div>
+    <p class="card-sub">🔼🔽 ترتیب را بین کلیدهای سفارشی عوض می‌کند؛ برای جای دقیق کنار بقیه‌ی دکمه‌های منو از چیدمان منو استفاده کن.</p>
+    <div class="cm-footer">
+      <button type="button" class="btn btn-primary" data-cm-act="new" ${CMG.items.length >= L.buttons ? 'disabled' : ''}>➕ کلید جدید (${CMG.items.length}/${L.buttons})</button>
+      <button type="button" class="btn" data-cm-act="close">بستن</button>
+    </div>`;
+}
+
+function cmNewHtml() {
+  const L = CMG.limits;
+  return `
+    <label class="bs-field"><span>متن روی کلید (حداکثر ${L.title} نویسه)</span>
+      <input class="input" id="cm-new-title" maxlength="${L.title}" placeholder="مثلاً 📢 کانال ما"></label>
+    <label class="bs-field"><span>این کلید چه کاری انجام بدهد؟</span>
+      <select class="input" id="cm-new-kind"><option value="url">🔗 باز کردن یک لینک</option><option value="content">💬 ارسال پیام (متن/عکس/ویس/استیکر/...)</option></select></label>
+    <label class="bs-field" id="cm-new-url-wrap"><span>آدرس لینک (https://… یا t.me/… یا @آیدی)</span>
+      <input class="input" id="cm-new-url" dir="ltr" placeholder="https://t.me/yourchannel"></label>
+    <label class="bs-field" id="cm-new-text-wrap" style="display:none"><span>اولین پیام (اختیاری؛ بقیه‌ی پیام‌ها و رسانه‌ها را بعد از ساخت اضافه کن)</span>
+      <textarea class="input" id="cm-new-first" rows="4" maxlength="${L.text}"></textarea></label>
+    <div class="bs-field"><span>رنگ کلید</span>${cmSwatchesHtml(CMG.newStyle)}</div>
+    <div class="cm-footer">
+      <button type="button" class="btn btn-primary" data-cm-act="create">ساخت کلید</button>
+      <button type="button" class="btn" data-cm-act="back">انصراف</button>
+    </div>`;
+}
+
+function cmPartHtml(p, d) {
+  const L = CMG.limits;
+  const src = `/api/custom-menu/${d.id}/parts/${p.index}/file`;
+  let media = '';
+  if (p.has_file) {
+    if (p.type === 'photo' || p.type === 'sticker') media = `<img data-cm-file class="cm-media" src="${src}" loading="lazy" alt="">`;
+    else if (['video', 'animation', 'video_note'].includes(p.type)) media = `<video data-cm-file class="cm-media" src="${src}" controls preload="metadata" playsinline></video>`;
+    else if (['voice', 'audio'].includes(p.type)) media = `<audio data-cm-file src="${src}" controls preload="none"></audio>`;
+    else media = '<div class="card-sub">📄 فایل ذخیره‌شده در تلگرام (پیش‌نمایش ندارد)</div>';
+  }
+  const isText = p.type === 'text';
+  const editor = isText || !CM_NO_CAPTION.includes(p.type) ? `
+    <label class="bs-field"><span>${isText ? 'متن پیام' : 'کپشن (اختیاری)'}</span>
+      <textarea class="input" rows="${isText ? 4 : 2}" data-cm-text="${p.index}" maxlength="${isText ? L.text : L.caption}">${esc(p.text)}</textarea></label>
+    ${p.rich ? '<small class="card-sub">این پیام قالب‌بندی دارد (بولد، لینک و ...)؛ ذخیره‌ی متن جدید آن را حذف می‌کند.</small>' : ''}
+    <div><button type="button" class="btn btn-sm" data-cm-act="part-save" data-cm-i="${p.index}">💾 ذخیره متن</button></div>` : '';
+  return `
+    <div class="cm-part">
+      <div class="cm-part-head">
+        <b>${p.index + 1}. ${CM_TYPE_LABEL[p.type] || esc(p.type)}</b>
+        <span class="cm-part-actions">
+          <button type="button" class="btn btn-sm" data-cm-act="part-up" data-cm-i="${p.index}" ${p.index === 0 ? 'disabled' : ''}>🔼</button>
+          <button type="button" class="btn btn-sm" data-cm-act="part-down" data-cm-i="${p.index}" ${p.index === d.parts.length - 1 ? 'disabled' : ''}>🔽</button>
+          <button type="button" class="btn btn-sm btn-danger" data-cm-act="part-del" data-cm-i="${p.index}">🗑</button>
+        </span>
+      </div>
+      ${media}${editor}
+    </div>`;
+}
+
+function cmEditHtml() {
+  const d = CMG.detail;
+  const L = CMG.limits;
+  const isContent = d.kind === 'content';
+  const full = isContent && d.parts.length >= L.parts;
+  const kindBtn = (k, label) => `<button type="button" class="${d.kind === k ? 'active' : ''}" data-cm-act="kind" data-cm-k="${k}">${label}</button>`;
+  const head = `
+    <div class="cm-footer">
+      <button type="button" class="btn btn-sm" data-cm-act="back">⬅️ بازگشت به لیست</button>
+      <button type="button" class="btn btn-sm btn-danger" data-cm-act="del">🗑 حذف کلید</button>
+    </div>
+    <div class="cm-meta card-sub">${d.clicks} کلیک تا الان · ${d.deliverable ? '' : '⚠️ بدون محتوا؛ تا چیزی اضافه نکنی به کاربران نشان داده نمی‌شود'}</div>
+    <label class="bs-field"><span>متن روی کلید</span>
+      <div class="cm-inline"><input class="input" id="cm-title" maxlength="${L.title}" value="${esc(d.title)}">
+      <button type="button" class="btn btn-sm" data-cm-act="save-title">💾 ذخیره</button></div></label>
+    <div class="bs-field"><span>رنگ کلید</span>${cmSwatchesHtml(d.style)}</div>
+    <div class="bs-field bs-inline"><span>نمایش در ربات</span>
+      <span class="switch" data-cm-act="toggle-active" data-on="${d.is_active ? '1' : '0'}"><i></i></span></div>
+    <div class="bs-field"><span>نوع کلید</span>
+      <div class="bs-seg">${kindBtn('url', '🔗 لینک')}${kindBtn('content', '💬 پیام')}</div></div>`;
+  if (!isContent) {
+    return `${head}
+      <label class="bs-field"><span>آدرس لینک</span>
+        <div class="cm-inline"><input class="input" id="cm-url" dir="ltr" value="${esc(d.url)}" placeholder="https://example.com">
+        <button type="button" class="btn btn-sm" data-cm-act="save-url">💾 ذخیره</button></div></label>`;
+  }
+  const parts = d.parts.map(p => cmPartHtml(p, d)).join('') || '<div class="empty-state">هنوز پیامی ثبت نشده.</div>';
+  const canPreview = ME.role === 'owner' && d.parts.length;
+  return `${head}
+    <h4 class="cm-h">پیام‌هایی که با لمس کلید ارسال می‌شوند (${d.parts.length}/${L.parts})</h4>
+    <div class="cm-parts">${parts}</div>
+    ${canPreview ? '<div><button type="button" class="btn btn-sm" data-cm-act="preview">👁 ارسال پیش‌نمایش به تلگرام مالک ربات</button></div>' : ''}
+    ${full ? `<p class="card-sub">به سقف ${L.parts} پیام رسیدی؛ برای افزودن مورد جدید یکی را حذف کن.</p>` : `
+    <div class="cm-add">
+      <b>➕ افزودن پیام متنی</b>
+      <textarea class="input" id="cm-new-text" rows="3" maxlength="${L.text}" placeholder="متن پیام"></textarea>
+      <div><button type="button" class="btn btn-sm btn-primary" data-cm-act="add-text">افزودن متن</button></div>
+    </div>
+    <div class="cm-add">
+      <b>📎 افزودن رسانه</b>
+      <input type="file" class="input" id="cm-file">
+      <select class="input" id="cm-kind">${CM_MEDIA_KINDS.map(k => `<option value="${k}">${CM_TYPE_LABEL[k]}</option>`).join('')}</select>
+      <input class="input" id="cm-caption" maxlength="${L.caption}" placeholder="کپشن (اختیاری)">
+      <small class="card-sub">حداکثر ${L.upload_mb} مگابایت. ویس باید OGG/Opus و ویدیو‌مسیج باید MP4 مربعی باشد.</small>
+      <div><button type="button" class="btn btn-sm btn-primary" data-cm-act="add-media">آپلود و افزودن</button></div>
+    </div>`}`;
+}
+
+function cmRender() {
+  CMG.root.innerHTML = CMG.view === 'edit' ? cmEditHtml() : CMG.view === 'new' ? cmNewHtml() : cmListHtml();
+  $$('[data-cm-file]', CMG.root).forEach(el => el.addEventListener('error', () => {
+    const ph = document.createElement('div');
+    ph.className = 'card-sub';
+    ph.textContent = 'پیش‌نمایش این فایل در دسترس نیست (حجم زیاد یا فرمت غیرقابل نمایش).';
+    el.replaceWith(ph);
+  }));
+}
+
+function cmSyncCaption() {
+  const kind = $('#cm-kind', CMG.root);
+  const cap = $('#cm-caption', CMG.root);
+  if (!kind || !cap) return;
+  const off = CM_NO_CAPTION.includes(kind.value);
+  cap.disabled = off;
+  if (off) cap.value = '';
+}
+
+async function cmPickStyle(style) {
+  if (CMG.view === 'new') {
+    CMG.newStyle = style;
+    $$('[data-cm-style]', CMG.root).forEach(b => b.classList.toggle('on', b.dataset.cmStyle === style));
+    return;
+  }
+  CMG.detail = await apiPut(`/custom-menu/${CMG.id}`, { style });
+  CMG.dirty = true;
+  cmRender();
+}
+
+function cmPartText(idx) {
+  const el = $(`[data-cm-text="${idx}"]`, CMG.root);
+  return el ? el.value : '';
+}
+
+async function cmAct(act, id, idx, el) {
+  const root = CMG.root;
+  const L = CMG.limits;
+  const apply = (detail, msg) => { CMG.detail = detail; CMG.dirty = true; if (msg) toast(msg); cmRender(); };
+  switch (act) {
+    case 'close': root.closest('.modal-backdrop').remove(); await cmAfterClose(); return;
+    case 'new': CMG.view = 'new'; CMG.newStyle = ''; cmRender(); return;
+    case 'back': await cmReloadList(); CMG.view = 'list'; CMG.id = null; CMG.detail = null; cmRender(); return;
+    case 'edit': CMG.id = id; await cmReloadDetail(); CMG.view = 'edit'; cmRender(); return;
+    case 'up':
+    case 'down':
+      await apiPost(`/custom-menu/${id}/move`, { direction: act });
+      CMG.dirty = true; await cmReloadList(); cmRender(); return;
+    case 'toggle': {
+      const it = CMG.items.find(i => i.id === id);
+      await apiPut(`/custom-menu/${id}`, { is_active: !it.is_active });
+      CMG.dirty = true; await cmReloadList(); cmRender(); return;
+    }
+    case 'toggle-active': apply(await apiPut(`/custom-menu/${CMG.id}`, { is_active: !CMG.detail.is_active })); return;
+    case 'del': {
+      const it = CMG.view === 'edit' ? CMG.detail : CMG.items.find(i => i.id === id);
+      if (!confirm(`کلید «${it.title}» برای همیشه حذف شود؟`)) return;
+      await apiDelete(`/custom-menu/${id}`);
+      CMG.dirty = true; toast('کلید حذف شد.');
+      await cmReloadList(); CMG.view = 'list'; CMG.id = null; CMG.detail = null; cmRender(); return;
+    }
+    case 'create': {
+      const kind = $('#cm-new-kind', root).value;
+      const res = await apiPost('/custom-menu', {
+        title: $('#cm-new-title', root).value, kind, url: $('#cm-new-url', root).value,
+        content: $('#cm-new-first', root).value, style: CMG.newStyle,
+      });
+      CMG.id = res.id; CMG.view = 'edit'; CMG.dirty = true;
+      apply(res, kind === 'content' ? 'کلید ساخته شد؛ پیام‌ها و رسانه‌هایش را اضافه کن.' : 'کلید ساخته شد.');
+      return;
+    }
+    case 'save-title': apply(await apiPut(`/custom-menu/${CMG.id}`, { title: $('#cm-title', root).value }), 'متن کلید ذخیره شد.'); return;
+    case 'save-url': apply(await apiPut(`/custom-menu/${CMG.id}`, { url: $('#cm-url', root).value }), 'لینک ذخیره شد.'); return;
+    case 'kind': {
+      const k = el.dataset.cmK;
+      if (k === CMG.detail.kind) return;
+      if (k === 'url') {
+        const url = prompt('آدرس لینک (https://… یا @آیدی):', '');
+        if (!url) return;
+        if (CMG.detail.parts.length && !confirm('پیام‌ها و رسانه‌های ذخیره‌شده‌ی این کلید حذف می‌شوند. ادامه بدهم؟')) return;
+        apply(await apiPut(`/custom-menu/${CMG.id}`, { kind: 'url', url }), 'نوع کلید تغییر کرد.');
+      } else {
+        apply(await apiPut(`/custom-menu/${CMG.id}`, { kind: 'content' }), 'نوع کلید تغییر کرد؛ حالا پیام‌هایش را اضافه کن.');
+      }
+      return;
+    }
+    case 'add-text': {
+      const text = $('#cm-new-text', root).value;
+      apply(await apiPost(`/custom-menu/${CMG.id}/parts/text`, { text }), 'پیام اضافه شد.');
+      return;
+    }
+    case 'add-media': {
+      const f = $('#cm-file', root).files[0];
+      if (!f) { toast('ابتدا یک فایل انتخاب کن.', true); return; }
+      if (f.size > L.upload_mb * 1024 * 1024) { toast(`حجم فایل نباید بیشتر از ${L.upload_mb} مگابایت باشد.`, true); return; }
+      const fd = new FormData();
+      fd.append('file', f);
+      fd.append('kind', $('#cm-kind', root).value);
+      fd.append('caption', $('#cm-caption', root).value);
+      const prev = el.textContent;
+      el.textContent = '⏳ در حال آپلود...';
+      try { apply(await apiMultipart(`/custom-menu/${CMG.id}/parts/media`, fd), 'رسانه اضافه شد.'); }
+      finally { el.textContent = prev; }
+      return;
+    }
+    case 'part-save': apply(await apiPut(`/custom-menu/${CMG.id}/parts/${idx}`, { text: cmPartText(idx) }), 'ذخیره شد.'); return;
+    case 'part-up':
+    case 'part-down': apply(await apiPost(`/custom-menu/${CMG.id}/parts/${idx}/move`, { direction: act === 'part-up' ? 'up' : 'down' })); return;
+    case 'part-del':
+      if (!confirm(`پیام ${idx + 1} حذف شود؟`)) return;
+      apply(await apiDelete(`/custom-menu/${CMG.id}/parts/${idx}`), 'پیام حذف شد.');
+      return;
+    case 'preview': {
+      const r = await apiPost(`/custom-menu/${CMG.id}/preview`);
+      toast(`${r.sent} از ${r.total} پیام برای مالک ربات ارسال شد.`);
+      return;
+    }
+  }
+}
+
+async function cmRun(el, fn) {
+  el.disabled = true;
+  try { await fn(); } catch (e) { handleErr(e); } finally { el.disabled = false; }
+}
+
+function cmWire() {
+  const root = CMG.root;
+  root.addEventListener('click', async (e) => {
+    const sw = e.target.closest('[data-cm-style]');
+    if (sw && root.contains(sw)) { try { await cmPickStyle(sw.dataset.cmStyle); } catch (err) { handleErr(err); } return; }
+    const el = e.target.closest('[data-cm-act]');
+    if (!el || !root.contains(el)) return;
+    const row = el.closest('[data-cm-id]');
+    const id = row ? Number(row.dataset.cmId) : CMG.id;
+    const idx = el.dataset.cmI !== undefined ? Number(el.dataset.cmI) : null;
+    await cmRun(el, () => cmAct(el.dataset.cmAct, id, idx, el));
+  });
+  root.addEventListener('change', (e) => {
+    if (e.target.id === 'cm-file' && e.target.files[0]) {
+      $('#cm-kind', root).value = cmGuessKind(e.target.files[0]);
+      cmSyncCaption();
+    }
+    if (e.target.id === 'cm-kind') cmSyncCaption();
+    if (e.target.id === 'cm-new-kind') {
+      $('#cm-new-url-wrap', root).style.display = e.target.value === 'url' ? '' : 'none';
+      $('#cm-new-text-wrap', root).style.display = e.target.value === 'content' ? '' : 'none';
+    }
+  });
+}
+
+async function cmAfterClose() {
+  if (!CMG.dirty) return;
+  CMG.dirty = false;
+  try { await bsLoad(); bsRefresh(); } catch (e) { handleErr(e); }
+}
+
+async function bsCmManagerOpen(focusId) {
+  if (!bsCmDiscardOk()) return;
+  CMG.view = 'list'; CMG.id = null; CMG.detail = null; CMG.dirty = false; CMG.newStyle = '';
+  try {
+    await cmReloadList();
+    if (focusId) { CMG.id = focusId; await cmReloadDetail(); CMG.view = 'edit'; }
+  } catch (e) { handleErr(e); return; }
+  const backdrop = openModal('🔘 کلیدهای سفارشی منوی شیشه‌ای', '<div id="cm-root"></div>', (body) => {
+    CMG.root = body.querySelector('#cm-root');
+    cmWire();
+    cmRender();
+  }, { wide: true });
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) cmAfterClose(); });
+}
+
 function bsWire() {
   const root = $('#bs-root');
   root.addEventListener('pointerdown', (e) => { if (e.target.closest('#bs-stage')) bsOnPointerDown(e); });
@@ -12706,6 +13030,8 @@ function bsWire() {
       bsRenderTop(); bsRenderScreens(); bsRenderPhone(); bsRenderInspector(); return;
     }
     if (q('[data-bs-cm-new]')) return bsCustomMenuNew();
+    const cmManage = q('[data-bs-cm-manage]');
+    if (cmManage) return bsCmManagerOpen(Number(cmManage.dataset.bsCmManage) || null);
     if (q('[data-bs-cm-del]')) return bsCustomMenuDelete();
     const act = q('[data-bs-act]');
     if (act) { if (act.dataset.bsAct === 'save') return bsSaveAll(); bsAction(act.dataset.bsAct); return; }
@@ -12719,12 +13045,10 @@ function bsWire() {
     }
   });
   root.addEventListener('input', (e) => {
-    if (['bs-text', 'bs-custom-url', 'bs-custom-content'].includes(e.target.id) && BS.sel) {
+    if (e.target.id === 'bs-text' && BS.sel) {
       const g = BS.groups[BS.cur];
       const it = bsItem(g, BS.sel);
-      if (e.target.id === 'bs-text') it.text = e.target.value;
-      if (e.target.id === 'bs-custom-url') it.custom_url = e.target.value;
-      if (e.target.id === 'bs-custom-content') it.custom_content = e.target.value;
+      it.text = e.target.value;
       bsMarkEdited(g, BS.sel);
       bsRenderTop(); bsRenderScreens(); bsRenderPhone();
       const sv = $('.bs-insp-save'); if (sv) sv.disabled = false;
@@ -12732,13 +13056,6 @@ function bsWire() {
   });
   root.addEventListener('change', (e) => {
     if (e.target.id === 'bs-cat' && e.target.value && BS.sel) { bsMoveToCat(BS.sel, e.target.value); bsRefresh(); }
-    if (e.target.id === 'bs-custom-kind' && BS.sel) {
-      const g = BS.groups[BS.cur];
-      const it = bsItem(g, BS.sel);
-      it.custom_kind = e.target.value;
-      bsMarkEdited(g, BS.sel);
-      bsRefresh();
-    }
   });
 }
 
