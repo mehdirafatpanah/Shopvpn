@@ -101,6 +101,7 @@
     catalog: null,
     cfg: { turnstile_site_key: "", email_enabled: false },
     brand: { name: "ShopVPN", logo: "", tagline: "", color: "" },
+    custom: {},
     next: ""
   };
   var timers = [];
@@ -344,6 +345,65 @@
     var botLink = $("botLink");
     if (/^https?:\/\//i.test(bot)) { botLink.href = bot; botLink.hidden = false; }
     if (b.theme === "dark" || b.theme === "light") root.setAttribute("data-theme", b.theme);
+    if ("default_sort" in b) {
+      // پاسخ کاتالوگ همیشه این کلید را دارد؛ نبودن اعلان/تعمیرات یعنی خاموش بودن آن‌ها.
+      S.custom = {
+        notice: b.notice || null, maintenance: b.maintenance || null, footer: b.footer || null,
+        sort: b.default_sort, faq: b.faq_custom || null, terms: b.terms_custom || null
+      };
+      renderNotice();
+      renderFooterExtra();
+    }
+  }
+  function hashStr(x) {
+    var n = 5381;
+    x = String(x || "");
+    for (var i = 0; i < x.length; i++) n = ((n << 5) + n + x.charCodeAt(i)) | 0;
+    return (n >>> 0).toString(36);
+  }
+  function renderNotice() {
+    var box = $("siteNotice");
+    if (!box) return;
+    var c = S.custom || {};
+    box.textContent = "";
+    box.className = "notice";
+    if (c.maintenance) {
+      box.classList.add("warning");
+      box.appendChild(h("span", { text: c.maintenance.text || t("maint_default") }));
+      box.hidden = false;
+      return;
+    }
+    var n = c.notice;
+    if (!n || !n.text) { box.hidden = true; return; }
+    var key = "sv-notice-" + hashStr(n.text + "|" + (n.link || ""));
+    if (store.get(key) === "1") { box.hidden = true; return; }
+    box.classList.add(n.style || "info");
+    box.appendChild(n.link && safeHref(n.link) !== "#"
+      ? h("a", { href: safeHref(n.link), target: "_blank", rel: "noopener", text: n.text })
+      : h("span", { text: n.text }));
+    box.appendChild(h("button", {
+      class: "notice-x", type: "button", "aria-label": t("notice_close"), text: "\u00d7",
+      onclick: function () { store.set(key, "1"); box.hidden = true; }
+    }));
+    box.hidden = false;
+  }
+  function renderFooterExtra() {
+    var meta = $("footMeta");
+    if (!meta) return;
+    var f = (S.custom && S.custom.footer) || null;
+    $("footCopy").textContent = f && f.text ? f.text : "";
+    var social = $("footSocial");
+    social.textContent = "";
+    if (f) {
+      if (f.channel && safeHref(f.channel) !== "#") social.appendChild(h("a", { href: safeHref(f.channel), target: "_blank", rel: "noopener", text: t("foot_channel") }));
+      if (f.instagram && safeHref(f.instagram) !== "#") social.appendChild(h("a", { href: safeHref(f.instagram), target: "_blank", rel: "noopener", text: t("foot_instagram") }));
+      if (f.email && /^[^\s@]+@[^\s@]+$/.test(f.email)) social.appendChild(h("a", { href: "mailto:" + f.email, text: t("foot_email") + ": " + f.email, dir: "ltr" }));
+    }
+    meta.hidden = !(f && (f.text || social.firstChild));
+  }
+  function maintenanceText() {
+    var m = S.custom && S.custom.maintenance;
+    return m ? (m.text || t("maint_default")) : "";
   }
 
   function setUser(u) {
@@ -634,7 +694,7 @@
     var cats = c.categories || [];
     if (!cats.length) { box.appendChild(alertBox(t("plans_empty"), true)); return; }
     var active = "all";
-    var sort = "value";
+    var sort = ["value", "low", "high"].indexOf(S.custom && S.custom.sort) > -1 ? S.custom.sort : "value";
     var chips = h("div", { class: "chips", role: "tablist" });
     var controls = h("div", { class: "catalog-controls" });
     var count = h("span", { class: "catalog-count" });
@@ -705,8 +765,13 @@
         step(2, t("how2_t"), t("how2_d")),
         step(3, t("how3_t"), t("how3_d"))));
   }
+  function faqItems() {
+    var c = S.custom && S.custom.faq;
+    return lang === "fa" && c && c.length ? c : T.faq;
+  }
   function faqList(limit) {
-    var items = T.faq.slice(0, limit || T.faq.length);
+    var src = faqItems();
+    var items = src.slice(0, limit || src.length);
     return h("div", { class: "faq" }, items.map(function (qa) { return h("details", null, h("summary", { text: qa[0] }), h("p", { text: qa[1] })); }));
   }
   function faqSection() {
@@ -838,7 +903,9 @@
     mount(pageShell(t("guide_title"), t("guide_sub"), h("div", { class: "stack", style: { marginTop: "24px" } }, what, tabsHost, body)), t("guide_title"));
   }
   function termsPage() {
-    var content = h("div", { class: "prose" }, T.terms.map(function (sec) {
+    var customTerms = S.custom && S.custom.terms;
+    var termsSrc = lang === "fa" && customTerms && customTerms.length ? customTerms : T.terms;
+    var content = h("div", { class: "prose" }, termsSrc.map(function (sec) {
       return h("section", null, h("h2", { text: sec[0] }), h("ul", null, sec[1].map(function (li) { return h("li", { text: li }); })));
     }));
     mount(pageShell(t("terms_title"), t("terms_page_sub"), content), t("terms_title"));
@@ -1180,6 +1247,12 @@
       if (!p) {
         body.textContent = "";
         body.appendChild(h("div", { class: "card stack" }, alertBox(t("not_found")), h("a", { class: "btn ghost", href: "#/plans", text: t("nav_plans") })));
+        return;
+      }
+      var maint = maintenanceText();
+      if (maint) {
+        body.textContent = "";
+        body.appendChild(h("div", { class: "card stack" }, alertBox(maint, true), h("a", { class: "btn ghost", href: "#/plans", text: t("nav_plans") })));
         return;
       }
       details(p);

@@ -2,6 +2,7 @@ window.SV_I18N = {
   fa: {
     skip: "رفتن به محتوا", nav_plans: "پلن‌ها", nav_guide: "راهنمای اتصال", nav_faq: "سؤالات متداول", nav_terms: "قوانین و تماس",
     nav_account: "حساب من", login: "ورود", support: "پشتیبانی", bot: "ربات تلگرام",
+    notice_close: "بستن اعلان", maint_default: "فروشگاه موقتاً در حال بروزرسانی است؛ ثبت سفارش جدید فعلاً امکان‌پذیر نیست. لطفاً کمی بعد دوباره تلاش کنید.", foot_channel: "کانال تلگرام", foot_instagram: "اینستاگرام", foot_email: "ایمیل",
     tab_home: "خانه", tab_plans: "پلن‌ها", tab_account: "حساب", tab_help: "راهنما",
     theme: "تغییر تم", language: "زبان", lang_btn: "EN", close: "بستن", retry: "تلاش دوباره", back_home: "بازگشت به خانه",
     net_err: "اتصال به سرور برقرار نشد.", loading: "در حال بارگذاری",
@@ -176,6 +177,7 @@ window.SV_I18N = {
   en: {
     skip: "Skip to content", nav_plans: "Plans", nav_guide: "Connection guide", nav_faq: "FAQ", nav_terms: "Terms and contact",
     nav_account: "My account", login: "Sign in", support: "Support", bot: "Telegram bot",
+    notice_close: "Dismiss notice", maint_default: "The store is being updated; new orders are temporarily unavailable. Please try again shortly.", foot_channel: "Telegram channel", foot_instagram: "Instagram", foot_email: "Email",
     tab_home: "Home", tab_plans: "Plans", tab_account: "Account", tab_help: "Help",
     theme: "Toggle theme", language: "Language", lang_btn: "FA", close: "Close", retry: "Try again", back_home: "Back to home",
     net_err: "Could not reach the server.", loading: "Loading",

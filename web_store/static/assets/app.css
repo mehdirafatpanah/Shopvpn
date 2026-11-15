@@ -861,3 +861,19 @@ html { overflow-x: clip; }
 :root:not([data-theme="dark"]) .highlight-card,:root:not([data-theme="dark"]) .device-card,:root:not([data-theme="dark"]) .quote-card{background:#fff}.final-cta{color:var(--ink)}
 @media(max-width:900px){.highlight-grid{grid-template-columns:repeat(2,1fr)}.device-section{grid-template-columns:1fr}.device-grid{grid-template-columns:repeat(5,1fr)}.quote-grid{grid-template-columns:1fr}.final-cta{display:grid}}
 @media(max-width:560px){.highlight-grid{grid-template-columns:1fr}.device-grid{grid-template-columns:repeat(2,1fr)}.device-card{min-height:118px}.premium-highlights{padding-top:50px}.final-cta{padding:26px 22px;border-radius:22px}.final-cta .btn{width:100%}}
+
+/* ---- شخصی‌سازی فروشگاه (اعلان بالای صفحه، حالت تعمیرات، فوتر/تماس) ---- */
+.notice { position: relative; display: flex; align-items: center; justify-content: center; gap: 12px; padding: 10px 44px; padding-top: calc(10px + env(safe-area-inset-top, 0px)); text-align: center; font-size: 14px; line-height: 1.7; color: var(--ink); background: color-mix(in srgb, var(--accent) 14%, var(--panel)); border-bottom: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); }
+.notice[hidden] { display: none; }
+.notice a { color: inherit; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+.notice.success { background: color-mix(in srgb, var(--ok) 14%, var(--panel)); border-bottom-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+.notice.warning { background: color-mix(in srgb, var(--warn) 18%, var(--panel)); border-bottom-color: color-mix(in srgb, var(--warn) 50%, transparent); }
+.notice.danger { background: color-mix(in srgb, var(--err) 16%, var(--panel)); border-bottom-color: color-mix(in srgb, var(--err) 50%, transparent); }
+.notice-x { position: absolute; inset-inline-end: 8px; top: 50%; transform: translateY(-50%); width: 32px; height: 32px; border: 0; border-radius: 50%; background: transparent; color: inherit; font-size: 20px; line-height: 1; cursor: pointer; opacity: .7; }
+.notice-x:hover, .notice-x:focus-visible { opacity: 1; background: color-mix(in srgb, currentColor 12%, transparent); }
+.foot-meta { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 22px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--mute); font-size: 14px; }
+.foot-meta[hidden] { display: none; }
+.foot-social { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.foot-social a { color: var(--mute); text-decoration: none; }
+.foot-social a:hover, .foot-social a:focus-visible { color: var(--ink); text-decoration: underline; }
+.faq details p { white-space: pre-line; }
