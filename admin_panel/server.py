@@ -10871,6 +10871,52 @@ def api_miniapp_header_delete(admin=Depends(require_permission("settings"))):
     return {"ok": True}
 
 
+# ------------------------------------------------ لوگوی فروشگاه وب (آپلود) --
+_WEB_LOGO_MAX = 1024 * 1024
+
+
+def _sniff_logo_mime(data: bytes) -> str:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data[:4] == b"GIF8":
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+@app.get("/api/settings/web-store/logo")
+def api_web_logo_get(admin=Depends(require_permission("settings"))):
+    uri = (db.get_setting("web_store_logo_data", "") or "").strip()
+    return {"has_upload": bool(uri), "preview": uri or None,
+            "url": (db.get_setting("web_store_logo", "") or "").strip()}
+
+
+@app.post("/api/settings/web-store/logo")
+async def api_web_logo_upload(photo: UploadFile = File(...), admin=Depends(require_permission("settings"))):
+    data = await photo.read()
+    if len(data) > _WEB_LOGO_MAX:
+        raise HTTPException(400, tr("حجم لوگو نباید بیشتر از ۱ مگابایت باشد."))
+    mime = _sniff_logo_mime(data)
+    if not mime:
+        raise HTTPException(400, tr("فقط فایل PNG، JPG، WEBP یا GIF پذیرفته می‌شود."))
+    uri = f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+    db.set_setting("web_store_logo_data", uri)
+    db.log_admin_action(admin["id"], "setting_change", f"لوگوی فروشگاه وب آپلود شد (پنل وب - {admin['username']})",
+                        "setting", "web_store_logo")
+    return {"ok": True, "preview": uri}
+
+
+@app.delete("/api/settings/web-store/logo")
+def api_web_logo_delete(admin=Depends(require_permission("settings"))):
+    db.set_setting("web_store_logo_data", "")
+    db.log_admin_action(admin["id"], "setting_change", f"لوگوی آپلودشده‌ی فروشگاه وب حذف شد (پنل وب - {admin['username']})",
+                        "setting", "web_store_logo")
+    return {"ok": True}
+
+
 # ------------------------------------------------ تنظیمات کامل کارت بانکی --
 # کارت‌به‌کارت دستی: وضعیت، کارت اصلی، عکس کارت، چند کارت با درصد نمایش، شرط نمایش
 # کارت، مدت ثابت‌ماندن کارت برای خریدار و حذف خودکار پیام کارت. (کارت‌به‌کارت خودکار با
