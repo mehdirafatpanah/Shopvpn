@@ -179,10 +179,20 @@ class MarzbanProvider(BasePanelProvider):
     async def create_user(self, username: str, volume_gb: int, duration_days: int, start_on_first_use: bool = False) -> PanelUserResult:
         inbounds = self.server["group_ids"]
         proxies = self.server["proxy_settings"]
-        if not inbounds or not proxies:
+        if not inbounds:
             raise PanelError(
-                "قالب inbounds/proxies برای این سرور تنظیم نشده. اول از «تعیین کاربر نمونه» استفاده کن."
+                "Inbound مقصد مشخص نشده. موقع ساخت محصول، inbound(های) این پنل را انتخاب کن."
             )
+        if isinstance(proxies, str):
+            try:
+                proxies = json.loads(proxies)
+            except ValueError:
+                proxies = None
+        if not proxies:
+            # اتصال بدون کاربر نمونه: پروکسی هر پروتکلی که در inbounds انتخابی محصول هست
+            # خالی ارسال می‌شود تا خود Marzban شناسه/رمز تازه بسازد.
+            _ib = json.loads(inbounds) if isinstance(inbounds, str) else inbounds
+            proxies = {proto: {} for proto in (_ib or {}).keys()} if isinstance(_ib, dict) else {}
         start_on_first_use = bool(self.server["start_on_first_use"]) if "start_on_first_use" in self.server.keys() else bool(start_on_first_use)
         payload = {
             "username": username,

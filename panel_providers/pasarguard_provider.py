@@ -210,10 +210,13 @@ class PasarguardProvider(BasePanelProvider):
                            user_limit: int = 0) -> PanelUserResult:
         group_ids = self.server["group_ids"]
         proxy_settings = self.server["proxy_settings"]
-        if not group_ids or not proxy_settings:
+        if not group_ids:
             raise PanelError(
-                "قالب گروه/پروکسی برای این سرور تنظیم نشده. اول از «تعیین کاربر نمونه» استفاده کن."
+                "گروه مقصد مشخص نشده. موقع ساخت محصول، گروه(های) این پنل را انتخاب کن."
             )
+        # اگر قالب «کاربر نمونه» ذخیره نشده (اتصال بدون کاربر نمونه)، proxy_settings خالی
+        # ارسال می‌شود و خود پاسارگارد برای همه‌ی پروتکل‌ها شناسه/رمز تازه تولید می‌کند.
+        proxy_settings = proxy_settings or {}
         start_on_first_use = bool(self.server["start_on_first_use"]) if "start_on_first_use" in self.server.keys() else bool(start_on_first_use)
         payload = {
             "username": username,

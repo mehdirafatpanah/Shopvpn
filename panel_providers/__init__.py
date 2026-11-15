@@ -66,6 +66,31 @@ SUB_BASE_URL_PANEL_TYPES = {"3xui", "hiddify", "alireza"}
 INBOUND_SELECT_PANEL_TYPES = {"3xui", "alireza"}
 SINGLE_INBOUND_PANEL_TYPES = {"alireza"}
 
+# پنل‌هایی که در مرحله‌ی «اتصال» هنوز به «کاربر نمونه» نیاز دارند، چون API فهرست زنده‌ی
+# گروه/سرویس ندارند و محصول فقط از روی همان قالب می‌تواند مقصد را انتخاب کند.
+# برای بقیه‌ی پنل‌ها در اتصال هیچ اینباند/گروه/کاربر نمونه‌ای پرسیده نمی‌شود؛
+# مقصد (گروه یا اینباند) موقع ساخت محصول انتخاب می‌شود.
+CONNECT_TEMPLATE_PANEL_TYPES = {"rebecca", "ibsng"}
+
+
+def connect_needs_template(panel_type) -> bool:
+    return panel_type in CONNECT_TEMPLATE_PANEL_TYPES
+
+
+def connect_needs_inbound(panel_type) -> bool:
+    """در اتصال دیگر انتخاب inbound وجود ندارد (در محصول انتخاب می‌شود)."""
+    return False
+
+
+def panel_server_is_ready(server) -> bool:
+    """آیا سرور بعد از اتصال آماده‌ی استفاده است؟ (بدون نیاز به اینباند/گروه در سطح سرور)"""
+    t = server["panel_type"]
+    if t in SUB_BASE_URL_PANEL_TYPES:
+        return bool(server["xui_sub_base_url"])
+    if t in CONNECT_TEMPLATE_PANEL_TYPES:
+        return bool(server["group_ids"])
+    return True
+
 TOKEN_ONLY_PANEL_TYPES = {"3xui": "3xui", "rebecca": "rebecca", "sui": "sui", "wgdashboard": "wgdashboard", "wui": "wui", "stealth": "stealth"}
 # پنل‌هایی که بعد از آدرس و توکن هیچ تنظیم دیگری (قالب/inbound/ساب) نمی‌خواهند؛ فقط تست اتصال و ذخیره
 NO_SETUP_PANEL_TYPES = {"stealth"}
@@ -116,3 +141,22 @@ def get_provider(server) -> BasePanelProvider:
     return cls(server)
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 # 		   		 		  	 	 		 		   		  	 	 		 			  		 				 			  	 
+
+
+def server_has_default_target(server) -> bool:
+    """آیا خودِ سرور (بدون محصول) مقصد پیش‌فرض دارد؟ فقط برای مهاجرت کاربران لازم است،
+    چون آن‌جا کاربر بدون محصول روی پنل مقصد ساخته می‌شود."""
+    t = server["panel_type"]
+    if t in ("hiddify", "stealth"):
+        return True
+    if t in INBOUND_SELECT_PANEL_TYPES:
+        return bool(parse_xui_inbound_ids(server))
+    return bool(server["group_ids"])
+
+
+CUSTOM_CONFIG_NEEDS_TARGET_MSG = (
+    "برای «خرید شخصی» (حجم دلخواه، بدون محصول) باید خودِ سرور یک مقصد پیش‌فرض داشته باشد؛ "
+    "چون در اتصال پنل دیگر گروه/اینباند پرسیده نمی‌شود، اول از مدیریت همین سرور «کاربر نمونه/قالب پیش‌فرض» "
+    "(یا «Inbound پیش‌فرض» برای 3X-UI/Alireza) را یک‌بار تنظیم کن."
+)
+
