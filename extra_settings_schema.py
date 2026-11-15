@@ -467,6 +467,18 @@ EXTRA_SETTINGS_GROUPS: List[Dict[str, Any]] = [
         ],
     },
     {
+        "id": "web_store_brand", "title": "🏷 فروشگاه وب: برندینگ و سئو", "web": False, "mini": True,
+        "fields": [
+            _t("web_store_logo", "آدرس لوگوی فروشگاه وب (فقط https)", ""),
+            _t("web_store_tagline", "شعار فروشگاه (حداکثر ۲۰۰ حرف)", ""),
+            _t("web_store_primary_color", "رنگ اصلی فروشگاه (HEX مثل #6366F1؛ خالی = پیش‌فرض)", ""),
+            _sel("web_store_theme", "حالت رنگ فروشگاه وب", [["auto", "خودکار"], ["light", "روشن"], ["dark", "تیره"]], "auto"),
+            _t("web_store_support_url", "لینک پشتیبانی فروشگاه (https://... یا t.me/... یا @آیدی)", ""),
+            _t("web_store_seo_title", "عنوان صفحه فروشگاه وب (Title، فارسی)", ""),
+            _ta("web_store_seo_description", "توضیح صفحه فروشگاه وب (Description، فارسی)", ""),
+        ],
+    },
+    {
         "id": "dsub_apps", "title": "📱 اشتراک اختصاصی: برنامه‌ها و سوالات متداول", "web": True, "mini": True,
         "fields": [
             {**_ta("dsub_faq", "سوالات متداول (هر خط: «سوال | جواب»، حداکثر ۱۰ مورد؛ خالی = پیش‌فرض)", ""), "maxlen": 3000},

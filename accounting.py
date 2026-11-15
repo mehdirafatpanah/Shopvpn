@@ -270,3 +270,214 @@ def suggest_tariff(db, panel_id: int) -> dict:
         result[key] = {field: _round(evaluate(cfg["formulas"][kind], env), step) if env[cost] else 0
                        for field, kind, cost in (("gb_rate", "payg_gb", "cost_gb"), ("day_rate", "payg_day", "cost_day"), ("user_rate", "payg_user", "cost_user"))}
     return result
+
+
+# ---------------------------------------------------------------------------
+# دفتر مالی پنل وب: ثبت درآمد/هزینه، گردش مالی و گزارش‌های دوره‌ای
+# ---------------------------------------------------------------------------
+
+LEDGER_TYPES = ("income", "expense")
+LEDGER_CATEGORIES = {
+    "income": ["فروش نقدی", "درآمد متفرقه", "سایر درآمد"],
+    "expense": ["هزینه سرور", "زیرساخت و شبکه", "حقوق و دستمزد", "بازاریابی", "کارمزد درگاه", "هزینه عملیاتی", "سایر هزینه"],
+}
+
+
+def ensure_ledger_schema(db) -> None:
+    """ایجاد امن جداول دفتر مالی؛ بدون تغییر در جداول عملیاتی سفارش و پرداخت."""
+    with db._get_conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS accounting_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry_type TEXT NOT NULL CHECK(entry_type IN ('income','expense')),
+                title TEXT NOT NULL,
+                amount INTEGER NOT NULL CHECK(amount > 0),
+                category TEXT NOT NULL,
+                payment_method TEXT NOT NULL DEFAULT '',
+                reference TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT '',
+                entry_date TEXT NOT NULL,
+                created_by INTEGER,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_accounting_ledger_date ON accounting_ledger(entry_date, id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_accounting_ledger_type ON accounting_ledger(entry_type, entry_date)")
+
+
+def _ledger_date(value) -> str:
+    from datetime import date
+    value = str(value or "").strip()
+    if not value:
+        return date.today().isoformat()
+    try:
+        return date.fromisoformat(value).isoformat()
+    except (TypeError, ValueError):
+        raise ValueError("تاریخ باید با فرمت YYYY-MM-DD باشد.")
+
+
+def _ledger_entry_payload(data: dict) -> dict:
+    data = data if isinstance(data, dict) else {}
+    entry_type = str(data.get("entry_type") or "").strip().lower()
+    if entry_type not in LEDGER_TYPES:
+        raise ValueError("نوع سند مالی نامعتبر است.")
+    title = str(data.get("title") or "").strip()
+    if not title or len(title) > 180:
+        raise ValueError("عنوان سند الزامی است و حداکثر ۱۸۰ کاراکتر می‌تواند باشد.")
+    try:
+        amount = int(data.get("amount"))
+    except (TypeError, ValueError):
+        raise ValueError("مبلغ باید عدد صحیح باشد.")
+    if amount <= 0 or amount > 10**15:
+        raise ValueError("مبلغ باید بزرگ‌تر از صفر و در محدوده مجاز باشد.")
+    category = str(data.get("category") or "").strip()
+    if not category or len(category) > 80:
+        raise ValueError("دسته‌بندی سند الزامی است.")
+    return {
+        "entry_type": entry_type, "title": title, "amount": amount,
+        "category": category,
+        "payment_method": str(data.get("payment_method") or "").strip()[:60],
+        "reference": str(data.get("reference") or "").strip()[:120],
+        "description": str(data.get("description") or "").strip()[:1000],
+        "entry_date": _ledger_date(data.get("entry_date")),
+    }
+
+
+def create_ledger_entry(db, data: dict, admin_id: int = None) -> dict:
+    ensure_ledger_schema(db)
+    row = _ledger_entry_payload(data)
+    with db._get_conn() as conn:
+        cur = conn.execute("""
+            INSERT INTO accounting_ledger
+            (entry_type,title,amount,category,payment_method,reference,description,entry_date,created_by)
+            VALUES (?,?,?,?,?,?,?,?,?)
+        """, (row["entry_type"], row["title"], row["amount"], row["category"],
+              row["payment_method"], row["reference"], row["description"],
+              row["entry_date"], admin_id))
+        row["id"] = cur.lastrowid
+    return row
+
+
+def update_ledger_entry(db, entry_id: int, data: dict) -> dict:
+    ensure_ledger_schema(db)
+    row = _ledger_entry_payload(data)
+    with db._get_conn() as conn:
+        cur = conn.execute("""
+            UPDATE accounting_ledger SET entry_type=?,title=?,amount=?,category=?,payment_method=?,
+            reference=?,description=?,entry_date=?,updated_at=CURRENT_TIMESTAMP WHERE id=?
+        """, (row["entry_type"], row["title"], row["amount"], row["category"],
+              row["payment_method"], row["reference"], row["description"],
+              row["entry_date"], int(entry_id)))
+        if not cur.rowcount:
+            raise KeyError("سند مالی موردنظر پیدا نشد.")
+    row["id"] = int(entry_id)
+    return row
+
+
+def delete_ledger_entry(db, entry_id: int) -> bool:
+    ensure_ledger_schema(db)
+    with db._get_conn() as conn:
+        cur = conn.execute("DELETE FROM accounting_ledger WHERE id=?", (int(entry_id),))
+        return bool(cur.rowcount)
+
+
+def list_ledger_entries(db, from_date=None, to_date=None, entry_type=None,
+                        category=None, query=None, offset=0, limit=50) -> dict:
+    ensure_ledger_schema(db)
+    clauses, params = [], []
+    if entry_type not in (None, "") and entry_type not in LEDGER_TYPES:
+        raise ValueError("نوع سند مالی نامعتبر است.")
+    if from_date:
+        clauses.append("entry_date >= ?"); params.append(_ledger_date(from_date))
+    if to_date:
+        clauses.append("entry_date <= ?"); params.append(_ledger_date(to_date))
+    if entry_type in LEDGER_TYPES:
+        clauses.append("entry_type = ?"); params.append(entry_type)
+    if category:
+        clauses.append("category = ?"); params.append(str(category)[:80])
+    if query:
+        clauses.append("(title LIKE ? OR reference LIKE ? OR description LIKE ?)")
+        q = f"%{str(query)[:100]}%"
+        params.extend([q, q, q])
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    offset = max(0, int(offset or 0))
+    limit = max(1, min(200, int(limit or 50)))
+    with db._get_conn() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM accounting_ledger" + where, params).fetchone()[0]
+        rows = conn.execute("SELECT * FROM accounting_ledger" + where +
+                            " ORDER BY entry_date DESC, id DESC LIMIT ? OFFSET ?",
+                            params + [limit, offset]).fetchall()
+    return {"items": [dict(r) for r in rows], "total": int(total), "offset": offset, "limit": limit}
+
+
+def ledger_summary(db, from_date=None, to_date=None) -> dict:
+    ensure_ledger_schema(db)
+    clauses, params = [], []
+    if from_date:
+        clauses.append("entry_date >= ?"); params.append(_ledger_date(from_date))
+    if to_date:
+        clauses.append("entry_date <= ?"); params.append(_ledger_date(to_date))
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    with db._get_conn() as conn:
+        rows = conn.execute(
+            "SELECT entry_type, COUNT(*) AS count, COALESCE(SUM(amount),0) AS total "
+            "FROM accounting_ledger" + where + " GROUP BY entry_type", params
+        ).fetchall()
+        by_category = conn.execute(
+            "SELECT entry_type, category, COUNT(*) AS count, COALESCE(SUM(amount),0) AS total "
+            "FROM accounting_ledger" + where +
+            " GROUP BY entry_type, category ORDER BY total DESC", params
+        ).fetchall()
+        monthly = conn.execute(
+            "SELECT substr(entry_date,1,7) AS month, "
+            "SUM(CASE WHEN entry_type='income' THEN amount ELSE 0 END) AS income, "
+            "SUM(CASE WHEN entry_type='expense' THEN amount ELSE 0 END) AS expense "
+            "FROM accounting_ledger" + where +
+            " GROUP BY substr(entry_date,1,7) ORDER BY month DESC LIMIT 12", params
+        ).fetchall()
+    totals = {"income": 0, "expense": 0, "income_count": 0, "expense_count": 0}
+    for r in rows:
+        key = r["entry_type"]
+        totals[key] = int(r["total"] or 0)
+        totals[key + "_count"] = int(r["count"] or 0)
+    totals["net"] = totals["income"] - totals["expense"]
+    gateway_revenue = []
+    try:
+        gateway_revenue = [dict(r) for r in db.get_gateway_revenue_report()]
+    except Exception:
+        # گزارش درگاه‌ها مکمل دفتر دستی است؛ خرابی/نبود جدول درگاه نباید
+        # ثبت اسناد و گزارش دفتر مالی را از دسترس خارج کند.
+        gateway_revenue = []
+    return {
+        **totals,
+        "categories": [dict(r) for r in by_category],
+        "monthly": [dict(r) for r in monthly],
+        "gateway_revenue_lifetime": gateway_revenue,
+        "currency": "IRT",
+        "available_categories": LEDGER_CATEGORIES,
+    }
+
+
+def export_ledger_csv(db, from_date=None, to_date=None, entry_type=None):
+    import csv
+    import io
+    ensure_ledger_schema(db)
+    clauses, params = [], []
+    if from_date:
+        clauses.append("entry_date >= ?"); params.append(_ledger_date(from_date))
+    if to_date:
+        clauses.append("entry_date <= ?"); params.append(_ledger_date(to_date))
+    if entry_type in LEDGER_TYPES:
+        clauses.append("entry_type = ?"); params.append(entry_type)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    with db._get_conn() as conn:
+        rows = conn.execute("SELECT * FROM accounting_ledger" + where + " ORDER BY entry_date DESC, id DESC", params).fetchall()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ID", "Date", "Type", "Title", "Amount (Toman)", "Category",
+                     "Payment method", "Reference", "Description"])
+    for r in rows:
+        writer.writerow([r["id"], r["entry_date"], r["entry_type"], r["title"], r["amount"],
+                         r["category"], r["payment_method"], r["reference"], r["description"]])
+    return "\ufeff" + output.getvalue()

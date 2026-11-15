@@ -34,6 +34,29 @@ MULTI_TARGET_NEEDS_DSUB = ("محصول با چند پنل/نود یا ترکیب
                            "ساب اختصاصی را فعال کنید.")
 
 
+ONHOLD_PANEL_TYPES = {"marzban", "pasarguard", "rebecca", "marzneshin", "3xui", "threexui"}
+
+
+def product_first_use(product, server=None) -> bool:
+    """True اگر زمان سرویس این محصول از اولین اتصال شروع شود؛ NULL در محصول یعنی تنظیم پنل."""
+    value = None
+    try:
+        value = product["start_on_first_use"]
+    except (KeyError, IndexError, TypeError):
+        pass
+    if value is None:
+        try:
+            return bool(server["start_on_first_use"]) if server is not None else False
+        except (KeyError, IndexError, TypeError):
+            return False
+    if not int(value):
+        return False
+    try:
+        return str(server["panel_type"]).lower() in ONHOLD_PANEL_TYPES if server is not None else True
+    except (KeyError, IndexError, TypeError):
+        return True
+
+
 def _whole_or_fraction(value):
     number = float(value)
     return int(number) if number == int(number) else number
@@ -111,7 +134,9 @@ async def _provision_vpn(db, product, quantity: int = 1, user_id: int = None, or
     if target_config_override is not ...:
         effective_product = dict(product)
         effective_product["provision_target_config"] = target_config_override
-    server = apply_product_target(server, effective_product)
+    server = dict(apply_product_target(server, effective_product))
+    first_use = product_first_use(product, server)
+    server["start_on_first_use"] = 1 if first_use else 0
 
     if not db.panel_has_capacity(server_id, quantity):
         info = db.get_panel_capacity_info(server_id) or {}
@@ -208,7 +233,7 @@ async def _provision_vpn(db, product, quantity: int = 1, user_id: int = None, or
                 item["custom_config_id"] = db.add_custom_config(
                     user_id, server["id"], item["username"], item["volume_gb"], item["duration_days"],
                     item["subscription_url"], order_id=order_id, source="direct_product",
-                    user_limit=item.get("user_limit"),
+                    user_limit=item.get("user_limit"), start_on_first_use=first_use,
                     panel_target_config=(effective_product["provision_target_config"] if "provision_target_config" in effective_product.keys() else None),
                 )
             except Exception:

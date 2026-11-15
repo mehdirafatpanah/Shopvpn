@@ -21,6 +21,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import dedicated_sub as ds
+import web_entry_gate
 from states import AdminLinksInput
 
 # کلیدهای قابل ویرایش داخل بات: key → (عنوان، راهنما)
@@ -67,7 +68,7 @@ def collect_links(db) -> list:
          "editable": None, "probe": ""},
         {"key": "store", "title": "🛍 فروشگاه وب", "url": (store + "/") if store else "", "source": "manage.sh (گزینه‌ی فروشگاه وب)",
          "editable": None, "probe": ""},
-        {"key": "panel", "title": "🖥 پنل مدیریت وب", "url": panel_db or panel_env,
+        {"key": "panel", "title": "🖥 پنل مدیریت وب", "url": web_entry_gate.with_entry_path(panel_db or panel_env),
          "source": "تنظیم داخل بات" if panel_db else ".env (ADMIN_PANEL_URL)",
          "editable": "admin_panel_url", "probe": ""},
         {"key": "dsub", "title": "🔗 سرور ساب اختصاصی" + ("" if dsub_on else " (خاموش)"), "url": dsub_url,

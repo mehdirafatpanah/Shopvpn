@@ -67,6 +67,7 @@ SETTINGS_FORM_SECTIONS = [
                 "fields": [
                     {"key": "card_number", "label": "شماره کارت", "type": "text"},
                     {"key": "card_holder", "label": "نام صاحب کارت", "type": "text"},
+                    {"key": "card_bank_name", "label": "نام بانک", "type": "text"},
                 ],
             },
             {
@@ -193,6 +194,23 @@ SETTINGS_FORM_SECTIONS = [
                     {"key": "custom_config_max_gb", "label": "حداکثر حجم مجاز (گیگ)", "type": "number"},
                     {"key": "custom_config_duration_days", "label": "مدت اعتبار (روز)", "type": "number"},
                     {"key": "btn_custom_config", "label": "متن دکمه ساخت کانفیگ شخصی", "type": "text"},
+                ],
+            },
+            {
+                "title": "🏷 برندینگ و ظاهر فروشگاه وب",
+                "fields": [
+                    {"key": "web_store_logo", "label": "آدرس لوگوی فروشگاه وب (فقط HTTPS)", "type": "text"},
+                    {"key": "web_store_tagline", "label": "شعار فروشگاه", "type": "text"},
+                    {"key": "web_store_primary_color", "label": "رنگ اصلی فروشگاه (HEX مثل #6366F1)", "type": "text"},
+                    {"key": "web_store_theme", "label": "حالت رنگ فروشگاه وب", "type": "select", "options": [["auto", "خودکار"], ["light", "روشن"], ["dark", "تیره"]]},
+                    {"key": "web_store_support_url", "label": "لینک پشتیبانی فروشگاه", "type": "text"},
+                ],
+            },
+            {
+                "title": "🔎 سئو و عنوان صفحه فروشگاه وب (فارسی)",
+                "fields": [
+                    {"key": "web_store_seo_title", "label": "عنوان صفحه (Title)", "type": "text"},
+                    {"key": "web_store_seo_description", "label": "توضیح صفحه (Description)", "type": "textarea"},
                 ],
             },
             {

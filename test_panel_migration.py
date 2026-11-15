@@ -86,7 +86,7 @@ class FakeBot:
         self.sent.append((chat_id, text))
 
 
-def make_world(dsub=True, types_=("3xui", "pasarguard")):
+def make_world(dsub=True, types_=("3xui", "pasarguard"), seed_targets=True):
     db = Database(os.path.join(_TMP, f"t{time.time_ns()}.db"))
     db.init_db(owner_id=1)
     if dsub:
@@ -95,6 +95,11 @@ def make_world(dsub=True, types_=("3xui", "pasarguard")):
     ids, fakes = [], {}
     for i, ptype in enumerate(types_):
         sid = db.add_panel_server(f"P{i + 1}", ptype, f"https://p{i + 1}.example.com", "u", "p")
+        if seed_targets:  # مقصد پیش‌فرض سرور (برای مهاجرت لازم است؛ در اتصال دیگر پرسیده نمی‌شود)
+            if ptype in ("3xui", "alireza"):
+                db.update_panel_server(sid, xui_inbound_ids="[1]")
+            else:
+                db.update_panel_server(sid, group_ids="[1]")
         ids.append(sid)
         fakes[sid] = FakePanel(f"p{i + 1}")
     pm.get_provider = lambda server: fakes[int(server["id"])]
@@ -262,6 +267,16 @@ class PanelMigrationTests(unittest.TestCase):
         self.assertFalse(run(pm.build_plan(db, ids[0], ids[0]))["ok"])
         fakes[ids[1]].down = True
         self.assertFalse(run(pm.build_plan(db, ids[0], ids[1]))["ok"])
+
+    def test_plan_requires_default_target_on_destination(self):
+        # پنل مقصدی که بدون گروه/اینباند متصل شده، قبل از مهاجرت باید مقصد پیش‌فرض بگیرد
+        db, ids, fakes = make_world(seed_targets=False)
+        add_service(db, fakes, ids[0], 80, "max", 5, 1, 10)
+        plan = run(pm.build_plan(db, ids[0], ids[1]))
+        self.assertFalse(plan["ok"])
+        self.assertIn("مقصد پیش‌فرض", plan["error"])
+        db.update_panel_server(ids[1], group_ids="[1]")
+        self.assertTrue(run(pm.build_plan(db, ids[0], ids[1]))["ok"])
 
     def test_rerun_only_picks_remaining_services(self):
         db, ids, fakes = make_world()

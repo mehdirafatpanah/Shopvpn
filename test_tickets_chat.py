@@ -174,3 +174,93 @@ class SearchHelpersTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UserPriorityChoiceTest(unittest.TestCase):
+    """کاربر موقع ساخت تیکت / در چت زنده خودش اولویت (زیاد/متوسط/کم) را انتخاب می‌کند."""
+
+    def setUp(self):
+        self.db = make_db()
+        add_user(self.db, 100)
+
+    def test_ticket_created_with_user_priority(self):
+        db = self.db
+        t_high = db.create_ticket(100, "s1", "m1", priority="high")
+        t_low = db.create_ticket(100, "s2", "m2", priority="low")
+        t_default = db.create_ticket(100, "s3", "m3")
+        t_bad = db.create_ticket(100, "s4", "m4", priority="urgent!!")
+        self.assertEqual(db.get_ticket(t_high)["priority"], "high")
+        self.assertEqual(db.get_ticket(t_low)["priority"], "low")
+        self.assertEqual(db.get_ticket(t_default)["priority"], "medium")
+        self.assertEqual(db.get_ticket(t_bad)["priority"], "medium")
+
+    def test_bot_keyboards(self):
+        import keyboards as kb
+        markup = kb.ticket_priority_kb("ticket_prio", "high", "ticket_cancel")
+        first = markup.inline_keyboard[0]
+        self.assertEqual([b.callback_data for b in first],
+                         ["ticket_prio:high", "ticket_prio:medium", "ticket_prio:low"])
+        self.assertTrue(first[0].text.startswith("✅"))
+        self.assertFalse(first[1].text.startswith("✅"))
+        self.assertEqual(markup.inline_keyboard[-1][0].callback_data, "ticket_cancel")
+        services = [{"kind": "custom", "id": 5, "label": "myvpn"}]
+        m2 = kb.ticket_services_kb(services, prefix="contact_svc", cancel_callback="cancel_flow",
+                                   priority_prefix="contact_prio", priority_selected="low")
+        datas = [b.callback_data for row in m2.inline_keyboard for b in row]
+        self.assertIn("contact_svc:custom:5", datas)
+        self.assertIn("contact_prio:low", datas)
+        self.assertEqual(datas[-1], "cancel_flow")
+        # لیست تیکت‌ها: اولویت زیاد با 🔴 مشخص می‌شود
+        tid = self.db.create_ticket(100, "urgent", "x", priority="high")
+        lst = kb.tickets_list_kb(self.db.get_user_tickets(100))
+        self.assertTrue(any("🔴" in b.text and f"#{tid}" in b.text for row in lst.inline_keyboard for b in row))
+
+    def test_miniapp_endpoints(self):
+        try:
+            from fastapi.testclient import TestClient
+            import miniapp.server as ms
+        except Exception as exc:  # pragma: no cover - وابستگی‌های محیط
+            self.skipTest(f"miniapp.server قابل import نیست: {exc}")
+        db = self.db
+
+        class _Tenant:
+            bot_token = "123:test"
+
+        ms.app.dependency_overrides[ms.get_verified_user] = lambda: (100, db, _Tenant())
+        sent = []
+
+        class _Session:
+            async def __aenter__(self_inner):
+                return self_inner
+
+            async def __aexit__(self_inner, *a):
+                return False
+
+            async def post(self_inner, url, json=None, **kw):
+                sent.append(json)
+
+        orig = ms.aiohttp.ClientSession
+        ms.aiohttp.ClientSession = lambda *a, **k: _Session()
+        try:
+            client = TestClient(ms.app)
+            r = client.post("/api/tickets", json={"subject": "s", "message": "m", "priority": "high"})
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertEqual(r.json()["priority"], "high")
+            self.assertTrue(any("🚦 اولویت: 🔴 زیاد" in (p or {}).get("text", "") for p in sent))
+            r = client.post("/api/tickets", json={"subject": "s2", "message": "m2"})
+            self.assertEqual(r.json()["priority"], "medium")
+            r = client.post("/api/tickets", json={"subject": "s3", "message": "m3", "priority": "zzz"})
+            self.assertEqual(r.json()["priority"], "medium")
+            # چت زنده
+            self.assertEqual(client.get("/api/support/state").json()["priority"], "medium")
+            r = client.post("/api/support/messages", json={"message": "hello", "priority": "low"})
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertEqual(client.get("/api/support/state").json()["priority"], "low")
+            # بدون ارسال priority اولویت فعلی حفظ می‌شود
+            client.post("/api/support/messages", json={"message": "again"})
+            self.assertEqual(client.get("/api/support/state").json()["priority"], "low")
+            client.post("/api/support/messages", json={"message": "now urgent", "priority": "high"})
+            self.assertEqual(db.get_support_conversation_state(100)["priority"], "high")
+        finally:
+            ms.aiohttp.ClientSession = orig
+            ms.app.dependency_overrides.clear()

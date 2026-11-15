@@ -1078,6 +1078,8 @@ def card_settings_kb(db) -> InlineKeyboardMarkup:
     فعال/غیرفعال و دکمه‌های تغییر."""
     card_number = db.get_setting("card_number") or "-"
     card_holder = db.get_setting("card_holder") or "-"
+    card_bank = db.get_setting("card_bank_name") or "-"
+    card_photo_set = bool(db.get_setting("card_photo_file_id"))
     enabled = db.get_setting("card_to_card_enabled", "1") == "1"
     ai_check_enabled = db.get_setting("receipt_ai_check_enabled", "1") == "1"
     ai_auto_reject_enabled = db.get_setting("receipt_ai_auto_reject_enabled", "1") == "1"
@@ -1101,6 +1103,8 @@ def card_settings_kb(db) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=tr(f"وضعیت: {'🟢 فعال' if enabled else '🔴 غیرفعال'}"), callback_data="noop")],
         [InlineKeyboardButton(text=tr(f"💳 شماره کارت: {card_number}"), callback_data="noop")],
         [InlineKeyboardButton(text=tr(f"👤 به نام: {card_holder}"), callback_data="noop")],
+        [InlineKeyboardButton(text=tr(f"🏦 بانک: {card_bank}"), callback_data="adm_set_card_bank")],
+        [InlineKeyboardButton(text=tr(f"🖼 عکس کارت: {'✅ تنظیم شده' if card_photo_set else 'ندارد'}"), callback_data="adm_set_card_photo")],
         [InlineKeyboardButton(text=tr(f"🗂 چند شماره کارت + درصد نمایش ({len(db.list_payment_cards(only_active=True))} فعال)"), callback_data="adm_pcards")],
         [InlineKeyboardButton(text=toggle_text, callback_data="adm_card_toggle")],
         [InlineKeyboardButton(text=tr("✏️ تغییر شماره کارت / صاحب حساب"), callback_data="adm_set_card_edit")],
@@ -1185,6 +1189,7 @@ def payment_card_detail_kb(card) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=toggle_text, callback_data=f"adm_pcard_toggle:{card['id']}")],
         [InlineKeyboardButton(text=tr("🎯 تغییر درصد نمایش"), callback_data=f"adm_pcard_w:{card['id']}")],
+        [InlineKeyboardButton(text=tr("🏦 تغییر نام بانک"), callback_data=f"adm_pcard_bank:{card['id']}")],
         [InlineKeyboardButton(text=tr("🖼 تنظیم عکس کارت"), callback_data=f"adm_pcard_photo:{card['id']}")],
         [InlineKeyboardButton(text=tr("📝 تنظیم توضیحات پارامتردار"), callback_data=f"adm_pcard_desc:{card['id']}")],
         [InlineKeyboardButton(text=tr("🗑 حذف"), callback_data=f"adm_pcard_del:{card['id']}")],
@@ -1702,8 +1707,10 @@ def tickets_list_kb(tickets) -> InlineKeyboardMarkup:
         subject = (t["subject"] or "بدون موضوع").strip()
         if len(subject) > 30:
             subject = subject[:30] + "…"
+        prio = (t["priority"] if "priority" in t.keys() else None) or "medium"
+        prio_mark = {"high": " 🔴", "low": " 🟢"}.get(prio, "")
         rows.append(
-            [InlineKeyboardButton(text=f"{status_icon} #{t['id']} — {subject}", callback_data=f"ticket_view:{t['id']}")]
+            [InlineKeyboardButton(text=f"{status_icon} #{t['id']} — {subject}{prio_mark}", callback_data=f"ticket_view:{t['id']}")]
         )
     if not rows:
         rows.append([InlineKeyboardButton(text=tr("هنوز تیکتی ثبت نکرده‌اید."), callback_data="noop")])
@@ -1712,10 +1719,32 @@ def tickets_list_kb(tickets) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def ticket_services_kb(services, prefix: str = "ticket_svc", skip_text: str = "⏭ بدون اشاره به سرویس خاص",
+def ticket_priority_buttons(prefix: str, selected: str = None) -> list:
+    """یک ردیف دکمه‌ی اولویت (زیاد / متوسط / کم)؛ گزینه‌ی انتخاب‌شده با ✅ مشخص می‌شود.
+    callback: {prefix}:{high|medium|low}"""
+    row = []
+    for key in ("high", "medium", "low"):
+        label = TICKET_PRIORITY_LABELS[key]
+        if key == selected:
+            label = "✅ " + label
+        row.append(InlineKeyboardButton(text=tr(label), callback_data=f"{prefix}:{key}"))
+    return row
+
+
+def ticket_priority_kb(prefix: str = "ticket_prio", selected: str = "medium",
                        cancel_callback: str = "ticket_cancel") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        ticket_priority_buttons(prefix, selected),
+        [InlineKeyboardButton(text=tr("❌ لغو"), callback_data=cancel_callback)],
+    ])
+
+
+def ticket_services_kb(services, prefix: str = "ticket_svc", skip_text: str = "⏭ بدون اشاره به سرویس خاص",
+                       cancel_callback: str = "ticket_cancel", priority_prefix: str = None,
+                       priority_selected: str = None) -> InlineKeyboardMarkup:
     """انتخاب اختیاری یکی از سرویس‌های خریداری‌شده برای تیکت/چت زنده.
-    callback: {prefix}:{kind}:{id} یا {prefix}:skip"""
+    callback: {prefix}:{kind}:{id} یا {prefix}:skip
+    اگر priority_prefix داده شود، ردیف انتخاب اولویت هم قبل از «لغو» اضافه می‌شود."""
     rows = []
     for item in services:
         label = str(item["label"])
@@ -1724,6 +1753,8 @@ def ticket_services_kb(services, prefix: str = "ticket_svc", skip_text: str = "�
         rows.append([InlineKeyboardButton(text=f"📦 {label}", callback_data=f"{prefix}:{item['kind']}:{item['id']}")])
     if prefix == "ticket_svc":
         rows.append([InlineKeyboardButton(text=tr(skip_text), callback_data=f"{prefix}:skip")])
+    if priority_prefix:
+        rows.append(ticket_priority_buttons(priority_prefix, priority_selected))
     rows.append([InlineKeyboardButton(text=tr("❌ لغو"), callback_data=cancel_callback)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -3396,6 +3427,10 @@ def admin_products_list_kb(db, products, category_id=None) -> InlineKeyboardMark
                 edit_row.insert(0, InlineKeyboardButton(text=tr("🔌 تغییر پنل/اینباند"), callback_data=f"adm_prod_srv:{p['id']}"))
             rows.append(edit_row)
             rows.append([InlineKeyboardButton(text=tr("🔄 قوانین تمدید کامل"), callback_data=f"adm_prodrr:{p['id']}")])
+            if p["provision_server_id"]:
+                _first = p["start_on_first_use"] if "start_on_first_use" in p.keys() else None
+                _first_label = "⏱ شروع زمان: از اولین اتصال" if _first == 1 else ("⏱ شروع زمان: از لحظه خرید" if _first == 0 else "⏱ شروع زمان: طبق تنظیم پنل")
+                rows.append([InlineKeyboardButton(text=tr(_first_label), callback_data=f"adm_prod_start:{p['id']}")])
             extra = p["extra_user_price"] if "extra_user_price" in p.keys() else 0
             max_users = p["max_users"] if "max_users" in p.keys() else 0
             base_users = p["base_users"] if "base_users" in p.keys() and p["base_users"] else 0
@@ -3423,6 +3458,18 @@ def admin_product_discount_kb(product, back_cb: str) -> InlineKeyboardMarkup:
     if compare > int(product["price"]):
         rows.append([InlineKeyboardButton(text=tr("❌ حذف تخفیف"), callback_data=f"adm_prod_dsc_off:{pid}")])
     rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data=back_cb)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_product_start_mode_kb(prefix: str, current, product_id=None, back_cb: str = "adm_products") -> InlineKeyboardMarkup:
+    """دو دکمه‌ی شروع زمان سرویس؛ current: 0=از خرید، 1=از اولین اتصال، None=طبق تنظیم پنل."""
+    tail = f":{product_id}" if product_id is not None else ""
+    rows = [
+        [InlineKeyboardButton(text=tr(("✅ " if current == 0 else "") + "🛒 از لحظه خرید"), callback_data=f"{prefix}:purchase{tail}")],
+        [InlineKeyboardButton(text=tr(("✅ " if current == 1 else "") + "📡 از اولین اتصال"), callback_data=f"{prefix}:first{tail}")],
+    ]
+    if product_id is not None:
+        rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data=back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -5121,8 +5168,11 @@ def panel_server_view_kb(server) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=tr("🔌 تست اتصال"), callback_data=f"adm_panel_server_test:{server['id']}")],
     ]
     # دکمه‌ی «کاربر نمونه» فقط برای پنل‌هایی که واقعاً قالب دارند (3X-UI/Alireza/Stealth ندارند)
+    # در اتصال دیگر لازم نیست (فقط Rebecca/IBSng)؛ این دکمه یک تنظیم «اختیاری» است
+    # برای مقصد پیش‌فرض سرور (مهاجرت کاربران/محصولات قدیمی بدون مقصد).
     if hasattr(PROVIDERS.get(server["panel_type"]), "fetch_template_from_user"):
-        rows.append([InlineKeyboardButton(text=tr("🧩 تغییر کاربر نمونه (قالب)"), callback_data=f"adm_panel_server_template:{server['id']}")])
+        _tpl_label = "🧩 تغییر کاربر نمونه (قالب)" if server["panel_type"] in ("rebecca", "ibsng") else "🧩 کاربر نمونه پیش‌فرض (اختیاری)"
+        rows.append([InlineKeyboardButton(text=tr(_tpl_label), callback_data=f"adm_panel_server_template:{server['id']}")])
     if server["panel_type"] in INBOUND_SELECT_PANEL_TYPES:
         rows.append([InlineKeyboardButton(
             text=tr("🔗 تغییر لینک Subscription"), callback_data=f"adm_panel_server_suburl:{server['id']}",

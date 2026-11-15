@@ -45,6 +45,7 @@ import emoji_prefs
 import keyboards as kb
 from database import Database, MENU_BUTTON_META
 from config import RESELLER_DBS_DIR, resolve_db_path, ADMIN_PANEL_URL, BOT_TOKEN, DB_PATH as MAIN_DB_PATH
+import web_entry_gate
 from config_delivery import (
     deliver_config_to_user, build_qr_bytes, has_qr_background, qr_background_enabled,
     save_qr_background, remove_qr_background,
@@ -88,7 +89,7 @@ from service_alerts import normalize_channel
 from notification_i18n import send_telegram
 from panel_providers import (
     get_provider, PROVIDERS, PanelError, PanelUsernameTakenError, PANEL_TYPE_LABELS,
-    SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES, parse_xui_inbound_ids,
+    SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES, parse_xui_inbound_ids, connect_needs_template, panel_server_is_ready,
     SINGLE_INBOUND_PANEL_TYPES, TOKEN_ONLY_PANEL_TYPES, SECRET_PROMPTS, TEMPLATE_PROMPTS, TEMPLATE_VALUE_LABELS,
 )
 from reseller_auto_provision import provision_auto_config, get_credit_bot_local_panel_id, ProvisionError
@@ -241,7 +242,7 @@ def _get_admin_panel_url(db) -> str:
     ادمین از داخل بات وارد کرده)، اگر نبود از ADMIN_PANEL_URL توی .env (برای
     سازگاری با نصب‌های قدیمی‌تر)."""
     saved = db.get_setting("admin_panel_url", "")
-    return (saved or ADMIN_PANEL_URL or "").strip().rstrip("/")
+    return web_entry_gate.with_entry_path((saved or ADMIN_PANEL_URL or "").strip().rstrip("/"))
 
 
 async def _deliver_webpanel_link(db, answerable, admin_id: int, bot_id: int) -> None:
@@ -320,22 +321,24 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         return db.is_full_admin(user_id)
 
     def panel_server_readiness_text(server) -> str:
+        later = "گروه/اینباند: موقع ساخت محصول انتخاب می‌شود"
         if server["panel_type"] in SUB_BASE_URL_PANEL_TYPES:
+            if not server["xui_sub_base_url"]:
+                return "⚠️ آدرس Subscription هنوز تنظیم نشده"
             if server["panel_type"] in INBOUND_SELECT_PANEL_TYPES:
                 ids = parse_xui_inbound_ids(server)
-                if ids and server["xui_sub_base_url"]:
+                if ids:
                     ids_text = "، ".join(f"#{i}" for i in ids)
-                    return f"{len(ids)} inbound تنظیم شده ({ids_text})"
-                return "⚠️ inbound/آدرس Subscription هنوز تنظیم نشده"
-            if server["xui_sub_base_url"]:
-                return "✅ آدرس Subscription تنظیم شده"
-            return "⚠️ آدرس Subscription هنوز تنظیم نشده"
+                    return f"✅ آدرس Subscription تنظیم شده | inbound پیش‌فرض قدیمی: {ids_text}\n{later}"
+            return f"✅ آدرس Subscription تنظیم شده\n{later}"
         if server["template_username"]:
             label = TEMPLATE_VALUE_LABELS.get(server["panel_type"])
             if label:
                 return f"{label}: «{server['template_username']}»"
             return f"قالب از کاربر «{server['template_username']}»"
-        return "⚠️ قالب هنوز تنظیم نشده"
+        if connect_needs_template(server["panel_type"]):
+            return "⚠️ قالب هنوز تنظیم نشده"
+        return f"✅ متصل\n{later}"
 
     def senior_admin_only(user_id: int) -> bool:
         """فقط مالک یا مدیر کامل؛ ادمین میانی و پشتیبان اجازه‌ی این بخش‌های حساس
@@ -2864,11 +2867,75 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             kb.admin_renew_rules_kb(rules, "newprodrr", "newprodrr_done", "➡️ ادامه (روش‌های پرداخت)"),
         )
 
+    def _newprod_start_mode_prompt():
+        return tr("⏱ زمان این محصول از چه لحظه‌ای شروع شود؟\n\n"
+                  "🛒 از لحظه خرید: مدت از همان لحظه‌ی خرید حساب می‌شود.\n"
+                  "📡 از اولین اتصال: مدت بعد از اولین اتصال کاربر شروع می‌شود.")
+
     async def _newprod_to_payment_methods(message: Message, state: FSMContext):
+        data = await state.get_data()
+        server_id = data.get("provision_server_id")
+        server = await asyncio.to_thread(db.get_panel_server, server_id) if server_id else None
+        from direct_panel_provision import ONHOLD_PANEL_TYPES
+        if server and data.get("duration_days") and server["panel_type"] in ONHOLD_PANEL_TYPES:
+            await state.set_state(AdminAddProduct.waiting_start_mode)
+            await message.answer(_newprod_start_mode_prompt(),
+                                 reply_markup=kb.admin_product_start_mode_kb("newprodstart", int(server["start_on_first_use"] or 0)))
+            return
+        await _newprod_to_renew_rules(message, state)
+
+    async def _newprod_to_renew_rules(message: Message, state: FSMContext):
         await state.set_state(AdminAddProduct.waiting_renew_rules)
         await state.update_data(renew_rules=dict(renewal_rules.DEFAULTS))
         text_rr, markup_rr = _newprod_renew_prompt(dict(renewal_rules.DEFAULTS))
         await message.answer(text_rr, reply_markup=markup_rr)
+
+    @router.callback_query(AdminAddProduct.waiting_start_mode, F.data.in_({"newprodstart:purchase", "newprodstart:first"}))
+    async def cb_newprod_start_mode(call: CallbackQuery, state: FSMContext):
+        await state.update_data(start_on_first_use=(call.data.endswith(":first")))
+        await state.set_state(AdminAddProduct.waiting_renew_rules)
+        await state.update_data(renew_rules=dict(renewal_rules.DEFAULTS))
+        text_rr, markup_rr = _newprod_renew_prompt(dict(renewal_rules.DEFAULTS))
+        await safe_edit(call, text_rr, reply_markup=markup_rr)
+        await call.answer()
+
+    @router.callback_query(F.data.regexp(r"^adm_prod_start:\d+$"))
+    async def cb_admin_prod_start(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        product_id = int(call.data.split(":")[1])
+        product = await asyncio.to_thread(db.get_product, product_id)
+        if not product or not product["provision_server_id"]:
+            return await call.answer(db.get_text('handlers_admin.auto_d6cec4a7', '⚠️ این محصول اتصال مستقیم به پنل ندارد.'), show_alert=True)
+        server = await asyncio.to_thread(db.get_panel_server, product["provision_server_id"])
+        current = product["start_on_first_use"] if "start_on_first_use" in product.keys() else None
+        if current is None and server:
+            current = int(server["start_on_first_use"] or 0)
+        await safe_edit(call, f"{_newprod_start_mode_prompt()}\n\n" + tr("ساخت‌های بعدی این محصول طبق انتخاب جدید انجام می‌شود؛ سرویس‌های قبلاً ساخته‌شده تغییر نمی‌کنند."),
+                        reply_markup=kb.admin_product_start_mode_kb("adm_prod_setstart", current, product_id, f"adm_prod_cat:{product['category_id']}"))
+        await call.answer()
+
+    @router.callback_query(F.data.regexp(r"^adm_prod_setstart:(purchase|first):\d+$"))
+    async def cb_admin_prod_setstart(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        _, mode, product_id_s = call.data.split(":")
+        product_id = int(product_id_s)
+        product = await asyncio.to_thread(db.get_product, product_id)
+        if not product or not product["provision_server_id"]:
+            return await call.answer(db.get_text('handlers_admin.auto_d6cec4a7', '⚠️ این محصول اتصال مستقیم به پنل ندارد.'), show_alert=True)
+        server = await asyncio.to_thread(db.get_panel_server, product["provision_server_id"])
+        from direct_panel_provision import ONHOLD_PANEL_TYPES
+        first = mode == "first"
+        if first and server and server["panel_type"] not in ONHOLD_PANEL_TYPES:
+            return await call.answer(tr("این نوع پنل شروع زمان از اولین اتصال را پشتیبانی نمی‌کند."), show_alert=True)
+        await asyncio.to_thread(db.edit_product, product_id, start_on_first_use=first)
+        await asyncio.to_thread(db.log_admin_action, call.from_user.id, "product_start_mode",
+                                f"محصول «{product['name']}» (#{product_id}) | شروع زمان: {'از اولین اتصال' if first else 'از لحظه خرید'}")
+        products = await asyncio.to_thread(db.get_products, product["category_id"], active_only=False)
+        await safe_edit(call, tr("✅ شروع زمان محصول ذخیره شد."),
+                        reply_markup=kb.admin_products_list_kb(db, products))
+        await call.answer()
 
     @router.callback_query(AdminAddProduct.waiting_renew_rules, F.data.startswith("newprodrr:"))
     async def cb_newprod_renew_toggle(call: CallbackQuery, state: FSMContext):
@@ -2990,6 +3057,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             renew_rules=data.get("renew_rules"),
             ai_description=data.get("ai_description") or "",
             product_kind=data.get("product_kind") or "config",
+            start_on_first_use=data.get("start_on_first_use"),
         ))
         pm_log = "همه" if payment_methods is None else "، ".join(payment_methods)
         if auto_provision_volume_gb is not None:
@@ -8102,7 +8170,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not senior_admin_only(call.from_user.id):
             return await deny_mid(call)
         await state.set_state(AdminAddPanelServer.waiting_name)
-        await safe_edit(call, db.get_text('handlers_admin.auto_e34b9555', 'یک نام دلخواه برای این سرور بفرست (مثلاً «سرور آلمان»):'), reply_markup=kb.admin_back_kb("adm_panel_servers"))
+        await safe_edit(call, db.get_text('handlers_admin.auto_e34b9555', 'یک نام دلخواه برای این سرور بفرست (مثلاً «سرور آلمان»):') + "\n\n" + tr("ℹ️ در اتصال فقط آدرس و اطلاعات ورود پنل را می‌گیریم. انتخاب گروه/اینباند اینجا نیست؛ موقع ساخت محصول انجام می‌شود."), reply_markup=kb.admin_back_kb("adm_panel_servers"))
         await call.answer()
 
     @router.message(AdminAddPanelServer.waiting_name)
@@ -8190,88 +8258,60 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             pass
         data = await state.get_data()
 
-        if data["panel_type"] in INBOUND_SELECT_PANEL_TYPES:
-            await message.answer(db.get_text('handlers_admin.auto_8b1f39a5', '⏳ در حال دریافت لیست inbound از پنل...'))
-            server_id = (await asyncio.to_thread(db.add_panel_server, 
-                name=data["name"], panel_type=data["panel_type"], api_url=data["url"],
-                api_username=data["username"], api_password=data["password"],
-            ))
-            server = (await asyncio.to_thread(db.get_panel_server, server_id))
-            try:
-                provider = get_provider(server)
-                inbounds = await provider.list_inbounds()
-            except PanelError as e:
-                (await asyncio.to_thread(db.delete_panel_server, server_id))
-                await state.clear()
-                await message.answer(tr(f"⛔️ {e}\nسرور ذخیره نشد؛ دوباره از ابتدا تلاش کن."))
-                return
-            if not inbounds:
-                (await asyncio.to_thread(db.delete_panel_server, server_id))
-                await state.clear()
-                await message.answer(db.get_text('handlers_admin.auto_9bd7ece4', '⛔️ این پنل هیچ inbound ای ندارد. اول از داخل پنل یک inbound بساز.'))
-                return
-            await state.update_data(server_id=server_id, inbounds=inbounds, selected_inbound_ids=[])
-            await state.set_state(AdminAddPanelServer.waiting_inbound_select)
+        if connect_needs_template(data["panel_type"]):
+            # Rebecca / IBSng: API فهرست زنده‌ی سرویس/گروه ندارند؛ فقط برای همین دو پنل
+            # «کاربر نمونه» هنوز لازم است تا محصول بتواند مقصد را از روی آن انتخاب کند.
+            await state.set_state(AdminAddPanelServer.waiting_template_user)
             await message.answer(
-                db.get_text('handlers_admin.auto_4d77a9ff', 'کدام inbound(ها) برای ساخت کاربرهای جدید استفاده شود؟ (می\u200cتوانی چند مورد را تیک بزنی)'),
-                reply_markup=kb.inbound_select_kb(inbounds, []),
+                (TEMPLATE_PROMPTS.get(data["panel_type"]) or "یک نام کاربری که از قبل روی این پنل وجود دارد بفرست.")
+                + "\n\n"
+                + tr("ℹ️ این پنل لیست زنده‌ی گروه/سرویس ندارد؛ برای همین فقط در همین یک مورد یک نمونه لازم است. گروه/سرویس نهایی هر محصول بعداً موقع ساخت محصول انتخاب می‌شود.")
             )
             return
 
+        # بقیه‌ی پنل‌ها: هیچ اینباند/گروه/کاربر نمونه‌ای در اتصال پرسیده نمی‌شود.
+        # فقط اتصال تست می‌شود؛ مقصد (گروه یا اینباند) موقع ساخت محصول انتخاب می‌شود.
+        await message.answer(tr("⏳ در حال تست اتصال به پنل..."))
+        server_id = (await asyncio.to_thread(db.add_panel_server,
+            name=data["name"], panel_type=data["panel_type"], api_url=data["url"],
+            api_username=data["username"], api_password=data["password"],
+        ))
+        server = (await asyncio.to_thread(db.get_panel_server, server_id))
+        ok, err = await get_provider(server).check_connection()
+        if not ok:
+            (await asyncio.to_thread(db.delete_panel_server, server_id))
+            await state.clear()
+            await message.answer(tr(f"⛔️ اتصال به پنل ناموفق بود: {err}\nسرور ذخیره نشد؛ آدرس و اطلاعات ورود را بررسی کن و دوباره از ابتدا تلاش کن."))
+            return
+        await state.update_data(server_id=server_id)
+
         if data["panel_type"] in SUB_BASE_URL_PANEL_TYPES:
-            # مثل Hiddify: inbound لازم نیست، فقط یک آدرس Subscription جدا از آدرس ادمین
-            server_id = (await asyncio.to_thread(db.add_panel_server, 
-                name=data["name"], panel_type=data["panel_type"], api_url=data["url"],
-                api_username=data["username"], api_password=data["password"],
-            ))
-            await state.update_data(server_id=server_id)
+            # فقط یک آدرس Subscription جدا از آدرس ادمین (inbound اینجا انتخاب نمی‌شود)
             await state.set_state(AdminAddPanelServer.waiting_sub_base_url)
             await message.answer(
                 db.get_text('handlers_admin.auto_6381e83b', 'آدرس عمومی Subscription پنل را بفرست (چون معمولاً با آدرس API ادمین فرق دارد؛ همان دامنه/مسیری که پنل برای لینک اشتراک کاربر نشان می\u200cدهد - بدون / انتهایی):')
             )
             return
 
-        # پنل‌های خانواده‌ی PasarGuard/Marzban/Marzneshin: قالب از کاربر نمونه
-        await state.set_state(AdminAddPanelServer.waiting_template_user)
+        await _finish_panel_server_connect(message, state, data, server_id)
+
+    PANEL_CONNECT_LATER_NOTE = (
+        "ℹ️ در مراحل اتصال، گروه یا اینباند انتخاب نمی‌شود؛ موقع ساخت هر محصول مشخص می‌کنی "
+        "که آن محصول روی کدام گروه/اینباندِ همین پنل ساخته شود (لیست از خود پنل خوانده می‌شود)."
+    )
+
+    async def _finish_panel_server_connect(message: Message, state: FSMContext, data: dict, server_id: int):
+        await state.clear()
+        label = PANEL_TYPE_LABELS.get(data["panel_type"], data["panel_type"])
+        (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "panel_server_add", f"سرور «{data['name']}» ({label}, #{server_id})"))
         await message.answer(
-            TEMPLATE_PROMPTS.get(data["panel_type"])
-            or "یک نام کاربری که از قبل روی این پنل وجود دارد بفرست.\n"
-            "تنظیمات پروتکل/گروه (یا سرویس) همین کاربر به‌عنوان قالب پیش‌فرض برای همه‌ی "
-            "کانفیگ‌های شخصی جدید استفاده می‌شود."
+            f"{tr('✅ سرور')} «{data['name']}» ({label}) {tr('با موفقیت متصل و اضافه شد.')}\n\n{tr(PANEL_CONNECT_LATER_NOTE)}",
+            reply_markup=kb.panel_servers_list_kb(db),
         )
-
-    @router.callback_query(F.data.startswith("adm_xui_inbound_toggle:"), AdminAddPanelServer.waiting_inbound_select)
-    async def cb_panel_server_inbound_toggle(call: CallbackQuery, state: FSMContext):
-        inbound_id = int(call.data.split(":")[1])
-        data = await state.get_data()
-        selected = list(data.get("selected_inbound_ids") or [])
-        if inbound_id in selected:
-            selected.remove(inbound_id)
-        else:
-            selected.append(inbound_id)
-        await state.update_data(selected_inbound_ids=selected)
-        await call.answer()
-        try:
-            await call.message.edit_reply_markup(reply_markup=kb.inbound_select_kb(data.get("inbounds") or [], selected))
-        except TelegramBadRequest:
-            pass
-
-    @router.callback_query(F.data == "adm_xui_inbound_confirm", AdminAddPanelServer.waiting_inbound_select)
-    async def cb_panel_server_inbound_confirm(call: CallbackQuery, state: FSMContext):
-        data = await state.get_data()
-        selected = data.get("selected_inbound_ids") or []
-        if not selected:
-            await call.answer(db.get_text('handlers_admin.auto_8b267fe4', 'حداقل یک inbound را تیک بزن.'), show_alert=True)
-            return
-        if data.get("panel_type") in SINGLE_INBOUND_PANEL_TYPES and len(selected) > 1:
-            await call.answer(db.get_text('handlers_admin.auto_d262862a', 'برای این نوع پنل فقط یک inbound قابل انتخاب است.'), show_alert=True)
-            return
-        await state.update_data(inbound_ids=selected)
-        await state.set_state(AdminAddPanelServer.waiting_sub_base_url)
-        await call.answer()
-        await call.message.answer(
-            db.get_text('handlers_admin.auto_1e091184', 'آدرس پایه\u200cی Subscription پنل را بفرست (همان چیزی که پنل موقع ساخت کاربر دستی نشانت می\u200cدهد، مثلاً https://domain:2096/sub یا https://domain/sub - بدون / انتهایی):')
-        )
+        import dedicated_sub as _ds
+        _warn = await asyncio.to_thread(_ds.wui_dsub_warning, db, data["panel_type"])
+        if _warn:
+            await message.answer(_warn)
 
     @router.message(AdminAddPanelServer.waiting_sub_base_url)
     async def process_xui_sub_base_url(message: Message, state: FSMContext):
@@ -8280,18 +8320,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await message.answer(db.get_text('handlers_admin.auto_df2458e0', 'آدرس باید با http:// یا https:// شروع شود.'))
             return
         data = await state.get_data()
-        if "inbound_ids" in data:
-            import json as _json
-            (await asyncio.to_thread(db.update_panel_server, data["server_id"], xui_inbound_ids=_json.dumps(data["inbound_ids"]), xui_sub_base_url=url))
-        else:
-            (await asyncio.to_thread(db.update_panel_server, data["server_id"], xui_sub_base_url=url))
-        await state.clear()
-        label = PANEL_TYPE_LABELS.get(data["panel_type"], data["panel_type"])
-        (await asyncio.to_thread(db.log_admin_action, message.from_user.id, "panel_server_add", f"سرور «{data['name']}» ({label}, #{data['server_id']})"))
-        await message.answer(
-            f"{tr('✅ سرور')} «{data['name']}» ({label}) {tr('با موفقیت اضافه شد.')}",
-            reply_markup=kb.panel_servers_list_kb(db),
-        )
+        (await asyncio.to_thread(db.update_panel_server, data["server_id"], xui_sub_base_url=url))
+        await _finish_panel_server_connect(message, state, data, data["server_id"])
 
     @router.message(AdminAddPanelServer.waiting_template_user)
     async def process_panel_server_template_user(message: Message, state: FSMContext):
@@ -9033,6 +9063,11 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not field:
             await call.answer(db.get_text('handlers_admin.auto_87a93951', 'نوع نامعتبر.'), show_alert=True)
             return
+        if kind == "custom" and not server[field]:
+            from panel_providers import server_has_default_target, CUSTOM_CONFIG_NEEDS_TARGET_MSG
+            if not server_has_default_target(server):
+                await call.answer(tr(CUSTOM_CONFIG_NEEDS_TARGET_MSG), show_alert=True)
+                return
         (await asyncio.to_thread(db.update_panel_server, server_id, **{field: 0 if server[field] else 1}))
         server = (await asyncio.to_thread(db.get_panel_server, server_id))
         (await asyncio.to_thread(db.log_admin_action, 
@@ -11732,6 +11767,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         return (
             f"💳 شماره: {card['card_number']}\n"
             f"👤 به نام: {card['holder_name'] or '-'}\n"
+            f"🏦 بانک: {card['bank_name'] or '-'}\n"
             f"🎯 وزن: {card['weight']} → درصد نمایش فعلی: {share}\n"
             f"وضعیت: {'🟢 فعال' if card['is_active'] else '🔴 غیرفعال'}"
         )
@@ -11766,8 +11802,32 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     @router.message(AdminPayCard.waiting_holder)
     async def process_pcard_holder(message: Message, state: FSMContext):
         await state.update_data(pcard_holder=(message.text or "").strip())
+        await state.set_state(AdminPayCard.waiting_bank)
+        await message.answer("🏦 نام بانک را ارسال کنید (مثلاً ملت)؛ برای بدون نام بانک «-» بفرستید:")
+
+    @router.message(AdminPayCard.waiting_bank)
+    async def process_pcard_bank(message: Message, state: FSMContext):
+        value = (message.text or "").strip()
+        await state.update_data(pcard_bank="" if value == "-" else value)
         await state.set_state(AdminPayCard.waiting_weight)
         await message.answer("درصد نمایش این کارت را بفرستید (عدد، مثلاً 70). درصدها خودکار نسبت‌گیری می‌شوند:")
+
+    @router.callback_query(F.data.startswith("adm_pcard_bank:"))
+    async def cb_pcard_bank(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id): return await deny_support(call)
+        card_id = callback_id(call.data, "adm_pcard_bank")
+        if not card_id or not await asyncio.to_thread(db.get_payment_card, card_id):
+            return await call.answer("کارت پیدا نشد.", show_alert=True)
+        await state.update_data(pcard_edit_id=card_id); await state.set_state(AdminPayCard.waiting_edit_bank)
+        await safe_edit(call, "🏦 نام بانک را ارسال کنید؛ برای حذف «-» بفرستید.", kb.admin_back_kb(f"adm_pcard:{card_id}")); await call.answer()
+
+    @router.message(AdminPayCard.waiting_edit_bank)
+    async def process_pcard_edit_bank(message: Message, state: FSMContext):
+        card_id = (await state.get_data()).get("pcard_edit_id")
+        value = (message.text or "").strip()
+        await asyncio.to_thread(db.update_payment_card, card_id, bank_name="" if value == "-" else value)
+        await state.clear(); card = await asyncio.to_thread(db.get_payment_card, card_id)
+        await message.answer("✅ نام بانک ذخیره شد.", reply_markup=kb.payment_card_detail_kb(card))
 
     def _parse_weight(text: str):
         import card_to_card_payment
@@ -11782,7 +11842,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if w is None:
             return await message.answer("⚠️ یک عدد بین 0 تا 1000 بفرستید:")
         data = await state.get_data()
-        card_id = await asyncio.to_thread(db.create_payment_card, data["pcard_number"], data.get("pcard_holder", ""), "", w)
+        card_id = await asyncio.to_thread(db.create_payment_card, data["pcard_number"], data.get("pcard_holder", ""), data.get("pcard_bank", ""), w)
         await asyncio.to_thread(db.log_admin_action, message.from_user.id, "payment_card_add", f"کارت #{card_id} با وزن {w} اضافه شد (بات).")
         await state.update_data(pcard_edit_id=card_id)
         await state.set_state(AdminPayCard.waiting_photo)
@@ -12048,15 +12108,76 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
 
     @router.message(AdminSetCard.waiting_holder)
     async def process_set_card_holder(message: Message, state: FSMContext):
+        await state.update_data(card_holder=(message.text or "").strip())
+        await state.set_state(AdminSetCard.waiting_bank)
+        await message.answer("🏦 نام بانک را ارسال کنید (مثلاً ملت)؛ برای بدون نام بانک «-» بفرستید:")
+
+    @router.message(AdminSetCard.waiting_bank)
+    async def process_set_card_bank(message: Message, state: FSMContext):
+        value = (message.text or "").strip()
+        await state.update_data(card_bank="" if value == "-" else value)
+        await state.set_state(AdminSetCard.waiting_photo)
+        await message.answer("🖼 عکس کارت را ارسال کنید؛ برای بدون عکس «-» بفرستید:")
+
+    async def _finish_set_card(message: Message, state: FSMContext, photo_file_id):
         data = await state.get_data()
-        (await asyncio.to_thread(db.set_setting, "card_number", data["card_number"]))
-        (await asyncio.to_thread(db.set_setting, "card_holder", message.text.strip()))
+        await asyncio.to_thread(db.set_setting, "card_number", data["card_number"])
+        await asyncio.to_thread(db.set_setting, "card_holder", data.get("card_holder", ""))
+        await asyncio.to_thread(db.set_setting, "card_bank_name", data.get("card_bank", ""))
+        await asyncio.to_thread(db.set_setting, "card_photo_file_id", photo_file_id or "")
         await state.clear()
-        (await asyncio.to_thread(db.log_admin_action, 
-            message.from_user.id, "card_change",
-            f"شماره کارت جدید: {data['card_number']} | به نام: {message.text.strip()}",
-        ))
+        await asyncio.to_thread(
+            db.log_admin_action, message.from_user.id, "card_change",
+            f"شماره کارت جدید: {data['card_number']} | به نام: {data.get('card_holder', '')} | بانک: {data.get('card_bank', '') or '-'}",
+        )
         await message.answer(db.get_text('handlers_admin.auto_9ebc4c96', '✅ اطلاعات کارت به\u200cروزرسانی شد.'), reply_markup=kb.card_settings_kb(db))
+
+    @router.message(AdminSetCard.waiting_photo, F.photo)
+    async def process_set_card_photo(message: Message, state: FSMContext):
+        await _finish_set_card(message, state, message.photo[-1].file_id)
+
+    @router.message(AdminSetCard.waiting_photo, F.text)
+    async def process_set_card_photo_skip(message: Message, state: FSMContext):
+        if (message.text or "").strip() != "-":
+            return await message.answer("عکس ارسال کنید یا برای رد شدن فقط - بفرستید.")
+        await _finish_set_card(message, state, None)
+
+    @router.callback_query(F.data == "adm_set_card_bank")
+    async def cb_admin_set_card_bank(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await state.set_state(AdminSetCard.waiting_edit_bank)
+        await safe_edit(call, "🏦 نام بانک را ارسال کنید؛ برای حذف «-» بفرستید:", reply_markup=kb.admin_back_kb("adm_set_card"))
+        await call.answer()
+
+    @router.message(AdminSetCard.waiting_edit_bank)
+    async def process_set_card_edit_bank(message: Message, state: FSMContext):
+        value = (message.text or "").strip()
+        await asyncio.to_thread(db.set_setting, "card_bank_name", "" if value == "-" else value)
+        await state.clear()
+        await message.answer("✅ نام بانک ذخیره شد.", reply_markup=kb.card_settings_kb(db))
+
+    @router.callback_query(F.data == "adm_set_card_photo")
+    async def cb_admin_set_card_photo(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        await state.set_state(AdminSetCard.waiting_edit_photo)
+        await safe_edit(call, "🖼 عکس جدید کارت را ارسال کنید؛ برای حذف عکس «-» بفرستید.", reply_markup=kb.admin_back_kb("adm_set_card"))
+        await call.answer()
+
+    @router.message(AdminSetCard.waiting_edit_photo, F.photo)
+    async def process_set_card_edit_photo(message: Message, state: FSMContext):
+        await asyncio.to_thread(db.set_setting, "card_photo_file_id", message.photo[-1].file_id)
+        await state.clear()
+        await message.answer("✅ عکس کارت ذخیره شد.", reply_markup=kb.card_settings_kb(db))
+
+    @router.message(AdminSetCard.waiting_edit_photo, F.text)
+    async def process_set_card_edit_photo_remove(message: Message, state: FSMContext):
+        if (message.text or "").strip() != "-":
+            return await message.answer("عکس بفرستید یا برای حذف - ارسال کنید.")
+        await asyncio.to_thread(db.set_setting, "card_photo_file_id", "")
+        await state.clear()
+        await message.answer("✅ عکس حذف شد.", reply_markup=kb.card_settings_kb(db))
 
     # -------------------------------------------------------------------
     # حذف خودکار پیام‌های حاوی شماره کارت

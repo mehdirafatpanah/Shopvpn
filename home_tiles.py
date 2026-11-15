@@ -17,6 +17,29 @@ BOT_KEY_TO_TILES = {
 }
 DEFAULT_TILES = ["store", "services", "wallet", "profile", "test", "support", "reseller"]
 
+# برچسب کاشی‌های ثابت صفحه‌ی خانه‌ی مینی‌اپ؛ منبع واحد برای مینی‌اپ و پنل وب ادمین
+# (تا فهرست آیکون‌ها در دو جا از هم جدا نشود).
+HOME_TILE_LABELS = {
+    "store": "خرید سرویس جدید",
+    "services": "سرویس‌های من",
+    "wallet": "کیف پول",
+    "profile": "حساب کاربری",
+    "test": "دریافت اشتراک تست رایگان",
+    "support": "پشتیبانی",
+    "reseller": "مرکز نمایندگی",
+}
+MAX_HOME_ICON_BYTES = 256 * 1024
+
+# تم‌های قابل انتخاب مینی‌اپ (هر تننت/نماینده جدا انتخاب می‌کند).
+MINIAPP_THEMES = {
+    "clean-light": "🌿 مینیمال روشن (پیش‌فرض)",
+    "synthwave": "🌅 سینت‌ویو",
+    "neon-mint": "🟢 نئون مینت",
+    "royal-violet": "👑 بنفش سلطنتی",
+    "blood-moon": "🔴 ماه خونین",
+    "aurora-ice": "🧊 یخ شمالی",
+}
+
 
 def tile_order(menu_order: list, custom_button_ids: list, customized: bool) -> list:
     """لیست کلید کاشی‌ها (store, services, ..., cm:ID). customized=False یعنی ترتیب پیش‌فرض."""

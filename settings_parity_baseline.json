@@ -2,6 +2,10 @@
  "web_only": [
   "abangateway_webhook_secret",
   "btn_custom_config",
+  "card_gate_min_days",
+  "card_gate_min_purchases",
+  "card_photo_file_id",
+  "card_sticky_minutes",
   "dsub_custom_template",
   "dsub_custom_template_enabled",
   "firebase_api_key",
@@ -15,9 +19,23 @@
   "tickets_default_sort",
   "web_3d_auto_lite",
   "web_3d_mobile",
-  "web_3d_mode"
+  "web_3d_mode",
+  "web_store_channel_url",
+  "web_store_default_sort",
+  "web_store_email",
+  "web_store_faq_custom",
+  "web_store_favicon",
+  "web_store_footer_text",
+  "web_store_hide_soldout",
+  "web_store_instagram_url",
+  "web_store_maintenance",
+  "web_store_maintenance_text",
+  "web_store_notice_enabled",
+  "web_store_notice_link",
+  "web_store_notice_style",
+  "web_store_notice_text",
+  "web_store_og_image",
+  "web_store_terms_custom"
  ],
- "mini_only": [
-  "header_image_data"
- ]
+ "mini_only": []
 }

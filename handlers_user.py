@@ -53,6 +53,7 @@ from service_refund import (
     quote_service_refund, refund_quote_text, wallet_refund_amount, grant_service_refund_credit, refund_result_text,
 )
 from config import RESELLER_DBS_DIR, resolve_db_path, DB_PATH, ADMIN_PANEL_URL
+import web_entry_gate
 from database import Database, DuplicateBotTokenError
 from config_delivery import deliver_config_to_user, send_individual_configs, build_qr_bytes
 import dedicated_sub
@@ -7977,7 +7978,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             if method == "card":
                 _card = await asyncio.to_thread(db.get_manual_card_for_user, call.from_user.id)
                 card_number, card_holder = _card["card_number"], _card["card_holder"]
-                text = f"💳 مبلغ {amount:,} تومان را واریز کنید و سپس عکس/فایل رسید را همین‌جا ارسال کنید:\n\n💳 شماره کارت: `{card_number}`\n👤 به نام: {escape_md(card_holder)}"
+                _bank_line = f"\n🏦 بانک: {escape_md(_card['bank_name'])}" if _card.get("bank_name") else ""
+                text = f"💳 مبلغ {amount:,} تومان را واریز کنید و سپس عکس/فایل رسید را همین‌جا ارسال کنید:\n\n💳 شماره کارت: `{card_number}`\n👤 به نام: {escape_md(card_holder)}{_bank_line}"
                 await call.message.answer(text, parse_mode="Markdown")
             elif method == "card_auto":
                 inv = card_to_card_payment.create_invoice(db, "reseller_request", req["id"], call.from_user.id, amount)
@@ -8468,7 +8470,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         web_panel_note = ""
         if req["wants_web_panel"]:
             panel_url = (await asyncio.to_thread(db.get_setting, "admin_panel_url", "")) or ADMIN_PANEL_URL or ""
-            panel_url = panel_url.rstrip("/")
+            panel_url = web_entry_gate.with_entry_path(panel_url.rstrip("/"))
             if panel_url:
                 b_value = reseller_bot_id
                 reseller_bot_row = await asyncio.to_thread(db.get_reseller_bot, reseller_bot_id)
@@ -8594,18 +8596,22 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await call.answer(db.get_text('handlers_user.support_method_disabled', 'این روش ارتباطی در حال حاضر غیرفعال است.'), show_alert=True)
             return
         await state.set_state(ContactFlow.waiting_message)
-        await state.update_data(chat_ref_kind=None, chat_ref_id=None, chat_ref_label=None)
+        await state.update_data(chat_ref_kind=None, chat_ref_id=None, chat_ref_label=None, chat_priority=None)
         prompt = (await asyncio.to_thread(db.get_setting, "contact_text")) or ""
         chat_state = await asyncio.to_thread(db.get_support_conversation_state, call.from_user.id)
         if chat_state["status"] == "closed":
             prompt = "🔒 گفتگوی قبلی شما بسته شده است؛ با ارسال پیام جدید، دوباره باز می‌شود.\n\n" + prompt
+        # اگر کاربر قبلاً اولویتی انتخاب کرده یا ادمین تغییر داده، همان نشان داده می‌شود؛ پیش‌فرض: متوسط.
+        shown_priority = chat_state["priority"]
+        prompt += "\n\n🚦 اولویت گفتگو را می‌توانید با دکمه‌ها تعیین کنید (پیش‌فرض: متوسط)."
         services = await asyncio.to_thread(db.list_user_support_services, call.from_user.id, 8)
         if services:
             # انتخاب سرویس اختیاری است؛ کاربر می‌تواند مستقیم پیامش را بنویسد.
-            prompt += "\n\n📦 اگر سؤالتان درباره‌ی یکی از سرویس‌های شماست، آن را انتخاب کنید (اختیاری):"
-            markup = kb.ticket_services_kb(services, prefix="contact_svc", cancel_callback="cancel_flow")
+            prompt += "\n📦 اگر سؤالتان درباره‌ی یکی از سرویس‌های شماست، آن را انتخاب کنید (اختیاری):"
+            markup = kb.ticket_services_kb(services, prefix="contact_svc", cancel_callback="cancel_flow",
+                                           priority_prefix="contact_prio", priority_selected=shown_priority)
         else:
-            markup = kb.cancel_kb()
+            markup = kb.ticket_priority_kb("contact_prio", shown_priority, "cancel_flow")
         await _safe_edit(call.message, prompt, reply_markup=markup)
         await call.answer()
 
@@ -8622,12 +8628,37 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await call.answer(db.get_text('handlers_user.ticket_service_invalid', '❌ این سرویس معتبر نیست.'), show_alert=True)
             return
         await state.update_data(chat_ref_kind=kind, chat_ref_id=ref_id, chat_ref_label=label)
+        data = await state.get_data()
+        cur_state = await asyncio.to_thread(db.get_support_conversation_state, call.from_user.id)
         await _safe_edit(
             call.message,
-            f"📦 سرویس انتخاب‌شده: {label}\n\nحالا پیام خود را برای پشتیبانی ارسال کنید:",
-            reply_markup=kb.cancel_kb(),
+            f"📦 سرویس انتخاب‌شده: {label}\n\nاولویت را در صورت نیاز تغییر دهید و پیام خود را برای پشتیبانی ارسال کنید:",
+            reply_markup=kb.ticket_priority_kb("contact_prio", data.get("chat_priority") or cur_state["priority"], "cancel_flow"),
         )
         await call.answer()
+
+    @router.callback_query(ContactFlow.waiting_message, F.data.startswith("contact_prio:"))
+    async def cb_contact_priority(call: CallbackQuery, state: FSMContext):
+        key = call.data.split(":", 1)[1]
+        if key not in kb.TICKET_PRIORITY_LABELS:
+            await call.answer(db.get_text('handlers_user.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
+            return
+        await state.update_data(chat_priority=key)
+        data = await state.get_data()
+        if data.get("chat_ref_kind"):
+            markup = kb.ticket_priority_kb("contact_prio", key, "cancel_flow")
+        else:
+            services = await asyncio.to_thread(db.list_user_support_services, call.from_user.id, 8)
+            markup = (
+                kb.ticket_services_kb(services, prefix="contact_svc", cancel_callback="cancel_flow",
+                                      priority_prefix="contact_prio", priority_selected=key)
+                if services else kb.ticket_priority_kb("contact_prio", key, "cancel_flow")
+            )
+        try:
+            await call.message.edit_reply_markup(reply_markup=markup)
+        except Exception:
+            pass  # «message is not modified» وقتی همان گزینه دوباره زده شود
+        await call.answer(f"🚦 اولویت: {kb.TICKET_PRIORITY_LABELS[key]}")
 
     @router.message(ContactFlow.waiting_message)
     async def contact_receive(message: Message, state: FSMContext, bot: Bot):
@@ -8639,6 +8670,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if message.text:
             (await asyncio.to_thread(db.add_support_message, user.id, "user", message.text))
             # پیام کاربر چت بسته را خودکار باز می‌کند؛ اشاره‌ی سرویس هم ثبت یا (برای چت تازه‌بازشده) پاک می‌شود.
+            if chat_data.get("chat_priority") in kb.TICKET_PRIORITY_LABELS:
+                await asyncio.to_thread(db.set_support_priority, user.id, chat_data["chat_priority"])
             if chat_data.get("chat_ref_kind"):
                 await asyncio.to_thread(
                     db.set_support_reference, user.id,
@@ -8647,19 +8680,22 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             elif was_closed:
                 await asyncio.to_thread(db.set_support_reference, user.id, None, None, None)
         current_ref = ref_label or ("" if was_closed else prev_state["ref_label"])
-        priority_label = kb.TICKET_PRIORITY_LABELS.get(prev_state["priority"], "")
+        cur_priority = chat_data.get("chat_priority") if chat_data.get("chat_priority") in kb.TICKET_PRIORITY_LABELS else prev_state["priority"]
+        priority_label = kb.TICKET_PRIORITY_LABELS.get(cur_priority, "")
         text = (
             f"📩 پیام جدید از کاربر\n"
             f"👤 {user.first_name or ''} (@{user.username or '---'})\n"
             f"🆔 {user.id}\n"
             + ("🔓 این گفتگو قبلاً بسته شده بود و دوباره باز شد.\n" if was_closed else "")
             + (f"📦 سرویس: {current_ref}\n" if current_ref else "")
-            + (f"🚦 اولویت: {priority_label}\n" if prev_state["priority"] == "high" else "")
+            + (f"🚦 اولویت: {priority_label}\n" if cur_priority != "medium" else "")
             + f"\n✉️ {message.text or '(بدون متن / رسانه)'}"
         )
         event_rows = [("کاربر", report_router.user_link(user.id, user.first_name or "", user.username or ""))]
         if current_ref:
             event_rows.append(("سرویس", current_ref))
+        if cur_priority != "medium":
+            event_rows.append(("اولویت", priority_label))
         event_rows.append(("متن", (message.text or "(بدون متن / رسانه)")[:300]))
         await report_router.notify(bot, db, "support", report_router.format_event(
             "پیام جدید از کاربر (چت مستقیم)", event_rows, icon="📩"))
@@ -9518,8 +9554,13 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 reply_markup=kb.ticket_services_kb(services),
             )
         else:
-            await state.set_state(TicketFlow.waiting_subject)
-            await _safe_edit(call.message, f"🧩 بخش انتخاب‌شده: {department['name']}\n\nموضوع تیکت را ارسال کنید:", reply_markup=kb.cancel_kb())
+            await state.update_data(ticket_priority="medium")
+            await state.set_state(TicketFlow.waiting_priority)
+            await _safe_edit(
+                call.message,
+                f"🧩 بخش انتخاب‌شده: {department['name']}\n\n🚦 اولویت تیکت را انتخاب کنید:",
+                reply_markup=kb.ticket_priority_kb("ticket_prio", "medium", "ticket_cancel"),
+            )
         await call.answer()
 
     @router.callback_query(TicketFlow.waiting_service, F.data.startswith("ticket_svc:"))
@@ -9537,10 +9578,30 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 return
             await state.update_data(ticket_ref_kind=kind, ticket_ref_id=ref_id, ticket_ref_label=label)
             ref_line = f"\n📦 سرویس: {label}"
-        await state.set_state(TicketFlow.waiting_subject)
+        await state.update_data(ticket_priority="medium")
+        await state.set_state(TicketFlow.waiting_priority)
         await _safe_edit(
             call.message,
-            f"🧩 بخش انتخاب‌شده: {dep_name}{ref_line}\n\nموضوع تیکت را ارسال کنید:",
+            f"🧩 بخش انتخاب‌شده: {dep_name}{ref_line}\n\n🚦 اولویت تیکت را انتخاب کنید:",
+            reply_markup=kb.ticket_priority_kb("ticket_prio", "medium", "ticket_cancel"),
+        )
+        await call.answer()
+
+    @router.callback_query(TicketFlow.waiting_priority, F.data.startswith("ticket_prio:"))
+    async def cb_ticket_priority(call: CallbackQuery, state: FSMContext):
+        key = call.data.split(":", 1)[1]
+        if key not in kb.TICKET_PRIORITY_LABELS:
+            await call.answer(db.get_text('handlers_user.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
+            return
+        data = await state.get_data()
+        await state.update_data(ticket_priority=key)
+        await state.set_state(TicketFlow.waiting_subject)
+        ref_label = data.get("ticket_ref_label")
+        await _safe_edit(
+            call.message,
+            f"🧩 بخش انتخاب‌شده: {data.get('ticket_department_name') or ''}"
+            + (f"\n📦 سرویس: {ref_label}" if ref_label else "")
+            + f"\n🚦 اولویت: {kb.TICKET_PRIORITY_LABELS[key]}\n\nموضوع تیکت را ارسال کنید:",
             reply_markup=kb.cancel_kb(),
         )
         await call.answer()
@@ -9566,9 +9627,11 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         department = await asyncio.to_thread(db.get_ticket_department, department_id) if department_id else None
         user = message.from_user
         ref_kind, ref_id, ref_label = data.get("ticket_ref_kind"), data.get("ticket_ref_id"), data.get("ticket_ref_label")
+        priority = data.get("ticket_priority") if data.get("ticket_priority") in kb.TICKET_PRIORITY_LABELS else "medium"
+        priority_label = kb.TICKET_PRIORITY_LABELS[priority]
         ticket_id = (await asyncio.to_thread(
             db.create_ticket, user.id, subject, message.text, department_id,
-            ref_kind=ref_kind, ref_id=ref_id, ref_label=ref_label,
+            ref_kind=ref_kind, ref_id=ref_id, ref_label=ref_label, priority=priority,
         ))
         text = (
             f"🎫 تیکت جدید #{ticket_id}\n"
@@ -9576,6 +9639,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             f"🆔 {user.id}\n"
             f"📌 موضوع: {subject}\n"
             f"🧩 بخش: {(department['name'] if department else 'عمومی')}\n"
+            f"🚦 اولویت: {priority_label}\n"
             + (f"📦 سرویس: {ref_label}\n" if ref_label else "")
             + f"\n✉️ {message.text}"
         )
@@ -9583,6 +9647,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             ("شماره", report_router.code(f"#{ticket_id}")),
             ("کاربر", report_router.user_link(user.id, user.first_name or "", user.username or "")),
             ("بخش", department["name"] if department else "عمومی"),
+            ("اولویت", priority_label),
         ]
         if ref_label:
             event_rows.append(("سرویس", ref_label))
@@ -9630,6 +9695,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             f"🎫 تیکت #{ticket['id']} — {kb.TICKET_STATUS_LABELS.get(ticket['status'], ticket['status'])}",
             f"📌 موضوع: {ticket['subject']}",
         ]
+        t_prio = (ticket["priority"] if "priority" in ticket.keys() else None) or "medium"
+        lines.append(f"🚦 اولویت: {kb.TICKET_PRIORITY_LABELS.get(t_prio, '')}")
         if ticket["ref_label"]:
             lines.append(f"📦 سرویس: {ticket['ref_label']}")
         lines.append("")

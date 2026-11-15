@@ -155,6 +155,15 @@ async def build_plan(db, source_id: int, dest_id: int, check_connections: bool =
         plan["error"] = "پنل مقصد غیرفعال است؛ اول فعالش کن."
         return plan
 
+    from panel_providers import server_has_default_target
+    if not server_has_default_target(dst):
+        plan["error"] = (
+            "پنل مقصد هنوز «مقصد پیش‌فرض» (قالب/گروه یا Inbound) ندارد؛ چون در اتصال پنل دیگر گروه/اینباند "
+            "پرسیده نمی‌شود، برای مهاجرت اول از مدیریت همان سرور «کاربر نمونه/قالب پیش‌فرض» "
+            "(یا «Inbound پیش‌فرض» برای 3X-UI/Alireza) را یک‌بار تنظیم کن."
+        )
+        return plan
+
     primaries = await asyncio.to_thread(db.pm_list_primary, int(source_id))
     links = await asyncio.to_thread(db.pm_list_links, int(source_id))
     users, pooled, expired, total_gb = set(), 0, 0, 0.0
