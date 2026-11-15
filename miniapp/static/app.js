@@ -563,7 +563,7 @@ function appendAIChatMessage(m) {
   box.scrollTop = box.scrollHeight;
 }
 
-let chatMetaState = { status: "open", ref_kind: null, ref_id: null, ref_label: "" };
+let chatMetaState = { status: "open", ref_kind: null, ref_id: null, ref_label: "", priority: "medium" };
 let chatMetaServices = [];
 
 function renderChatMeta() {
@@ -577,8 +577,13 @@ function renderChatMeta() {
       <option value="">📦 سرویس مرتبط با سؤال (اختیاری)</option>
       ${chatMetaServices.map((sv) => `<option value="${sv.kind}:${sv.id}" ${current === `${sv.kind}:${sv.id}` ? "selected" : ""}>${escHtml(sv.label)}</option>`).join("")}
     </select>` : ""}
+    <select class="input" id="chat-priority" style="margin-bottom:8px;direction:rtl;font-family:var(--font-body)" aria-label="اولویت گفتگو">
+      ${["high", "medium", "low"].map((k) => `<option value="${k}" ${(chatMetaState.priority || "medium") === k ? "selected" : ""}>🚦 اولویت: ${SUPPORT_PRIORITY_LABEL[k]}</option>`).join("")}
+    </select>
     ${closed ? "" : `<button class="btn outline small" id="chat-close-btn" style="width:auto;margin-bottom:8px">🔒 بستن گفتگو</button>`}
   `;
+  const prioSel = document.getElementById("chat-priority");
+  if (prioSel) prioSel.onchange = () => { chatMetaState.priority = prioSel.value; };
   const reopen = document.getElementById("chat-reopen-btn");
   if (reopen) reopen.onclick = async () => {
     try { await api("/api/support/reopen", { method: "POST" }); chatMetaState.status = "open"; renderChatMeta(); } catch (e) { notify(e.message); }
@@ -623,6 +628,8 @@ function renderSupportChat() {
     input.value = "";
     appendChatMessage({ sender: "user", message: text, created_at: new Date().toISOString() }, true);
     const payload = { message: text };
+    const prioSel = document.getElementById("chat-priority");
+    if (prioSel && prioSel.value) payload.priority = prioSel.value;
     const svcSel = document.getElementById("chat-service");
     if (svcSel && svcSel.value) {
       const [kind, id] = svcSel.value.split(":");
@@ -677,6 +684,10 @@ function appendChatMessage(m, isOptimistic) {
 // ---------------------------------------------------------------------------
 
 const TICKET_STATUS_LABEL = { open: "🟡 در انتظار پاسخ", answered: "🟢 پاسخ داده‌شده", closed: "⚪️ بسته‌شده" };
+const SUPPORT_PRIORITY_LABEL = { high: "🔴 زیاد", medium: "🟡 متوسط", low: "🟢 کم" };
+function supportPriorityOptions(sel) {
+  return ["high", "medium", "low"].map((k) => `<option value="${k}" ${k === sel ? "selected" : ""}>${SUPPORT_PRIORITY_LABEL[k]}</option>`).join("");
+}
 
 async function renderTicketsSection() {
   const body = document.getElementById("support-section-body");
@@ -697,7 +708,7 @@ async function renderTicketsList(body) {
         <div class="admin-list-row" data-open-ticket="${t.id}" style="cursor:pointer">
           <div class="admin-list-row-main">
             <span>${t.subject}</span>
-            <span class="hint-text" style="margin:0">${TICKET_STATUS_LABEL[t.status] || t.status}</span>
+            <span class="hint-text" style="margin:0">${TICKET_STATUS_LABEL[t.status] || t.status} · ${SUPPORT_PRIORITY_LABEL[t.priority] || SUPPORT_PRIORITY_LABEL.medium}</span>
           </div>
         </div>
       `).join("")}
@@ -706,6 +717,9 @@ async function renderTicketsList(body) {
     <div class="card" id="new-ticket-form" style="display:none;margin-top:12px">
       <select class="input" id="new-ticket-dept" style="display:none;margin-bottom:8px;direction:rtl;font-family:var(--font-body)"></select>
       <select class="input" id="new-ticket-service" style="display:none;margin-bottom:8px;direction:rtl;font-family:var(--font-body)"></select>
+      <select class="input" id="new-ticket-priority" style="margin-bottom:8px;direction:rtl;font-family:var(--font-body)" aria-label="اولویت تیکت">
+        ${["high", "medium", "low"].map((k) => `<option value="${k}" ${k === "medium" ? "selected" : ""}>🚦 اولویت: ${SUPPORT_PRIORITY_LABEL[k]}</option>`).join("")}
+      </select>
       <input class="input" id="new-ticket-subject" type="text" placeholder="موضوع تیکت" style="direction:rtl;text-align:right;font-family:var(--font-body);margin-bottom:8px" />
       <textarea class="input" id="new-ticket-message" rows="4" placeholder="توضیح مشکل یا سوال خود را بنویس..." style="direction:rtl;text-align:right;font-family:var(--font-body)"></textarea>
       <button class="btn" id="new-ticket-submit" style="margin-top:8px">ارسال تیکت</button>
@@ -739,7 +753,7 @@ async function renderTicketsList(body) {
     const subject = document.getElementById("new-ticket-subject").value.trim();
     const message = document.getElementById("new-ticket-message").value.trim();
     if (!subject || !message) { notify("موضوع و متن پیام الزامی است."); return; }
-    const payload = { subject, message };
+    const payload = { subject, message, priority: document.getElementById("new-ticket-priority").value || "medium" };
     const deptSel = document.getElementById("new-ticket-dept");
     if (deptSel && deptSel.style.display !== "none" && deptSel.value) payload.department_id = Number(deptSel.value);
     const svcSel = document.getElementById("new-ticket-service");
@@ -768,6 +782,7 @@ async function renderTicketThread(body) {
   body.innerHTML = `
     <button class="btn outline small" id="back-to-tickets" style="width:auto;margin-bottom:12px">→ بازگشت به لیست تیکت‌ها</button>
     <div class="eyebrow" style="margin-top:0">${ticket.subject} <span class="hint-text" style="margin-right:6px">${TICKET_STATUS_LABEL[ticket.status] || ""}</span></div>
+    <div class="hint-text" style="margin-top:0">🚦 اولویت: ${SUPPORT_PRIORITY_LABEL[ticket.priority] || SUPPORT_PRIORITY_LABEL.medium}</div>
     ${ticket.ref_label ? `<div class="hint-text" style="margin-top:0">📦 سرویس: ${escHtml(ticket.ref_label)}</div>` : ""}
     <div class="chat-wrap">
       <div class="chat-messages" id="ticket-messages"></div>
@@ -3219,7 +3234,10 @@ let adminCatalogView = { level: "categories" }; // categories | products | confi
 let adminPanelsView = { level: "servers" }; // servers | pricing
 const PANEL_INBOUND_TYPES = ["3xui", "alireza"];
 const PANEL_SUBURL_ONLY_TYPES = ["hiddify"];
-const PANEL_NO_TEMPLATE_TYPES = [...PANEL_INBOUND_TYPES, ...PANEL_SUBURL_ONLY_TYPES];
+// اینباند/گروه دیگر در مرحله‌ی اتصال انتخاب نمی‌شود (موقع ساخت محصول انتخاب می‌شود).
+// فقط Rebecca و IBSng (بدون لیست زنده‌ی گروه/سرویس) هنوز «کاربر نمونه» لازم دارند.
+const PANEL_TEMPLATE_REQUIRED_TYPES = ["rebecca", "ibsng"];
+const PANEL_NO_TEMPLATE_TYPES = ["pasarguard", "3xui", "marzban", "marzneshin", "hiddify", "alireza", "sui", "wgdashboard", "mikrotik", "wui"];
 const PANEL_TOKEN_ONLY_TYPES = { "3xui": "3xui", rebecca: "rebecca", sui: "sui", wgdashboard: "wgdashboard", wui: "wui" };
 const PANEL_SECRET_LABELS = {
   rebecca: "توکن ادمین (Bearer token)",
@@ -5213,12 +5231,13 @@ async function renderAdminPanelsSection() {
           </div>
           <label class="field-label" id="ps-password-label">رمز عبور ادمین پنل</label>
           <input class="input" id="ps-password" type="password" style="direction:ltr;text-align:left;margin-bottom:10px" />
+          <p class="hint-text" id="ps-later-hint" style="margin-top:0">ℹ️ در اتصال فقط آدرس و اطلاعات ورود پنل را می‌گیریم. انتخاب گروه/اینباند اینجا نیست؛ موقع ساخت هر محصول مشخص می‌کنی آن محصول روی کدام گروه/اینباندِ این پنل ساخته شود (لیست از خود پنل خوانده می‌شود).</p>
           <div id="ps-template-wrap">
             <label class="field-label" id="ps-template-label">نام کاربری نمونه (که از قبل روی پنل موجود است)</label>
-            <p class="hint-text" id="ps-template-hint" style="margin-top:0">تنظیمات پروتکل/گروه همین کاربر به‌عنوان قالب پیش‌فرض برای همه‌ی کانفیگ‌های جدید استفاده می‌شود.</p>
+            <p class="hint-text" id="ps-template-hint" style="margin-top:0">این پنل لیست زنده‌ی گروه/سرویس ندارد؛ برای همین فقط در همین یک مورد یک نمونه لازم است. گروه/سرویس نهایی هر محصول بعداً موقع ساخت محصول انتخاب می‌شود.</p>
             <input class="input" id="ps-template" type="text" style="direction:ltr;text-align:left;margin-bottom:4px" />
           </div>
-          <p class="hint-text" id="ps-xui-hint" style="display:none;margin-top:0">بعد از اتصال، لیست inbound های پنل خوانده می‌شود و در مرحله‌ی بعد یکی را انتخاب می‌کنی.</p>
+          <p class="hint-text" id="ps-xui-hint" style="display:none;margin-top:0">بعد از اتصال فقط آدرس عمومی Subscription را می‌پرسیم. inbound اینجا انتخاب نمی‌شود؛ موقع ساخت محصول انتخاب می‌کنی.</p>
           <p class="hint-text" id="ps-hiddify-hint" style="display:none;margin-top:0">هیدیفای یوزر/پس ندارد: در «نام کاربری» هر چیزی بنویس، و در «رمز عبور» همان Hiddify-API-Key (UUID ادمین) را بگذار. بعد از اتصال، آدرس عمومی Subscription را می‌پرسیم.</p>
           <div class="field-error" id="ps-error"></div>
           <div style="display:flex;gap:8px;margin-top:8px">
@@ -5238,6 +5257,7 @@ async function renderAdminPanelsSection() {
         document.getElementById("ps-username-wrap").style.display = PANEL_TOKEN_ONLY_TYPES[psType.value] ? "none" : "block";
         document.getElementById("ps-password-label").textContent = PANEL_SECRET_LABELS[psType.value] || "رمز عبور ادمین پنل";
         document.getElementById("ps-xui-hint").style.display = PANEL_INBOUND_TYPES.includes(psType.value) ? "block" : "none";
+        document.getElementById("ps-later-hint").style.display = needsTemplate ? "none" : "block";
         document.getElementById("ps-hiddify-hint").style.display = psType.value === "hiddify" ? "block" : "none";
       };
       psType.onchange = syncPsType;
@@ -5267,12 +5287,11 @@ async function renderAdminPanelsSection() {
           document.getElementById("ps-save").disabled = true;
           const res = await api("/api/admin/panel-servers", { method: "POST", body: JSON.stringify(payload) });
           tg.HapticFeedback.notificationOccurred("success");
-          if (PANEL_INBOUND_TYPES.includes(panelType)) {
-            adminPanelsView = { level: "xui-config", serverId: res.id, inbounds: res.inbounds, name: payload.name };
-          } else if (panelType === "hiddify") {
+          if (PANEL_INBOUND_TYPES.includes(panelType) || panelType === "hiddify") {
+            // فقط آدرس Subscription؛ بدون انتخاب inbound
             adminPanelsView = { level: "suburl-config", serverId: res.id, name: payload.name };
           } else {
-            notify("سرور با موفقیت اضافه شد.");
+            notify("سرور با موفقیت متصل شد. گروه/اینباند را موقع ساخت محصول انتخاب کن." + (res.warning ? "\n" + res.warning : ""));
             adminPanelsView = { level: "servers" };
           }
           renderAdminPanelsSection();
@@ -5290,8 +5309,9 @@ async function renderAdminPanelsSection() {
       const preselected = new Set(adminPanelsView.selectedIds || []);
       body.innerHTML = `
         <div class="card">
-          <div class="eyebrow" style="margin-top:0">⚙️ تنظیم Inbound برای «${adminPanelsView.name || ""}»</div>
-          <label class="field-label">کدام inbound(ها) برای ساخت کاربرهای جدید استفاده شود؟ (می‌توانی چند مورد را تیک بزنی)</label>
+          <div class="eyebrow" style="margin-top:0">⚙️ Inbound پیش‌فرض (اختیاری) برای «${adminPanelsView.name || ""}»</div>
+          <p class="hint-text" style="margin-top:0">این تنظیم اختیاری است و فقط برای مهاجرت کاربران/محصولات قدیمی بدون مقصد استفاده می‌شود. مقصد هر محصول جدید موقع ساخت محصول انتخاب می‌شود.</p>
+          <label class="field-label">inbound(های) پیش‌فرض سرور</label>
           <div id="ps-xui-inbound-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
             ${inbounds.map((ib) => `
               <label style="display:flex;align-items:center;gap:8px;background:var(--glass-bg);border:1px solid var(--glass-brd);border-radius:8px;padding:8px 10px;cursor:pointer">
@@ -5319,8 +5339,8 @@ async function renderAdminPanelsSection() {
         errBox.textContent = "";
         const inbound_ids = Array.from(document.querySelectorAll(".ps-xui-inbound-cb:checked")).map((cb) => parseInt(cb.value, 10));
         const sub_base_url = document.getElementById("ps-xui-suburl").value.trim();
-        if (!inbound_ids.length || !sub_base_url) {
-          errBox.textContent = "حداقل یک inbound و آدرس Subscription الزامی هستند."; return;
+        if (!sub_base_url) {
+          errBox.textContent = "آدرس Subscription الزامی است."; return;
         }
         try {
           document.getElementById("ps-xui-save").disabled = true;
@@ -5345,7 +5365,7 @@ async function renderAdminPanelsSection() {
           <div class="eyebrow" style="margin-top:0">⚙️ تنظیم آدرس Subscription برای «${adminPanelsView.name || ""}»</div>
           <label class="field-label">آدرس عمومی Subscription پنل</label>
           <p class="hint-text" style="margin-top:0">چون معمولاً با آدرس API ادمین فرق دارد؛ همان دامنه/مسیری که پنل برای لینک اشتراک کاربر نشان می‌دهد - بدون / انتهایی.</p>
-          <input class="input" id="ps-suburl" type="text" placeholder="https://..." style="direction:ltr;text-align:left;margin-bottom:4px" />
+          <input class="input" id="ps-suburl" type="text" placeholder="https://..." style="direction:ltr;text-align:left;margin-bottom:4px" value="${adminPanelsView.subBaseUrl || ""}" />
           <div class="field-error" id="ps-suburl-error"></div>
           <div style="display:flex;gap:8px;margin-top:8px">
             <button class="btn" id="ps-suburl-save">💾 ذخیره</button>
@@ -5487,10 +5507,12 @@ async function renderAdminPanelsSection() {
               </div>
               <div class="hint-text" style="margin:4px 0 4px;direction:ltr;text-align:left">${s.api_url}</div>
               <div class="hint-text" style="margin:0 0 4px">${PANEL_INBOUND_TYPES.includes(s.panel_type)
-                ? (s.is_configured ? `⚙️ ${s.xui_inbound_ids.length} Inbound تنظیم شده (${s.xui_inbound_ids.map((i) => "#" + i).join("، ")})` : "⚠️ Inbound تنظیم نشده")
+                ? (s.is_configured ? "✅ آدرس Subscription تنظیم شده — گروه/اینباند در محصول انتخاب می‌شود" : "⚠️ آدرس Subscription تنظیم نشده")
                 : s.panel_type === "hiddify"
                 ? (s.is_configured ? "✅ آدرس Subscription تنظیم شده" : "⚠️ آدرس Subscription تنظیم نشده")
-                : (s.has_template ? (PANEL_TEMPLATE_VALUE_LABELS[s.panel_type] ? `🧩 ${PANEL_TEMPLATE_VALUE_LABELS[s.panel_type]}: «${s.template_username}»` : `🧩 قالب از کاربر «${s.template_username}»`) : "⚠️ قالب تنظیم نشده")}</div>
+                : PANEL_TEMPLATE_REQUIRED_TYPES.includes(s.panel_type)
+                ? (s.has_template ? (PANEL_TEMPLATE_VALUE_LABELS[s.panel_type] ? `🧩 ${PANEL_TEMPLATE_VALUE_LABELS[s.panel_type]}: «${s.template_username}»` : `🧩 قالب از کاربر «${s.template_username}»`) : "⚠️ قالب تنظیم نشده")
+                : "✅ متصل — گروه/اینباند در محصول انتخاب می‌شود"}</div>
               <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
                 <span class="tag" style="opacity:${s.used_for_custom_config ? 1 : 0.4}">${s.used_for_custom_config ? "✅" : "◻️"} خرید شخصی</span>
                 <span class="tag" style="opacity:${s.used_for_test_config ? 1 : 0.4}">${s.used_for_test_config ? "✅" : "◻️"} کانفیگ تست</span>
@@ -5498,10 +5520,10 @@ async function renderAdminPanelsSection() {
               <div style="display:flex;gap:6px;flex-wrap:wrap">
                 <button class="btn outline" data-test="${s.id}" style="padding:4px 10px;font-size:12px">🔌 تست اتصال</button>
                 ${PANEL_INBOUND_TYPES.includes(s.panel_type)
-                  ? `<button class="btn outline" data-xui-inbound="${s.id}" data-xui-name="${s.name}" style="padding:4px 10px;font-size:12px">⚙️ تنظیم Inbound</button>`
+                  ? `<button class="btn outline" data-xui-inbound="${s.id}" data-xui-name="${s.name}" style="padding:4px 10px;font-size:12px">⚙️ Inbound پیش‌فرض (اختیاری)</button>`
                   : s.panel_type === "hiddify"
                   ? `<button class="btn outline" data-suburl="${s.id}" data-suburl-name="${s.name}" style="padding:4px 10px;font-size:12px">⚙️ تنظیم آدرس Sub</button>`
-                  : `<button class="btn outline" data-template="${s.id}" data-ptype="${s.panel_type}" style="padding:4px 10px;font-size:12px">🧩 تغییر قالب</button>`}
+                  : `<button class="btn outline" data-template="${s.id}" data-ptype="${s.panel_type}" style="padding:4px 10px;font-size:12px">${PANEL_TEMPLATE_REQUIRED_TYPES.includes(s.panel_type) ? "🧩 تغییر قالب" : "🧩 قالب پیش‌فرض (اختیاری)"}</button>`}
                 <button class="btn outline" data-usage-custom="${s.id}" style="padding:4px 10px;font-size:12px">${s.used_for_custom_config ? "غیرفعال (خرید)" : "فعال (خرید)"}</button>
                 <button class="btn outline" data-usage-test="${s.id}" style="padding:4px 10px;font-size:12px">${s.used_for_test_config ? "غیرفعال (تست)" : "فعال (تست)"}</button>
                 <button class="btn outline" data-toggle="${s.id}" style="padding:4px 10px;font-size:12px">${s.is_active ? "غیرفعال کن" : "فعال کن"}</button>
@@ -5652,7 +5674,7 @@ async function renderAdminPanelsSection() {
           });
           tg.HapticFeedback.notificationOccurred("success");
           renderAdminPanelsSection();
-        } catch (e) { notify(e.message); btn.textContent = "🧩 تغییر قالب"; }
+        } catch (e) { notify(e.message); btn.textContent = "🧩 قالب پیش‌فرض"; }
       };
     });
     document.querySelectorAll("[data-xui-inbound]").forEach((btn) => {
@@ -5668,7 +5690,7 @@ async function renderAdminPanelsSection() {
             subBaseUrl: (server && server.xui_sub_base_url) || "",
           };
           renderAdminPanelsSection();
-        } catch (e) { notify(e.message); btn.textContent = "⚙️ تنظیم Inbound"; }
+        } catch (e) { notify(e.message); btn.textContent = "⚙️ Inbound پیش‌فرض (اختیاری)"; }
       };
     });
     document.querySelectorAll("[data-suburl]").forEach((btn) => {
@@ -6014,12 +6036,53 @@ function productProvisionFieldsHtml(panelServers, bankAllowed = true) {
       <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
         <input type="checkbox" id="new-prod-duration-unlimited" /> ♾ مدت اعتبار نامحدود (هیچ‌وقت روی پنل منقضی نمی‌شود)
       </label>
+      ${miniStartModeHtml("new-prod", !!(panelServers[0] && panelServers[0].start_on_first_use && panelServers[0].onhold_supported !== false), false)}
       <input class="input" id="new-prod-volume" type="number" placeholder="حجم (گیگابایت)" style="margin-bottom:8px" />
       <label style="display:flex;align-items:center;gap:6px">
         <input type="checkbox" id="new-prod-volume-unlimited" /> ♾ حجم نامحدود
       </label>
     </div>
   `;
+}
+
+function miniStartModeHtml(prefix, firstUse, touched) {
+  return `<div id="${prefix}-start-box" style="margin-bottom:10px">
+    <label class="field-label">⏱ شروع زمان سرویس</label>
+    <div style="display:flex;gap:8px;margin-bottom:4px">
+      <button type="button" class="btn small ${firstUse ? "outline" : ""}" data-start-mode="purchase" data-start-prefix="${prefix}" style="flex:1">🛒 از لحظه خرید</button>
+      <button type="button" class="btn small ${firstUse ? "" : "outline"}" data-start-mode="first_use" data-start-prefix="${prefix}" style="flex:1">📡 از اولین اتصال</button>
+    </div>
+    <input type="hidden" id="${prefix}-start-mode" value="${firstUse ? "first_use" : "purchase"}" data-touched="${touched ? "1" : ""}" />
+    <p class="hint-text" id="${prefix}-start-hint" style="margin:0"></p>
+  </div>`;
+}
+
+function wireMiniStartMode(prefix, panelServers, serverSelId, isMulti) {
+  const hid = document.getElementById(`${prefix}-start-mode`);
+  const box = document.getElementById(`${prefix}-start-box`);
+  if (!hid || !box) return () => {};
+  const sync = (fromPanel) => {
+    const srv = panelServers.find((x) => Number(x.id) === Number(document.getElementById(serverSelId)?.value || 0));
+    const supported = !srv || srv.onhold_supported !== false;
+    if (fromPanel && !hid.dataset.touched && srv) hid.value = srv.start_on_first_use && supported ? "first_use" : "purchase";
+    if (!supported) hid.value = "purchase";
+    box.style.display = isMulti && isMulti() ? "none" : "";
+    const on = hid.value === "first_use";
+    box.querySelectorAll("[data-start-mode]").forEach((btn) => {
+      const active = btn.dataset.startMode === hid.value;
+      btn.classList.toggle("outline", !active);
+      if (btn.dataset.startMode === "first_use") btn.disabled = !supported;
+    });
+    const hint = document.getElementById(`${prefix}-start-hint`);
+    if (hint) hint.textContent = !supported ? "این نوع پنل از شروع زمان با اولین اتصال پشتیبانی نمی‌کند."
+      : (on ? "زمان سرویس بعد از اولین اتصال کاربر شروع می‌شود." : "زمان سرویس از لحظه خرید شروع می‌شود.");
+  };
+  box.querySelectorAll("[data-start-mode]").forEach((btn) => btn.addEventListener("click", () => {
+    hid.value = btn.dataset.startMode; hid.dataset.touched = "1"; sync(false);
+  }));
+  document.getElementById(serverSelId)?.addEventListener("change", () => sync(true));
+  sync(false);
+  return sync;
 }
 
 function productPaymentMethodsFieldsHtml(paymentMethods) {
@@ -6214,6 +6277,8 @@ async function renderAdminProducts(body) {
   };
   sourceRadios.forEach((r) => r.addEventListener("change", syncNewProdPanelKind));
   syncNewProdUserLimit();
+  const syncNewStartMode = wireMiniStartMode("new-prod", panelServers, "new-prod-server", () => !!document.querySelector("[data-new-extra-panel]:checked"));
+  document.querySelectorAll("[data-new-extra-panel]").forEach((el) => el.addEventListener("change", () => syncNewStartMode(false)));
   if (document.getElementById("new-prod-server")) {
     loadAdminProductTargets(document.getElementById("new-prod-server").value, "new-prod-target-picker").then(() => loadMiniExtraPanelTargets()).catch(() => {});
   }
@@ -6254,6 +6319,7 @@ async function renderAdminProducts(body) {
       }
       payload.provision_server_id = provision_server_id;
       payload.auto_provision_volume_gb = auto_provision_volume_gb;
+      payload.start_on_first_use = document.getElementById("new-prod-start-mode")?.value === "first_use";
       const targetValues = readAdminProductTargetValues("new-prod-target-picker");
       if (targetValues !== null) {
         if (!targetValues.length) { errBox.textContent = "حداقل یک گروه یا Inbound انتخاب کنید."; return; }
@@ -6331,6 +6397,7 @@ async function renderAdminEditProduct(body) {
         ${panelServers.map((s) => `<option value="${s.id}" ${s.id === p.provision_server_id ? "selected" : ""}>${s.name}</option>`).join("")}
       </select>
       <div id="edit-prod-target-picker"></div>
+      ${miniStartModeHtml("edit-prod", p.start_on_first_use != null ? Number(p.start_on_first_use) === 1 : !!panelServers.find((x) => Number(x.id) === Number(p.provision_server_id))?.start_on_first_use, p.start_on_first_use != null)}
       <input class="input" id="edit-prod-volume" type="number" placeholder="حجم (گیگابایت)" value="${p.auto_provision_volume_gb || ""}" style="margin-bottom:4px" ${volumeIsUnlimited ? "disabled" : ""} />
       <label style="display:flex;align-items:center;gap:6px;margin-bottom:10px">
         <input type="checkbox" id="edit-prod-volume-unlimited" ${volumeIsUnlimited ? "checked" : ""} /> ♾ حجم نامحدود
@@ -6386,6 +6453,7 @@ async function renderAdminEditProduct(body) {
   });
   body.querySelectorAll('input[name="edit-prod-source"]').forEach((r) => r.addEventListener("change", syncEditProdUserLimit));
   syncEditProdUserLimit();
+  wireMiniStartMode("edit-prod", panelServers, "edit-prod-server", null);
   if (document.getElementById("edit-prod-server")) {
     loadAdminProductTargets(document.getElementById("edit-prod-server").value, "edit-prod-target-picker", productTargetValuesFromConfig(p.provision_target_config, document.getElementById("edit-prod-server").value)).catch(() => {});
   }
@@ -6428,6 +6496,7 @@ async function renderAdminEditProduct(body) {
       }
       payload.provision_server_id = provision_server_id;
       payload.auto_provision_volume_gb = auto_provision_volume_gb;
+      payload.start_on_first_use = document.getElementById("edit-prod-start-mode")?.value === "first_use";
       const targetValues = readAdminProductTargetValues("edit-prod-target-picker");
       if (targetValues !== null) {
         if (!targetValues.length) { errBox.textContent = "حداقل یک گروه یا Inbound انتخاب کنید."; return; }
@@ -7776,6 +7845,8 @@ async function renderAdminFinanceSection() {
         <input class="input" id="fin-card-number" type="text" placeholder="6037-XXXX-XXXX-XXXX" value="${(card.card_number || "").replace(/"/g, "&quot;")}" style="direction:ltr;text-align:left;margin-bottom:10px" />
         <label class="field-label">نام صاحب کارت</label>
         <input class="input" id="fin-card-holder" type="text" placeholder="نام و نام خانوادگی" value="${(card.card_holder || "").replace(/"/g, "&quot;")}" style="margin-bottom:4px" />
+        <label class="field-label" style="margin-top:10px">نام بانک (اختیاری)</label>
+        <input class="input" id="fin-card-bank" type="text" placeholder="مثلاً ملت" value="${(card.card_bank_name || "").replace(/"/g, "&quot;")}" style="margin-bottom:4px" />
         <div class="field-error" id="fin-card-error"></div>
         <button class="btn" id="fin-card-save" style="margin-top:8px">💾 ذخیره شماره کارت</button>
       </div>
@@ -7913,7 +7984,7 @@ async function renderAdminFinanceSection() {
       try {
         await api("/api/admin/settings/card", {
           method: "POST",
-          body: JSON.stringify({ card_number: cardNumber, card_holder: cardHolder }),
+          body: JSON.stringify({ card_number: cardNumber, card_holder: cardHolder, card_bank_name: document.getElementById("fin-card-bank").value.trim() }),
         });
         tg.HapticFeedback.notificationOccurred("success");
         notify("شماره کارت ذخیره شد.");
