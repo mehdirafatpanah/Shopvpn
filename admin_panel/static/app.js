@@ -437,7 +437,9 @@ const NAV_GROUPS = [
   ] },
   { id: 'botconfig', label: 'تنظیمات', items: [
     { key: 'settings', label: 'تنظیمات و برندینگ', icon: 'settings', role: 'settings',
-      subs: [['content', 'محتوا و متن‌ها'], ['payment', 'پرداخت و مالی'], ['sales', 'فروش و سرویس‌ها'], ['growth', 'رشد و تعامل'], ['webcustom', 'شخصی‌سازی وب'], ['ai', 'هوش مصنوعی'], ['system', 'سیستم و پایش'], ['mobile_app', 'اپ موبایل']] },
+      subs: [['content', 'محتوا و متن‌ها'], ['payment', 'پرداخت و مالی'], ['sales', 'فروش و سرویس‌ها'], ['growth', 'رشد و تعامل'], ['ai', 'هوش مصنوعی'], ['system', 'سیستم و پایش'], ['mobile_app', 'اپ موبایل']] },
+    { key: 'webcustomize', label: 'تنظیمات شخصی‌سازی وب', icon: 'globe', role: 'settings',
+      subs: [['store', 'فروشگاه'], ['sub', 'لینک ساب'], ['miniapp', 'مینی‌اپ']] },
     { key: 'salessettings', label: 'تنظیمات فروش', icon: 'sliders', role: 'settings',
       subs: [['referral', 'رفرال و جذب'], ['renewal', 'تمدید و نگهداشت'], ['access', 'تست، عضویت و موجودی']] },
   ] },
@@ -467,6 +469,7 @@ const NAV_SUB_STATE = {
   catalog: { get: () => catalogTab, set: v => { catalogTab = v; } },
   resellers: { get: () => resellersSubTab, set: v => { resellersSubTab = v; } },
   settings: { get: () => settingsActiveTab, set: v => { settingsActiveTab = v; } },
+  webcustomize: { get: () => webCustomSub, set: v => { webCustomSub = v; } },
 };
 function navSubGet(tab) {
   if (NAV_SUB_STATE[tab]) return NAV_SUB_STATE[tab].get();
@@ -652,7 +655,7 @@ function goTo(tab, sub) {
   updatePageHeading();
   // اگر همین صفحه باز است و تب/بخش داخلی دارد، بدون بارگذاری مجدد جابه‌جا شو
   if (sameTab && sub) {
-    if (tab === 'settings' && $('#settings-tabs-nav', content())) { switchSettingsTab(sub, content()); return; }
+    if ((tab === 'settings' || tab === 'webcustomize') && $('#settings-tabs-nav', content())) { switchSettingsTab(sub, content()); return; }
     if (SECTION_PAGES[tab] && $('.section-nav', content())) { showSection(tab, sub); return; }
   }
   renderPage(tab);
@@ -1245,8 +1248,9 @@ async function renderPage(tab) {
       case 'panels': return await renderPanels();
       case 'ssh': return await renderSSHManagement();
       case 'system': return await renderSystem();
-      case 'settings': return await renderSettings();
-      case 'subscription-page': settingsActiveTab = 'webcustom'; return await renderSettings(); // لینک/بوکمارک قدیمی
+      case 'settings': settingsWebMode = false; return await renderSettings();
+      case 'webcustomize': settingsWebMode = true; return await renderSettings();
+      case 'subscription-page': settingsWebMode = true; webCustomSub = 'sub'; return await renderSettings(); // لینک/بوکمارک قدیمی
       case 'languages': return await renderLanguages();
       case 'buttons': return await renderButtons();
       case 'bottexts': return await renderBotTexts();
@@ -10509,7 +10513,6 @@ const SETTINGS_TABS = [
   { key: 'payment', label: '💳 پرداخت و مالی' },
   { key: 'sales', label: '🛒 فروش و سرویس‌ها' },
   { key: 'growth', label: '🎁 رشد و تعامل' },
-  { key: 'webcustom', label: '🎨 شخصی‌سازی وب' },
   { key: 'ai', label: '🤖 هوش مصنوعی' },
   { key: 'system', label: '🛠 سیستم و پایش' },
   { key: 'mobile_app', label: '📱 اپ موبایل' },
@@ -11039,6 +11042,20 @@ function settingsFieldHtml(f, settings) {
 }
 
 let settingsActiveTab = 'content';
+// صفحه‌ی جدای «تنظیمات شخصی‌سازی وب» با زیرمجموعه‌های فروشگاه / لینک ساب / مینی‌اپ؛
+// همان موتور فرم تنظیمات را استفاده می‌کند (data-settings-tab="webcustom") ولی تب‌های خودش را دارد.
+let settingsWebMode = false;
+let webCustomSub = 'store';
+const WEB_CUSTOM_SUBS = [['store', '🛍 فروشگاه'], ['sub', '🔗 لینک ساب'], ['miniapp', '📱 مینی‌اپ']];
+function settingsTabList() {
+  return settingsWebMode ? WEB_CUSTOM_SUBS.map(([key, label]) => ({ key, label })) : SETTINGS_TABS;
+}
+function settingsTabCurrent() { return settingsWebMode ? webCustomSub : settingsActiveTab; }
+function applyWebCustomSub(root) {
+  if (!settingsWebMode) return;
+  $$('[data-wc-sub]', root).forEach(el => { el.style.display = el.dataset.wcSub === webCustomSub ? '' : 'none'; });
+  $$('.settings-save-bar', root).forEach(el => { el.style.display = webCustomSub === 'miniapp' ? 'none' : ''; });
+}
 
 function renderSettingsGroups(settings) {
   const seen = new Set();
@@ -11047,7 +11064,7 @@ function renderSettingsGroups(settings) {
       const isFirstInTab = !seen.has(g.tab);
       seen.add(g.tab);
       return `
-      <div class="settings-group ${isFirstInTab ? 'open' : ''}" data-settings-tab="${g.tab}" style="${g.tab === settingsActiveTab ? '' : 'display:none'}">
+      <div class="settings-group ${isFirstInTab ? 'open' : ''}" data-settings-tab="${g.tab}"${g.tab === 'webcustom' ? ' data-wc-sub="store"' : ''} style="${g.tab === settingsActiveTab ? '' : 'display:none'}">
         <button type="button" class="settings-group-head">
           <span>${esc(settingsUiText(g.title))}</span>
           <span class="settings-group-arrow">˅</span>
@@ -11063,11 +11080,17 @@ function renderSettingsGroups(settings) {
 
 function settingsTabsHtml() {
   return `<div class="tabs" id="settings-tabs-nav">
-    ${SETTINGS_TABS.map(t => `<button type="button" class="tab-btn ${t.key === settingsActiveTab ? 'active' : ''}" data-tab="${t.key}">${settingsUiText(t.label)}</button>`).join('')}
+    ${settingsTabList().map(t => `<button type="button" class="tab-btn ${t.key === settingsTabCurrent() ? 'active' : ''}" data-tab="${t.key}">${settingsUiText(t.label)}</button>`).join('')}
   </div>`;
 }
 
 function switchSettingsTab(tab, root) {
+  if (settingsWebMode) {
+    webCustomSub = tab;
+    $$('#settings-tabs-nav .tab-btn, #settings-tabs-nav .bru-seg-btn, #settings-tabs-nav .bn-seg-btn', root).forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+    applyWebCustomSub(root);
+    return;
+  }
   settingsActiveTab = tab;
   $$('#settings-tabs-nav .tab-btn, #settings-tabs-nav .bru-seg-btn, #settings-tabs-nav .bn-seg-btn', root).forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   $$('[data-settings-tab]', root).forEach(el => { el.style.display = el.dataset.settingsTab === tab ? '' : 'none'; });
@@ -11284,6 +11307,7 @@ function syncExtraSettingsTab(root) {
     si.value = '';
     const empty = $('.extra-empty', box); if (empty) empty.style.display = 'none';
   }
+  applyWebCustomSub(root);
 }
 
 /* --------------------------------------------- تنظیمات: اپ موبایل مدیریت -- */
@@ -13592,7 +13616,8 @@ function subPageSettingsHtml(s) {
 }
 
 async function renderSettings() {
-  if (!SETTINGS_TABS.some(t => t.key === settingsActiveTab)) settingsActiveTab = 'content';
+  if (settingsWebMode) settingsActiveTab = 'webcustom';
+  else if (!SETTINGS_TABS.some(t => t.key === settingsActiveTab)) settingsActiveTab = 'content';
   const [settings, rate, mainMenuDisplay, gateways, methods, c2cCards, c2cWebhook, c2cInvoices, mobileTokens] = await Promise.all([
     apiGet('/settings'),
     apiGet('/exchange-rate').catch(e => ({ ok: false, rate: null, source: null, updated_at: null, error: e.message })),
@@ -13623,8 +13648,8 @@ async function renderSettings() {
       ${mobileAppCardHtml(mobileTokens)}
     </div>
     <div data-settings-tab="webcustom" style="${settingsActiveTab === 'webcustom' ? '' : 'display:none'}">
-      ${miniappSectionHtml()}
-      ${subPageSettingsHtml(settings)}
+      <div data-wc-sub="miniapp">${miniappSectionHtml()}</div>
+      <div data-wc-sub="sub">${subPageSettingsHtml(settings)}</div>
     </div>
 
     ${extraSettingsTabHtml()}
@@ -13743,9 +13768,9 @@ function bindSubscriptionLivePreview(root) {
 
 function renderSettingsBento(settings, rate, mainMenuDisplay, pay, mobileTokens) {
   setContent(`
-    <div class="bn-hero"><div><h2>${settingsUiText('تنظیمات')}</h2><p>${settingsUiText('پیکربندی محتوا، پرداخت، کمپین و سرویس‌های ربات')}</p></div></div>
+    <div class="bn-hero"><div><h2>${settingsUiText(settingsWebMode ? 'تنظیمات شخصی‌سازی وب' : 'تنظیمات')}</h2><p>${settingsUiText(settingsWebMode ? 'فروشگاه وب، صفحه‌ی لینک ساب و مینی‌اپ' : 'پیکربندی محتوا، پرداخت، کمپین و سرویس‌های ربات')}</p></div></div>
     <div class="bn-seg" id="settings-tabs-nav" style="margin-bottom:16px">
-      ${SETTINGS_TABS.map(t => `<button type="button" class="bn-seg-btn ${t.key === settingsActiveTab ? 'active' : ''}" data-tab="${t.key}">${settingsUiText(t.label)}</button>`).join('')}
+      ${settingsTabList().map(t => `<button type="button" class="bn-seg-btn ${t.key === settingsTabCurrent() ? 'active' : ''}" data-tab="${t.key}">${settingsUiText(t.label)}</button>`).join('')}
     </div>
     <div data-settings-tab="content" style="${settingsActiveTab === 'content' ? '' : 'display:none'}">
       ${mainMenuDisplayCardHtml(mainMenuDisplay)}
@@ -13758,8 +13783,8 @@ function renderSettingsBento(settings, rate, mainMenuDisplay, pay, mobileTokens)
       ${mobileAppCardHtml(mobileTokens)}
     </div>
     <div data-settings-tab="webcustom" style="${settingsActiveTab === 'webcustom' ? '' : 'display:none'}">
-      ${miniappSectionHtml()}
-      ${subPageSettingsHtml(settings)}
+      <div data-wc-sub="miniapp">${miniappSectionHtml()}</div>
+      <div data-wc-sub="sub">${subPageSettingsHtml(settings)}</div>
     </div>
     ${extraSettingsTabHtml()}
     ${renderSettingsGroups(settings)}
@@ -13807,10 +13832,10 @@ function renderSettingsBento(settings, rate, mainMenuDisplay, pay, mobileTokens)
 // واقعی) — بدنه‌ی فرم‌ها با همون منطق قبلی، فقط قاب/سوییچ/سواچ برutalist.
 function renderSettingsBrutalist(settings, rate, mainMenuDisplay, pay, mobileTokens) {
   setContent(`
-    <div class="bru-hero"><h2>${settingsUiText('تنظیمات')}</h2><p>${settingsUiText('پیکربندی محتوا، پرداخت، کمپین و سرویس‌های ربات')}</p></div>
+    <div class="bru-hero"><h2>${settingsUiText(settingsWebMode ? 'تنظیمات شخصی‌سازی وب' : 'تنظیمات')}</h2><p>${settingsUiText(settingsWebMode ? 'فروشگاه وب، صفحه‌ی لینک ساب و مینی‌اپ' : 'پیکربندی محتوا، پرداخت، کمپین و سرویس‌های ربات')}</p></div>
     <div class="bru-settings-layout">
       <nav class="bru-settings-nav" id="settings-tabs-nav">
-        ${SETTINGS_TABS.map(t => `<button type="button" class="bru-seg-btn ${t.key === settingsActiveTab ? 'active' : ''}" data-tab="${t.key}">${t.label}</button>`).join('')}
+        ${settingsTabList().map(t => `<button type="button" class="bru-seg-btn ${t.key === settingsTabCurrent() ? 'active' : ''}" data-tab="${t.key}">${t.label}</button>`).join('')}
       </nav>
       <div class="bru-settings-content">
         <div data-settings-tab="content" style="${settingsActiveTab === 'content' ? '' : 'display:none'}">
@@ -13824,8 +13849,8 @@ function renderSettingsBrutalist(settings, rate, mainMenuDisplay, pay, mobileTok
           ${mobileAppCardHtml(mobileTokens)}
         </div>
         <div data-settings-tab="webcustom" style="${settingsActiveTab === 'webcustom' ? '' : 'display:none'}">
-          ${miniappSectionHtml()}
-          ${subPageSettingsHtml(settings)}
+          <div data-wc-sub="miniapp">${miniappSectionHtml()}</div>
+          <div data-wc-sub="sub">${subPageSettingsHtml(settings)}</div>
         </div>
         ${extraSettingsTabHtml()}
         ${renderSettingsGroups(settings)}
