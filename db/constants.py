@@ -154,6 +154,9 @@ DEFAULT_SETTINGS = {
     "test_delete_days": "0",
     "expired_cleanup_warning_days": "3",
     "expired_cleanup_dry_run": "1",
+    # فاصله‌ی اجرای پاکسازی و اعلام آن (ساعت) + اعلام یک‌پیامی در تاپیک «سرویس» گروه گزارش.
+    "expired_cleanup_interval_hours": "1",
+    "expired_cleanup_report_enabled": "1",
     # F138: ساعت روزانه حذف کانفیگ‌هایی که کاربر/ادمین غیرفعال کرده است؛ خالی یعنی خاموش.
     "inactive_config_delete_time": "",
     "force_join_enabled": "0",
