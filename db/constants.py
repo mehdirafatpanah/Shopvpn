@@ -161,6 +161,8 @@ DEFAULT_SETTINGS = {
     "force_join_channel": "",  # مثلاً: @mychannel
     "card_number": "0000-0000-0000-0000",
     "card_holder": "نام صاحب حساب",
+    "card_bank_name": "",
+    "card_photo_file_id": "",
     # حذف خودکار پیام‌های حاوی شماره کارت بعد از این تعداد ثانیه از ارسال؛
     # صفر یعنی غیرفعال (پیام برای همیشه در چت باقی می‌ماند).
     "card_msg_autodelete_seconds": "0",
@@ -225,8 +227,32 @@ DEFAULT_SETTINGS = {
     "miniapp_theme": "clean-light",
     # فروشگاه وب: حالت سه‌بعدی صفحه‌ی اصلی (off/cinema/particles/globe/network/tunnel/waves)
     "web_3d_mode": "cinema",
+    "web_store_logo": "",
+    "web_store_tagline": "",
+    "web_store_primary_color": "",
+    "web_store_support_url": "",
+    "web_store_theme": "auto",
+    "web_store_seo_title": "",
+    "web_store_seo_description": "",
     "web_3d_mobile": "1",
     "web_3d_auto_lite": "1",
+    # فروشگاه وب: اعلان بالای صفحه، حالت تعمیرات، نمایش پلن‌ها، فوتر/تماس، محتوای سفارشی، آیکون
+    "web_store_notice_enabled": "0",
+    "web_store_notice_text": "",
+    "web_store_notice_link": "",
+    "web_store_notice_style": "info",
+    "web_store_maintenance": "0",
+    "web_store_maintenance_text": "",
+    "web_store_hide_soldout": "0",
+    "web_store_default_sort": "value",
+    "web_store_footer_text": "",
+    "web_store_channel_url": "",
+    "web_store_instagram_url": "",
+    "web_store_email": "",
+    "web_store_faq_custom": "",
+    "web_store_terms_custom": "",
+    "web_store_favicon": "",
+    "web_store_og_image": "",
     # سیستم زیرمجموعه‌گیری
     # کلید مستر: مستقل از سه مدل زیر - غیرفعال کردنش کل سیستم رفرال (دکمه/تب و
     # هر سه مدل پاداش) را کاملاً خاموش می‌کند، صرف‌نظر از اینکه کدام مدل روشن باشد.

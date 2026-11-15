@@ -503,7 +503,7 @@ class CatalogMixin:
                      compare_price: int = 0, provision_ssh_node_id: int = None,
                      provision_ssh_protocol: str = "ssh",
                      extra_panel_ids=(), extra_ssh_node_ids=(), provision_target_config=None, extra_panel_target_configs=None, renew_rules=None, ai_description: str = "",
-                     btn_style: str = "", product_kind: str = "config") -> int:
+                     btn_style: str = "", product_kind: str = "config", start_on_first_use=None) -> int:
         """payment_methods: None/[] یعنی «همه‌ی روش‌های پرداخت مجازند» (پیش‌فرض)،
         در غیر این صورت لیستی از کلیدهای مجاز - همان قراردادِ set_product_payment_methods.
 
@@ -531,6 +531,8 @@ class CatalogMixin:
                  btn_style if btn_style in ("primary", "success", "danger") else ""),
             )
             product_id = cur.lastrowid
+            if start_on_first_use is not None:
+                conn.execute("UPDATE products SET start_on_first_use=? WHERE id=?", (1 if start_on_first_use else 0, product_id))
             if product_kind == "panel_account":
                 conn.execute("UPDATE products SET product_kind='panel_account' WHERE id=?", (product_id,))
             if ai_description:
@@ -706,7 +708,7 @@ class CatalogMixin:
                       provision_server_id=..., payment_methods=..., category_id: int = None,
                       provision_ssh_node_id=..., provision_ssh_protocol=...,
                       compare_price=..., discount_days=..., discount_max_uses=..., provision_target_config=...,
-                      ai_description: str = None, btn_style=..., delivery_text=..., delivery_sticker=...):
+                      ai_description: str = None, btn_style=..., delivery_text=..., delivery_sticker=..., start_on_first_use=...):
         # نکته: is_auto_provision/auto_provision_volume_gb/provision_server_id از سنتینل
         # Ellipsis استفاده می‌کنند (مثل payment_methods) چون باید بتوان آن‌ها را عمداً
         # NULL/False کرد (مثلاً وقتی محصول از «اتصال مستقیم به پنل» به «بانک کانفیگ»
@@ -728,6 +730,9 @@ class CatalogMixin:
             fields.append("delivery_text=?"); values.append(str(delivery_text or "").strip()[:3500])
         if delivery_sticker is not ...:
             fields.append("delivery_sticker=?"); values.append(str(delivery_sticker or "").strip()[:200])
+        if start_on_first_use is not ...:
+            fields.append("start_on_first_use=?")
+            values.append(None if start_on_first_use is None else (1 if start_on_first_use else 0))
         if is_auto_provision is not ...:
             fields.append("is_auto_provision=?"); values.append(1 if is_auto_provision else 0)
         if auto_provision_volume_gb is not ...:

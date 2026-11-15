@@ -1151,7 +1151,9 @@ class PaymentsMixin:
             "id": None,
             "card_number": self.get_setting("card_number"),
             "card_holder": self.get_setting("card_holder"),
-            "bank_name": "",
+            "bank_name": self.get_setting("card_bank_name", "") or "",
+            "photo_file_id": self.get_setting("card_photo_file_id", "") or None,
+            "description_template": "",
         }
 
 
