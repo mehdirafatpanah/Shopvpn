@@ -158,6 +158,16 @@ def _gate_is_internal(request: Request) -> bool:
     return client in ("127.0.0.1", "::1") and not proxied
 
 
+def _gate_denied(request: Request) -> Response:
+    """صفحه‌ی خطای طراحی‌شده برای مرورگر؛ JSON ساده برای درخواست‌های برنامه‌نویسی."""
+    if web_entry_gate.is_document_navigation(request.headers):
+        return HTMLResponse(
+            web_entry_gate.ERROR_PAGE_HTML, status_code=404,
+            headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow"},
+        )
+    return JSONResponse({"detail": "Not Found"}, status_code=404)
+
+
 @app.middleware("http")
 async def _entry_path_gate(request: Request, call_next):
     enabled, slug = web_entry_gate.get_config()
@@ -165,30 +175,35 @@ async def _entry_path_gate(request: Request, call_next):
         return await call_next(request)
     path = request.url.path
     prefix = "/" + slug
+    # ۱) آدرس با مسیر مخفی: همان‌جا (بدون ریدایرکت) سرو می‌شود تا مسیر در آدرس‌بار بماند.
     if path == prefix or path.startswith(prefix + "/"):
         rest = path[len(prefix):] or "/"
-        if rest.startswith(_GATE_PASS_PREFIXES):
-            request.scope["path"] = rest
-            request.scope["raw_path"] = rest.encode()
-            response = await call_next(request)
-            _gate_set_cookie(response, request, slug)
-            return response
-        target = rest + (("?" + request.url.query) if request.url.query else "")
-        response = RedirectResponse(url=target, status_code=302)
+        request.scope["path"] = rest
+        request.scope["raw_path"] = rest.encode()
+        response = await call_next(request)
         _gate_set_cookie(response, request, slug)
         return response
+    # ۲) بدون مسیر: باز کردن «صفحه» هرگز مجاز نیست (کوکی هم کافی نیست)؛
+    #    فقط مسیرهای /api/ و /app/ (دانلود فایل، پل اپ موبایل) از این قاعده معافند.
+    if web_entry_gate.is_document_navigation(request.headers) and not path.startswith(_GATE_PASS_PREFIXES):
+        if not _gate_is_internal(request):
+            return _gate_denied(request)
+    if path == "/app/webview-bridge":
+        response = await call_next(request)
+        if response.status_code in (301, 302, 303, 307, 308):
+            _gate_set_cookie(response, request, slug)
+            loc = response.headers.get("location", "")
+            if loc.startswith("/") and not loc.startswith("//") and not loc.startswith(prefix + "/") and loc != prefix:
+                response.headers["location"] = prefix + loc  # مقصد هم باید زیر مسیر مخفی باشد
+        return response
+    # ۳) زیرمنابع صفحه (api / assets / manifest ...) با کوکی گیت
     if web_entry_gate.cookie_valid(ADMIN_PANEL_SECRET, slug, request.cookies.get(web_entry_gate.COOKIE_NAME, "")):
         return await call_next(request)
     if _gate_is_internal(request):
         return await call_next(request)
     if path.startswith("/api/") and request.headers.get("authorization", "").startswith("Bearer "):
         return await call_next(request)
-    if path == "/app/webview-bridge":
-        response = await call_next(request)
-        if response.status_code in (301, 302, 303, 307, 308):
-            _gate_set_cookie(response, request, slug)
-        return response
-    return JSONResponse({"detail": "Not Found"}, status_code=404)
+    return _gate_denied(request)
 
 
 # --------------------------------------------------------- multi-tenancy --
@@ -11707,7 +11722,9 @@ def serve_asset_chunk(name: str, index: int, request: Request):
 def serve_service_worker():
     # عمداً روی ریشه‌ی دامنه سرو می‌شود (نه زیر /assets) تا scope پیش‌فرض
     # Service Worker کل پنل را بگیرد و بتواند برای هر صفحه‌ای اعلان Push نشان دهد.
-    return FileResponse(os.path.join(STATIC_DIR, "sw.js"), media_type="application/javascript")
+    with open(os.path.join(STATIC_DIR, "sw.js"), "r", encoding="utf-8") as f:
+        js = f.read().replace("__SV_BASE__", web_entry_gate.base_path())
+    return Response(js, media_type="application/javascript", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/manifest.json")
@@ -11718,7 +11735,8 @@ def serve_manifest(request: Request):
     آیکون روی هوم‌اسکرین به پنل درست باز نمی‌شود. index.html این مسیر را با
     همان query string صفحه‌ی جاری صدا می‌زند (مثلا /manifest.json?b=xyz)."""
     b_value = request.query_params.get("b", "").strip()
-    start_url = f"/?b={b_value}&source=pwa" if b_value else "/?source=pwa"
+    base = web_entry_gate.base_path()  # با مسیر مخفی: «/<مسیر>/» تا PWA نصب‌شده به صفحه‌ی خطا نخورد
+    start_url = f"{base}?b={b_value}&source=pwa" if b_value else f"{base}?source=pwa"
 
     # رنگ اسپلش‌اسکرین/نوار وضعیت باید با تم و حالت روشن/تیره‌ی فعلی کاربر
     # هماهنگ باشد؛ index.html این دو را به‌صورت کوئری‌استرینگ می‌فرستد.
