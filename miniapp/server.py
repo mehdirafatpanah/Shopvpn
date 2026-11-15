@@ -2170,16 +2170,28 @@ async def api_create_ticket(body: TicketCreate, auth=Depends(get_verified_user))
         + (f"📦 سرویس: {escape_md(ref_label)}\n" if ref_label else "")
         + f"\n📌 {subject}\n✉️ {message}"
     )
-    admin_ids = db.list_admins()
-    async with aiohttp.ClientSession() as session:
-        for admin_id in admin_ids:
-            try:
-                await session.post(
-                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                    json={"chat_id": admin_id, "text": caption, "parse_mode": "Markdown"},
-                )
-            except Exception:
-                pass
+    # گروه تاپیک فعال: اعلان با دکمه‌های «مشاهده کامل» و «پاسخ» در تاپیک پشتیبانی می‌نشیند و پیام خصوصی نمی‌رود.
+    grp_rows = [
+        ("شماره", report_router.code(f"#{ticket_id}")),
+        ("کاربر", report_router.user_link(tg_id, (user["first_name"] if user else "") or "", (user["username"] if user else "") or "")),
+        ("اولویت", _SUPPORT_PRIORITY_FA[priority]),
+    ]
+    if ref_label:
+        grp_rows.append(("سرویس", ref_label))
+    grp_rows += [("موضوع", subject), ("متن", message[:300])]
+    grp_ok = await report_router.notify_ticket_raw(tenant.bot_token, db, ticket_id, report_router.format_event(
+        "تیکت جدید", grp_rows, icon="🎫", note="↩️ برای پاسخ، از دکمه‌ی «پاسخ به تیکت» یا ریپلای روی همین پیام استفاده کنید."))
+    if not grp_ok:
+        admin_ids = db.list_admins()
+        async with aiohttp.ClientSession() as session:
+            for admin_id in admin_ids:
+                try:
+                    await session.post(
+                        f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+                        json={"chat_id": admin_id, "text": caption, "parse_mode": "Markdown"},
+                    )
+                except Exception:
+                    pass
 
     return _ticket_to_dict(db.get_ticket(ticket_id))
 
@@ -2223,16 +2235,24 @@ async def api_send_my_ticket_message(ticket_id: int, body: TicketMessageCreate, 
         f"👤 {(user['first_name'] if user else '') or ''} (@{(user['username'] if user else '') or '---'})\n\n"
         f"✉️ {text}"
     )
-    admin_ids = db.list_admins()
-    async with aiohttp.ClientSession() as session:
-        for admin_id in admin_ids:
-            try:
-                await session.post(
-                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                    json={"chat_id": admin_id, "text": caption, "parse_mode": "Markdown"},
-                )
-            except Exception:
-                pass
+    grp_ok = await report_router.notify_ticket_raw(tenant.bot_token, db, ticket_id, report_router.format_event(
+        "پیام جدید در تیکت", [
+            ("شماره", report_router.code(f"#{ticket_id}")),
+            ("کاربر", report_router.user_link(tg_id, (user["first_name"] if user else "") or "", (user["username"] if user else "") or "")),
+            ("موضوع", ticket["subject"]),
+            ("متن", text[:300]),
+        ], icon="💬", note="↩️ برای پاسخ، از دکمه‌ی «پاسخ به تیکت» یا ریپلای روی همین پیام استفاده کنید."))
+    if not grp_ok:
+        admin_ids = db.list_admins()
+        async with aiohttp.ClientSession() as session:
+            for admin_id in admin_ids:
+                try:
+                    await session.post(
+                        f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
+                        json={"chat_id": admin_id, "text": caption, "parse_mode": "Markdown"},
+                    )
+                except Exception:
+                    pass
 
     return {"id": msg_id, "sender": "user", "message": text}
 
@@ -2261,9 +2281,15 @@ async def api_reopen_my_ticket(ticket_id: int, auth=Depends(get_verified_user)):
             f"🔓 تیکت #{ticket_id} ({ticket['subject']}) توسط کاربر دوباره باز شد.\n"
             f"👤 {(user['first_name'] if user else '') or ''} (@{(user['username'] if user else '') or '---'})"
         )
+        grp_ok = await report_router.notify_ticket_raw(tenant.bot_token, db, ticket_id, report_router.format_event(
+            "تیکت دوباره باز شد", [
+                ("شماره", report_router.code(f"#{ticket_id}")),
+                ("کاربر", report_router.user_link(tg_id, (user["first_name"] if user else "") or "", (user["username"] if user else "") or "")),
+                ("موضوع", ticket["subject"]),
+            ], icon="🔓", note="↩️ برای پاسخ، از دکمه‌ی «پاسخ به تیکت» یا ریپلای روی همین پیام استفاده کنید."))
         admin_ids = [ticket["claimed_by"]] if ticket["claimed_by"] else db.list_admins()
         async with aiohttp.ClientSession() as session:
-            for admin_id in admin_ids:
+            for admin_id in ([] if grp_ok else admin_ids):
                 try:
                     await session.post(
                         f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
@@ -6861,7 +6887,7 @@ class ExtraSettingsUpdate(BaseModel):
 def api_admin_get_extra_settings(auth=Depends(require_main_admin)):
     from extra_settings_schema import groups_for, load_values
     _, db, _ = auth
-    return {"groups": groups_for("mini"), "values": load_values(db, "mini")}
+    return {"groups": groups_for("mini", db), "values": load_values(db, "mini")}
 
 
 @app.post("/api/admin/settings/extra")
