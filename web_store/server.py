@@ -22,6 +22,7 @@ from asset_versioning import ApiNoStoreMiddleware, static_version
 from i18n import normalize_language, reset_language, set_language
 from miniapp import server as core
 from web_store import customize as wcustom
+from web_store import maintenance_page
 from web_store.routes import router as web_router
 
 log = logging.getLogger("web_store")
@@ -215,6 +216,16 @@ def healthz():
 
 
 def _render_index(lang: str, request: Request) -> HTMLResponse:
+    # حالت تعمیرات: صفحه‌ی «در حال ساخت‌وساز». با ?live=1 مدیر می‌تواند خودِ فروشگاه را ببیند.
+    if request.query_params.get("live") != "1":
+        try:
+            maint = wcustom.maintenance_message(lambda k, d="": core.main_db.get_setting(k, d))
+        except Exception:
+            log.exception("خواندن حالت تعمیرات ناموفق بود؛ صفحه‌ی عادی")
+            maint = ""
+        if maint:
+            return HTMLResponse(maintenance_page.render(lang, maint), status_code=503,
+                                headers={"Cache-Control": "no-store", "Retry-After": "600"})
     meta = PAGE_META[lang]
     base = os.getenv("SHOPVPN_SEO_SITE_URL", "").strip().rstrip("/")
     if not base:
