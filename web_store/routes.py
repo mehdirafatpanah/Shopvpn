@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
 """مسیرهای API مخصوص سایت فروش وب: ورود، کاتالوگ، سرویس‌ها، QR و ادغام حساب."""
+import re
+
 from fastapi import APIRouter
 
 import dedicated_sub as ds
+from web_store import customize as wcustom
 
 from miniapp.server import (
     BaseModel,
@@ -39,13 +42,53 @@ def _web_main_only(tenant: Tenant):
         raise HTTPException(status_code=404, detail=tr("این فروشگاه در دسترس نیست."))
 
 
+_HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _web_brand_settings(db: Database) -> dict:
+    """برندینگ فروشگاه وب از تنظیمات (تب «شخصی‌سازی وب» در پنل ادمین)؛ مقدار نامعتبر = نادیده."""
+    def _get(key: str) -> str:
+        return (db.get_setting(key, "") or "").strip()
+
+    logo = _get("web_store_logo")
+    if not re.match(r"^https://", logo, re.I):
+        logo = ""
+    color = _get("web_store_primary_color")
+    if color and not color.startswith("#"):
+        color = "#" + color
+    if not _HEX_COLOR_RE.match(color):
+        color = ""
+    support = _get("web_store_support_url")
+    if re.match(r"^(@)[A-Za-z0-9_]{4,}$", support):
+        support = "https://t.me/" + support[1:]
+    elif re.match(r"^(t\.me|telegram\.me)/", support, re.I):
+        support = "https://" + support
+    if not re.match(r"^https?://", support, re.I):
+        support = ""
+    theme = _get("web_store_theme").lower()
+    out = {
+        "logo": logo,
+        "tagline": _get("web_store_tagline")[:200],
+        "primary_color": color,
+        "support_url": support,
+    }
+    if theme in ("light", "dark"):
+        out["theme"] = theme
+    # اعلان، حالت تعمیرات، فوتر/تماس، مرتب‌سازی پیش‌فرض، FAQ و قوانین سفارشی
+    out.update(wcustom.build_custom_payload(lambda k, d="": db.get_setting(k, d)))
+    return out
+
+
 def _web_catalog_payload(db: Database) -> list:
     categories = []
     paths = db.get_category_path_names()
+    hide_soldout = wcustom.hide_soldout(lambda k, d="": db.get_setting(k, d))
     for c in db.get_categories(active_only=True):
         products = []
         for p in db.get_products(c["id"], active_only=True):
             in_stock = bool(p["is_auto_provision"]) or db.count_available_configs(p["id"]) > 0
+            if hide_soldout and not in_stock:
+                continue
             products.append({
                 "id": p["id"],
                 "name": p["name"],
@@ -69,12 +112,10 @@ async def api_web_catalog(tenant: Tenant = Depends(get_tenant)):
     categories = await asyncio.to_thread(_web_catalog_payload, tenant.db)
     username = await get_bot_username(tenant)
     store_name = render_stored_setting("store_name", tenant.db.get_setting("store_name", "⚡ SHOP VPN"))
+    brand = await asyncio.to_thread(_web_brand_settings, tenant.db)
     return {
         "store_name": store_name,
-        "logo": "",
-        "tagline": "",
-        "primary_color": "",
-        "support_url": "",
+        **brand,
         "bot_url": f"https://t.me/{username}" if username else "",
         "categories": categories,
     }
