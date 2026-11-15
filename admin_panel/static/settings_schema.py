@@ -45,6 +45,7 @@ SETTINGS_FORM_SECTIONS = [
                 "fields": [
                     {"key": "card_number", "label": "شماره کارت", "type": "text"},
                     {"key": "card_holder", "label": "نام صاحب کارت", "type": "text"},
+                    {"key": "card_bank_name", "label": "نام بانک", "type": "text"},
                 ],
             },
 

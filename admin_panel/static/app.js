@@ -404,7 +404,7 @@ const NAV_GROUPS = [
   ] },
   { id: 'accounting', label: 'حسابداری', items: [
     { key: 'accounting', label: 'حسابداری', icon: 'topups', role: 'payg',
-      subs: [['costs', 'قیمت تمام‌شده'], ['formulas', 'فرمول‌ها و قیمت‌گذاری']] },
+      subs: [['overview', 'داشبورد مالی'], ['ledger', 'دفتر درآمد و هزینه'], ['costs', 'قیمت تمام‌شده'], ['formulas', 'فرمول‌ها و قیمت‌گذاری']] },
   ] },
   { id: 'customers', label: 'مشتریان و پشتیبانی', items: [
     { key: 'users', label: 'کاربران', icon: 'users', role: 'any' },
@@ -437,10 +437,9 @@ const NAV_GROUPS = [
   ] },
   { id: 'botconfig', label: 'تنظیمات', items: [
     { key: 'settings', label: 'تنظیمات و برندینگ', icon: 'settings', role: 'settings',
-      subs: [['content', 'محتوا و متن‌ها'], ['payment', 'پرداخت و مالی'], ['sales', 'فروش و سرویس‌ها'], ['growth', 'رشد و تعامل'], ['sub', 'اشتراک اختصاصی'], ['ai', 'هوش مصنوعی'], ['system', 'سیستم و پایش'], ['mobile_app', 'اپ موبایل']] },
+      subs: [['content', 'محتوا و متن‌ها'], ['payment', 'پرداخت و مالی'], ['sales', 'فروش و سرویس‌ها'], ['growth', 'رشد و تعامل'], ['webcustom', 'شخصی‌سازی وب'], ['ai', 'هوش مصنوعی'], ['system', 'سیستم و پایش'], ['mobile_app', 'اپ موبایل']] },
     { key: 'salessettings', label: 'تنظیمات فروش', icon: 'sliders', role: 'settings',
       subs: [['referral', 'رفرال و جذب'], ['renewal', 'تمدید و نگهداشت'], ['access', 'تست، عضویت و موجودی']] },
-    { key: 'subscription-page', label: 'تنظیمات صفحه اشتراک', icon: 'link', role: 'settings' },
   ] },
   { id: 'admin', label: 'مدیریت و امنیت', items: [
     { key: 'database', label: 'مدیریت دیتابیس', icon: 'database', role: 'database' },
@@ -1247,7 +1246,7 @@ async function renderPage(tab) {
       case 'ssh': return await renderSSHManagement();
       case 'system': return await renderSystem();
       case 'settings': return await renderSettings();
-      case 'subscription-page': return await renderSubscriptionPageSettings();
+      case 'subscription-page': settingsActiveTab = 'webcustom'; return await renderSettings(); // لینک/بوکمارک قدیمی
       case 'languages': return await renderLanguages();
       case 'buttons': return await renderButtons();
       case 'bottexts': return await renderBotTexts();
@@ -4888,6 +4887,10 @@ function productProvisionFieldsHtml(panelServers, sshNodes = [], prefill = null)
   const comboLocked = !catalogDsubEnabled;
   const durUnlimited = !!(prefill && prefill.duration_days === 0);
   const volUnlimited = !!(prefill && prefill.auto_provision_volume_gb === 0);
+  const prefillStartSet = !!(prefill && prefill.start_on_first_use != null);
+  const startFirstUse = prefill
+    ? (prefillStartSet ? Number(prefill.start_on_first_use) === 1 : !!prefill.start_on_first_use_effective)
+    : !!(panelServers.find(x => x.panel_type !== 'stealth') || {}).start_on_first_use;
   return `
     <div class="form-row" style="gap:12px;align-items:center">
       <label style="display:flex;align-items:center;gap:4px"><input type="radio" name="prod-source" value="bank" ${isDirect ? '' : 'checked'}> بانک کانفیگ</label>
@@ -4913,6 +4916,15 @@ function productProvisionFieldsHtml(panelServers, sshNodes = [], prefill = null)
       </div>
       <label class="field" id="prod-ssh-proto-field" style="display:none"><span>پروتکل حساب</span><select class="input" id="prod-ssh-protocol" data-prefill="${esc((prefill && prefill.provision_ssh_protocol) || 'ssh')}"><option value="ssh">SSH</option></select><span class="card-sub">OpenVPN و WireGuard فقط در محصول «ترکیبی» ممکن‌اند و فایل آن‌ها داخل لینک ساب اختصاصی تحویل می‌شود (ساب اختصاصی باید فعال باشد).</span></label></div>
       <label class="field field-row"><span>♾ مدت اعتبار نامحدود</span><input type="checkbox" id="prod-duration-unlimited" ${durUnlimited ? 'checked' : ''}></label>
+      <div class="field" id="prod-start-mode-box" style="grid-column:1/-1;display:${target === 'vpn' ? '' : 'none'}">
+        <span>⏱ شروع زمان سرویس</span>
+        <div class="form-row" style="gap:8px;margin-top:6px">
+          <button type="button" class="btn ${startFirstUse ? '' : 'primary'}" id="prod-start-purchase" data-start-mode="purchase">🛒 از لحظه خرید</button>
+          <button type="button" class="btn ${startFirstUse ? 'primary' : ''}" id="prod-start-first" data-start-mode="first_use">📡 از اولین اتصال</button>
+        </div>
+        <input type="hidden" id="prod-start-mode" value="${startFirstUse ? 'first_use' : 'purchase'}" data-touched="${prefillStartSet ? '1' : ''}">
+        <span class="card-sub" id="prod-start-mode-hint"></span>
+      </div>
       <label class="field"><span>حجم (GB) — ۰ = نامحدود</span><input class="input" id="prod-volume" type="number" min="0" step="1" placeholder="حجم (گیگابایت)" value="${prefill && prefill.auto_provision_volume_gb != null ? prefill.auto_provision_volume_gb : ''}" ${volUnlimited ? 'disabled' : ''}></label>
       <label class="field field-row"><span>♾ حجم نامحدود</span><input type="checkbox" id="prod-volume-unlimited" ${volUnlimited ? 'checked' : ''}></label>
       <div id="prod-user-limit-fields" style="display:none;grid-column:1/-1">
@@ -5083,6 +5095,30 @@ function wireProductProvisionToggle(b) {
     });
     loadProductPanelTargetPicker(b, prodServer.value, productTargetValuesFromConfig(window.__productPrefillTargetConfig, prodServer.value)).catch(() => {});
   }
+  const syncStartMode = (fromPanel) => {
+    const box = $('#prod-start-mode-box', b), hid = $('#prod-start-mode', b);
+    if (!box || !hid) return;
+    const tt = targetType ? targetType.value : 'vpn';
+    box.style.display = tt === 'vpn' ? '' : 'none';
+    const srv = (window.__productPanelServers || []).find(x => Number(x.id) === Number($('#prod-server', b)?.value || 0));
+    const supported = !srv || srv.onhold_supported !== false;
+    if (fromPanel && !hid.dataset.touched && srv) hid.value = srv.start_on_first_use && supported ? 'first_use' : 'purchase';
+    if (!supported) hid.value = 'purchase';
+    const fb = $('#prod-start-first', b), pb = $('#prod-start-purchase', b);
+    fb.disabled = !supported;
+    fb.classList.toggle('primary', hid.value === 'first_use');
+    pb.classList.toggle('primary', hid.value !== 'first_use');
+    const hint = $('#prod-start-mode-hint', b);
+    if (hint) hint.textContent = !supported ? 'این نوع پنل از شروع زمان با اولین اتصال پشتیبانی نمی‌کند.'
+      : (hid.value === 'first_use' ? 'زمان سرویس بعد از اولین اتصال کاربر شروع می‌شود.' : 'زمان سرویس از لحظه خرید شروع می‌شود.');
+  };
+  $$('[data-start-mode]', b).forEach(btn => btn.addEventListener('click', () => {
+    const hid = $('#prod-start-mode', b);
+    hid.value = btn.dataset.startMode; hid.dataset.touched = '1'; syncStartMode(false);
+  }));
+  if (targetType) targetType.addEventListener('change', () => syncStartMode(true));
+  if (prodServer) prodServer.addEventListener('change', () => syncStartMode(true));
+  syncStartMode(false);
   syncPanelOptions();
   syncUserLimit();
   const volUnlimitedCb = $('#prod-volume-unlimited', b);
@@ -5152,7 +5188,7 @@ function readProductProvisionFields(b) {
   if (!provision_server_id) { toast('یک پنل VPN فعال انتخاب کنید.', true); return { ok: false }; }
   const provision_target_values = readProductTargetValues(b);
   if (provision_target_values !== null && !provision_target_values.length) { toast('حداقل یک گروه یا Inbound انتخاب کنید.', true); return { ok: false }; }
-  return { ok: true, source: 'direct', provision_server_id, provision_target_values, provision_ssh_node_id: null, extra_panel_ids: [], extra_ssh_node_ids: [], auto_provision_volume_gb, duration_days, ...userLimit() };
+  return { ok: true, source: 'direct', provision_server_id, provision_target_values, provision_ssh_node_id: null, extra_panel_ids: [], extra_ssh_node_ids: [], auto_provision_volume_gb, duration_days, start_on_first_use: ($('#prod-start-mode', b)?.value === 'first_use'), ...userLimit() };
 }
 
 // روش‌های پرداخت مجاز حین «ساخت» محصول جدید (پیش‌فرض: همه تیک‌خورده = بدون
@@ -5271,7 +5307,7 @@ function openProductEditModal(product, categories, panelServers, sshNodes) {
         payload.extra_panel_ids = prov.extra_panel_ids;
         payload.extra_ssh_node_ids = prov.extra_ssh_node_ids;
         payload.auto_provision_volume_gb = prov.auto_provision_volume_gb;
-        payload.base_users = prov.base_users; payload.extra_user_price = prov.extra_user_price; payload.max_users = prov.max_users; payload.renew_rules = prov.renew_rules;
+        payload.base_users = prov.base_users; payload.extra_user_price = prov.extra_user_price; payload.max_users = prov.max_users; payload.renew_rules = prov.renew_rules; if (prov.start_on_first_use !== undefined) payload.start_on_first_use = prov.start_on_first_use;
       }
       try {
         await apiPut(`/products/${product.id}`, payload);
@@ -5427,7 +5463,7 @@ async function renderCatalog() {
           category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
           description: $('#prod-desc', b).value, btn_style: readProductBtnStyle(b, 'prod'), ai_description: $('#prod-ai-desc', b)?.value || '', duration_days: prov.duration_days, product_kind: prov.product_kind || 'config',
           provision_server_id: prov.provision_server_id, provision_target_values: prov.provision_target_values, extra_panel_target_values: prov.extra_panel_target_values, provision_ssh_node_id: prov.provision_ssh_node_id, provision_ssh_protocol: prov.provision_ssh_protocol, extra_panel_ids: prov.extra_panel_ids, extra_ssh_node_ids: prov.extra_ssh_node_ids,
-          auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods, base_users: prov.base_users, extra_user_price: prov.extra_user_price, max_users: prov.max_users, renew_rules: prov.renew_rules,
+          auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods, base_users: prov.base_users, extra_user_price: prov.extra_user_price, max_users: prov.max_users, renew_rules: prov.renew_rules, start_on_first_use: prov.start_on_first_use,
         });
         toast('محصول اضافه شد.'); close(); renderCatalog();
       } catch (e) { handleErr(e); }
@@ -5560,7 +5596,7 @@ function renderCatalogBento(categories, products, panelServers, sshNodes, paymen
           category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
           description: $('#prod-desc', b).value, btn_style: readProductBtnStyle(b, 'prod'), ai_description: $('#prod-ai-desc', b)?.value || '', duration_days: prov.duration_days, product_kind: prov.product_kind || 'config',
           provision_server_id: prov.provision_server_id, provision_target_values: prov.provision_target_values, extra_panel_target_values: prov.extra_panel_target_values, provision_ssh_node_id: prov.provision_ssh_node_id, provision_ssh_protocol: prov.provision_ssh_protocol, extra_panel_ids: prov.extra_panel_ids, extra_ssh_node_ids: prov.extra_ssh_node_ids,
-          auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods, base_users: prov.base_users, extra_user_price: prov.extra_user_price, max_users: prov.max_users, renew_rules: prov.renew_rules,
+          auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods, base_users: prov.base_users, extra_user_price: prov.extra_user_price, max_users: prov.max_users, renew_rules: prov.renew_rules, start_on_first_use: prov.start_on_first_use,
         });
         toast('محصول اضافه شد.'); close(); renderCatalog();
       } catch (e) { handleErr(e); }
@@ -5693,7 +5729,7 @@ function renderCatalogBrutalist(categories, products, panelServers, sshNodes, pa
           category_id: Number($('#prod-cat', b).value), name, price: disc.price, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
           description: $('#prod-desc', b).value, btn_style: readProductBtnStyle(b, 'prod'), ai_description: $('#prod-ai-desc', b)?.value || '', duration_days: prov.duration_days, product_kind: prov.product_kind || 'config',
           provision_server_id: prov.provision_server_id, provision_target_values: prov.provision_target_values, extra_panel_target_values: prov.extra_panel_target_values, provision_ssh_node_id: prov.provision_ssh_node_id, provision_ssh_protocol: prov.provision_ssh_protocol, extra_panel_ids: prov.extra_panel_ids, extra_ssh_node_ids: prov.extra_ssh_node_ids,
-          auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods, base_users: prov.base_users, extra_user_price: prov.extra_user_price, max_users: prov.max_users, renew_rules: prov.renew_rules,
+          auto_provision_volume_gb: prov.auto_provision_volume_gb, payment_methods, base_users: prov.base_users, extra_user_price: prov.extra_user_price, max_users: prov.max_users, renew_rules: prov.renew_rules, start_on_first_use: prov.start_on_first_use,
         });
         toast('محصول اضافه شد.'); close(); renderCatalog();
       } catch (e) { handleErr(e); }
@@ -8655,6 +8691,10 @@ const PANEL_TYPE_OPTIONS_HTML = [
 const PANEL_INBOUND_SELECT_TYPES = ['3xui', 'alireza'];
 const PANEL_SUB_BASE_URL_TYPES = ['3xui', 'hiddify', 'alireza'];
 const PANEL_TEMPLATE_BASED_TYPES = ['pasarguard', 'marzban', 'marzneshin', 'rebecca', 'sui', 'wgdashboard', 'mikrotik', 'ibsng', 'wui'];
+// در مرحله‌ی «اتصال» فقط این دو پنل هنوز «کاربر نمونه» می‌خواهند (لیست زنده‌ی گروه/سرویس ندارند).
+// برای بقیه، گروه/اینباند موقع ساخت محصول انتخاب می‌شود.
+const PANEL_CONNECT_TEMPLATE_TYPES = ['rebecca', 'ibsng'];
+const PANEL_LATER_NOTE = 'ℹ️ در اتصال فقط آدرس و اطلاعات ورود پنل را می‌گیریم. انتخاب گروه/اینباند اینجا نیست؛ موقع ساخت هر محصول مشخص می‌کنی آن محصول روی کدام گروه/اینباندِ این پنل ساخته شود (لیست از خود پنل خوانده می‌شود).';
 const PANEL_TOKEN_ONLY_TYPES = ['3xui', 'rebecca', 'sui', 'wgdashboard', 'wui', 'stealth'];
 const PANEL_SECRET_PLACEHOLDERS = {
   rebecca: 'توکن ادمین (Bearer token)',
@@ -8672,12 +8712,12 @@ const PANEL_TEMPLATE_PLACEHOLDERS = {
   ibsng: 'نام گروه (Group) در IBSng',
 };
 const PANEL_TEMPLATE_HINTS = {
-  sui: 'inbound های کاربر نمونه برای کاربرهای جدید استفاده می‌شود. فقط API Token لازم است.',
-  rebecca: 'سرویس (service) کاربر نمونه برای کاربرهای جدید استفاده می‌شود. فقط توکن لازم است.',
+  sui: 'فقط API Token لازم است. inbound ها موقع ساخت محصول انتخاب می‌شوند.',
+  rebecca: 'این پنل لیست زنده‌ی سرویس ندارد؛ برای همین فقط در همین یک مورد یک کاربر نمونه لازم است. سرویس نهایی هر محصول موقع ساخت محصول انتخاب می‌شود.',
   wgdashboard: 'فقط API Key لازم است. کاربرها به‌صورت peer داخل configuration ساخته می‌شوند و حجم/انقضا با Schedule Job اعمال می‌شود.',
-  wui: 'interface های مشتری نمونه برای کاربرهای جدید استفاده می‌شود. فقط API Token لازم است. آدرس API باید شامل Web Base Path پنل باشد.',
-  mikrotik: 'حجم و مدت را profile تعیین می‌کند و مقدار حجم/مدت محصول اعمال نمی‌شود. یوزر/پس ادمین روتر (REST API) لازم است.',
-  ibsng: 'حجم و مدت را گروه تعیین می‌کند و مقدار حجم/مدت محصول اعمال نمی‌شود. یوزر/پس ادمین IBSng لازم است.',
+  wui: 'فقط API Token لازم است. interface ها موقع ساخت محصول انتخاب می‌شوند. آدرس API باید شامل Web Base Path پنل باشد.',
+  mikrotik: 'یوزر/پس ادمین روتر (REST API) لازم است. profile (که حجم و مدت را تعیین می‌کند) موقع ساخت محصول انتخاب می‌شود.',
+  ibsng: 'این پنل لیست زنده‌ی گروه ندارد؛ برای همین فقط در همین یک مورد نام یک گروه (Group) لازم است. حجم و مدت را گروه تعیین می‌کند. یوزر/پس ادمین IBSng لازم است.',
 };
 
 // ---- نصب خودکار نود Stealth VLESS (مشترک بین «پنل‌ها» و «نودها و سهمیه SSH») ----
@@ -8733,6 +8773,7 @@ function panelAddFormHtml() {
       <div class="form-row"><input class="input" id="p-user" placeholder="یوزرنیم"><input class="input" id="p-pass" type="password" placeholder="پسورد"></div>
       <input class="input" id="p-template" placeholder="نام کاربری نمونه (برای دریافت قالب)" style="display:none">
       <p id="p-hint" style="display:none;font-size:12px;color:var(--muted,#8892a6);margin:0"></p>
+      <p id="p-later-note" style="font-size:12px;color:var(--muted,#8892a6);margin:0">${PANEL_LATER_NOTE}</p>
       <select class="input" id="p-cat"><option value="">🗂 بدون دسته‌بندی</option>${(window.__panelCats || []).map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
       <button class="btn btn-primary" id="p-save">ثبت</button>
     </div>
@@ -8759,7 +8800,7 @@ function wirePanelAddForm(body, close) {
       userInp.style.display = 'none'; userInp.value = '';
       passInp.placeholder = 'API Token (Settings ← Security در پنل)';
       hint.style.display = 'block';
-      hint.textContent = '3X-UI جدید فقط با API Token کار می‌کند؛ یوزرنیم لازم نیست. بعد از ثبت باید inbound و لینک Subscription را هم تنظیم کنی.';
+      hint.textContent = '3X-UI جدید فقط با API Token کار می‌کند؛ یوزرنیم لازم نیست. بعد از ثبت فقط لینک Subscription را می‌پرسیم؛ inbound موقع ساخت محصول انتخاب می‌شود.';
     } else if (t === 'hiddify') {
       userInp.style.display = ''; userInp.placeholder = 'هر مقداری (استفاده نمی‌شود)';
       passInp.placeholder = 'Hiddify API Key (UUID ادمین)';
@@ -8769,16 +8810,16 @@ function wirePanelAddForm(body, close) {
       userInp.style.display = ''; userInp.placeholder = 'یوزرنیم';
       passInp.placeholder = 'پسورد';
       hint.style.display = 'block';
-      hint.textContent = 'فقط یک inbound قابل انتخاب است. بعد از ثبت باید inbound و لینک Subscription را هم تنظیم کنی.';
+      hint.textContent = 'بعد از ثبت فقط لینک Subscription را می‌پرسیم؛ inbound (فقط یکی) موقع ساخت محصول انتخاب می‌شود.';
     } else {
       const tokenOnly = PANEL_TOKEN_ONLY_TYPES.includes(t);
       userInp.style.display = tokenOnly ? 'none' : ''; userInp.placeholder = 'یوزرنیم';
       if (tokenOnly) userInp.value = '';
       passInp.placeholder = PANEL_SECRET_PLACEHOLDERS[t] || 'پسورد';
       hint.style.display = 'block';
-      templateInp.style.display = '';
+      templateInp.style.display = PANEL_CONNECT_TEMPLATE_TYPES.includes(t) ? '' : 'none';
       templateInp.placeholder = PANEL_TEMPLATE_PLACEHOLDERS[t] || 'نام کاربری نمونه (برای دریافت قالب)';
-      hint.textContent = PANEL_TEMPLATE_HINTS[t] || 'یک نام کاربری که از قبل روی این پنل ساخته شده را وارد کن؛ تنظیمات (گروه/پروکسی) او به‌عنوان قالب برای کاربرهای جدید استفاده می‌شود.';
+      hint.textContent = PANEL_TEMPLATE_HINTS[t] || 'فقط آدرس و اطلاعات ورود پنل لازم است؛ گروه/اینباند موقع ساخت محصول انتخاب می‌شود.';
     }
   }
   typeSel.addEventListener('change', syncTypeUI);
@@ -8790,7 +8831,7 @@ function wirePanelAddForm(body, close) {
     const panel_type = typeSel.value;
     if (!name || !api_url) return toast('نام و آدرس الزامی است.', true);
     if (!passInp.value.trim()) return toast(PANEL_TOKEN_ONLY_TYPES.includes(panel_type) ? 'API Token الزامی است.' : 'رمز/کلید الزامی است.', true);
-    if (PANEL_TEMPLATE_BASED_TYPES.includes(panel_type) && !templateInp.value.trim()) {
+    if (PANEL_CONNECT_TEMPLATE_TYPES.includes(panel_type) && !templateInp.value.trim()) {
       return toast(PANEL_TEMPLATE_PLACEHOLDERS[panel_type] ? 'مقدار قالب الزامی است.' : 'نام کاربری نمونه الزامی است.', true);
     }
     let serverId, warning = '';
@@ -8799,41 +8840,22 @@ function wirePanelAddForm(body, close) {
         name, panel_type, api_url,
         api_username: userInp.value, api_password: passInp.value,
         panel_category_id: Number($('#p-cat', body)?.value) || undefined,
-        template_username: PANEL_TEMPLATE_BASED_TYPES.includes(panel_type) ? templateInp.value.trim() : undefined,
+        template_username: PANEL_CONNECT_TEMPLATE_TYPES.includes(panel_type) ? templateInp.value.trim() : undefined,
       });
       serverId = r.id; warning = r.warning || '';
     } catch (e) { return handleErr(e); }
 
-    if (PANEL_INBOUND_SELECT_TYPES.includes(panel_type)) return finishXuiInboundSetup(serverId, close);
+    // فقط آدرس Subscription (بدون انتخاب inbound)
     if (PANEL_SUB_BASE_URL_TYPES.includes(panel_type)) return askPanelSubBaseUrl(serverId, close);
-    toast(warning ? ('پنل اضافه شد.\n' + warning) : 'پنل اضافه شد.'); close(); renderPanels();
+    toast((warning ? ('پنل متصل شد.\n' + warning + '\n') : 'پنل متصل شد. ') + 'گروه/اینباند را موقع ساخت محصول انتخاب کن.'); close(); renderPanels();
   });
-}
-
-async function finishXuiInboundSetup(serverId, closeParent) {
-  let inbounds;
-  try {
-    inbounds = await apiGet(`/panel-servers/${serverId}/inbounds`);
-  } catch (e) {
-    toast('پنل ذخیره شد ولی دریافت لیست inbound ناموفق بود: ' + e.message, true);
-    closeParent(); renderPanels();
-    return;
-  }
-  if (!inbounds.length) {
-    toast('این پنل هیچ inbound ای ندارد؛ اول از داخل پنل یک inbound بساز، بعد دوباره تلاش کن.', true);
-    try { await apiDelete(`/panel-servers/${serverId}?force=true`); } catch (e) { /* ignore */ }
-    closeParent(); renderPanels();
-    return;
-  }
-  closeParent();
-  openXuiInboundModal(serverId, inbounds, [], '');
 }
 
 function openXuiInboundModal(serverId, inbounds, selectedIds, subBaseUrl) {
   const selected = new Set(selectedIds || []);
-  openModal('انتخاب Inbound', `
+  openModal('Inbound پیش‌فرض (اختیاری)', `
     <div class="form-grid">
-      <p style="margin:0">کدام inbound(ها) برای ساخت کاربرهای جدید استفاده شود؟ (می‌توانی چند مورد را تیک بزنی)</p>
+      <p style="margin:0">این تنظیم اختیاری است و فقط برای مهاجرت کاربران/محصولات قدیمی بدون مقصد استفاده می‌شود. مقصد هر محصول جدید موقع ساخت محصول انتخاب می‌شود.</p>
       <div id="p-inbound-list" style="display:flex;flex-direction:column;gap:6px;max-height:220px;overflow:auto">
         ${inbounds.map(ib => `
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
@@ -8848,9 +8870,8 @@ function openXuiInboundModal(serverId, inbounds, selectedIds, subBaseUrl) {
       const suburl = $('#p-suburl', body2).value.trim();
       const inbound_ids = $$('.p-inbound-cb', body2).filter(cb => cb.checked).map(cb => parseInt(cb.value, 10));
       if (!suburl) return toast('لینک Subscription الزامی است.', true);
-      if (!inbound_ids.length) return toast('حداقل یک inbound را تیک بزن.', true);
       try {
-        await apiPut(`/panel-servers/${serverId}`, { xui_inbound_ids: inbound_ids, xui_sub_base_url: suburl });
+        await apiPut(`/panel-servers/${serverId}`, { ...(inbound_ids.length ? { xui_inbound_ids: inbound_ids } : {}), xui_sub_base_url: suburl });
         toast('پنل تنظیم شد.'); close2(); renderPanels();
       } catch (e) { handleErr(e); }
     });
@@ -9293,13 +9314,150 @@ const ACCT_KIND_LABELS = { panel: 'محصول متصل به پنل / نود', pe
 const ACCT_VAR_HELP = [['gb', 'حجم (GB)'], ['days', 'مدت (روز)'], ['users', 'ظرفیت کاربر'], ['panels', 'تعداد پنل'], ['nodes', 'تعداد نود'], ['cost_gb', 'هزینه هر گیگ'], ['cost_day', 'هزینه هر روز'], ['cost_user', 'هزینه هر کاربر']];
 
 async function renderAccounting() {
-  const sub = navSubGet('accounting') || 'costs';
-  const tabs = [['costs', 'قیمت تمام‌شده'], ['formulas', 'فرمول‌ها و قیمت‌گذاری']];
+  const sub = navSubGet('accounting') || 'overview';
+  const tabs = [['overview', 'داشبورد مالی'], ['ledger', 'دفتر درآمد و هزینه'], ['costs', 'قیمت تمام‌شده'], ['formulas', 'فرمول‌ها و قیمت‌گذاری']];
   const bar = `<div class="toolbar" style="gap:8px;flex-wrap:wrap">${tabs.map(([k, l]) => `<button class="btn btn-sm ${sub === k ? 'btn-primary' : ''}" data-acct-tab="${k}">${l}</button>`).join('')}</div>`;
-  const body = sub === 'formulas' ? await acctFormulasHtml() : (await paygCostsHtml('acct')) + (await acctNodeCostsHtml());
+  let body = '';
+  if (sub === 'overview') body = await acctOverviewHtml();
+  else if (sub === 'ledger') body = await acctLedgerHtml();
+  else if (sub === 'formulas') body = await acctFormulasHtml();
+  else body = (await paygCostsHtml('acct')) + (await acctNodeCostsHtml());
   setContent(bar + body);
   $$('[data-acct-tab]', content()).forEach(b => b.addEventListener('click', () => goTo('accounting', b.dataset.acctTab)));
-  if (sub === 'formulas') acctBindFormulas(); else { paygBindCosts('acct'); acctBindNodeCosts(); }
+  if (sub === 'overview') acctBindOverview();
+  else if (sub === 'ledger') acctBindLedger();
+  else if (sub === 'formulas') acctBindFormulas();
+  else { paygBindCosts('acct'); acctBindNodeCosts(); }
+}
+
+function acctPeriodParams(root) {
+  const from = $('#acct-from', root)?.value || '';
+  const to = $('#acct-to', root)?.value || '';
+  return `from_date=${encodeURIComponent(from)}&to_date=${encodeURIComponent(to)}`;
+}
+
+async function acctOverviewHtml() {
+  const now = new Date();
+  const from = window.__acctPeriod?.from || new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0,10);
+  const to = window.__acctPeriod?.to || now.toISOString().slice(0,10);
+  const d = await apiGet(`/accounting/ledger/summary?from_date=${from}&to_date=${to}`);
+  const money = v => `${fmt(v || 0)} تومان`;
+  const monthly = (d.monthly || []).slice().reverse();
+  const max = Math.max(1, ...monthly.map(x => Math.max(Number(x.income||0), Number(x.expense||0))));
+  const bars = monthly.map(m => `<div style="display:grid;grid-template-columns:70px 1fr;gap:10px;align-items:center;margin:8px 0">
+    <span class="card-sub">${esc(m.month)}</span><div style="display:grid;gap:4px">
+      <div title="درآمد ${money(m.income)}" style="height:9px;border-radius:8px;background:var(--success,#16a34a);width:${Math.max(1,Number(m.income||0)/max*100)}%"></div>
+      <div title="هزینه ${money(m.expense)}" style="height:9px;border-radius:8px;background:var(--danger,#dc2626);width:${Math.max(1,Number(m.expense||0)/max*100)}%"></div>
+    </div></div>`).join('') || '<div class="empty-state">هنوز سند مالی ثبت نشده است.</div>';
+  const cats = (d.categories || []).map(c => `<tr><td>${esc(c.category)}</td><td>${c.entry_type === 'income' ? 'درآمد' : 'هزینه'}</td><td>${fmt(c.count)}</td><td>${money(c.total)}</td></tr>`).join('');
+  const gateways = (d.gateway_revenue_lifetime || []).map(g => `<tr><td>${esc(g.label || g.gateway)}</td><td>${fmt(g.count)}</td><td>${money(g.amount_toman)}</td></tr>`).join('');
+  const gatewayTotal = (d.gateway_revenue_lifetime || []).reduce((s,g)=>s+Number(g.amount_toman||0),0);
+  return `<div class="card" style="padding:14px;margin-top:12px">
+    <div class="row-between" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><b>خلاصه عملکرد مالی</b><p class="card-sub">بر اساس اسناد ثبت‌شده در دفتر مالی؛ درآمدهای خودکار درگاه‌ها جداگانه در گزارش پرداخت‌ها نگهداری می‌شوند.</p></div>
+    <button class="btn btn-primary" id="acct-new-income">+ ثبت درآمد</button><button class="btn" id="acct-new-expense">− ثبت هزینه</button></div>
+    <div class="form-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin-top:12px">
+      <label class="field"><span>از تاریخ</span><input class="input" type="date" id="acct-from" value="${from}"></label>
+      <label class="field"><span>تا تاریخ</span><input class="input" type="date" id="acct-to" value="${to}"></label>
+      <button class="btn" id="acct-refresh" style="align-self:end">به‌روزرسانی گزارش</button></div>
+    <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:14px">
+      <div class="card"><span class="card-sub">درآمد ثبت‌شده</span><h2>${money(d.income)}</h2><span class="card-sub">${fmt(d.income_count)} سند</span></div>
+      <div class="card"><span class="card-sub">هزینه ثبت‌شده</span><h2>${money(d.expense)}</h2><span class="card-sub">${fmt(d.expense_count)} سند</span></div>
+      <div class="card"><span class="card-sub">خالص گردش ثبت‌شده</span><h2 style="color:${d.net>=0?'var(--success,#16a34a)':'var(--danger,#dc2626)'}">${money(d.net)}</h2><span class="card-sub">درآمد منهای هزینه</span></div>
+    </div></div>
+    <div class="card" style="padding:14px;margin-top:12px"><b>روند ماهانه</b><div class="card-sub">سبز: درآمد · قرمز: هزینه</div>${bars}</div>
+    <div class="card" style="padding:14px;margin-top:12px"><b>تفکیک بر اساس دسته‌بندی دفتر مالی</b><div class="table-wrap"><table><thead><tr><th>دسته</th><th>نوع</th><th>تعداد</th><th>مجموع</th></tr></thead><tbody>${cats || '<tr><td colspan="4">داده‌ای موجود نیست.</td></tr>'}</tbody></table></div></div>
+    <div class="card" style="padding:14px;margin-top:12px"><b>وضعیت درآمد درگاه‌های پرداخت</b><p class="card-sub">این گزارش از فاکتورهای تکمیل‌شده درگاه‌ها خوانده می‌شود و مجموع کل دوره است؛ با فیلتر تاریخ دفتر دستی تغییر نمی‌کند و در خالص دفتر مالی دوباره جمع نشده تا درآمد تکراری محاسبه نشود.</p><h3>${money(gatewayTotal)}</h3><div class="table-wrap"><table><thead><tr><th>درگاه</th><th>تعداد پرداخت</th><th>مجموع دریافتی</th></tr></thead><tbody>${gateways || '<tr><td colspan="3">گزارش درگاه در دسترس نیست.</td></tr>'}</tbody></table></div></div>`;
+}
+
+function acctBindOverview() {
+  const root = content();
+  $('#acct-refresh', root)?.addEventListener('click', () => {
+    const from=$('#acct-from',root).value, to=$('#acct-to',root).value;
+    if(from && to && from>to){toast('تاریخ شروع نمی‌تواند بعد از تاریخ پایان باشد');return;}
+    window.__acctPeriod={from,to};
+    renderAccounting().catch(handleErr);
+  });
+  $('#acct-new-income', root)?.addEventListener('click', () => acctOpenEntryEditor('income'));
+  $('#acct-new-expense', root)?.addEventListener('click', () => acctOpenEntryEditor('expense'));
+}
+
+async function acctLedgerHtml() {
+  const now = new Date();
+  const from = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0,10);
+  const to = now.toISOString().slice(0,10);
+  const d = await apiGet(`/accounting/ledger/entries?from_date=${from}&to_date=${to}&limit=50`);
+  window.__acctLedger = d;
+  const rows = (d.items || []).map(r => `<tr>
+    <td>${esc(r.entry_date)}</td><td><span class="badge ${r.entry_type==='income'?'badge-success':'badge-danger'}">${r.entry_type==='income'?'درآمد':'هزینه'}</span></td>
+    <td>${esc(r.title)}</td><td>${esc(r.category)}</td><td>${fmt(r.amount)} تومان</td><td>${esc(r.payment_method||'—')}</td>
+    <td><button class="btn btn-sm" data-acct-edit="${Number(r.id)}">ویرایش</button> <button class="btn btn-sm btn-danger" data-acct-delete="${Number(r.id)}">حذف</button></td></tr>`).join('');
+  return `<div class="card" style="padding:14px;margin-top:12px"><div class="row-between" style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><div><b>دفتر درآمد و هزینه</b><p class="card-sub">ثبت اسناد دستی، قابل جستجو، ویرایش و خروجی CSV</p></div>
+    <div><button class="btn btn-primary" id="acct-ledger-income">+ درآمد</button> <button class="btn" id="acct-ledger-expense">− هزینه</button></div></div>
+    <div class="form-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:12px 0">
+      <label class="field"><span>از تاریخ</span><input class="input" id="acct-ledger-from" type="date" value="${from}"></label>
+      <label class="field"><span>تا تاریخ</span><input class="input" id="acct-ledger-to" type="date" value="${to}"></label>
+      <label class="field"><span>نوع سند</span><select class="input" id="acct-ledger-type"><option value="">همه</option><option value="income">درآمد</option><option value="expense">هزینه</option></select></label>
+      <label class="field"><span>جستجو</span><input class="input" id="acct-ledger-q" placeholder="عنوان، ارجاع یا توضیحات"></label>
+      <button class="btn" id="acct-ledger-filter" style="align-self:end">اعمال فیلتر</button>
+      <a class="btn" id="acct-ledger-export" href="/api/accounting/ledger/export.csv?from_date=${from}&to_date=${to}">خروجی CSV</a>
+    </div><div class="table-wrap"><table><thead><tr><th>تاریخ</th><th>نوع</th><th>عنوان</th><th>دسته</th><th>مبلغ</th><th>روش پرداخت</th><th>عملیات</th></tr></thead><tbody>${rows || '<tr><td colspan="7" class="empty-state">برای این بازه سندی ثبت نشده است.</td></tr>'}</tbody></table></div>
+    <div class="card-sub" style="margin-top:8px">نمایش ${fmt(d.items?.length||0)} مورد از ${fmt(d.total||0)} سند</div></div>`;
+}
+
+function acctBindLedger() {
+  const root = content();
+  $('#acct-ledger-income', root)?.addEventListener('click', () => acctOpenEntryEditor('income'));
+  $('#acct-ledger-expense', root)?.addEventListener('click', () => acctOpenEntryEditor('expense'));
+  $('#acct-ledger-filter', root)?.addEventListener('click', async () => {
+    const from=$('#acct-ledger-from',root).value, to=$('#acct-ledger-to',root).value;
+    const type=$('#acct-ledger-type',root).value, q=$('#acct-ledger-q',root).value.trim();
+    const params=new URLSearchParams({from_date:from,to_date:to,entry_type:type,q,limit:'50'});
+    const d=await apiGet('/accounting/ledger/entries?'+params.toString());
+    window.__acctLedger=d;
+    const url=`/api/accounting/ledger/export.csv?from_date=${encodeURIComponent(from)}&to_date=${encodeURIComponent(to)}&entry_type=${encodeURIComponent(type)}`;
+    $('#acct-ledger-export',root).href=url;
+    const rows=(d.items||[]).map(r=>`<tr><td>${esc(r.entry_date)}</td><td>${r.entry_type==='income'?'درآمد':'هزینه'}</td><td>${esc(r.title)}</td><td>${esc(r.category)}</td><td>${fmt(r.amount)} تومان</td><td>${esc(r.payment_method||'—')}</td><td><button class="btn btn-sm" data-acct-edit="${Number(r.id)}">ویرایش</button> <button class="btn btn-sm btn-danger" data-acct-delete="${Number(r.id)}">حذف</button></td></tr>`).join('');
+    $('tbody',root).innerHTML=rows||'<tr><td colspan="7" class="empty-state">سندی یافت نشد.</td></tr>';
+    acctBindLedgerRows(root);
+  });
+  acctBindLedgerRows(root);
+}
+
+function acctBindLedgerRows(root) {
+  $$('[data-acct-edit]',root).forEach(b=>b.addEventListener('click',()=>{
+    const id=Number(b.dataset.acctEdit), item=(window.__acctLedger?.items||[]).find(x=>Number(x.id)===id);
+    if(item) acctOpenEntryEditor(item.entry_type,item);
+  }));
+  $$('[data-acct-delete]',root).forEach(b=>b.addEventListener('click',async()=>{
+    const id=Number(b.dataset.acctDelete);
+    if(!confirm('این سند مالی حذف شود؟ این عملیات قابل بازگشت نیست.')) return;
+    try { await apiDelete(`/accounting/ledger/entries/${id}`); toast('سند حذف شد'); renderAccounting().catch(handleErr); }
+    catch(e){handleErr(e);}
+  }));
+}
+
+function acctOpenEntryEditor(type, item=null) {
+  const isEdit=!!item;
+  const cats=type==='income'?['فروش نقدی','درآمد متفرقه','سایر درآمد']:['هزینه سرور','زیرساخت و شبکه','حقوق و دستمزد','بازاریابی','کارمزد درگاه','هزینه عملیاتی','سایر هزینه'];
+  const html=`<div style="display:grid;gap:10px">
+    <label class="field"><span>عنوان سند</span><input class="input" id="acct-entry-title" maxlength="180" value="${esc(item?.title||'')}"></label>
+    <div class="form-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px">
+      <label class="field"><span>مبلغ (تومان)</span><input class="input" id="acct-entry-amount" type="number" min="1" step="1" value="${Number(item?.amount||'')}"></label>
+      <label class="field"><span>تاریخ</span><input class="input" id="acct-entry-date" type="date" value="${esc(item?.entry_date||new Date().toISOString().slice(0,10))}"></label>
+      <label class="field"><span>دسته‌بندی</span><select class="input" id="acct-entry-category">${cats.map(c=>`<option ${item?.category===c?'selected':''}>${c}</option>`).join('')}</select></label>
+      <label class="field"><span>روش پرداخت</span><select class="input" id="acct-entry-method">${['','نقدی','کارت‌به‌کارت','انتقال بانکی','کیف پول','کریپتو','سایر'].map(c=>`<option value="${esc(c)}" ${item?.payment_method===c?'selected':''}>${c||'انتخاب نشده'}</option>`).join('')}</select></label>
+    </div>
+    <label class="field"><span>شماره پیگیری / مرجع</span><input class="input" id="acct-entry-ref" maxlength="120" value="${esc(item?.reference||'')}"></label>
+    <label class="field"><span>توضیحات</span><textarea class="input" id="acct-entry-desc" rows="3">${esc(item?.description||'')}</textarea></label>
+    <button class="btn btn-primary" id="acct-entry-save">${isEdit?'ذخیره تغییرات':'ثبت سند'}</button></div>`;
+  openModal(isEdit?'ویرایش سند مالی':(type==='income'?'ثبت درآمد جدید':'ثبت هزینه جدید'),html,async(el,close)=>{
+    $('#acct-entry-save',el).addEventListener('click',async e=>{
+      const btn=e.currentTarget; btn.disabled=true;
+      const body={entry_type:type,title:$('#acct-entry-title',el).value,amount:Number($('#acct-entry-amount',el).value),entry_date:$('#acct-entry-date',el).value,category:$('#acct-entry-category',el).value,payment_method:$('#acct-entry-method',el).value,reference:$('#acct-entry-ref',el).value,description:$('#acct-entry-desc',el).value};
+      try { if(isEdit) await apiPut(`/accounting/ledger/entries/${Number(item.id)}`,body); else await apiPost('/accounting/ledger/entries',body); toast('سند مالی ذخیره شد'); close(); renderAccounting().catch(handleErr); }
+      catch(err){handleErr(err);btn.disabled=false;}
+    });
+  },{wide:true});
 }
 
 async function acctNodeCostsHtml() {
@@ -9743,8 +9901,8 @@ async function renderPanels() {
           <button class="btn btn-sm" data-move-down="${s.id}" title="یک پله پایین">↓</button>
           <button class="btn btn-sm" data-test="${s.id}">تست اتصال</button>
           <button class="btn btn-sm" data-edit="${s.id}">ویرایش</button>
-          ${PANEL_INBOUND_SELECT_TYPES.includes(s.panel_type) ? `<button class="btn btn-sm" data-edit-inbounds="${s.id}">Inbound ها</button>` : ''}
-          ${PANEL_TEMPLATE_BASED_TYPES.includes(s.panel_type) ? `<button class="btn btn-sm" data-retemplate="${s.id}">قالب جدید</button>` : ''}
+          ${PANEL_INBOUND_SELECT_TYPES.includes(s.panel_type) ? `<button class="btn btn-sm" data-edit-inbounds="${s.id}">Inbound پیش‌فرض</button>` : ''}
+          ${PANEL_TEMPLATE_BASED_TYPES.includes(s.panel_type) ? `<button class="btn btn-sm" data-retemplate="${s.id}">${PANEL_CONNECT_TEMPLATE_TYPES.includes(s.panel_type) ? 'قالب جدید' : 'قالب پیش‌فرض'}</button>` : ''}
           <button class="btn btn-danger btn-sm" data-del="${s.id}">حذف</button>
         </td>
       </tr>`).join('') || '<tr><td colspan="6" class="empty-state">پنلی ثبت نشده</td></tr>'}</tbody>
@@ -9758,7 +9916,7 @@ async function renderPanels() {
       const inbounds = await apiGet(`/panel-servers/${server.id}/inbounds`);
       openXuiInboundModal(server.id, inbounds, server.xui_inbound_ids || [], server.xui_sub_base_url || '');
     } catch (e) { handleErr(e); }
-    finally { b.textContent = 'Inbound ها'; b.disabled = false; }
+    finally { b.textContent = 'Inbound پیش‌فرض'; b.disabled = false; }
   }));
   $$('[data-test]', content()).forEach(b => b.addEventListener('click', async () => {
     b.textContent = 'در حال تست...'; b.disabled = true;
@@ -9827,6 +9985,7 @@ function enhancePanelCategories(servers, pcats) {
   applyFilter();
   $$('[data-pcat-filter]', bar).forEach(b => b.addEventListener('click', () => { panelCatFilter = b.dataset.pcatFilter; renderPanels(); }));
   $('#pcat-manage', bar).addEventListener('click', () => openPanelCategoriesModal(pcats));
+  enhancePanelAdvanced(servers);
 }
 
 function openPanelCategoriesModal(pcats) {
@@ -9912,6 +10071,291 @@ function openPanelRetemplateModal(serverId) {
   });
 }
 
+function panelAdvancedRow(label, inner, hint) {
+  return `<div style="display:flex;flex-direction:column;gap:4px"><label style="font-size:12px;opacity:.8">${label}</label>${inner}${hint ? `<div style="font-size:11px;opacity:.65">${hint}</div>` : ''}</div>`;
+}
+
+async function downloadPanelBackup(serverId) {
+  const res = await fetch(`/api/panel-servers/${serverId}/backup`, { credentials: 'include', headers: idleHeaders() });
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    throw new Error(formatApiError(d.detail || `خطای سرور (${res.status})`));
+  }
+  const cd = res.headers.get('Content-Disposition') || '';
+  const m = /filename="?([^";]+)"?/.exec(cd);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = m ? m[1] : `panel_${serverId}.db`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+async function openPanelAdvancedModal(serverId) {
+  let s;
+  try { s = await apiGet(`/panel-servers/${serverId}/advanced`); } catch (e) { return handleErr(e); }
+  const isOwner = ME.role === 'owner';
+  const cap = s.capacity || {};
+  const nm = s.naming || {};
+  const capText = cap.max_services ? `${fmt(cap.active_services)} / ${fmt(cap.max_services)} (${fmt(cap.percent)}٪)${cap.near_limit ? ' ⚠️ نزدیک سقف' : ''}` : `${fmt(cap.active_services)} سرویس فعال (نامحدود)`;
+  const ratingText = s.rating && s.rating.count ? `⭐ ${s.rating.avg}/۵ (${fmt(s.rating.count)} رأی)` : '';
+  const chk = (id, label, on, extra = '') => `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" id="${id}" ${on ? 'checked' : ''} ${extra}> ${label}</label>`;
+  const modeOptions = [`<option value="default">پیش‌فرض (روش قبلی)</option>`, ...(nm.modes || []).map(m => `<option value="${esc(m.key)}" ${nm.mode === m.key ? 'selected' : ''}>${esc(m.label)}</option>`)].join('');
+  const tools = [
+    s.has_stats ? '<button class="btn btn-sm" id="pa-stats">📊 آمار کامل پنل</button>' : '',
+    s.has_backup && isOwner ? '<button class="btn btn-sm" id="pa-backup">💾 دانلود بکاپ پنل</button>' : '',
+    s.has_backup && isOwner ? '<button class="btn btn-sm" id="pa-restore-btn">♻️ بازیابی از بکاپ</button>' : '',
+    isOwner && s.migration_supported ? '<button class="btn btn-sm" id="pa-migrate">🚚 مهاجرت کاربران به پنل دیگر</button>' : '',
+  ].filter(Boolean).join('');
+
+  openModal(`⚙️ تنظیمات پیشرفته: ${esc(s.name)}`, `
+    <div class="form-grid" style="gap:14px">
+      <div style="font-size:12px;opacity:.8;line-height:1.9">
+        <div>نوع: ${esc(s.type_label)} — <span class="mono" style="direction:ltr;display:inline-block">${esc(s.api_url)}</span></div>
+        <div>📊 ظرفیت: ${capText}</div>
+        ${ratingText ? `<div>${ratingText}</div>` : ''}
+      </div>
+      <fieldset style="border:1px solid rgba(128,128,128,.25);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:8px">
+        <legend style="font-size:12px;padding:0 6px">کاربرد این سرور</legend>
+        ${chk('pa-u-custom', 'خرید شخصی (کانفیگ شخصی)', s.used_for_custom_config)}
+        ${chk('pa-u-test', 'کانفیگ تست', s.used_for_test_config)}
+        ${chk('pa-u-reseller', 'نمایندگی', s.used_for_reseller)}
+      </fieldset>
+      <fieldset style="border:1px solid rgba(128,128,128,.25);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:10px">
+        <legend style="font-size:12px;padding:0 6px">تنظیمات سرور</legend>
+        ${chk('pa-target', '📍 مقصد انتقال لوکیشن (کاربران بتوانند به این سرور منتقل شوند)', s.allow_transfer_target)}
+        ${chk('pa-onhold', '⏱ انقضا از اولین اتصال (On-hold)', s.start_on_first_use, s.onhold_supported ? '' : 'disabled')}
+        ${s.onhold_supported ? '' : '<div style="font-size:11px;opacity:.65">این نوع پنل از On-hold پشتیبانی نمی‌کند.</div>'}
+        ${panelAdvancedRow('💰 هزینه تغییر لوکیشن به این سرور (تومان، ۰ = رایگان)', `<input class="input" id="pa-price" type="number" min="0" value="${Number(s.transfer_price || 0)}">`)}
+        ${panelAdvancedRow('📊 سقف تعداد سرویس فعال (۰ = نامحدود)', `<input class="input" id="pa-max" type="number" min="0" value="${Number(s.max_services || 0)}">`)}
+        ${panelAdvancedRow('🧦 پروکسی SOCKS (برای پنل‌هایی که مستقیم از سرور بات قابل‌اتصال نیستند؛ خالی = اتصال مستقیم)', `<input class="input mono" id="pa-socks" style="direction:ltr;text-align:left" placeholder="socks5://user:pass@host:port" value="${esc(s.socks_proxy || '')}">`)}
+        <button class="btn btn-primary" id="pa-save">ذخیره تنظیمات</button>
+      </fieldset>
+      <fieldset style="border:1px solid rgba(128,128,128,.25);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:10px">
+        <legend style="font-size:12px;padding:0 6px">🏷 نام‌گذاری اکانت‌ها</legend>
+        ${panelAdvancedRow('حالت ساخت نام اکانت (username) برای کانفیگ‌هایی که خودکار روی این پنل ساخته می‌شود', `<select class="input" id="pa-nm-mode">${modeOptions}</select>`)}
+        <div id="pa-nm-prefix-wrap">${panelAdvancedRow('پیشوند', `<input class="input mono" id="pa-nm-prefix" style="direction:ltr;text-align:left" maxlength="${Number(nm.affix_max_len || 12)}" value="${esc(nm.prefix || '')}">`, `فقط حروف انگلیسی، عدد و آندرلاین، حداکثر ${Number(nm.affix_max_len || 12)} کاراکتر`)}</div>
+        <div id="pa-nm-suffix-wrap">${panelAdvancedRow('پسوند', `<input class="input mono" id="pa-nm-suffix" style="direction:ltr;text-align:left" maxlength="${Number(nm.affix_max_len || 12)}" value="${esc(nm.suffix || '')}">`)}</div>
+        <div id="pa-nm-preview" style="font-size:12px;opacity:.8"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-primary btn-sm" id="pa-nm-save">ذخیره نام‌گذاری</button>
+          <button class="btn btn-sm" id="pa-nm-reset">🔄 صفر کردن شمارنده</button>
+          <span id="pa-nm-counter" style="font-size:12px;opacity:.75"></span>
+        </div>
+      </fieldset>
+      ${tools ? `<fieldset style="border:1px solid rgba(128,128,128,.25);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:10px">
+        <legend style="font-size:12px;padding:0 6px">ابزارها</legend>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">${tools}</div>
+        <div id="pa-out" style="font-size:13px;line-height:1.9"></div>
+        <div id="pa-restore-box" style="display:none;gap:8px;flex-direction:column">
+          <div style="font-size:12px;color:#FB7185">⚠️ با تایید، دیتابیس فعلی پنل با این فایل جایگزین و Xray روی پنل ری‌استارت می‌شود.</div>
+          <input type="file" id="pa-restore-file" accept=".db">
+          <button class="btn btn-danger btn-sm" id="pa-restore-go">شروع بازیابی</button>
+        </div>
+      </fieldset>` : ''}
+    </div>`, (body, close) => {
+    const out = $('#pa-out', body);
+    const refreshList = () => { if (typeof renderPanels === 'function') renderPanels(); };
+    ['custom', 'test', 'reseller'].forEach(kind => {
+      const cb = $(`#pa-u-${kind}`, body);
+      cb.addEventListener('change', async () => {
+        try { await apiPost(`/panel-servers/${serverId}/usage/${kind}`); toast('ذخیره شد.'); }
+        catch (e) { handleErr(e); cb.checked = !cb.checked; }
+      });
+    });
+    $('#pa-save', body).addEventListener('click', async e => {
+      const btn = e.currentTarget;
+      const max = Number($('#pa-max', body).value || 0);
+      const payload = {
+        allow_transfer_target: $('#pa-target', body).checked,
+        transfer_price: Number($('#pa-price', body).value || 0),
+        socks_proxy: $('#pa-socks', body).value.trim(),
+      };
+      if (s.onhold_supported) payload.start_on_first_use = $('#pa-onhold', body).checked;
+      if (max > 0) payload.max_services = max; else payload.clear_max_services = true;
+      btn.disabled = true;
+      try { await apiPut(`/panel-servers/${serverId}/advanced`, payload); toast('تنظیمات ذخیره شد.'); refreshList(); }
+      catch (err) { handleErr(err); }
+      finally { btn.disabled = false; }
+    });
+
+    const modes = nm.modes || [];
+    const syncNaming = () => {
+      const key = $('#pa-nm-mode', body).value;
+      const m = modes.find(x => x.key === key) || {};
+      $('#pa-nm-prefix-wrap', body).style.display = m.prefix ? '' : 'none';
+      $('#pa-nm-suffix-wrap', body).style.display = m.suffix ? '' : 'none';
+      $('#pa-nm-preview', body).textContent = key === 'default' ? 'روش قبلی (بدون الگوی خاص).' : '';
+    };
+    const showNamingState = st => {
+      $('#pa-nm-preview', body).textContent = st.preview ? `نمونه: ${st.preview}` : '';
+      $('#pa-nm-counter', body).textContent = st.needs_counter ? `آخرین شمارنده: ${fmt(st.counter)}` : '';
+    };
+    $('#pa-nm-mode', body).addEventListener('change', syncNaming);
+    syncNaming();
+    showNamingState(nm);
+    $('#pa-nm-save', body).addEventListener('click', async e => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      try {
+        const st = await apiPut(`/panel-servers/${serverId}/naming`, {
+          mode: $('#pa-nm-mode', body).value,
+          prefix: $('#pa-nm-prefix', body).value,
+          suffix: $('#pa-nm-suffix', body).value,
+        });
+        toast('نام‌گذاری ذخیره شد.'); showNamingState(st);
+      } catch (err) { handleErr(err); }
+      finally { btn.disabled = false; }
+    });
+    $('#pa-nm-reset', body).addEventListener('click', async () => {
+      try { await apiPost(`/panel-servers/${serverId}/naming/reset-counter`); toast('شمارنده صفر شد.'); $('#pa-nm-counter', body).textContent = 'آخرین شمارنده: ۰'; }
+      catch (err) { handleErr(err); }
+    });
+
+    $('#pa-stats', body)?.addEventListener('click', async e => {
+      const btn = e.currentTarget;
+      btn.disabled = true; out.textContent = '⏳ در حال دریافت آمار...';
+      try {
+        const st = await apiGet(`/panel-servers/${serverId}/stats`);
+        out.innerHTML = `🔌 اینباندها: ${fmt(st.inbound_count)}<br>👥 کل کاربران: ${fmt(st.total_clients)}<br>🟢 آنلاین: ${fmt(st.online_clients)}<br>⌛️ منقضی‌شده: ${fmt(st.expired_clients)}<br>🔴 غیرفعال‌شده: ${fmt(st.disabled_clients)}`;
+      } catch (err) { out.textContent = ''; handleErr(err); }
+      finally { btn.disabled = false; }
+    });
+    $('#pa-backup', body)?.addEventListener('click', async e => {
+      const btn = e.currentTarget;
+      btn.disabled = true; out.textContent = '⏳ در حال دریافت بکاپ...';
+      try { await downloadPanelBackup(serverId); out.textContent = '✅ بکاپ دانلود شد.'; }
+      catch (err) { out.textContent = ''; handleErr(err); }
+      finally { btn.disabled = false; }
+    });
+    $('#pa-restore-btn', body)?.addEventListener('click', () => {
+      const box = $('#pa-restore-box', body);
+      box.style.display = box.style.display === 'none' ? 'flex' : 'none';
+    });
+    $('#pa-restore-go', body)?.addEventListener('click', async e => {
+      const btn = e.currentTarget;
+      const file = $('#pa-restore-file', body).files[0];
+      if (!file) return toast('فایل دیتابیس (x-ui.db) را انتخاب کن.', true);
+      if (!confirm(`دیتابیس پنل «${s.name}» با این فایل جایگزین می‌شود و Xray ری‌استارت می‌شود. مطمئنی؟`)) return;
+      const fd = new FormData();
+      fd.append('file', file); fd.append('confirm', 'yes');
+      btn.disabled = true; out.textContent = '⏳ در حال بازیابی دیتابیس پنل...';
+      try { await apiMultipart(`/panel-servers/${serverId}/restore`, fd); out.textContent = '✅ دیتابیس پنل بازیابی شد.'; toast('دیتابیس پنل بازیابی شد.'); }
+      catch (err) { out.textContent = ''; handleErr(err); }
+      finally { btn.disabled = false; }
+    });
+    $('#pa-migrate', body)?.addEventListener('click', () => { close(); openPanelMigrationModal(serverId); });
+  }, { wide: true });
+}
+
+async function openPanelMigrationModal(serverId) {
+  let info;
+  try { info = await apiGet(`/panel-servers/${serverId}/migration`); } catch (e) { return handleErr(e); }
+  const total = Number(info.primary || 0) + Number(info.links || 0);
+  const optDefs = [
+    ['notify_users', '📩 ارسال پیام و لینک جدید به کاربران', true],
+    ['retarget_sales', '🛒 فروش جدید هم روی پنل مقصد باشد', true],
+    ['disable_old', '⛔ غیرفعال‌کردن کاربران قدیمی روی پنل مبدأ', false],
+    ['allow_estimate', '🧮 اگر پنل مبدأ در دسترس نبود، حجم را از دیتابیس تخمین بزن', true],
+  ];
+  const runsHtml = (info.recent_runs || []).map(r => `<li>${esc(r.source_name || '')} ← ${esc(r.dest_name || '')}: ${fmt(r.migrated)} موفق / ${fmt(r.failed)} خطا / ${fmt(r.skipped)} ردشده</li>`).join('');
+  openModal(`🚚 مهاجرت کاربران از «${esc(info.source.name)}»`, `
+    <div class="form-grid" style="gap:12px">
+      <div style="font-size:13px;line-height:1.9">پنل مبدأ: ${esc(info.source.name)} (${esc(info.source.type_label)})<br>سرویس‌های فعال: ${fmt(info.primary)}${info.links ? ` + ${fmt(info.links)} کاربر چندپنلی` : ''}</div>
+      ${total ? '' : '<div style="color:#FB7185;font-size:13px">سرویس فعالی روی این پنل نیست.</div>'}
+      ${info.destinations.length ? '' : '<div style="color:#FB7185;font-size:13px">اول یک پنل دیگر (فعال) اضافه کن، بعد برگرد.</div>'}
+      <select class="input" id="pm-dest"><option value="">پنل مقصد را انتخاب کن...</option>${info.destinations.map(d => `<option value="${d.id}">${esc(d.name)} (${esc(d.type_label)})</option>`).join('')}</select>
+      <div style="display:flex;flex-direction:column;gap:6px">${optDefs.map(([k, l, d]) => `<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" data-pm-opt="${k}" ${d ? 'checked' : ''}> ${l}</label>`).join('')}</div>
+      <button class="btn" id="pm-plan" ${total && info.destinations.length ? '' : 'disabled'}>🔍 پیش‌نمایش</button>
+      <div id="pm-plan-out" style="font-size:13px;line-height:1.9"></div>
+      <button class="btn btn-danger" id="pm-run" style="display:none">🚀 شروع مهاجرت</button>
+      <div id="pm-progress" style="font-size:13px;line-height:1.9"></div>
+      ${runsHtml ? `<div style="font-size:12px;opacity:.8"><b>آخرین مهاجرت‌ها:</b><ul style="margin:4px 0;padding-inline-start:18px">${runsHtml}</ul></div>` : ''}
+    </div>`, (body, close) => {
+    const planOut = $('#pm-plan-out', body);
+    const runBtn = $('#pm-run', body);
+    const progress = $('#pm-progress', body);
+    const options = () => {
+      const o = {};
+      $$('[data-pm-opt]', body).forEach(cb => { o[cb.dataset.pmOpt] = cb.checked; });
+      return o;
+    };
+    const renderJob = job => {
+      if (!job) return;
+      const pct = job.total ? Math.min(100, Math.round((job.done / job.total) * 100)) : 0;
+      if (job.state === 'running') {
+        progress.innerHTML = `🚚 در حال مهاجرت… ${fmt(job.done)}/${fmt(job.total)} (${fmt(pct)}٪)<br>✅ موفق: ${fmt(job.ok)}   ❌ خطا: ${fmt(job.failed)}   ⏭ ردشده: ${fmt(job.skipped)}`;
+        return;
+      }
+      const r = job.report || {};
+      const head = job.state === 'aborted' ? '⛔ مهاجرت متوقف شد' : (job.state === 'done' ? '✅ مهاجرت تمام شد' : '❌ مهاجرت انجام نشد');
+      let h = `<b>${head}</b>`;
+      if (r.total !== undefined) h += `<br>✅ منتقل‌شده: ${fmt(r.migrated)} از ${fmt(r.total)}<br>❌ خطا: ${fmt(r.failed)}<br>⏭ ردشده (منقضی/حجم تمام‌شده): ${fmt(r.skipped)}<br>📩 پیام ارسال‌شده به کاربران: ${fmt(r.notified)}`;
+      if (r.estimated) h += `<br>🧮 حجم تخمینی: ${fmt(r.estimated)} سرویس`;
+      if (r.error) h += `<br>⚠️ ${esc(r.error)}`;
+      const fails = (r.failures || []).slice(0, 10);
+      if (fails.length) h += `<br>نمونه‌ی خطاها:<br>${fails.map(f => `• ${esc(f.old_username || '')}: ${esc((f.error || '').slice(0, 90))}`).join('<br>')}<br>برای سرویس‌های خطادار دوباره «مهاجرت» را اجرا کن؛ فقط باقی‌مانده‌ها برداشته می‌شوند.`;
+      h += '<br>پنل قدیمی دست‌نخورده مانده؛ هر وقت مطمئن شدی از «حذف» پاکش کن.';
+      progress.innerHTML = h;
+    };
+    const poll = async () => {
+      if (!document.body.contains(body)) return;
+      try {
+        const st = await apiGet(`/panel-servers/${serverId}/migration/status`);
+        renderJob(st.job);
+        if (st.running || (st.job && st.job.state === 'running')) setTimeout(poll, 2500);
+        else if (st.job) { runBtn.disabled = false; }
+      } catch (e) { handleErr(e); }
+    };
+    if (info.running || (info.job && info.job.state === 'running')) { renderJob(info.job || { state: 'running', done: 0, total: 0, ok: 0, failed: 0, skipped: 0 }); poll(); }
+    else if (info.job) renderJob(info.job);
+
+    $('#pm-plan', body).addEventListener('click', async e => {
+      const btn = e.currentTarget;
+      const dest = Number($('#pm-dest', body).value || 0);
+      if (!dest) return toast('پنل مقصد را انتخاب کن.', true);
+      btn.disabled = true; runBtn.style.display = 'none'; planOut.textContent = '⏳ در حال بررسی پنل‌ها…';
+      try {
+        const plan = await apiPost(`/panel-servers/${serverId}/migration/plan`, { dest_id: dest, ...options() });
+        if (!plan.ok) { planOut.innerHTML = `<span style="color:#FB7185">❌ ${esc(plan.error || 'مهاجرت ممکن نیست.')}</span>`; return; }
+        planOut.innerHTML = `از «${esc(plan.source.name)}» (${esc(plan.source.type_label)}) ← به «${esc(plan.dest.name)}» (${esc(plan.dest.type_label)})<br>👥 کاربران: ${fmt(plan.users)}<br>📦 سرویس‌های اصلی: ${fmt(plan.primary)}${plan.links ? `<br>🔗 کاربران پنل‌های اضافه (چندپنلی): ${fmt(plan.links)}` : ''}${plan.pooled ? `<br>🔄 عضو سهمیه‌ی مشترک: ${fmt(plan.pooled)}` : ''}<br>🧮 مجموع حجم خریداری‌شده: ${fmt(plan.total_gb)} گیگ${plan.expired ? `<br>⏳ منقضی‌شده (منتقل نمی‌شود): ${fmt(plan.expired)}` : ''}<br>اتصال پنل مقصد: ${plan.dst_reachable ? '✅ برقرار' : '❌'}<br>اتصال پنل مبدأ: ${plan.src_reachable ? '✅ برقرار' : '⚠️ برقرار نیست'}${(plan.warnings || []).map(w => `<br>⚠️ ${esc(w)}`).join('')}<br><span style="opacity:.75">حجم و زمان باقی‌مانده‌ی هر کاربر حفظ می‌شود و کاربران قدیمی روی پنل مبدأ حذف نمی‌شوند. قبل از اجرا مطمئن شو در پنل مقصد «کاربر نمونه/گروه/اینباند» تنظیم شده است.</span>`;
+        runBtn.style.display = '';
+        runBtn.dataset.dest = String(dest);
+        runBtn.dataset.need = String(plan.need);
+      } catch (err) { planOut.textContent = ''; handleErr(err); }
+      finally { btn.disabled = false; }
+    });
+    runBtn.addEventListener('click', async () => {
+      const dest = Number(runBtn.dataset.dest || 0);
+      if (!dest) return;
+      if (!confirm(`${runBtn.dataset.need} سرویس منتقل می‌شود. مطمئنی؟`)) return;
+      runBtn.disabled = true;
+      try {
+        await apiPost(`/panel-servers/${serverId}/migration/run`, { dest_id: dest, ...options() });
+        toast('مهاجرت شروع شد.');
+        runBtn.style.display = 'none';
+        progress.textContent = '🚚 مهاجرت شروع شد…';
+        setTimeout(poll, 1500);
+      } catch (err) { runBtn.disabled = false; handleErr(err); }
+    });
+  }, { wide: true });
+}
+
+function enhancePanelAdvanced(servers) {
+  const root = content();
+  servers.forEach(s => {
+    const editBtn = root.querySelector(`[data-edit="${s.id}"]`);
+    if (!editBtn || root.querySelector(`[data-adv="${s.id}"]`)) return;
+    const b = document.createElement('button');
+    b.className = 'btn btn-sm';
+    b.dataset.adv = String(s.id);
+    b.textContent = '⚙️ تنظیمات پیشرفته';
+    b.style.marginInlineStart = '4px';
+    b.addEventListener('click', () => openPanelAdvancedModal(s.id));
+    editBtn.parentElement.appendChild(b);
+  });
+}
+
 /* ------------------------------------------------------------ panels: bento */
 function renderPanelsBento(servers) {
   setContent(`
@@ -9934,8 +10378,8 @@ function renderPanelsBento(servers) {
             <button class="bn-btn bn-btn-ghost" data-move-down="${s.id}">↓</button>
             <button class="bn-btn bn-btn-ghost" data-test="${s.id}">تست اتصال</button>
             <button class="bn-btn bn-btn-ghost" data-edit="${s.id}">ویرایش</button>
-            ${PANEL_INBOUND_SELECT_TYPES.includes(s.panel_type) ? `<button class="bn-btn bn-btn-ghost" data-edit-inbounds="${s.id}">Inbound ها</button>` : ''}
-            ${PANEL_TEMPLATE_BASED_TYPES.includes(s.panel_type) ? `<button class="bn-btn bn-btn-ghost" data-retemplate="${s.id}">قالب جدید</button>` : ''}
+            ${PANEL_INBOUND_SELECT_TYPES.includes(s.panel_type) ? `<button class="bn-btn bn-btn-ghost" data-edit-inbounds="${s.id}">Inbound پیش‌فرض</button>` : ''}
+            ${PANEL_TEMPLATE_BASED_TYPES.includes(s.panel_type) ? `<button class="bn-btn bn-btn-ghost" data-retemplate="${s.id}">${PANEL_CONNECT_TEMPLATE_TYPES.includes(s.panel_type) ? 'قالب جدید' : 'قالب پیش‌فرض'}</button>` : ''}
             <button class="bn-btn bn-btn-no" data-del="${s.id}">حذف</button>
           </div>
         </div>
@@ -9959,7 +10403,7 @@ function renderPanelsBento(servers) {
       const inbounds = await apiGet(`/panel-servers/${server.id}/inbounds`);
       openXuiInboundModal(server.id, inbounds, server.xui_inbound_ids || [], server.xui_sub_base_url || '');
     } catch (e) { handleErr(e); }
-    finally { b.textContent = 'Inbound ها'; b.disabled = false; }
+    finally { b.textContent = 'Inbound پیش‌فرض'; b.disabled = false; }
   }));
   $$('[data-retemplate]', content()).forEach(b => b.addEventListener('click', () => openPanelRetemplateModal(Number(b.dataset.retemplate))));
   wirePanelReorder(servers);
@@ -10002,8 +10446,8 @@ function renderPanelsBrutalist(servers) {
           <div class="bru-coupon-actions" style="padding:0;border:none;margin-top:8px;flex-wrap:wrap">
             <button class="btn btn-sm" data-test="${s.id}">تست اتصال</button>
             <button class="btn btn-sm" data-edit="${s.id}">ویرایش</button>
-            ${PANEL_INBOUND_SELECT_TYPES.includes(s.panel_type) ? `<button class="btn btn-sm" data-edit-inbounds="${s.id}">Inbound ها</button>` : ''}
-            ${PANEL_TEMPLATE_BASED_TYPES.includes(s.panel_type) ? `<button class="btn btn-sm" data-retemplate="${s.id}">قالب جدید</button>` : ''}
+            ${PANEL_INBOUND_SELECT_TYPES.includes(s.panel_type) ? `<button class="btn btn-sm" data-edit-inbounds="${s.id}">Inbound پیش‌فرض</button>` : ''}
+            ${PANEL_TEMPLATE_BASED_TYPES.includes(s.panel_type) ? `<button class="btn btn-sm" data-retemplate="${s.id}">${PANEL_CONNECT_TEMPLATE_TYPES.includes(s.panel_type) ? 'قالب جدید' : 'قالب پیش‌فرض'}</button>` : ''}
             <button class="btn btn-danger btn-sm" data-del="${s.id}">حذف</button>
           </div>
         </div>
@@ -10027,7 +10471,7 @@ function renderPanelsBrutalist(servers) {
       const inbounds = await apiGet(`/panel-servers/${server.id}/inbounds`);
       openXuiInboundModal(server.id, inbounds, server.xui_inbound_ids || [], server.xui_sub_base_url || '');
     } catch (e) { handleErr(e); }
-    finally { b.textContent = 'Inbound ها'; b.disabled = false; }
+    finally { b.textContent = 'Inbound پیش‌فرض'; b.disabled = false; }
   }));
   $$('[data-retemplate]', content()).forEach(b => b.addEventListener('click', () => openPanelRetemplateModal(Number(b.dataset.retemplate))));
   wirePanelReorder(servers);
@@ -10065,7 +10509,7 @@ const SETTINGS_TABS = [
   { key: 'payment', label: '💳 پرداخت و مالی' },
   { key: 'sales', label: '🛒 فروش و سرویس‌ها' },
   { key: 'growth', label: '🎁 رشد و تعامل' },
-  { key: 'sub', label: '🔗 اشتراک اختصاصی' },
+  { key: 'webcustom', label: '🎨 شخصی‌سازی وب' },
   { key: 'ai', label: '🤖 هوش مصنوعی' },
   { key: 'system', label: '🛠 سیستم و پایش' },
   { key: 'mobile_app', label: '📱 اپ موبایل' },
@@ -10075,7 +10519,6 @@ const EXTRA_GROUP_TABS = {
   payment: ['currency', 'card_to_card_ui', 'crypto_payment_toggle_mini', 'wallet'],
   sales: ['main_menu', 'delivery', 'smart_sub', 'location', 'provisioning', 'free_test', 'cleanup', 'alerts', 'acct_svc_buttons_mini', 'acct_svc_buttons_web', 'service_buttons_extra'],
   growth: ['signup_gift', 'referral_adv', 'referral_fraud', 'lottery', 'engagement', 'season', 'daily_quiz', 'gift_cards', 'renewal_adv', 'churn', 'reminder_discount_codes', 'force_join'],
-  sub: ['dsub_enable_web', 'dsub_basic', 'dsub_apps'],
   ai: ['ai_general', 'ai_providers', 'ai_buy_guide', 'ai_extra_agents', 'receipt_ai'],
   system: ['system', 'report_and_server_monitoring', 'backup', 'spam_limits', 'misc_admin', 'parity_extra'],
 };
@@ -10120,21 +10563,56 @@ const SETTINGS_GROUPS = [
     { key: 'delivery_message_template_wui', label: 'قالب تحویل — WUI', type: 'textarea' },
     { key: 'delivery_message_template_stealth', label: 'قالب تحویل — Stealth', type: 'textarea' },
   ]},
-  { tab: 'content', title: '🧊 جلوه سه‌بعدی فروشگاه وب (صفحه اصلی)', fields: [
+  { tab: 'webcustom', title: '🏷 برندینگ و ظاهر فروشگاه وب', fields: [
+    { key: 'web_store_logo', label: 'آدرس لوگوی فروشگاه وب (فقط HTTPS؛ خالی = لوگوی پیش‌فرض)', type: 'text' },
+    { key: 'web_store_tagline', label: 'شعار فروشگاه (زیر لوگو / پایین صفحه، حداکثر ۲۰۰ حرف)', type: 'text' },
+    { key: 'web_store_primary_color', label: 'رنگ اصلی فروشگاه (HEX شش‌رقمی مثل #6366F1؛ خالی = پیش‌فرض)', type: 'text' },
+    { key: 'web_store_theme', label: 'حالت رنگ فروشگاه وب', type: 'select', options: [['auto', 'خودکار (بر اساس دستگاه کاربر)'], ['light', 'همیشه روشن'], ['dark', 'همیشه تیره']] },
+    { key: 'web_store_support_url', label: 'لینک پشتیبانی فروشگاه (https://... یا t.me/... یا @آیدی)', type: 'text' },
+  ]},
+  { tab: 'webcustom', title: '🔎 سئو و عنوان صفحه فروشگاه وب (فارسی)', fields: [
+    { key: 'web_store_seo_title', label: 'عنوان صفحه (Title؛ خالی = پیش‌فرض، حداکثر ۱۲۰ حرف)', type: 'text' },
+    { key: 'web_store_seo_description', label: 'توضیح صفحه برای گوگل و پیش‌نمایش لینک (Description؛ حداکثر ۳۰۰ حرف)', type: 'textarea' },
+  ]},
+  { tab: 'webcustom', title: '📢 اعلان بالای صفحه فروشگاه وب', fields: [
+    { key: 'web_store_notice_enabled', label: 'نمایش اعلان بالای صفحه (مثلاً تخفیف، تغییر قیمت یا خبر مهم)', type: 'bool' },
+    { key: 'web_store_notice_text', label: 'متن اعلان (حداکثر ۳۰۰ حرف)', type: 'textarea' },
+    { key: 'web_store_notice_link', label: 'لینک اعلان (اختیاری؛ https://... یا t.me/... یا @آیدی)', type: 'text' },
+    { key: 'web_store_notice_style', label: 'رنگ اعلان', type: 'select', options: [['info', 'اطلاع‌رسانی (رنگ اصلی)'], ['success', 'سبز (خبر خوب / تخفیف)'], ['warning', 'زرد (هشدار)'], ['danger', 'قرمز (مهم / اختلال)']] },
+  ]},
+  { tab: 'webcustom', title: '🚧 حالت تعمیرات فروشگاه وب', fields: [
+    { key: 'web_store_maintenance', label: 'فعال‌سازی حالت تعمیرات (ثبت سفارش، پرداخت و تمدید از سایت بسته می‌شود؛ مشاهده پلن‌ها و ورود به حساب باز می‌ماند)', type: 'bool' },
+    { key: 'web_store_maintenance_text', label: 'پیام حالت تعمیرات (خالی = پیام پیش‌فرض)', type: 'textarea' },
+  ]},
+  { tab: 'webcustom', title: '🛒 نمایش پلن‌ها در فروشگاه وب', fields: [
+    { key: 'web_store_hide_soldout', label: 'پنهان کردن پلن‌های ناموجود (خاموش = با برچسب «ناموجود» نمایش داده می‌شوند)', type: 'bool' },
+    { key: 'web_store_default_sort', label: 'مرتب‌سازی پیش‌فرض پلن‌ها', type: 'select', options: [['value', 'به‌صرفه‌ترین (پیش‌فرض)'], ['low', 'ارزان‌ترین'], ['high', 'گران‌ترین']] },
+  ]},
+  { tab: 'webcustom', title: '📞 فوتر و راه‌های ارتباطی فروشگاه وب', fields: [
+    { key: 'web_store_footer_text', label: 'متن پایین صفحه (مثلاً حقوق و نام مجموعه، حداکثر ۲۰۰ حرف)', type: 'text' },
+    { key: 'web_store_channel_url', label: 'کانال تلگرام (https://t.me/... یا t.me/... یا @آیدی)', type: 'text' },
+    { key: 'web_store_instagram_url', label: 'اینستاگرام (آدرس صفحه یا @آیدی)', type: 'text' },
+    { key: 'web_store_email', label: 'ایمیل پشتیبانی', type: 'text' },
+  ]},
+  { tab: 'webcustom', title: '❓ سؤالات متداول و قوانین اختصاصی (فقط صفحه فارسی)', fields: [
+    { key: 'web_store_faq_custom', rows: 10, label: 'سؤالات متداول سفارشی — هر سؤال یک بلوک: خط اول سؤال، خط‌های بعدی پاسخ؛ بین بلوک‌ها یک خط خالی بگذار. خالی = سؤالات پیش‌فرض', type: 'textarea' },
+    { key: 'web_store_terms_custom', rows: 10, label: 'قوانین و تماس سفارشی — هر بخش یک بلوک: خط اول عنوان، هر خط بعدی یک مورد؛ بین بخش‌ها یک خط خالی بگذار. خالی = قوانین پیش‌فرض', type: 'textarea' },
+  ]},
+  { tab: 'webcustom', title: '🖼 آیکون سایت و تصویر اشتراک‌گذاری', fields: [
+    { key: 'web_store_favicon', label: 'آدرس آیکون تب مرورگر (فقط HTTPS، ترجیحاً PNG/SVG مربعی؛ خالی = پیش‌فرض)', type: 'text' },
+    { key: 'web_store_og_image', label: 'تصویر پیش‌نمایش لینک در تلگرام/شبکه‌ها (فقط HTTPS، پیشنهاد ۱۲۰۰×۶۳۰؛ خالی = پیش‌فرض)', type: 'text' },
+  ]},
+  { tab: 'webcustom', title: '🧊 جلوه سه‌بعدی فروشگاه وب (صفحه اصلی)', fields: [
     { key: 'web_3d_mode', label: 'حالت سه‌بعدی (برای سبک‌ترین سایت «خاموش» را بزن)', type: 'select', options: [['off', '⛔ خاموش — بدون هیچ جلوه سه‌بعدی (سبک‌ترین)'], ['cinema', '🎬 سینمایی (حالت فعلی)'], ['particles', '✨ ذرات و سپر'], ['globe', '🌍 کره زمین با مسیرهای اتصال'], ['network', '🕸 شبکه گره‌ها'], ['tunnel', '🚀 تونل سرعت'], ['waves', '🌊 موج‌های سه‌بعدی']] },
     { key: 'web_3d_mobile', label: 'نمایش جلوه سه‌بعدی روی موبایل (خاموش = در موبایل همیشه ساده)', type: 'bool' },
     { key: 'web_3d_auto_lite', label: 'خاموش شدن خودکار روی گوشی/سیستم ضعیف و «حالت صرفه‌جویی داده»', type: 'bool' },
   ]},
-  { tab: 'content', title: '🗺 نقشه زنده شبکه — مکان سرورها (دستی)', fields: [
+  { tab: 'webcustom', title: '🗺 نقشه زنده شبکه — مکان سرورها (دستی)', fields: [
     { key: 'netmap_locations', label: 'مکان سرورها', type: 'netmap_simple' },
   ]},
 
 
   // ------------------------------------------------------------ پرداخت و مالی
-  { tab: 'payment', title: 'کارت بانکی', fields: [
-    { key: 'card_number', label: 'شماره کارت', type: 'text' },
-    { key: 'card_holder', label: 'نام صاحب کارت', type: 'text' },
-  ]},
   { tab: 'payment', title: '🏦 استعلام بانکی رسید (کارت↔شبا، نام صاحب کارت)', fields: [
     { key: 'bank_inquiry_enabled', label: 'فعال بودن استعلام بانکی (پیش‌فرض خاموش؛ چک محلی کد بانک شبا همیشه فعال است)', type: 'bool' },
     { key: 'bank_inquiry_url', label: 'آدرس API سرویس استعلام (می‌تواند {card} داشته باشد)', type: 'text' },
@@ -10525,7 +11003,7 @@ function settingsFieldHtml(f, settings) {
   }
   if (f.type === 'textarea') {
     return `<label class="field"><span>${esc(settingsUiText(f.label))}</span>
-      <textarea class="input" rows="3" data-key="${f.key}" data-type="text">${esc(val)}</textarea></label>`;
+      <textarea class="input" rows="${f.rows || 3}" data-key="${f.key}" data-type="text">${esc(val)}</textarea></label>`;
   }
   if (f.type === 'select') {
     return `<label class="field"><span>${esc(settingsUiText(f.label))}</span>
@@ -10580,13 +11058,7 @@ function renderSettingsGroups(settings) {
       </div>`;
     }).join('')}
   </div>
-  <div class="settings-live-preview" data-settings-tab="content" style="${settingsActiveTab === 'content' ? '' : 'display:none'}">
-    <div class="settings-live-preview-head">
-      <div><strong>🔗 پیش‌نمایش زنده صفحه لینک ساب</strong><div class="card-sub">برندینگ و بخش‌های صفحه ساب را قبل از ذخیره به‌صورت زنده ببین.</div></div>
-      <button type="button" class="btn btn-sm" id="sub-page-preview-open">باز کردن در تب جدید</button>
-    </div>
-    <iframe id="sub-page-preview-frame" title="پیش‌نمایش صفحه لینک ساب" src="/api/settings/sub-page-preview?preview=1" loading="lazy"></iframe>
-  </div>`;
+  `;
 }
 
 function settingsTabsHtml() {
@@ -10697,6 +11169,9 @@ function extraSettingsHtml(data) {
   // دو فرم روی یک کلید همدیگر را بازنویسی نکنند.
   const existing = new Set();
   SETTINGS_GROUPS.forEach(g => g.fields.forEach(f => existing.add(f.key)));
+  // کلیدهای صفحه‌ی لینک ساب فقط در تب «شخصی‌سازی وب» (subPageSettingsHtml) ویرایش می‌شوند؛ از تنظیمات تکمیلی حذف تا تکراری نشوند.
+  SUB_PAGE_KEYS.forEach(k => existing.add(k));
+  BANK_CARD_KEYS.forEach(k => existing.add(k));  // فرم اختصاصی «کارت بانکی» در تب پرداخت
   const placeOf = g => EXTRA_GROUP_TAB_INDEX[g.id] || { tab: 'system', order: 999 };
   const tabOrder = SETTINGS_TABS.map(t => t.key);
   const groups = (data.groups || []).map(g => ({ ...g, fields: (g.fields || []).filter(f => !existing.has(f.key)) }))
@@ -10826,6 +11301,287 @@ function mobileTokenRowsHtml(tokens) {
         ? `<button class="btn btn-danger btn-sm" data-revoke-token="${t.id}">باطل کردن</button>`
         : `<button class="btn btn-danger btn-sm" data-delete-token="${t.id}">حذف</button>`}
     </div>`).join('') || `<div class="empty-state">هنوز توکنی نساخته‌ای.</div>`;
+}
+
+/* ================================ بخش «مینی‌اپ» در شخصی‌سازی وب ================================ */
+// آیکون کاشی‌های صفحه‌ی خانه و ظاهر مینی‌اپ (تم، نام فروشگاه، متن بنر، لوگوی هدر).
+// داده همان است که پنل مدیریت داخل خود مینی‌اپ هم ویرایش می‌کند. نکته: عمداً از
+// data-key/data-type استفاده نشده تا «ذخیره تغییرات» عمومی تنظیمات این فیلدها را برنگیرد.
+const MA = { state: null, icons: {} };
+
+function miniappSectionHtml() {
+  return `
+  <div class="card" id="miniapp-section">
+    <h3 style="margin:0 0 4px">📱 مینی‌اپ</h3>
+    <p class="card-sub" style="margin:0 0 12px">ظاهر و آیکون‌های مینی‌اپ تلگرام را از اینجا شخصی‌سازی کن. تغییرات بلافاصله در مینی‌اپ اعمال می‌شود (بنرهای کاروسل در صفحه‌ی «بنرها» ویرایش می‌شوند).</p>
+    <div id="miniapp-section-body"><p class="card-sub">در حال بارگذاری…</p></div>
+  </div>`;
+}
+
+function maIconPreview(v) {
+  if (!v) return '<span class="card-sub" style="margin:0">پیش‌فرض</span>';
+  if (String(v).startsWith('data:image/')) return `<img src="${esc(v)}" alt="" style="width:32px;height:32px;object-fit:contain;border-radius:6px">`;
+  return `<span style="font-size:24px;line-height:1">${esc(v)}</span>`;
+}
+
+function maBodyHtml() {
+  const s = MA.state;
+  const themeOpts = s.themes.map(t => `<option value="${esc(t.id)}" ${t.id === s.theme ? 'selected' : ''}>${esc(t.label)}</option>`).join('');
+  const rows = s.icons.map(it => {
+    const v = MA.icons[it.key] || '';
+    const isImg = String(v).startsWith('data:image/');
+    return `
+    <div class="card" style="margin:0 0 8px;padding:10px" data-ma-icon-row="${esc(it.key)}">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <b dir="auto">${esc(it.label)}${it.custom ? ' <span class="chip">دکمه سفارشی</span>' : ''}</b>
+        <span data-ma-preview>${maIconPreview(v)}</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+        ${isImg ? '' : `<input class="input" type="text" maxlength="16" style="max-width:180px" placeholder="ایموجی دلخواه، مثلاً 🔥" data-ma-emoji="${esc(it.key)}" value="${esc(v)}">`}
+        <label class="btn btn-sm" style="margin:0;cursor:pointer">🖼 آپلود تصویر
+          <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" data-ma-file="${esc(it.key)}" style="display:none"></label>
+        <button type="button" class="btn btn-sm btn-ghost" data-ma-reset="${esc(it.key)}">↩️ پیش‌فرض</button>
+      </div>
+    </div>`;
+  }).join('');
+  return `
+    <div class="card" style="margin-bottom:14px">
+      <h4 style="margin:0 0 10px">🎨 ظاهر و برندینگ</h4>
+      <div class="form-grid">
+        <label>نام فروشگاه (بالای مینی‌اپ)<input class="input" id="ma-store-name" maxlength="40" value="${esc(s.store_name)}"></label>
+        <label>متن بنر (زیر نام کاربر)<input class="input" id="ma-banner-text" maxlength="80" value="${esc(s.banner_text)}"></label>
+        <label>تم رنگی مینی‌اپ<select class="input" id="ma-theme">${themeOpts}</select></label>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0">
+        ${s.header_image ? `<img src="${esc(s.header_image)}" alt="" style="width:64px;height:64px;border-radius:50%;object-fit:cover">` : '<span class="card-sub" style="margin:0">لوگوی هدر تنظیم نشده (خورشید انیمیشنی نمایش داده می‌شود).</span>'}
+        <label class="btn btn-sm" style="margin:0;cursor:pointer">🖼 آپلود لوگوی هدر (حداکثر ۲ مگابایت)
+          <input type="file" accept="image/png,image/jpeg,image/webp" id="ma-header-file" style="display:none"></label>
+        ${s.header_image ? '<button type="button" class="btn btn-sm btn-ghost" id="ma-header-reset">🗑 حذف لوگو</button>' : ''}
+      </div>
+      <button type="button" class="btn btn-primary btn-sm" id="ma-branding-save">💾 ذخیره ظاهر مینی‌اپ</button>
+    </div>
+    <div class="card">
+      <h4 style="margin:0 0 4px">🏠 آیکون دکمه‌های صفحه‌ی خانه</h4>
+      <p class="card-sub" style="margin:0 0 10px">برای هر دکمه می‌توانی یک ایموجی بنویسی یا تصویر (PNG/JPG/WEBP/GIF تا ۲۵۶ کیلوبایت) آپلود کنی. «پیش‌فرض» آیکون اصلی را برمی‌گرداند. دکمه‌های سفارشی منوی ربات هم اینجا آیکون دارند.</p>
+      ${rows}
+      <button type="button" class="btn btn-primary btn-sm" id="ma-icons-save">💾 ذخیره آیکون‌ها</button>
+    </div>`;
+}
+
+function maCollectEmoji(root) {
+  $$('[data-ma-emoji]', root).forEach(el => {
+    if (!String(MA.icons[el.dataset.maEmoji] || '').startsWith('data:image/')) MA.icons[el.dataset.maEmoji] = el.value.trim();
+  });
+}
+
+function maRender(root) {
+  const body = $('#miniapp-section-body', root);
+  if (!body || !MA.state) return;
+  body.innerHTML = maBodyHtml();
+  $('#ma-branding-save', body).addEventListener('click', async (ev) => {
+    const btn = ev.currentTarget; btn.disabled = true;
+    try {
+      const res = await apiPost('/settings/miniapp/branding', {
+        store_name: $('#ma-store-name', body).value, banner_text: $('#ma-banner-text', body).value, theme: $('#ma-theme', body).value,
+      });
+      MA.state = res.state; toast('ظاهر مینی‌اپ ذخیره شد.');
+    } catch (e) { handleErr(e); } finally { btn.disabled = false; }
+  });
+  $('#ma-header-file', body).addEventListener('change', async (ev) => {
+    const f = ev.target.files && ev.target.files[0]; if (!f) return;
+    const fd = new FormData(); fd.append('photo', f);
+    try {
+      const res = await apiMultipart('/settings/miniapp/header-image', fd);
+      MA.state.header_image = res.header_image; toast('لوگوی هدر ذخیره شد.');
+      maCollectEmoji(body); maRender(root);
+    } catch (e) { handleErr(e); }
+  });
+  $('#ma-header-reset', body)?.addEventListener('click', async () => {
+    try { await apiDelete('/settings/miniapp/header-image'); MA.state.header_image = ''; toast('لوگوی هدر حذف شد.'); maCollectEmoji(body); maRender(root); }
+    catch (e) { handleErr(e); }
+  });
+  $$('[data-ma-file]', body).forEach(input => input.addEventListener('change', async () => {
+    const f = input.files && input.files[0]; if (!f) return;
+    const fd = new FormData(); fd.append('photo', f);
+    try {
+      maCollectEmoji(body);
+      const res = await apiMultipart('/settings/miniapp/icons/upload', fd);
+      MA.icons[input.dataset.maFile] = res.image; maRender(root);
+    } catch (e) { handleErr(e); }
+  }));
+  $$('[data-ma-reset]', body).forEach(btn => btn.addEventListener('click', () => {
+    maCollectEmoji(body); MA.icons[btn.dataset.maReset] = ''; maRender(root);
+  }));
+  $('#ma-icons-save', body).addEventListener('click', async (ev) => {
+    const btn = ev.currentTarget; btn.disabled = true;
+    try {
+      maCollectEmoji(body);
+      const res = await apiPost('/settings/miniapp/icons', { icons: MA.icons });
+      MA.state = res.state; MA.icons = {}; MA.state.icons.forEach(it => { if (it.icon) MA.icons[it.key] = it.icon; });
+      toast('آیکون‌ها ذخیره شد.'); maRender(root);
+    } catch (e) { handleErr(e); } finally { btn.disabled = false; }
+  });
+}
+
+async function bindMiniappSection(root) {
+  const body = $('#miniapp-section-body', root);
+  if (!body) return;
+  try {
+    MA.state = await apiGet('/settings/miniapp');
+    MA.icons = {}; MA.state.icons.forEach(it => { if (it.icon) MA.icons[it.key] = it.icon; });
+    maRender(root);
+  } catch (e) {
+    body.innerHTML = `<p class="card-sub">بارگذاری تنظیمات مینی‌اپ ناموفق بود: ${esc(e.message || '')}</p>`;
+  }
+}
+
+/* ================================ تنظیمات کامل کارت بانکی ================================ */
+// کارت‌به‌کارت دستی: وضعیت، کارت اصلی، عکس کارت، چند کارت با درصد نمایش، شرط نمایش کارت،
+// مدت ثابت‌ماندن کارت و حذف خودکار پیام. کلیدهای این بخش از فرم‌های عمومی/تکمیلی حذف شده‌اند
+// (BANK_CARD_KEYS) تا دو فرم روی یک کلید همدیگر را بازنویسی نکنند.
+const BANK_CARD_KEYS = ['card_number', 'card_holder', 'card_bank_name', 'card_to_card_enabled', 'card_msg_autodelete_seconds', 'card_sticky_minutes', 'card_gate_min_purchases', 'card_gate_min_days', 'card_photo_file_id'];
+const BC = { state: null };
+
+function bankCardSectionHtml() {
+  return `
+  <div class="card" id="bank-card-section">
+    <h3 style="margin:0 0 4px">💳 کارت بانکی (کارت‌به‌کارت دستی)</h3>
+    <p class="card-sub" style="margin:0 0 12px">همه‌ی تنظیمات کارت‌به‌کارت دستی یک‌جا؛ مشابه منوی «تنظیمات کارت» در ربات. کارت‌به‌کارت با تایید خودکار پیامکی در بخش‌های پایین‌تر همین تب است.</p>
+    <div id="bank-card-body"><p class="card-sub">در حال بارگذاری…</p></div>
+  </div>`;
+}
+
+function bcCardsTableHtml(s) {
+  if (!s.cards.length) return '<p class="card-sub">کارت اضافه‌ای تعریف نشده؛ همان کارت اصلی بالا نشان داده می‌شود.</p>';
+  return `<div class="table-wrap"><table>
+    <thead><tr><th>شماره</th><th>صاحب کارت</th><th>بانک</th><th>وزن ← درصد نمایش</th><th>عکس</th><th>وضعیت</th><th></th></tr></thead>
+    <tbody>${s.cards.map(c => `<tr>
+      <td class="mono" dir="ltr">${esc(c.card_number)}</td><td>${esc(c.holder_name || '-')}</td><td>${esc(c.bank_name || '-')}</td>
+      <td>${c.weight}${c.percent != null ? ` ← ${esc(String(c.percent))}٪` : ''}</td>
+      <td>${c.has_photo ? '✅' : '—'}</td>
+      <td>${c.is_active ? '🟢 فعال' : '🔴 غیرفعال'}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-sm" data-bc-edit="${c.id}">✏️</button>
+        <button class="btn btn-sm" data-bc-toggle="${c.id}">${c.is_active ? '⏸' : '▶️'}</button>
+        <button class="btn btn-sm btn-danger" data-bc-del="${c.id}">🗑</button>
+      </td></tr>`).join('')}</tbody></table></div>`;
+}
+
+function bcBodyHtml() {
+  const s = BC.state;
+  const hist = (s.history || []).slice().reverse().map(h => `<li class="mono" dir="ltr">${esc(h.card || '')} <span class="card-sub">(تا ${esc(String(h.until || '').slice(0, 16).replace('T', ' '))})</span></li>`).join('');
+  return `
+    <label style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+      <input type="checkbox" id="bc-enabled" ${s.enabled ? 'checked' : ''}> <span>فعال بودن پرداخت کارت‌به‌کارت دستی</span></label>
+    <div class="form-grid">
+      <label>شماره کارت (۱۶ رقم) یا شبا<input class="input" id="bc-number" dir="ltr" value="${esc(s.card_number)}" placeholder="6037-xxxx-xxxx-xxxx"></label>
+      <label>نام صاحب کارت<input class="input" id="bc-holder" maxlength="80" value="${esc(s.card_holder)}"></label>
+      <label>نام بانک<input class="input" id="bc-bank" maxlength="40" value="${esc(s.bank_name)}"></label>
+      <label>مدت ثابت‌ماندن کارت برای هر خریدار (دقیقه)<input class="input" type="number" min="1" max="10080" id="bc-sticky" value="${s.sticky_minutes}"></label>
+      <label>حذف خودکار پیام کارت بعد از (ثانیه، ۰ = غیرفعال)<input class="input" type="number" min="0" max="86400" id="bc-autodel" value="${s.autodelete_seconds}"></label>
+    </div>
+    <div style="margin-top:12px"><b>🔒 شرط نمایش شماره کارت</b>
+      <p class="card-sub" style="margin:2px 0 8px">کارت فقط به کاربری نشان داده می‌شود که حداقل یکی از دو شرط را داشته باشد؛ هر دو ۰ یعنی همه (ادمین‌ها همیشه می‌بینند).</p>
+      <div class="form-grid">
+        <label>حداقل خرید موفق<input class="input" type="number" min="0" id="bc-gate-p" value="${s.gate_min_purchases}"></label>
+        <label>حداقل روز از استارت ربات<input class="input" type="number" min="0" id="bc-gate-d" value="${s.gate_min_days}"></label>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:14px 0">
+      <span>🖼 عکس کارت: ${s.has_photo ? '✅ تنظیم شده' : 'ندارد'}</span>
+      <label class="btn btn-sm" style="margin:0;cursor:pointer">آپلود عکس<input type="file" accept="image/jpeg,image/png,image/webp" id="bc-photo-file" style="display:none"></label>
+      ${s.has_photo ? '<button type="button" class="btn btn-sm btn-ghost" id="bc-photo-reset">🗑 حذف عکس</button>' : ''}
+    </div>
+    <button type="button" class="btn btn-primary btn-sm" id="bc-save">💾 ذخیره تنظیمات کارت</button>
+    ${hist ? `<details style="margin-top:12px"><summary class="card-sub">کارت‌های جایگزین‌شده (برای رسیدهای قدیمی معتبر می‌مانند)</summary><ul style="margin:6px 0">${hist}</ul></details>` : ''}
+    <hr style="margin:16px 0;opacity:.2">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+      <b>🗂 چند شماره کارت + درصد نمایش</b>
+      <button type="button" class="btn btn-sm btn-primary" id="bc-add">➕ کارت جدید</button>
+    </div>
+    <p class="card-sub" style="margin:4px 0 8px">هر خریدار با احتمال متناسب با «وزن» یکی از کارت‌های فعال را می‌بیند. اگر هیچ کارتی فعال نباشد، کارت اصلی بالا استفاده می‌شود.</p>
+    ${bcCardsTableHtml(s)}`;
+}
+
+function bcOpenCardModal(card) {
+  const c = card || { id: null, card_number: '', holder_name: '', bank_name: '', weight: 1, description_template: '', has_photo: false };
+  openModal(card ? '✏️ ویرایش کارت' : '➕ کارت جدید', `
+    <div class="form-grid">
+      <label>شماره کارت / شبا<input class="input" id="bcm-number" dir="ltr" value="${esc(c.card_number)}"></label>
+      <label>نام صاحب کارت<input class="input" id="bcm-holder" maxlength="80" value="${esc(c.holder_name)}"></label>
+      <label>نام بانک<input class="input" id="bcm-bank" maxlength="40" value="${esc(c.bank_name)}"></label>
+      <label>وزن (سهم نمایش، ۰ تا ۱۰۰۰)<input class="input" type="number" min="0" max="1000" id="bcm-weight" value="${c.weight}"></label>
+    </div>
+    <label style="display:block;margin-top:10px">توضیحات نمایشی (اختیاری؛ پارامترها: {card_number} {holder} {bank} {amount_toman} {amount_rial})
+      <textarea class="input" id="bcm-desc" rows="3" maxlength="1500">${esc(c.description_template)}</textarea></label>
+    ${card ? `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px">
+      <span>🖼 عکس این کارت: ${c.has_photo ? '✅' : 'ندارد'}</span>
+      <label class="btn btn-sm" style="margin:0;cursor:pointer">آپلود<input type="file" accept="image/jpeg,image/png,image/webp" id="bcm-photo" style="display:none"></label>
+      ${c.has_photo ? '<button type="button" class="btn btn-sm btn-ghost" id="bcm-photo-del">حذف</button>' : ''}</div>` : ''}
+    <div style="margin-top:14px;display:flex;gap:8px"><button class="btn btn-primary" id="bcm-save">ذخیره</button></div>`,
+  (body, close) => {
+    const refresh = (state) => { BC.state = state; bcRender(); };
+    $('#bcm-save', body).addEventListener('click', async () => {
+      const payload = {
+        card_number: $('#bcm-number', body).value, holder_name: $('#bcm-holder', body).value, bank_name: $('#bcm-bank', body).value,
+        weight: Number($('#bcm-weight', body).value) || 0, description_template: $('#bcm-desc', body).value,
+      };
+      try {
+        const res = card ? await apiPut(`/settings/bank-card/cards/${card.id}`, payload) : await apiPost('/settings/bank-card/cards', payload);
+        toast('ذخیره شد.'); refresh(res.state); close();
+      } catch (e) { handleErr(e); }
+    });
+    $('#bcm-photo', body)?.addEventListener('change', async (ev) => {
+      const f = ev.target.files && ev.target.files[0]; if (!f) return;
+      const fd = new FormData(); fd.append('photo', f); fd.append('card_id', String(card.id));
+      try { const res = await apiMultipart('/settings/bank-card/photo', fd); toast('عکس کارت ذخیره شد.'); refresh(res.state); close(); } catch (e) { handleErr(e); }
+    });
+    $('#bcm-photo-del', body)?.addEventListener('click', async () => {
+      try { const res = await apiDelete(`/settings/bank-card/photo?card_id=${card.id}`); toast('عکس حذف شد.'); refresh(res.state); close(); } catch (e) { handleErr(e); }
+    });
+  });
+}
+
+function bcRender() {
+  const body = $('#bank-card-body');
+  if (!body || !BC.state) return;
+  body.innerHTML = bcBodyHtml();
+  $('#bc-save', body).addEventListener('click', async (ev) => {
+    const btn = ev.currentTarget; btn.disabled = true;
+    try {
+      const res = await apiPost('/settings/bank-card', {
+        enabled: $('#bc-enabled', body).checked, card_number: $('#bc-number', body).value, card_holder: $('#bc-holder', body).value,
+        bank_name: $('#bc-bank', body).value, sticky_minutes: Number($('#bc-sticky', body).value) || 60,
+        gate_min_purchases: Number($('#bc-gate-p', body).value) || 0, gate_min_days: Number($('#bc-gate-d', body).value) || 0,
+        autodelete_seconds: Number($('#bc-autodel', body).value) || 0,
+      });
+      BC.state = res.state; toast('تنظیمات کارت ذخیره شد.'); bcRender();
+    } catch (e) { handleErr(e); } finally { btn.disabled = false; }
+  });
+  $('#bc-photo-file', body).addEventListener('change', async (ev) => {
+    const f = ev.target.files && ev.target.files[0]; if (!f) return;
+    const fd = new FormData(); fd.append('photo', f);
+    try { const res = await apiMultipart('/settings/bank-card/photo', fd); BC.state = res.state; toast('عکس کارت ذخیره شد.'); bcRender(); } catch (e) { handleErr(e); }
+  });
+  $('#bc-photo-reset', body)?.addEventListener('click', async () => {
+    try { const res = await apiDelete('/settings/bank-card/photo'); BC.state = res.state; toast('عکس حذف شد.'); bcRender(); } catch (e) { handleErr(e); }
+  });
+  $('#bc-add', body).addEventListener('click', () => bcOpenCardModal(null));
+  $$('[data-bc-edit]', body).forEach(b => b.addEventListener('click', () => bcOpenCardModal(BC.state.cards.find(c => c.id === Number(b.dataset.bcEdit)))));
+  $$('[data-bc-toggle]', body).forEach(b => b.addEventListener('click', async () => {
+    try { const res = await apiPost(`/settings/bank-card/cards/${b.dataset.bcToggle}/toggle`); BC.state = res.state; bcRender(); } catch (e) { handleErr(e); }
+  }));
+  $$('[data-bc-del]', body).forEach(b => b.addEventListener('click', async () => {
+    if (!confirm('این کارت حذف شود؟')) return;
+    try { const res = await apiDelete(`/settings/bank-card/cards/${b.dataset.bcDel}`); BC.state = res.state; toast('کارت حذف شد.'); bcRender(); } catch (e) { handleErr(e); }
+  }));
+}
+
+async function bindBankCardSection(root) {
+  const body = $('#bank-card-body', root);
+  if (!body) return;
+  try { BC.state = await apiGet('/settings/bank-card'); bcRender(); }
+  catch (e) { body.innerHTML = `<p class="card-sub">بارگذاری تنظیمات کارت ناموفق بود: ${esc(e.message || '')}</p>`; }
 }
 
 function mobileAppCardHtml(tokens) {
@@ -11371,6 +12127,7 @@ function bsModeBarHtml(g) {
         </div>
         <label class="bs-switch-row"><span class="switch" data-bs-mm="reply" data-on="${BS.mm.reply ? '1' : '0'}"><i></i></span><span>منوی پایین فعال</span></label>
         <label class="bs-switch-row"><span class="switch" data-bs-mm="inline" data-on="${BS.mm.inline ? '1' : '0'}"><i></i></span><span>منوی شیشه‌ای فعال</span></label>
+        <button type="button" class="btn btn-sm btn-primary" data-bs-cm-new>➕ دکمه سفارشی جدید</button>
       </div>`;
   }
   if (bsIsAdminItems(g)) {
@@ -11448,6 +12205,7 @@ function bsInspectorHtml(g) {
     <div class="bs-insp-head"><b dir="auto">${esc(it.label)}</b><code>${esc(it.key)}</code>
       <button type="button" class="btn btn-ghost btn-sm bs-close" data-bs-act="close" title="بستن">✕</button></div>
     ${text}${customEditor}${swatches}${toggle}${arrows}${catSel}
+    ${it.custom_menu ? '<button type="button" class="btn btn-sm btn-danger" data-bs-cm-del style="margin-top:8px">🗑 حذف این دکمه سفارشی</button>' : ''}
     ${!it.has_text && !it.has_style && !it.togglable && !it.custom_menu ? '<p class="card-sub">این دکمه متن/رنگ قابل ویرایش ندارد.</p>' : ''}
     <button type="button" class="btn btn-primary bs-insp-save" data-bs-act="save" ${bsChangeCount() ? '' : 'disabled'}>ذخیره تغییرات</button>`;
 }
@@ -11773,6 +12531,71 @@ async function bsSaveAll() {
 }
 
 /* ------------------------------------------------------------------ boot -- */
+
+/* -------------------------------------------- ساخت/حذف دکمه‌ی سفارشی منوی اصلی -- */
+function bsCmDiscardOk() {
+  return !bsChangeCount() || confirm('تغییرات ذخیره‌نشده‌ی دیگر صفحه‌ها با این کار از بین می‌رود. ادامه بدهم؟');
+}
+
+function bsCustomMenuNew() {
+  openModal('➕ دکمه سفارشی جدید در منوی اصلی ربات', `
+    <label class="bs-field"><span>متن روی دکمه (حداکثر ۴۰ نویسه)</span>
+      <input class="input" id="cmn-title" maxlength="40" placeholder="مثلاً 📢 کانال ما"></label>
+    <label class="bs-field"><span>نوع دکمه</span>
+      <select class="input" id="cmn-kind"><option value="url">🔗 باز کردن لینک</option><option value="content">💬 ارسال پیام</option></select></label>
+    <label class="bs-field" id="cmn-url-wrap"><span>آدرس لینک (https://… یا t.me/… یا @آیدی)</span>
+      <input class="input" id="cmn-url" dir="ltr" placeholder="https://t.me/yourchannel"></label>
+    <label class="bs-field" id="cmn-content-wrap" style="display:none"><span>متن پیامی که با لمس دکمه ارسال می‌شود</span>
+      <textarea class="input" id="cmn-content" rows="5" maxlength="4000"></textarea>
+      <small class="card-sub">برای پیام رسانه‌ای (عکس، ویدیو، ویس و ...) بعد از ساخت دکمه، محتوا را از داخل ربات اضافه کن.</small></label>
+    <div class="bs-field"><span>رنگ دکمه</span>
+      <div class="bs-swatches" id="cmn-styles">${(BS.styleOptions.length ? BS.styleOptions : [{ value: '', label: 'پیش‌فرض' }]).map((o, i) =>
+        `<button type="button" class="bs-sw st-${esc(o.value)}${i === 0 ? ' on' : ''}" data-cmn-style="${esc(o.value)}" title="${esc(BS_STYLE_LABEL[o.value] || o.label)}"></button>`).join('')}</div></div>
+    <div style="margin-top:14px"><button class="btn btn-primary" id="cmn-save">ساخت دکمه</button></div>`,
+  (body, close) => {
+    let style = '';
+    const kindSel = $('#cmn-kind', body);
+    kindSel.addEventListener('change', () => {
+      $('#cmn-url-wrap', body).style.display = kindSel.value === 'url' ? '' : 'none';
+      $('#cmn-content-wrap', body).style.display = kindSel.value === 'content' ? '' : 'none';
+    });
+    $$('[data-cmn-style]', body).forEach(b => b.addEventListener('click', () => {
+      style = b.dataset.cmnStyle;
+      $$('[data-cmn-style]', body).forEach(x => x.classList.toggle('on', x === b));
+    }));
+    $('#cmn-save', body).addEventListener('click', async (ev) => {
+      const btn = ev.currentTarget;
+      if (!bsCmDiscardOk()) return;
+      btn.disabled = true;
+      try {
+        const res = await apiPost('/settings/custom-menu-buttons', {
+          title: $('#cmn-title', body).value, kind: kindSel.value, url: $('#cmn-url', body).value,
+          content: $('#cmn-content', body).value, style,
+        });
+        toast('دکمه ساخته شد.');
+        close();
+        await bsLoad();
+        BS.cur = 'main_menu'; BS.sel = res.key;
+        bsRefresh();
+      } catch (e) { handleErr(e); btn.disabled = false; }
+    });
+  });
+}
+
+async function bsCustomMenuDelete() {
+  const g = BS.groups[BS.cur];
+  const it = BS.sel && g && bsItem(g, BS.sel);
+  if (!it || !it.custom_menu) return;
+  if (!confirm(`دکمه‌ی «${it.label}» برای همیشه حذف شود؟`)) return;
+  if (!bsCmDiscardOk()) return;
+  try {
+    await apiDelete(`/settings/custom-menu-buttons/${encodeURIComponent(String(it.key).split(':')[1])}`);
+    toast('دکمه حذف شد.');
+    await bsLoad();
+    bsRefresh();
+  } catch (e) { handleErr(e); }
+}
+
 function bsWire() {
   const root = $('#bs-root');
   root.addEventListener('pointerdown', (e) => { if (e.target.closest('#bs-stage')) bsOnPointerDown(e); });
@@ -11800,6 +12623,8 @@ function bsWire() {
       const g = BS.groups[BS.cur]; bsItem(g, BS.sel).style = sw.dataset.bsStyle; bsMarkEdited(g, BS.sel);
       bsRenderTop(); bsRenderScreens(); bsRenderPhone(); bsRenderInspector(); return;
     }
+    if (q('[data-bs-cm-new]')) return bsCustomMenuNew();
+    if (q('[data-bs-cm-del]')) return bsCustomMenuDelete();
     const act = q('[data-bs-act]');
     if (act) { if (act.dataset.bsAct === 'save') return bsSaveAll(); bsAction(act.dataset.bsAct); return; }
     const tgBtn = q('#bs-stage .tg-btn[data-key]');
@@ -12321,6 +13146,7 @@ function _pushNotifGuideHtml() {
 function paymentExtrasHtml({ methods, gateways, c2cCards, c2cWebhook, c2cInvoices }) {
   const builtin = (methods || []).filter(m => !m.is_custom && m.key !== 'wallet');
   return `
+    ${bankCardSectionHtml()}
     <div class="card">
       <div class="card-sub" style="margin-bottom:10px"><b>👛 روش‌های پرداخت مجاز برای شارژ کیف پول</b> — مستقل از
         محدودیت روش پرداخت هر محصول: با این تنظیم می‌توانی مشخص کنی کاربر هنگام شارژ کیف پول کدام روش‌ها را ببیند.</div>
@@ -12436,6 +13262,7 @@ function paymentExtrasHtml({ methods, gateways, c2cCards, c2cWebhook, c2cInvoice
 }
 
 function bindPaymentExtrasEvents(root, { gateways, c2cCards, c2cWebhook }) {
+  bindBankCardSection(root);
   $('#sms-forwarder-guide', root)?.addEventListener('click', () => openModal('📖 راهنمای کامل فوروارد پیامک', _smsForwarderGuideHtml(), null, { wide: true }));
   $('#wallet-pm-edit', root)?.addEventListener('click', () => openWalletPaymentMethodsModal());
   $('#cc-pm-edit', root)?.addEventListener('click', () => openCustomConfigPaymentMethodsModal());
@@ -12680,8 +13507,10 @@ document.addEventListener('click', async e => {
 
 
 
-async function renderSubscriptionPageSettings() {
-  const s = await apiGet('/settings');
+// تنظیمات کامل صفحه لینک ساب اختصاصی؛ تنها مرجع این تنظیمات (تب «شخصی‌سازی وب»).
+// فقط یک iframe پیش‌نمایش (#sub-page-preview-frame) در کل پنل وجود دارد.
+const SUB_PAGE_KEYS = ['dsub_accent_color', 'dsub_apps_hidden', 'dsub_apps_rec', 'dsub_base_url', 'dsub_brand', 'dsub_cache_ttl', 'dsub_card_style', 'dsub_custom_apps', 'dsub_custom_template', 'dsub_custom_template_enabled', 'dsub_density', 'dsub_enabled', 'dsub_expired_placeholder', 'dsub_expired_text', 'dsub_faq', 'dsub_footer_text', 'dsub_info_line', 'dsub_info_line_text', 'dsub_limited_text', 'dsub_log_enabled', 'dsub_logo_url', 'dsub_notice', 'dsub_profile_title', 'dsub_secondary_color', 'dsub_show_apps', 'dsub_show_chart', 'dsub_show_configs', 'dsub_show_faq', 'dsub_show_qr', 'dsub_style', 'dsub_support_url', 'dsub_theme', 'dsub_update_interval', 'dsub_usage_sampling', 'dsub_web_page'];
+function subPageSettingsHtml(s) {
   const val = k => s[k] ?? '';
   const field = (key, label, type='text', hint='') => `
     <label class="field"><span>${label}</span>
@@ -12701,8 +13530,8 @@ async function renderSubscriptionPageSettings() {
   };
   const paletteHtml = `<div class="palette-wrap"><span class="card-sub">پالت‌های آماده (با یک کلیک رنگ اصلی و مکمل ست می‌شوند)</span>
     <div class="palette-grid">${SUB_PAGE_PALETTES.map(([n,a,b]) => `<button type="button" class="palette-chip" data-a="${a}" data-b="${b}" title="${esc(n)}"><i style="background:linear-gradient(135deg,${a},${b})"></i><span>${esc(n)}</span></button>`).join('')}</div></div>`;
-  setContent(`
-    <div class="hero"><div><h2>تنظیمات صفحه اشتراک</h2><p class="card-sub">مدیریت کامل ظاهر، محتوا و رفتار لینک ساب اختصاصی</p></div></div>
+  return `
+    <div class="hero" style="margin-bottom:12px"><div><h3 style="margin:0">🔗 صفحه لینک ساب اختصاصی</h3><p class="card-sub">مدیریت کامل ظاهر، محتوا و رفتار لینک ساب اختصاصی</p></div></div>
     <div class="card" style="margin-bottom:16px"><div class="card-head"><h3>🔌 وضعیت و آدرس سرویس</h3></div><div class="form-grid">
       ${select('dsub_enabled','فعال بودن لینک ساب اختصاصی',[['0','غیرفعال'],['1','فعال']])}
       ${select('dsub_web_page','نمایش صفحه وب در مرورگر',[['0','غیرفعال'],['1','فعال']])}
@@ -12718,7 +13547,7 @@ async function renderSubscriptionPageSettings() {
         ${select('dsub_density','تراکم محتوا',[['comfortable','راحت'],['compact','فشرده']])}
       </div>
       ${paletteHtml}
-      <div class="card-sub">پیش‌نمایش زنده (با هر تغییر، بدون ذخیره به‌روز می‌شود)</div>
+      <div class="card-sub">🔗 پیش‌نمایش زنده صفحه لینک ساب (با هر تغییر، بدون ذخیره به‌روز می‌شود؛ تنها پیش‌نمایش این صفحه همین‌جاست)</div>
       <iframe id="sub-page-preview-frame" src="/api/settings/sub-page-preview?preview=1" title="پیش‌نمایش صفحه اشتراک" style="width:100%;height:560px;border:1px solid var(--border);border-radius:14px;background:#fff"></iframe>
       <button class="btn btn-ghost btn-sm" id="sub-page-preview-open" type="button">باز کردن پیش‌نمایش در تب جدید</button>
     </div>
@@ -12751,28 +13580,15 @@ async function renderSubscriptionPageSettings() {
         ${toggle('dsub_custom_template_enabled','استفاده از قالب HTML اختصاصی')}
         ${area('dsub_custom_template','کد HTML قالب اختصاصی',12)}
       </div>
-      <div class="form-grid" style="margin-top:10px">
-        <button class="btn btn-ghost sub-tpl-guide-btn" type="button">راهنمای قالب</button>
-        <button class="btn btn-ghost sub-tpl-default-btn" type="button">پر کردن قالب پیش‌فرض</button>
-        <label class="btn btn-ghost" style="cursor:pointer">آپلود فایل HTML<input class="sub-tpl-upload-input" type="file" accept=".html,text/html" hidden></label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+        <button type="button" class="btn btn-ghost btn-sm sub-tpl-guide-btn">📖 راهنمای قالب</button>
+        <button type="button" class="btn btn-ghost btn-sm sub-tpl-default-btn">⬇️ پر کردن قالب پیش‌فرض</button>
+        <button type="button" class="btn btn-ghost btn-sm sub-tpl-upload-btn">📤 آپلود فایل HTML</button>
+        <input type="file" class="sub-tpl-upload-input" accept=".html,.htm,text/html" hidden>
       </div>
     </div>
-    <div class="settings-save-bar"><button class="btn btn-primary btn-block" id="subscription-page-save">ذخیره تنظیمات صفحه اشتراک</button></div>
-  `);
-  const root = content();
-  bindSettingsGroupEvents(root);
-  bindSubPageColorPickers(root);
-  bindSubscriptionLivePreview(root);
-  $('#subscription-page-save',root).addEventListener('click',()=>collectAndSaveSettings(root,$('#subscription-page-save',root)));
-  $$('.sub-tpl-guide-btn',root).forEach(btn=>btn.addEventListener('click',()=>openModal('راهنمای قالب اختصاصی',_subTemplateGuideHtml(),null,{wide:true})));
-  $$('.sub-tpl-default-btn',root).forEach(btn=>btn.addEventListener('click',async()=>{
-    try { const r=await fetch('/api/settings/sub-page-template/default',{credentials:'same-origin'}); if(!r.ok) throw new Error('HTTP '+r.status); $('textarea[data-key="dsub_custom_template"]',root).value=await r.text(); toast('قالب پیش‌فرض بارگذاری شد؛ ذخیره را بزن.'); } catch(e){handleErr(e);}
-  }));
-  $$('.sub-tpl-upload-input',root).forEach(input=>input.addEventListener('change',async()=>{
-    const file=input.files&&input.files[0]; input.value=''; if(!file)return;
-    if(file.size>400000){toast('حجم فایل بیش از ۴۰۰ کیلوبایت است.');return;}
-    try{const t=await file.text();if(!t.includes('__DATA__')){toast('قالب باید شامل __DATA__ باشد.');return;} $('textarea[data-key="dsub_custom_template"]',root).value=t;toast('قالب بارگذاری شد؛ ذخیره را بزن.');}catch(e){handleErr(e);}
-  }));
+    </div>
+  `;
 }
 
 async function renderSettings() {
@@ -12806,6 +13622,10 @@ async function renderSettings() {
     <div data-settings-tab="mobile_app" style="${settingsActiveTab === 'mobile_app' ? '' : 'display:none'}">
       ${mobileAppCardHtml(mobileTokens)}
     </div>
+    <div data-settings-tab="webcustom" style="${settingsActiveTab === 'webcustom' ? '' : 'display:none'}">
+      ${miniappSectionHtml()}
+      ${subPageSettingsHtml(settings)}
+    </div>
 
     ${extraSettingsTabHtml()}
 
@@ -12817,7 +13637,9 @@ async function renderSettings() {
   `);
   $$('#settings-tabs-nav .tab-btn', content()).forEach(btn => btn.addEventListener('click', () => switchSettingsTab(btn.dataset.tab, content())));
   bindSettingsGroupEvents(content());
+  bindSubPageColorPickers(content());
   bindSubscriptionLivePreview(content());
+  bindMiniappSection(content());
   syncExtraSettingsTab(content());
   bindPaymentExtrasEvents(content(), pay);
   bindMobileAppEvents(content(), renderSettings);
@@ -12935,6 +13757,10 @@ function renderSettingsBento(settings, rate, mainMenuDisplay, pay, mobileTokens)
     <div data-settings-tab="mobile_app" style="${settingsActiveTab === 'mobile_app' ? '' : 'display:none'}">
       ${mobileAppCardHtml(mobileTokens)}
     </div>
+    <div data-settings-tab="webcustom" style="${settingsActiveTab === 'webcustom' ? '' : 'display:none'}">
+      ${miniappSectionHtml()}
+      ${subPageSettingsHtml(settings)}
+    </div>
     ${extraSettingsTabHtml()}
     ${renderSettingsGroups(settings)}
     <div class="settings-save-bar">
@@ -12943,7 +13769,9 @@ function renderSettingsBento(settings, rate, mainMenuDisplay, pay, mobileTokens)
   `);
   $$('#settings-tabs-nav .bn-seg-btn', content()).forEach(btn => btn.addEventListener('click', () => switchSettingsTab(btn.dataset.tab, content())));
   bindSettingsGroupEvents(content());
+  bindSubPageColorPickers(content());
   bindSubscriptionLivePreview(content());
+  bindMiniappSection(content());
   syncExtraSettingsTab(content());
   bindPaymentExtrasEvents(content(), pay);
   bindMobileAppEvents(content(), renderSettings);
@@ -12995,6 +13823,10 @@ function renderSettingsBrutalist(settings, rate, mainMenuDisplay, pay, mobileTok
         <div data-settings-tab="mobile_app" style="${settingsActiveTab === 'mobile_app' ? '' : 'display:none'}">
           ${mobileAppCardHtml(mobileTokens)}
         </div>
+        <div data-settings-tab="webcustom" style="${settingsActiveTab === 'webcustom' ? '' : 'display:none'}">
+          ${miniappSectionHtml()}
+          ${subPageSettingsHtml(settings)}
+        </div>
         ${extraSettingsTabHtml()}
         ${renderSettingsGroups(settings)}
         <div class="settings-save-bar">
@@ -13005,7 +13837,9 @@ function renderSettingsBrutalist(settings, rate, mainMenuDisplay, pay, mobileTok
   `);
   $$('#settings-tabs-nav .bru-seg-btn', content()).forEach(btn => btn.addEventListener('click', () => switchSettingsTab(btn.dataset.tab, content())));
   bindSettingsGroupEvents(content());
+  bindSubPageColorPickers(content());
   bindSubscriptionLivePreview(content());
+  bindMiniappSection(content());
   syncExtraSettingsTab(content());
   bindPaymentExtrasEvents(content(), pay);
   bindMobileAppEvents(content(), renderSettings);
@@ -13868,6 +14702,10 @@ async function renderAccount() {
       <div class="card-head"><h3>زمان انقضای نشست (عدم فعالیت)</h3></div>
       <div class="form-grid" id="acc-session-body"><div class="loading">در حال بارگذاری...</div></div>
     </div>
+    ${!ME.tenant ? `<div class="card" id="acc-entry-card" style="max-width:520px;margin-top:18px">
+      <div class="card-head"><h3>مسیر ورود مخفی پنل</h3></div>
+      <div class="form-grid" id="acc-entry-body"><div class="loading">در حال بارگذاری...</div></div>
+    </div>` : ''}
     <div class="card" id="acc-2fa-admins-card" style="max-width:520px;margin-top:18px">
       <div class="card-head"><h3>مدیریت 2FA ادمین‌ها</h3></div>
       <div id="acc-2fa-admins-body"><div class="loading">در حال بارگذاری...</div></div>
@@ -13898,7 +14736,7 @@ async function renderAccount() {
     } catch (e) { handleErr(e); }
   });
   renderAccount2FA();
-  if (ME.role === 'owner') { renderAccountSession(); renderAccount2FAAdmins(); }
+  if (ME.role === 'owner') { renderAccountSession(); renderAccount2FAAdmins(); if (!ME.tenant) renderAccountEntryPath(); }
 }
 
 async function renderAccount2FA() {
@@ -13985,6 +14823,47 @@ async function renderAccountSession() {
       ME.session_idle_minutes = r.idle_minutes;
       LAST_USER_INPUT = Date.now();
       toast('ذخیره شد.');
+    } catch (e) { handleErr(e); }
+  });
+}
+
+async function renderAccountEntryPath() {
+  const body = $('#acc-entry-body');
+  if (!body) return;
+  let st;
+  try { st = await apiGet('/security/entry-path'); } catch (e) { body.innerHTML = ''; handleErr(e); return; }
+  const randomSlug = () => {
+    const a = new Uint8Array(12);
+    crypto.getRandomValues(a);
+    return Array.from(a, b => 'abcdefghijkmnpqrstuvwxyz23456789'[b % 32]).join('');
+  };
+  body.innerHTML = `
+    <span class="card-sub">وقتی روشن باشد، پنل فقط بعد از باز کردن آدرس مخفی زیر قابل دسترسی است و هر درخواست دیگری (مثل اسکنر و ربات‌ها) خطای ۴۰۴ می‌گیرد. به‌صورت پیش‌فرض خاموش است. آدرس را جای امنی ذخیره کن؛ اگر فراموشش کنی از داخل ربات در «مدیریت لینک‌ها» یا با دستور <span class="mono" dir="ltr">python3 -m admin_panel.entry_path_cli --show</span> روی سرور قابل بازیابی است.</span>
+    <label class="field"><span>وضعیت</span>
+      <select class="input" id="entry-enabled"><option value="0" ${st.enabled ? '' : 'selected'}>خاموش</option><option value="1" ${st.enabled ? 'selected' : ''}>روشن</option></select>
+    </label>
+    <label class="field"><span>مسیر مخفی (۶ تا ۶۴ حرف انگلیسی، عدد، - و _)</span>
+      <input class="input mono" id="entry-path" dir="ltr" value="${esc(st.path || '')}" placeholder="مثلاً k7x2m9qpa4">
+    </label>
+    <button class="btn" id="entry-random" type="button">ساخت مسیر تصادفی</button>
+    <div class="card-sub mono" id="entry-preview" dir="ltr"></div>
+    <button class="btn btn-primary" id="entry-save" type="button">ذخیره</button>`;
+  const preview = () => {
+    const v = $('#entry-path').value.trim();
+    $('#entry-preview').textContent = v ? `${st.base_url}/${v}` : '';
+  };
+  $('#entry-path').addEventListener('input', preview);
+  $('#entry-random').addEventListener('click', () => { $('#entry-path').value = randomSlug(); preview(); });
+  preview();
+  $('#entry-save').addEventListener('click', async () => {
+    const enabled = $('#entry-enabled').value === '1';
+    const path = $('#entry-path').value.trim();
+    if (enabled && !path) { toast('مسیر را وارد کن یا یک مسیر تصادفی بساز.', true); return; }
+    if (enabled && !confirm(`بعد از ذخیره، پنل فقط از آدرس زیر باز می‌شود. آدرس را ذخیره کردی؟\n${st.base_url}/${path}`)) return;
+    try {
+      const r = await apiPost('/security/entry-path', { enabled, path });
+      toast(r.enabled ? 'مسیر مخفی فعال شد.' : 'مسیر مخفی خاموش شد.');
+      renderAccountEntryPath();
     } catch (e) { handleErr(e); }
   });
 }
