@@ -95,17 +95,19 @@ import leak_index
 from panel_capabilities import product_capabilities, normalize_user_limit, USER_LIMIT, node_capabilities, all_panels_support
 from panel_providers import (
     get_provider, PanelError, PanelUsernameTakenError, PANEL_TYPE_LABELS,
-    PROVIDERS, SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES, TEMPLATE_BASED_PANEL_TYPES,
+    PROVIDERS, SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES, TEMPLATE_BASED_PANEL_TYPES, connect_needs_template, panel_server_is_ready,
     SINGLE_INBOUND_PANEL_TYPES, TOKEN_ONLY_PANEL_TYPES, NO_SETUP_PANEL_TYPES, TEMPLATE_PROMPTS,
     parse_xui_inbound_ids,
 )
 from renewal_reminders import STATUS_KEY_LAST_RUN, STATUS_KEY_LAST_DATE_SENT, STATUS_KEY_LAST_VOLUME_SENT
 from backup import create_backup, restore_backup, is_valid_sqlite_db
+import account_naming
 import exchange_rate
 import geo_scan
 import world_map
 import payment_engine
 import custom_gateway_payment
+import web_entry_gate
 
 logger = logging.getLogger("admin_panel.server")
 
@@ -132,6 +134,62 @@ app.add_middleware(ApiNoStoreMiddleware)
 app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
 main_db = Database(DB_PATH)
 main_db.init_db(owner_id=OWNER_ID)
+
+# ------------------------------------------------------- secret entry path --
+# مسیر ورود مخفی (اختیاری، پیش‌فرض خاموش). جزئیات در web_entry_gate.py.
+_GATE_PASS_PREFIXES = ("/api/", "/app/")
+
+
+def _gate_secure(request: Request) -> bool:
+    return request.headers.get("x-forwarded-proto", request.url.scheme) == "https"
+
+
+def _gate_set_cookie(response: Response, request: Request, slug: str) -> None:
+    response.set_cookie(
+        web_entry_gate.COOKIE_NAME, web_entry_gate.cookie_value(ADMIN_PANEL_SECRET, slug),
+        max_age=web_entry_gate.COOKIE_MAX_AGE, httponly=True, samesite="lax",
+        secure=_gate_secure(request), path="/",
+    )
+
+
+def _gate_is_internal(request: Request) -> bool:
+    client = request.client.host if request.client else ""
+    proxied = request.headers.get("x-real-ip") or request.headers.get("x-forwarded-for")
+    return client in ("127.0.0.1", "::1") and not proxied
+
+
+@app.middleware("http")
+async def _entry_path_gate(request: Request, call_next):
+    enabled, slug = web_entry_gate.get_config()
+    if not enabled:
+        return await call_next(request)
+    path = request.url.path
+    prefix = "/" + slug
+    if path == prefix or path.startswith(prefix + "/"):
+        rest = path[len(prefix):] or "/"
+        if rest.startswith(_GATE_PASS_PREFIXES):
+            request.scope["path"] = rest
+            request.scope["raw_path"] = rest.encode()
+            response = await call_next(request)
+            _gate_set_cookie(response, request, slug)
+            return response
+        target = rest + (("?" + request.url.query) if request.url.query else "")
+        response = RedirectResponse(url=target, status_code=302)
+        _gate_set_cookie(response, request, slug)
+        return response
+    if web_entry_gate.cookie_valid(ADMIN_PANEL_SECRET, slug, request.cookies.get(web_entry_gate.COOKIE_NAME, "")):
+        return await call_next(request)
+    if _gate_is_internal(request):
+        return await call_next(request)
+    if path.startswith("/api/") and request.headers.get("authorization", "").startswith("Bearer "):
+        return await call_next(request)
+    if path == "/app/webview-bridge":
+        response = await call_next(request)
+        if response.status_code in (301, 302, 303, 307, 308):
+            _gate_set_cookie(response, request, slug)
+        return response
+    return JSONResponse({"detail": "Not Found"}, status_code=404)
+
 
 # --------------------------------------------------------- multi-tenancy --
 # پنل وب یک instance واحد است که هم بات اصلی و هم نماینده‌های «کامل» را سرو
@@ -1839,9 +1897,9 @@ def api_app_config(admin=Depends(get_current_admin)):
                 {"key": "is_active", "label": "فعال", "type": "toggle",
                  "toggle_endpoint": "/api/panel-servers/{id}/toggle"},
             ],
-            # فقط پنل‌های خانواده‌ی PasarGuard/Marzban/Marzneshin (ساخت تک‌مرحله‌ای
-            # با «کاربر نمونه»). افزودن 3X-UI/Hiddify از اپ پشتیبانی نمی‌شود چون
-            # نیاز به انتخاب inbound یا تکمیل بعدی دارند - فعلاً فقط از پنل وب.
+            # فقط پنل‌های خانواده‌ی PasarGuard/Marzban/Marzneshin (ساخت تک‌مرحله‌ای؛
+            # گروه/اینباند موقع ساخت محصول انتخاب می‌شود). افزودن 3X-UI/Hiddify از اپ پشتیبانی
+            # نمی‌شود چون بعد از اتصال «آدرس Subscription» هم می‌خواهند - فعلاً فقط از پنل وب.
             "create_form": {
                 "title": "افزودن پنل (PasarGuard/Marzban/Marzneshin)",
                 "submit_url": "/api/panel-servers",
@@ -1854,7 +1912,6 @@ def api_app_config(admin=Depends(get_current_admin)):
                     {"key": "api_url", "label": "آدرس پنل (API URL)", "type": "text"},
                     {"key": "api_username", "label": "نام کاربری ادمین پنل", "type": "text"},
                     {"key": "api_password", "label": "پسورد ادمین پنل", "type": "password"},
-                    {"key": "template_username", "label": "نام کاربری نمونه (برای دریافت قالب)", "type": "text"},
                     {"key": "default_group", "label": "گروه پیش‌فرض (اختیاری)", "type": "text", "nullable": True},
                 ],
             },
@@ -1934,6 +1991,7 @@ def api_app_config(admin=Depends(get_current_admin)):
                 {"title": "پرداخت و مالی", "groups": [{"title": "کارت بانکی", "fields": [
                     {"key": "card_number", "label": "شماره کارت", "type": "text"},
                     {"key": "card_holder", "label": "نام صاحب کارت", "type": "text"},
+                    {"key": "card_bank_name", "label": "نام بانک", "type": "text"},
                 ]}, {"title": "قابلیت ۸۶: انقضای سفارش‌های رهاشده با کد تخفیف", "fields": [
                     {"key": "discount_order_expiry_minutes",
                      "label": "مهلت لغو خودکار سفارش (دقیقه) اگر رسید کارت‌به‌کارت فرستاده نشود؛ ۰ = غیرفعال",
@@ -4855,6 +4913,20 @@ class ProductBody(BaseModel):
     renew_rules: Optional[dict] = None  # قوانین تمدید کامل (renewal_rules.py)
     ai_description: str = ""  # توضیح برای راهنمای خرید هوشمند (به کاربر نمایش داده نمی‌شود)
     product_kind: str = "config"  # config | panel_account (فقط هنگام ساخت)
+    start_on_first_use: Optional[bool] = None  # True=زمان از اولین اتصال، False=از لحظه خرید، None=طبق تنظیم پنل
+
+
+def _checked_product_first_use(value, server_id, ssh_node_id=None, multi=False):
+    """None برای محصول بدون پنل VPN مستقیم یا چندمقصدی (اثری ندارد)؛ وگرنه bool معتبر."""
+    if value is None:
+        return None
+    if not server_id or ssh_node_id or multi:
+        return None
+    if value:
+        server = db.get_panel_server(int(server_id))
+        if server and server["panel_type"] not in PANEL_ONHOLD_TYPES:
+            raise HTTPException(400, tr("این نوع پنل شروع زمان از اولین اتصال را پشتیبانی نمی‌کند."))
+    return bool(value)
 
 
 @app.get("/api/products")
@@ -4873,6 +4945,10 @@ def api_products(admin=Depends(require_permission("catalog"))):
         if p.get("provision_server_id"):
             _provision_panel = db.get_panel_server(p["provision_server_id"])
             p["provision_panel_type"] = _provision_panel["panel_type"] if _provision_panel else None
+            if p.get("start_on_first_use") is None:
+                p["start_on_first_use_effective"] = bool(_provision_panel and _provision_panel["start_on_first_use"])
+            else:
+                p["start_on_first_use_effective"] = bool(p["start_on_first_use"])
         else:
             p["provision_panel_type"] = None
     return products
@@ -4890,7 +4966,9 @@ def api_panel_servers_lite(admin=Depends(require_permission("catalog"))):
     """لیست سبک پنل‌ها (فقط id/name) برای انتخاب پنل موقع ساخت محصول اتصال مستقیم."""
     from panel_capabilities import provider_capabilities
     return [{"id": s["id"], "name": s["name"], "panel_type": s["panel_type"],
-             "supports_user_limit": provider_capabilities(s["panel_type"])[USER_LIMIT]}
+             "supports_user_limit": provider_capabilities(s["panel_type"])[USER_LIMIT],
+             "onhold_supported": s["panel_type"] in PANEL_ONHOLD_TYPES,
+             "start_on_first_use": bool(_row_get(s, "start_on_first_use", 0))}
             for s in db.get_panel_servers(active_only=True)]
 
 @app.get("/api/panel-servers/{server_id}/product-targets")
@@ -5629,6 +5707,9 @@ async def api_add_product(body: ProductBody, admin=Depends(require_permission("c
         renew_rules=body.renew_rules, ai_description=body.ai_description,
         btn_style=(body.btn_style or ""),
         product_kind="panel_account" if is_panel_kind else "config",
+        start_on_first_use=_checked_product_first_use(
+            body.start_on_first_use, body.provision_server_id, body.provision_ssh_node_id,
+            multi=bool(extra_panels or extra_nodes)),
     )
     if int(body.compare_price or 0) > 0 and (body.discount_days is not None or body.discount_max_uses is not None):
         db.edit_product(pid, compare_price=int(body.compare_price),
@@ -5750,6 +5831,7 @@ class ProductEditBody(BaseModel):
     max_users: Optional[int] = None
     renew_rules: Optional[dict] = None
     ai_description: Optional[str] = None
+    start_on_first_use: Optional[bool] = None
 
 
 @app.put("/api/products/{product_id}")
@@ -5990,6 +6072,11 @@ async def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends
         discount_max_uses=(max(int(body.discount_max_uses), 0) if body.discount_max_uses is not None else ...),
         provision_target_config=target_config_update, ai_description=body.ai_description,
         btn_style=(body.btn_style if body.btn_style is not None else ...),
+        start_on_first_use=(
+            _checked_product_first_use(
+                body.start_on_first_use, effective_server_id, effective_ssh_node_id,
+                multi=bool(final_extra_panels or final_extra_nodes))
+            if body.start_on_first_use is not None else ...),
     )
     if extras_changed or body.extra_panel_target_values is not None or body.source is not None or provision_server_id is not ... or provision_ssh_node_id is not ...:
         db.set_product_extra_targets(product_id, final_extra_panels, final_extra_nodes, final_extra_target_configs)
@@ -6754,8 +6841,8 @@ def api_support_delete(user_id: int, admin=Depends(require_permission("tickets")
 def _resolved_admin_panel_url(request: Request) -> str:
     saved = (db.get_setting("admin_panel_url", "") or "").strip().rstrip("/")
     if saved:
-        return saved
-    return f"{request.url.scheme}://{request.url.netloc}"
+        return web_entry_gate.with_entry_path(saved)
+    return web_entry_gate.with_entry_path(f"{request.url.scheme}://{request.url.netloc}")
 
 
 async def _deliver_reseller_webpanel_link(bot_id: int, request: Request) -> bool:
@@ -8156,6 +8243,51 @@ class PanelServerUpdateBody(BaseModel):
     xui_sub_base_url: Optional[str] = None
 
 
+PANEL_ONHOLD_TYPES = {"marzban", "pasarguard", "rebecca", "marzneshin", "3xui", "threexui"}
+PANEL_STATS_TYPES = {"3xui", "pasarguard"}
+PANEL_BACKUP_TYPES = {"3xui"}
+PANEL_USAGE_FIELDS = {
+    "custom": "used_for_custom_config",
+    "test": "used_for_test_config",
+    "reseller": "used_for_reseller",
+}
+
+
+def _mask_proxy(value: str) -> str:
+    return re.sub(r"://[^/@]*@", "://***@", value or "")
+
+
+def _row_get(row, key, default=None):
+    try:
+        return row[key] if key in row.keys() else default
+    except (AttributeError, IndexError, KeyError, TypeError):
+        return default
+
+
+class PanelServerAdvancedBody(BaseModel):
+    socks_proxy: Optional[str] = None
+    transfer_price: Optional[int] = None
+    allow_transfer_target: Optional[bool] = None
+    used_for_reseller: Optional[bool] = None
+    start_on_first_use: Optional[bool] = None
+    max_services: Optional[int] = None
+    clear_max_services: bool = False
+
+
+class PanelNamingBody(BaseModel):
+    mode: str
+    prefix: Optional[str] = None
+    suffix: Optional[str] = None
+
+
+class PanelMigrationBody(BaseModel):
+    dest_id: int
+    notify_users: bool = True
+    retarget_sales: bool = True
+    disable_old: bool = False
+    allow_estimate: bool = True
+
+
 class PanelServerTemplateBody(BaseModel):
     template_username: str
 
@@ -8169,13 +8301,15 @@ def _panel_server_public(s, health=None) -> dict:
     h = (health or {}).get(s["id"])
     is_sub_base_type = s["panel_type"] in SUB_BASE_URL_PANEL_TYPES
     xui_inbound_ids = parse_xui_inbound_ids(s) if s["panel_type"] in INBOUND_SELECT_PANEL_TYPES else []
+    # اینباند/گروه دیگر در اتصال انتخاب نمی‌شود (در ساخت محصول انتخاب می‌شود)
     if is_sub_base_type:
-        needs_inbound = s["panel_type"] in INBOUND_SELECT_PANEL_TYPES
-        configured = bool(s["xui_sub_base_url"]) and (bool(xui_inbound_ids) if needs_inbound else True)
+        configured = bool(s["xui_sub_base_url"])
     elif s["panel_type"] in NO_SETUP_PANEL_TYPES:
         configured = True
+    elif connect_needs_template(s["panel_type"]):
+        configured = bool(s["group_ids"])
     else:
-        configured = bool(s["group_ids"] and s["proxy_settings"])
+        configured = True
     return {
         "id": s["id"], "name": s["name"], "panel_type": s["panel_type"],
         "panel_category_id": s["panel_category_id"] if "panel_category_id" in s.keys() else None,
@@ -8192,6 +8326,18 @@ def _panel_server_public(s, health=None) -> dict:
         "health_last_change": h["last_change"] if h else None,
         "health_error": (h["last_error"] or None) if h else None,
         "sort_order": int(s["sort_order"] or 0),
+        "used_for_reseller": bool(_row_get(s, "used_for_reseller", 0)),
+        "socks_proxy": _mask_proxy(_row_get(s, "socks_proxy", "") or ""),
+        "start_on_first_use": bool(_row_get(s, "start_on_first_use", 0)),
+        "onhold_supported": s["panel_type"] in PANEL_ONHOLD_TYPES,
+        "max_services": _row_get(s, "max_services", None),
+        "allow_transfer_target": bool(_row_get(s, "allow_transfer_target", 0)),
+        "transfer_price": int(_row_get(s, "transfer_price", 0) or 0),
+        "naming_mode": account_naming.server_mode(s),
+        "naming_prefix": account_naming.server_affix(s, "prefix"),
+        "naming_suffix": account_naming.server_affix(s, "suffix"),
+        "has_stats": s["panel_type"] in PANEL_STATS_TYPES,
+        "has_backup": s["panel_type"] in PANEL_BACKUP_TYPES,
     }
 
 
@@ -8528,9 +8674,9 @@ def api_panel_server_types(admin=Depends(require_permission("panels")), _fa=Depe
     return [
         {
             "type": k, "label": v,
-            "needs_template": k in TEMPLATE_BASED_PANEL_TYPES,
+            "needs_template": connect_needs_template(k),
             "needs_sub_base_url": k in SUB_BASE_URL_PANEL_TYPES,
-            "needs_inbound_select": k in INBOUND_SELECT_PANEL_TYPES,
+            "needs_inbound_select": False,
             "single_inbound": k in SINGLE_INBOUND_PANEL_TYPES,
             "token_only": k in TOKEN_ONLY_PANEL_TYPES,
             "no_setup": k in NO_SETUP_PANEL_TYPES,
@@ -8553,27 +8699,6 @@ async def api_add_panel_server(body: PanelServerBody, admin=Depends(require_perm
     if body.panel_type == "pasarguard" and not username and body.api_password.strip().startswith("pg_key_"):
         username = "apikey"
 
-    if body.panel_type in INBOUND_SELECT_PANEL_TYPES:
-        server_id = db.add_panel_server(body.name.strip(), body.panel_type, body.api_url.strip(), username, body.api_password, body.default_group, panel_category_id=body.panel_category_id)
-        server = db.get_panel_server(server_id)
-        try:
-            provider = get_provider(server)
-            inbounds = await provider.list_inbounds()
-        except PanelError as e:
-            db.delete_panel_server(server_id)
-            raise HTTPException(400, str(e))
-        if not inbounds:
-            db.delete_panel_server(server_id)
-            raise HTTPException(400, tr("این پنل هیچ inbound ای ندارد. اول از داخل پنل یک inbound بساز."))
-        db.log_admin_action(admin["id"], "panel_add", f"سرور «{body.name}» (3X-UI، #{server_id}) از پنل وب")
-        return {"id": server_id, "inbounds": inbounds, "needs_inbound_select": True}
-
-    if body.panel_type in SUB_BASE_URL_PANEL_TYPES:
-        # مثل Hiddify: inbound لازم نیست؛ باید بعداً با /xui-config تکمیل شود.
-        server_id = db.add_panel_server(body.name.strip(), body.panel_type, body.api_url.strip(), username, body.api_password, body.default_group, panel_category_id=body.panel_category_id)
-        db.log_admin_action(admin["id"], "panel_add", f"سرور «{body.name}» (#{server_id}) از پنل وب")
-        return {"id": server_id, "needs_sub_base_url": True}
-
     if body.panel_type in NO_SETUP_PANEL_TYPES:
         # Stealth VLESS: فقط آدرس + توکن؛ اتصال تست و ذخیره می‌شود
         server_id = db.add_panel_server(body.name.strip(), body.panel_type, body.api_url.strip(), username, body.api_password, body.default_group, panel_category_id=body.panel_category_id)
@@ -8584,24 +8709,39 @@ async def api_add_panel_server(body: PanelServerBody, admin=Depends(require_perm
         db.log_admin_action(admin["id"], "panel_add", f"سرور «{body.name}» (#{server_id}) از پنل وب")
         return {"id": server_id}
 
-    # خانواده‌ی PasarGuard/Marzban/Marzneshin: با «کاربر نمونه» قالب گرفته می‌شود
-    if not body.template_username or not body.template_username.strip():
-        raise HTTPException(400, tr("نام کاربری نمونه (برای دریافت قالب) الزامی است."))
+    if connect_needs_template(body.panel_type):
+        # Rebecca / IBSng: لیست زنده‌ی سرویس/گروه ندارند؛ فقط برای همین دو، «کاربر نمونه» لازم است.
+        if not body.template_username or not body.template_username.strip():
+            raise HTTPException(400, tr("نام کاربری نمونه (برای دریافت قالب) الزامی است."))
+        server_id = db.add_panel_server(body.name.strip(), body.panel_type, body.api_url.strip(), username, body.api_password, body.default_group, panel_category_id=body.panel_category_id)
+        server = db.get_panel_server(server_id)
+        try:
+            provider = get_provider(server)
+            template = await provider.fetch_template_from_user(body.template_username.strip())
+        except PanelError as e:
+            db.delete_panel_server(server_id)
+            raise HTTPException(400, str(e))
+        db.update_panel_server(
+            server_id, group_ids=json.dumps(template["group_ids"]),
+            proxy_settings=json.dumps(template["proxy_settings"]), template_username=body.template_username.strip(),
+        )
+        db.log_admin_action(admin["id"], "panel_add", f"سرور «{body.name}» (#{server_id}) از پنل وب")
+        import dedicated_sub as _ds
+        return {"id": server_id, "warning": _ds.wui_dsub_warning(db, body.panel_type)}
+
+    # بقیه‌ی پنل‌ها: بدون اینباند/گروه/کاربر نمونه؛ فقط تست اتصال و ذخیره.
+    # مقصد (گروه یا اینباند) موقع ساخت محصول از لیست زنده‌ی پنل انتخاب می‌شود.
     server_id = db.add_panel_server(body.name.strip(), body.panel_type, body.api_url.strip(), username, body.api_password, body.default_group, panel_category_id=body.panel_category_id)
-    server = db.get_panel_server(server_id)
-    try:
-        provider = get_provider(server)
-        template = await provider.fetch_template_from_user(body.template_username.strip())
-    except PanelError as e:
+    ok, err = await get_provider(db.get_panel_server(server_id)).check_connection()
+    if not ok:
         db.delete_panel_server(server_id)
-        raise HTTPException(400, str(e))
-    db.update_panel_server(
-        server_id, group_ids=json.dumps(template["group_ids"]),
-        proxy_settings=json.dumps(template["proxy_settings"]), template_username=body.template_username.strip(),
-    )
+        raise HTTPException(400, tr("اتصال به پنل ناموفق بود: ") + str(err))
     db.log_admin_action(admin["id"], "panel_add", f"سرور «{body.name}» (#{server_id}) از پنل وب")
     import dedicated_sub as _ds
-    return {"id": server_id, "warning": _ds.wui_dsub_warning(db, body.panel_type)}
+    result = {"id": server_id, "warning": _ds.wui_dsub_warning(db, body.panel_type)}
+    if body.panel_type in SUB_BASE_URL_PANEL_TYPES:
+        result["needs_sub_base_url"] = True
+    return result
 
 
 @app.get("/api/panel-servers/{server_id}/inbounds")
@@ -8625,8 +8765,7 @@ async def api_set_panel_server_xui_config(server_id: int, body: PanelServerXuiCo
         raise HTTPException(404, tr("یافت نشد."))
     if server["panel_type"] not in SUB_BASE_URL_PANEL_TYPES:
         raise HTTPException(400, tr("این سرور به این تنظیمات نیاز ندارد."))
-    if server["panel_type"] in INBOUND_SELECT_PANEL_TYPES and not body.inbound_ids:
-        raise HTTPException(400, tr("انتخاب حداقل یک inbound برای این نوع پنل الزامی است."))
+    # انتخاب inbound دیگر اینجا نیست (در ساخت محصول انتخاب می‌شود)
     if server["panel_type"] in SINGLE_INBOUND_PANEL_TYPES and len(body.inbound_ids or []) > 1:
         raise HTTPException(400, tr("برای این نوع پنل فقط یک inbound قابل انتخاب است."))
     url = body.sub_base_url.strip()
@@ -8674,12 +8813,16 @@ def api_toggle_panel_server(server_id: int, admin=Depends(require_permission("pa
 def api_toggle_panel_server_usage(server_id: int, kind: str, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
     """مشخص‌کردن این‌که این سرور برای «کانفیگ شخصی» و/یا «کانفیگ تست» استفاده شود؛
     قبلاً این کلیدها فقط از داخل ربات/مینی‌اپ قابل تنظیم بودند."""
-    if kind not in ("custom", "test"):
+    field = PANEL_USAGE_FIELDS.get(kind)
+    if not field:
         raise HTTPException(400, tr("نوع مصرف نامعتبر است."))
     server = db.get_panel_server(server_id)
     if not server:
         raise HTTPException(404, tr("یافت نشد."))
-    field = "used_for_custom_config" if kind == "custom" else "used_for_test_config"
+    if kind == "custom" and not server[field]:
+        from panel_providers import server_has_default_target, CUSTOM_CONFIG_NEEDS_TARGET_MSG
+        if not server_has_default_target(server):
+            raise HTTPException(400, tr(CUSTOM_CONFIG_NEEDS_TARGET_MSG))
     db.update_panel_server(server_id, **{field: 0 if server[field] else 1})
     db.log_admin_action(admin["id"], "panel_usage_toggle", f"سرور #{server_id} | {field} (پنل وب)", "panel", server_id)
     return {"ok": True}
@@ -8726,6 +8869,281 @@ async def api_test_panel_server(server_id: int, admin=Depends(require_permission
     except PanelError as e:
         return {"ok": False, "error": str(e)}
     return {"ok": ok}
+
+
+def _panel_server_or_404(server_id: int):
+    server = db.get_panel_server(server_id)
+    if not server:
+        raise HTTPException(404, tr("یافت نشد."))
+    return server
+
+
+def _panel_naming_state(server) -> dict:
+    mode = account_naming.server_mode(server)
+    return {
+        "mode": mode,
+        "mode_label": account_naming.mode_label(mode),
+        "prefix": account_naming.server_affix(server, "prefix"),
+        "suffix": account_naming.server_affix(server, "suffix"),
+        "counter": int(_row_get(server, "naming_counter", 0) or 0),
+        "needs_prefix": account_naming.needs_prefix(mode),
+        "needs_suffix": account_naming.needs_suffix(mode),
+        "needs_counter": account_naming.needs_counter(server),
+        "needs_user_name": account_naming.needs_user_name(server),
+        "preview": account_naming.preview(server, mode) if mode else "",
+        "affix_max_len": account_naming.AFFIX_MAX_LEN,
+        "modes": [{"key": k, "label": account_naming.mode_label(k), "prefix": account_naming.needs_prefix(k), "suffix": account_naming.needs_suffix(k)} for k in account_naming.MODE_ORDER],
+    }
+
+
+@app.get("/api/panel-servers/{server_id}/advanced")
+async def api_panel_server_advanced(server_id: int, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    server = await asyncio.to_thread(_panel_server_or_404, server_id)
+    cap = await asyncio.to_thread(db.get_panel_capacity_info, server_id)
+    rating = await asyncio.to_thread(db.get_panel_rating_summary, server_id)
+    public = _panel_server_public(server, await asyncio.to_thread(db.list_panel_health))
+    public["socks_proxy"] = _row_get(server, "socks_proxy", "") or ""
+    public["capacity"] = {
+        "max_services": cap["max_services"] if cap else None,
+        "active_services": cap["active_services"] if cap else 0,
+        "percent": round(float(cap["percent"]), 1) if cap else 0,
+        "near_limit": bool(cap and cap.get("near_limit")),
+    }
+    public["rating"] = {"avg": rating.get("avg"), "count": rating.get("count", 0)}
+    public["naming"] = _panel_naming_state(server)
+    public["migration_supported"] = not admin.get("tenant")
+    return public
+
+
+@app.put("/api/panel-servers/{server_id}/advanced")
+async def api_panel_server_advanced_update(server_id: int, body: PanelServerAdvancedBody, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    server = await asyncio.to_thread(_panel_server_or_404, server_id)
+    fields = {}
+    notes = []
+    if body.socks_proxy is not None:
+        value = body.socks_proxy.strip()
+        if value and not (value.startswith("socks5://") or value.startswith("socks4://")):
+            raise HTTPException(400, tr("آدرس باید با socks5:// یا socks4:// شروع شود، یا خالی بماند."))
+        fields["socks_proxy"] = value
+        notes.append("socks_proxy=" + ("set" if value else "off"))
+    if body.transfer_price is not None:
+        if body.transfer_price < 0 or body.transfer_price > 10_000_000_000:
+            raise HTTPException(400, tr("حداکثر مبلغ ۱۰ میلیارد تومان است."))
+        fields["transfer_price"] = int(body.transfer_price)
+        notes.append(f"transfer_price={int(body.transfer_price)}")
+    if body.allow_transfer_target is not None:
+        fields["allow_transfer_target"] = 1 if body.allow_transfer_target else 0
+        notes.append(f"allow_transfer_target={fields['allow_transfer_target']}")
+    if body.used_for_reseller is not None:
+        fields["used_for_reseller"] = 1 if body.used_for_reseller else 0
+        notes.append(f"used_for_reseller={fields['used_for_reseller']}")
+    if body.start_on_first_use is not None:
+        if body.start_on_first_use and server["panel_type"] not in PANEL_ONHOLD_TYPES:
+            raise HTTPException(400, tr("این نوع پنل از On-hold پشتیبانی نمی‌کند."))
+        fields["start_on_first_use"] = 1 if body.start_on_first_use else 0
+        notes.append(f"start_on_first_use={fields['start_on_first_use']}")
+    if body.clear_max_services or body.max_services is not None:
+        limit = 0 if body.clear_max_services else int(body.max_services or 0)
+        if limit < 0:
+            raise HTTPException(400, tr("لطفاً فقط یک عدد صحیح نامنفی بفرست."))
+        cap = await asyncio.to_thread(db.get_panel_capacity_info, server_id)
+        if cap and limit > 0 and limit < cap["active_services"]:
+            raise HTTPException(400, tr("سقف نمی‌تواند کمتر از تعداد سرویس‌های فعال فعلی باشد.") + f" ({cap['active_services']})")
+        fields["max_services"] = limit or None
+        fields["capacity_alert_sent"] = 0
+        notes.append(f"max_services={limit or 'unlimited'}")
+    if not fields:
+        raise HTTPException(400, tr("تغییری ارسال نشد."))
+    await asyncio.to_thread(lambda: db.update_panel_server(server_id, **fields))
+    db.log_admin_action(admin["id"], "panel_advanced_update", f"سرور #{server_id} | " + ", ".join(notes) + " (پنل وب)", "panel", server_id)
+    return {"ok": True}
+
+
+@app.put("/api/panel-servers/{server_id}/naming")
+async def api_panel_server_naming_update(server_id: int, body: PanelNamingBody, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    server = await asyncio.to_thread(_panel_server_or_404, server_id)
+    key = (body.mode or "").strip()
+    if key != "default" and key not in account_naming.MODES:
+        raise HTTPException(400, tr("حالت نام‌گذاری نامعتبر است."))
+    mode = account_naming.MODE_LEGACY if key == "default" else key
+    fields = {"naming_mode": mode}
+    for kind, value in (("prefix", body.prefix), ("suffix", body.suffix)):
+        if value is None:
+            continue
+        value = value.strip()
+        if value and not account_naming.valid_affix(value):
+            raise HTTPException(400, tr("مقدار نامعتبر است. فقط حروف انگلیسی، عدد و آندرلاین، حداکثر") + f" {account_naming.AFFIX_MAX_LEN} " + tr("کاراکتر."))
+        fields[f"naming_{kind}"] = value
+    merged = dict(server)
+    merged.update(fields)
+    missing = account_naming.missing_affix(mode, merged)
+    if missing:
+        raise HTTPException(400, tr("برای این حالت پیشوند لازم است.") if missing == "prefix" else tr("برای این حالت پسوند لازم است."))
+    await asyncio.to_thread(lambda: db.update_panel_server(server_id, **fields))
+    db.log_admin_action(admin["id"], "panel_naming_mode", f"سرور #{server_id} ← {mode or 'default'} (پنل وب)", "panel", server_id)
+    return _panel_naming_state(db.get_panel_server(server_id))
+
+
+@app.post("/api/panel-servers/{server_id}/naming/reset-counter")
+async def api_panel_server_naming_reset(server_id: int, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    await asyncio.to_thread(_panel_server_or_404, server_id)
+    await asyncio.to_thread(db.reset_panel_naming_counter, server_id)
+    db.log_admin_action(admin["id"], "panel_naming_counter_reset", f"سرور #{server_id} (پنل وب)", "panel", server_id)
+    return {"ok": True}
+
+
+@app.get("/api/panel-servers/{server_id}/stats")
+async def api_panel_server_stats(server_id: int, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    server = await asyncio.to_thread(_panel_server_or_404, server_id)
+    if server["panel_type"] not in PANEL_STATS_TYPES:
+        raise HTTPException(400, tr("این قابلیت فقط برای سرور 3X-UI و PasarGuard است."))
+    try:
+        return await get_provider(server).get_panel_stats()
+    except PanelError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/panel-servers/{server_id}/backup")
+async def api_panel_server_backup(server_id: int, admin=Depends(require_owner), _fa=Depends(require_full_access_tenant)):
+    server = await asyncio.to_thread(_panel_server_or_404, server_id)
+    if server["panel_type"] not in PANEL_BACKUP_TYPES:
+        raise HTTPException(400, tr("این قابلیت فقط برای سرور 3X-UI است."))
+    try:
+        data, _name = await get_provider(server).backup_panel()
+    except PanelError as e:
+        raise HTTPException(400, str(e))
+    filename = f"3xui_panel_{server_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.db"
+    db.log_admin_action(admin["id"], "panel_server_backup", f"سرور #{server_id} (پنل وب)", "panel", server_id)
+    return Response(content=data, media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@app.post("/api/panel-servers/{server_id}/restore")
+async def api_panel_server_restore(server_id: int, file: UploadFile = File(...), confirm: str = Form(""), admin=Depends(require_owner), _fa=Depends(require_full_access_tenant)):
+    server = await asyncio.to_thread(_panel_server_or_404, server_id)
+    if server["panel_type"] not in PANEL_BACKUP_TYPES:
+        raise HTTPException(400, tr("این قابلیت فقط برای سرور 3X-UI است."))
+    if confirm.strip() != "yes":
+        raise HTTPException(400, tr("تایید بازیابی ارسال نشد."))
+    if not (file.filename or "").lower().endswith(".db"):
+        raise HTTPException(400, tr("فایل باید همان دیتابیس x-ui.db باشد (پسوند .db)."))
+    data = await file.read(200 * 1024 * 1024 + 1)
+    if len(data) > 200 * 1024 * 1024:
+        raise HTTPException(413, tr("حجم فایل بیش از حد مجاز است."))
+    import tempfile
+    tmp_dir = tempfile.mkdtemp(prefix="xui_restore_")
+    tmp_path = os.path.join(tmp_dir, "uploaded.db")
+    try:
+        with open(tmp_path, "wb") as fh:
+            fh.write(data)
+        if not await asyncio.to_thread(is_valid_sqlite_db, tmp_path):
+            raise HTTPException(400, tr("این فایل یک دیتابیس sqlite معتبر نیست."))
+        try:
+            await get_provider(server).restore_panel(data)
+        except PanelError as e:
+            raise HTTPException(400, tr("بازیابی ناموفق بود: ") + str(e))
+    finally:
+        try:
+            os.remove(tmp_path)
+            os.rmdir(tmp_dir)
+        except OSError:
+            pass
+    db.log_admin_action(admin["id"], "panel_server_restore", f"سرور #{server_id} (پنل وب)", "panel", server_id)
+    return {"ok": True}
+
+
+_PMIG_JOBS: dict = {}
+
+
+def _pmig_plan_public(plan: dict) -> dict:
+    out = {k: v for k, v in plan.items() if k not in ("source", "dest")}
+    for key in ("source", "dest"):
+        row = plan.get(key)
+        if row:
+            out[key] = {"id": row["id"], "name": row["name"], "panel_type": row["panel_type"],
+                        "type_label": PANEL_TYPE_LABELS.get(row["panel_type"], row["panel_type"])}
+    return out
+
+
+@app.get("/api/panel-servers/{server_id}/migration")
+async def api_panel_migration_info(server_id: int, admin=Depends(require_owner), _t=Depends(require_main_tenant)):
+    import panel_migration as pm
+    src = await asyncio.to_thread(_panel_server_or_404, server_id)
+    primaries = await asyncio.to_thread(db.pm_list_primary, server_id)
+    links = await asyncio.to_thread(db.pm_list_links, server_id)
+    servers = [s for s in await asyncio.to_thread(db.get_panel_servers, True) if int(s["id"]) != server_id]
+    job = _PMIG_JOBS.get(server_id)
+    return {
+        "source": {"id": src["id"], "name": src["name"], "type_label": PANEL_TYPE_LABELS.get(src["panel_type"], src["panel_type"])},
+        "primary": len(primaries), "links": len(links),
+        "destinations": [{"id": s["id"], "name": s["name"], "type_label": PANEL_TYPE_LABELS.get(s["panel_type"], s["panel_type"])} for s in servers],
+        "running": pm.is_running(server_id),
+        "job": job,
+        "recent_runs": await asyncio.to_thread(db.pm_recent_runs, 5),
+    }
+
+
+@app.post("/api/panel-servers/{server_id}/migration/plan")
+async def api_panel_migration_plan(server_id: int, body: PanelMigrationBody, admin=Depends(require_owner), _t=Depends(require_main_tenant)):
+    import panel_migration as pm
+    plan = await pm.build_plan(db, server_id, body.dest_id)
+    return _pmig_plan_public(plan)
+
+
+@app.post("/api/panel-servers/{server_id}/migration/run")
+async def api_panel_migration_run(server_id: int, body: PanelMigrationBody, admin=Depends(require_owner), _t=Depends(require_main_tenant)):
+    import panel_migration as pm
+    if pm.is_running(server_id):
+        raise HTTPException(409, tr("مهاجرت این پنل همین الان در حال اجراست."))
+    plan = await pm.build_plan(db, server_id, body.dest_id)
+    if not plan.get("ok"):
+        raise HTTPException(400, plan.get("error") or tr("مهاجرت ممکن نیست."))
+    opts = pm.Options(notify_users=body.notify_users, retarget_sales=body.retarget_sales,
+                      disable_old=body.disable_old, allow_estimate=body.allow_estimate)
+    tenant_db = main_db
+    admin_id = admin["id"]
+    token = _bot_token()
+    job = {"state": "running", "dest_id": body.dest_id, "done": 0, "total": int(plan.get("need") or 0),
+           "ok": 0, "failed": 0, "skipped": 0, "report": None, "started_at": int(time.time())}
+    _PMIG_JOBS[server_id] = job
+
+    async def progress(done, total, ok, bad, skipped):
+        job.update(done=done, total=total, ok=ok, failed=bad, skipped=skipped)
+
+    async def _job():
+        bot = None
+        try:
+            if opts.notify_users and token:
+                from aiogram import Bot
+                bot = Bot(token=token)
+            report = await pm.run_migration(tenant_db, server_id, body.dest_id, opts, bot=bot, admin_id=admin_id, progress=progress)
+            job["report"] = report
+            job["state"] = "aborted" if report.get("aborted") else ("done" if report.get("ok", True) else "error")
+        except Exception as exc:
+            logger.exception("web panel-migration failed")
+            job["state"] = "error"
+            job["report"] = {"ok": False, "error": str(exc)[:300]}
+        finally:
+            if bot is not None:
+                try:
+                    await bot.session.close()
+                except Exception:
+                    pass
+
+    task = asyncio.create_task(_job())
+    _PMIG_TASKS.add(task)
+    task.add_done_callback(_PMIG_TASKS.discard)
+    db.log_admin_action(admin["id"], "panel_migration_start", f"سرور #{server_id} ← #{body.dest_id} (پنل وب)", "panel", server_id)
+    return {"ok": True, "total": job["total"]}
+
+
+_PMIG_TASKS: set = set()
+
+
+@app.get("/api/panel-servers/{server_id}/migration/status")
+async def api_panel_migration_status(server_id: int, admin=Depends(require_owner), _t=Depends(require_main_tenant)):
+    import panel_migration as pm
+    return {"running": pm.is_running(server_id), "job": _PMIG_JOBS.get(server_id)}
 
 
 # ----------------------------------------------------------- exchange rate --
@@ -10247,6 +10665,404 @@ def api_menu_layout_set(body: MenuLayoutBody, admin=Depends(require_permission("
     return {"ok": True}
 
 
+# ------------------------------------- ساخت/حذف دکمه‌ی سفارشی منوی اصلی --
+# تا قبل از این، ساخت دکمه‌ی سفارشی فقط از داخل بات ممکن بود و پنل وب فقط ویرایش و
+# ترتیب را داشت. حالا ساخت و حذف هم از «استودیوی چیدمان دکمه‌های ربات» انجام می‌شود.
+
+CM_MAX_BUTTONS = 30
+CM_MAX_TITLE = 40
+CM_MAX_TEXT = 4000
+
+
+def _cm_clean_url(raw: str) -> str:
+    url = (raw or "").strip()
+    if re.fullmatch(r"@[A-Za-z0-9_]{4,32}", url):
+        url = "https://t.me/" + url[1:]
+    if url and not re.match(r"^(https?://|tg://)", url, re.I):
+        url = "https://" + url
+    ok_scheme = re.match(r"^tg://\S+$", url, re.I) or re.match(r"^https?://[^\s/:?#]+\.[^\s/:?#]+(:\d+)?([/?#]\S*)?$", url, re.I)
+    if not url or len(url) > 512 or re.search(r"\s", url) or not ok_scheme:
+        raise HTTPException(400, tr("آدرس لینک نامعتبر است."))
+    return url
+
+
+class CustomMenuButtonCreate(BaseModel):
+    title: str
+    kind: str = "url"
+    url: str = ""
+    content: str = ""
+    style: str = ""
+
+
+@app.post("/api/settings/custom-menu-buttons")
+def api_custom_menu_button_create(body: CustomMenuButtonCreate, admin=Depends(require_permission("settings"))):
+    title = (body.title or "").strip()
+    if not title or len(title) > CM_MAX_TITLE:
+        raise HTTPException(400, tr(f"متن دکمه باید بین ۱ تا {CM_MAX_TITLE} نویسه باشد."))
+    if body.kind not in ("url", "content"):
+        raise HTTPException(400, tr("نوع کلید نامعتبر است."))
+    if body.style not in ("", "primary", "success", "danger"):
+        raise HTTPException(400, tr("رنگ دکمه نامعتبر است."))
+    if db.cm_count() >= CM_MAX_BUTTONS:
+        raise HTTPException(400, tr(f"حداکثر {CM_MAX_BUTTONS} دکمه‌ی سفارشی مجاز است."))
+    url, parts = "", []
+    if body.kind == "url":
+        url = _cm_clean_url(body.url)
+    else:
+        content = (body.content or "").strip()
+        if not content:
+            raise HTTPException(400, tr("متن پیام نمی‌تواند خالی باشد."))
+        if len(content) > CM_MAX_TEXT:
+            raise HTTPException(400, tr(f"متن پیام حداکثر {CM_MAX_TEXT} نویسه باشد."))
+        parts = [{"type": "text", "text": content, "entities": []}]
+    new_id = db.cm_create(title, body.kind, url, parts, body.style)
+    db.log_admin_action(admin["id"], "cmb_create", f"دکمه‌ی سفارشی #{new_id}: {title} (پنل وب - {admin['username']})",
+                        "setting", "custom_menu")
+    return {"ok": True, "id": new_id, "key": f"custom_menu:{new_id}"}
+
+
+@app.delete("/api/settings/custom-menu-buttons/{button_id}")
+def api_custom_menu_button_delete(button_id: int, admin=Depends(require_permission("settings"))):
+    btn = db.cm_get(button_id)
+    if not btn:
+        raise HTTPException(404, tr("این دکمه دیگر وجود ندارد."))
+    db.cm_delete(button_id)
+    # آیکون سفارشی کاشی مینی‌اپ این دکمه هم باید پاک شود تا در تنظیمات ماندگار نشود.
+    try:
+        icons = db.get_home_icons()
+        if icons.pop(f"cm:{button_id}", None) is not None:
+            db.set_home_icons(icons)
+    except Exception:
+        pass
+    db.log_admin_action(admin["id"], "cmb_delete", f"دکمه‌ی سفارشی #{button_id}: {btn.get('title', '')} حذف شد (پنل وب - {admin['username']})",
+                        "setting", "custom_menu")
+    return {"ok": True}
+
+
+# ------------------------------------------------ بخش «مینی‌اپ» شخصی‌سازی وب --
+# آیکون کاشی‌های صفحه‌ی خانه + ظاهر مینی‌اپ (تم، متن بنر، لوگوی هدر). همان داده‌ای که
+# پنل مدیریت داخل خود مینی‌اپ ویرایش می‌کند (miniapp_home_icons / miniapp_theme / ...)؛
+# بنرهای کاروسل هم در صفحه‌ی «بنرها» (همین پنل) ویرایش می‌شوند.
+
+import home_tiles as _home_tiles
+
+_MA_ICON_DATA_RE = re.compile(r"^data:image/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$")
+_MA_HEADER_MAX = 2 * 1024 * 1024
+
+
+def _ma_clean_icon(value: str) -> str:
+    v = (value or "").strip()
+    if not v:
+        return ""
+    if v.startswith("data:image/"):
+        if not _MA_ICON_DATA_RE.match(v) or len(v) > int(_home_tiles.MAX_HOME_ICON_BYTES * 1.4):
+            raise HTTPException(400, tr("تصویر آیکون نامعتبر یا بیش از حد بزرگ است."))
+        return v
+    if len(v) > 16 or "<" in v or ">" in v:
+        raise HTTPException(400, tr("آیکون باید یک ایموجی کوتاه یا یک تصویر باشد."))
+    return v
+
+
+def _ma_icon_items() -> list:
+    icons = db.get_home_icons()
+    items = [{"key": k, "label": label, "icon": icons.get(k, "")} for k, label in _home_tiles.HOME_TILE_LABELS.items()]
+    # دکمه‌های سفارشی فقط روی بات اصلی در مینی‌اپ نمایش داده می‌شوند.
+    if _current_tenant.get().slug:
+        return items
+    try:
+        for b in db.cm_list():
+            key = f"cm:{b['id']}"
+            items.append({"key": key, "label": b.get("title") or "دکمه سفارشی", "icon": icons.get(key, ""), "custom": True})
+    except Exception:
+        pass
+    return items
+
+
+def _ma_state() -> dict:
+    theme = db.get_setting("miniapp_theme", "clean-light")
+    if theme not in _home_tiles.MINIAPP_THEMES:
+        theme = "clean-light"
+    return {
+        "icons": _ma_icon_items(),
+        "store_name": db.get_setting("store_name", "") or "",
+        "banner_text": db.get_setting("miniapp_banner_text", "اتصال امن و پایدار برقرار است") or "",
+        "theme": theme,
+        "themes": [{"id": k, "label": v} for k, v in _home_tiles.MINIAPP_THEMES.items()],
+        "header_image": db.get_setting("header_image_data", "") or "",
+    }
+
+
+@app.get("/api/settings/miniapp")
+def api_miniapp_get(admin=Depends(require_permission("settings"))):
+    return _ma_state()
+
+
+class MiniappIconsBody(BaseModel):
+    icons: Dict[str, str]
+
+
+@app.post("/api/settings/miniapp/icons")
+def api_miniapp_icons_save(body: MiniappIconsBody, admin=Depends(require_permission("settings"))):
+    valid = {it["key"] for it in _ma_icon_items()}
+    clean = {}
+    for key, value in body.icons.items():
+        if key not in valid:
+            continue
+        icon = _ma_clean_icon(value)
+        if icon:
+            clean[key] = icon
+    db.set_home_icons(clean)
+    db.log_admin_action(admin["id"], "setting_change", f"آیکون‌های مینی‌اپ ذخیره شد (پنل وب - {admin['username']})",
+                        "setting", "miniapp_home_icons")
+    return {"ok": True, "state": _ma_state()}
+
+
+@app.post("/api/settings/miniapp/icons/upload")
+async def api_miniapp_icon_upload(photo: UploadFile = File(...), admin=Depends(require_permission("settings"))):
+    if photo.content_type not in ("image/png", "image/jpeg", "image/webp", "image/gif"):
+        raise HTTPException(400, tr("فقط فایل PNG، JPG، WEBP یا GIF پذیرفته می‌شود."))
+    data = await photo.read()
+    if len(data) > _home_tiles.MAX_HOME_ICON_BYTES:
+        raise HTTPException(400, tr("حجم آیکون نباید بیشتر از ۲۵۶ کیلوبایت باشد."))
+    return {"ok": True, "image": f"data:{photo.content_type};base64,{base64.b64encode(data).decode('ascii')}"}
+
+
+class MiniappBrandingBody(BaseModel):
+    store_name: str
+    banner_text: str
+    theme: str
+
+
+@app.post("/api/settings/miniapp/branding")
+def api_miniapp_branding_save(body: MiniappBrandingBody, admin=Depends(require_permission("settings"))):
+    store_name = body.store_name.strip()
+    banner_text = body.banner_text.strip()
+    if not store_name or len(store_name) > 40:
+        raise HTTPException(400, tr("نام فروشگاه باید بین ۱ تا ۴۰ نویسه باشد."))
+    if not banner_text or len(banner_text) > 80:
+        raise HTTPException(400, tr("متن بنر باید بین ۱ تا ۸۰ نویسه باشد."))
+    if body.theme not in _home_tiles.MINIAPP_THEMES:
+        raise HTTPException(400, tr("این تم معتبر نیست."))
+    db.set_setting("store_name", store_name)
+    db.set_setting("miniapp_banner_text", banner_text)
+    db.set_setting("miniapp_theme", body.theme)
+    db.log_admin_action(admin["id"], "setting_change", f"ظاهر مینی‌اپ ذخیره شد (پنل وب - {admin['username']})",
+                        "setting", "miniapp_branding")
+    return {"ok": True, "state": _ma_state()}
+
+
+@app.post("/api/settings/miniapp/header-image")
+async def api_miniapp_header_upload(photo: UploadFile = File(...), admin=Depends(require_permission("settings"))):
+    if not photo.content_type or not photo.content_type.startswith("image/") or "svg" in photo.content_type:
+        raise HTTPException(400, tr("فقط فایل عکس (PNG، JPG، WEBP) پذیرفته می‌شود."))
+    data = await photo.read()
+    if len(data) > _MA_HEADER_MAX:
+        raise HTTPException(400, tr("حجم عکس نباید بیشتر از ۲ مگابایت باشد."))
+    uri = f"data:{photo.content_type};base64,{base64.b64encode(data).decode('ascii')}"
+    db.set_setting("header_image_data", uri)
+    db.log_admin_action(admin["id"], "setting_change", f"لوگوی هدر مینی‌اپ تغییر کرد (پنل وب - {admin['username']})",
+                        "setting", "miniapp_header_image")
+    return {"ok": True, "header_image": uri}
+
+
+@app.delete("/api/settings/miniapp/header-image")
+def api_miniapp_header_delete(admin=Depends(require_permission("settings"))):
+    db.set_setting("header_image_data", "")
+    return {"ok": True}
+
+
+# ------------------------------------------------ تنظیمات کامل کارت بانکی --
+# کارت‌به‌کارت دستی: وضعیت، کارت اصلی، عکس کارت، چند کارت با درصد نمایش، شرط نمایش
+# کارت، مدت ثابت‌ماندن کارت برای خریدار و حذف خودکار پیام کارت. (کارت‌به‌کارت خودکار با
+# پیامک بانک و ظاهر پیام کارت در بخش‌های خودشان در همین تب هستند.)
+
+def _bc_normalize_number(raw: str) -> str:
+    v = (raw or "").strip()
+    v = v.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
+    v = re.sub(r"[\s\-_]", "", v)
+    if not v:
+        return ""
+    if re.fullmatch(r"\d{16}", v):
+        return v
+    if re.fullmatch(r"(?i)IR\d{24}", v):
+        return v.upper()
+    raise HTTPException(400, tr("شماره کارت باید ۱۶ رقم (یا شبا با IR و ۲۴ رقم) باشد."))
+
+
+def _bc_card_row(r, pct: dict) -> dict:
+    keys = r.keys()
+    return {
+        "id": r["id"], "card_number": r["card_number"], "holder_name": r["holder_name"] or "",
+        "bank_name": r["bank_name"] or "", "weight": int(r["weight"] or 0), "is_active": bool(r["is_active"]),
+        "percent": pct.get(r["id"]),
+        "has_photo": bool(r["photo_file_id"]) if "photo_file_id" in keys else False,
+        "description_template": (r["description_template"] if "description_template" in keys else "") or "",
+    }
+
+
+def _bc_state() -> dict:
+    min_purchases, min_days = db.get_card_gate_settings()
+    pct = db.payment_card_percentages()
+    try:
+        history = json.loads(db.get_setting("card_number_history", "") or "[]")
+    except ValueError:
+        history = []
+    return {
+        "enabled": db.get_setting("card_to_card_enabled", "1") == "1",
+        "card_number": db.get_setting("card_number", "") or "",
+        "card_holder": db.get_setting("card_holder", "") or "",
+        "bank_name": db.get_setting("card_bank_name", "") or "",
+        "has_photo": bool(db.get_setting("card_photo_file_id", "")),
+        "sticky_minutes": int(db.get_setting("card_sticky_minutes", "60") or 60),
+        "gate_min_purchases": min_purchases,
+        "gate_min_days": min_days,
+        "autodelete_seconds": int(db.get_setting("card_msg_autodelete_seconds", "0") or 0),
+        "history": [h for h in history if isinstance(h, dict)][-10:],
+        "cards": [_bc_card_row(r, pct) for r in db.list_payment_cards()],
+    }
+
+
+@app.get("/api/settings/bank-card")
+def api_bank_card_get(admin=Depends(require_permission("settings"))):
+    return _bc_state()
+
+
+class BankCardSettingsBody(BaseModel):
+    enabled: bool
+    card_number: str = ""
+    card_holder: str = ""
+    bank_name: str = ""
+    sticky_minutes: int = 60
+    gate_min_purchases: int = 0
+    gate_min_days: int = 0
+    autodelete_seconds: int = 0
+
+
+@app.post("/api/settings/bank-card")
+def api_bank_card_save(body: BankCardSettingsBody, admin=Depends(require_permission("settings"))):
+    number = _bc_normalize_number(body.card_number)
+    if len(body.card_holder.strip()) > 80 or len(body.bank_name.strip()) > 40:
+        raise HTTPException(400, tr("نام صاحب کارت یا نام بانک بیش از حد طولانی است."))
+    if not 1 <= body.sticky_minutes <= 10080:
+        raise HTTPException(400, tr("مدت ثابت‌ماندن کارت باید بین ۱ تا ۱۰۰۸۰ دقیقه باشد."))
+    if not (0 <= body.gate_min_purchases <= 100000 and 0 <= body.gate_min_days <= 36500):
+        raise HTTPException(400, tr("مقادیر شرط نمایش کارت نامعتبر است."))
+    if not 0 <= body.autodelete_seconds <= 86400:
+        raise HTTPException(400, tr("زمان حذف خودکار باید بین ۰ تا ۸۶۴۰۰ ثانیه باشد."))
+    old_number = db.get_setting("card_number", "") or ""
+    db.set_setting("card_to_card_enabled", "1" if body.enabled else "0")
+    db.set_setting("card_number", number)  # تاریخچه‌ی کارت جایگزین‌شده داخل set_setting ثبت می‌شود
+    db.set_setting("card_holder", body.card_holder.strip())
+    db.set_setting("card_bank_name", body.bank_name.strip())
+    db.set_setting("card_sticky_minutes", str(body.sticky_minutes))
+    db.set_setting("card_gate_min_purchases", str(body.gate_min_purchases))
+    db.set_setting("card_gate_min_days", str(body.gate_min_days))
+    db.set_setting("card_msg_autodelete_seconds", str(body.autodelete_seconds))
+    detail = "تنظیمات کارت بانکی ذخیره شد"
+    if number != old_number:
+        detail = f"شماره کارت جدید: {number} | به نام: {body.card_holder.strip()} | بانک: {body.bank_name.strip() or '-'}"
+    db.log_admin_action(admin["id"], "card_change", f"{detail} (پنل وب - {admin['username']})", "setting", "card")
+    return {"ok": True, "state": _bc_state()}
+
+
+@app.post("/api/settings/bank-card/photo")
+async def api_bank_card_photo_upload(photo: UploadFile = File(...), card_id: Optional[int] = Form(None),
+                                     admin=Depends(require_permission("settings"))):
+    ctype = (photo.content_type or "").lower()
+    if ctype not in ("image/jpeg", "image/png", "image/webp"):
+        raise HTTPException(400, tr("فقط تصویر JPG، PNG یا WEBP مجاز است."))
+    content = await photo.read()
+    if not content:
+        raise HTTPException(400, tr("فایل انتخاب‌شده خالی است."))
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(400, tr("حجم تصویر نباید بیشتر از ۱۰ مگابایت باشد."))
+    if card_id is not None and not db.get_payment_card(card_id):
+        raise HTTPException(404, tr("کارت پیدا نشد."))
+    file_id = await tg_upload_photo_get_file_id(_bot_token(), _tenant_owner_chat_id(), content,
+                                                filename=photo.filename or "card.jpg", content_type=ctype)
+    if not file_id:
+        raise HTTPException(502, tr("آپلود تصویر در تلگرام ناموفق بود. ربات باید روشن باشد و مالک ربات را استارت کرده باشد."))
+    if card_id is None:
+        db.set_setting("card_photo_file_id", file_id)
+    else:
+        db.update_payment_card(card_id, photo_file_id=file_id)
+    db.log_admin_action(admin["id"], "card_change", f"عکس کارت تغییر کرد (پنل وب - {admin['username']})", "setting", "card")
+    return {"ok": True, "state": _bc_state()}
+
+
+@app.delete("/api/settings/bank-card/photo")
+def api_bank_card_photo_delete(card_id: Optional[int] = None, admin=Depends(require_permission("settings"))):
+    if card_id is None:
+        db.set_setting("card_photo_file_id", "")
+    else:
+        if not db.get_payment_card(card_id):
+            raise HTTPException(404, tr("کارت پیدا نشد."))
+        db.update_payment_card(card_id, photo_file_id=None)
+    return {"ok": True, "state": _bc_state()}
+
+
+class PaymentCardBody(BaseModel):
+    card_number: str
+    holder_name: str = ""
+    bank_name: str = ""
+    weight: int = 1
+    description_template: str = ""
+
+
+def _bc_validate_card(body: PaymentCardBody) -> tuple:
+    number = _bc_normalize_number(body.card_number)
+    if not number:
+        raise HTTPException(400, tr("شماره کارت را وارد کنید."))
+    if not 0 <= body.weight <= 1000:
+        raise HTTPException(400, tr("وزن (سهم نمایش) باید بین ۰ تا ۱۰۰۰ باشد."))
+    if len(body.holder_name.strip()) > 80 or len(body.bank_name.strip()) > 40:
+        raise HTTPException(400, tr("نام صاحب کارت یا نام بانک بیش از حد طولانی است."))
+    if len(body.description_template) > 1500:
+        raise HTTPException(400, tr("توضیحات حداکثر ۱۵۰۰ نویسه باشد."))
+    return number, body.holder_name.strip(), body.bank_name.strip(), body.weight, body.description_template.strip()
+
+
+@app.post("/api/settings/bank-card/cards")
+def api_bank_card_create(body: PaymentCardBody, admin=Depends(require_permission("settings"))):
+    number, holder, bank, weight, desc = _bc_validate_card(body)
+    card_id = db.create_payment_card(number, holder, bank, weight)
+    if desc:
+        db.update_payment_card(card_id, description_template=desc)
+    db.log_admin_action(admin["id"], "payment_card_add", f"کارت #{card_id} با وزن {weight} اضافه شد (پنل وب - {admin['username']}).",
+                        "setting", "card")
+    return {"ok": True, "state": _bc_state()}
+
+
+@app.put("/api/settings/bank-card/cards/{card_id}")
+def api_bank_card_update(card_id: int, body: PaymentCardBody, admin=Depends(require_permission("settings"))):
+    if not db.get_payment_card(card_id):
+        raise HTTPException(404, tr("کارت پیدا نشد."))
+    number, holder, bank, weight, desc = _bc_validate_card(body)
+    db.update_payment_card(card_id, card_number=number, holder_name=holder, bank_name=bank, weight=weight,
+                           description_template=desc)
+    db.log_admin_action(admin["id"], "payment_card_update", f"کارت #{card_id} ویرایش شد (پنل وب - {admin['username']}).",
+                        "setting", "card")
+    return {"ok": True, "state": _bc_state()}
+
+
+@app.post("/api/settings/bank-card/cards/{card_id}/toggle")
+def api_bank_card_toggle(card_id: int, admin=Depends(require_permission("settings"))):
+    if not db.get_payment_card(card_id):
+        raise HTTPException(404, tr("کارت پیدا نشد."))
+    db.toggle_payment_card(card_id)
+    return {"ok": True, "state": _bc_state()}
+
+
+@app.delete("/api/settings/bank-card/cards/{card_id}")
+def api_bank_card_delete(card_id: int, admin=Depends(require_permission("settings"))):
+    if not db.get_payment_card(card_id):
+        raise HTTPException(404, tr("کارت پیدا نشد."))
+    db.delete_payment_card(card_id)
+    db.log_admin_action(admin["id"], "payment_card_delete", f"کارت #{card_id} حذف شد (پنل وب - {admin['username']}).",
+                        "setting", "card")
+    return {"ok": True, "state": _bc_state()}
+
+
 # --------------------------------------------------- تب مستقل «دکمه‌های ربات» --
 # رجیستری عمومی کاستوم‌سازی دکمه‌ها (button_registry.py): پنل مدیریت، مسیر
 # خرید، حساب کاربری، روش‌های پرداخت + درگاه‌های سفارشی. منوی اصلی بات از قبل
@@ -10753,6 +11569,46 @@ def api_get_session_settings(admin=Depends(require_owner)):
         "min_minutes": SESSION_IDLE_MIN_MINUTES,
         "max_minutes": SESSION_IDLE_MAX_MINUTES,
     }
+
+
+class EntryPathBody(BaseModel):
+    enabled: bool
+    path: str = ""
+
+
+@app.get("/api/security/entry-path")
+def api_get_entry_path(request: Request, admin=Depends(require_owner), _main=Depends(require_main_tenant)):
+    enabled, slug = web_entry_gate.get_config(force=True)
+    saved = (main_db.get_setting(web_entry_gate.KEY_PATH, "") or "").strip()
+    return {
+        "enabled": enabled,
+        "path": slug or saved,
+        "base_url": f"{request.url.scheme}://{request.url.netloc}",
+    }
+
+
+@app.post("/api/security/entry-path")
+def api_set_entry_path(body: EntryPathBody, request: Request, admin=Depends(require_owner), _main=Depends(require_main_tenant)):
+    slug = (body.path or "").strip().strip("/")
+    if body.enabled:
+        error = web_entry_gate.validate_slug(slug)
+        if error:
+            raise HTTPException(400, tr(error))
+        main_db.set_setting(web_entry_gate.KEY_PATH, slug)
+        main_db.set_setting(web_entry_gate.KEY_ENABLED, "1")
+    else:
+        main_db.set_setting(web_entry_gate.KEY_ENABLED, "0")
+        if slug and not web_entry_gate.validate_slug(slug):
+            main_db.set_setting(web_entry_gate.KEY_PATH, slug)
+    web_entry_gate.invalidate()
+    main_db.log_admin_action(
+        admin["id"], "web_entry_path_set", "on" if body.enabled else "off", "setting", web_entry_gate.KEY_ENABLED,
+    )
+    enabled, saved_slug = web_entry_gate.get_config(force=True)
+    response = JSONResponse({"ok": True, "enabled": enabled, "path": saved_slug})
+    if enabled:
+        _gate_set_cookie(response, request, saved_slug)
+    return response
 
 
 @app.post("/api/security/session")
@@ -11297,3 +12153,93 @@ async def db_admin_import_api(table_name: str, request: Request,
         raise
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Accounting ledger API (manual income/expense book)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/accounting/ledger/summary")
+def api_accounting_ledger_summary(from_date: str = None, to_date: str = None,
+                                  admin=Depends(require_permission("catalog")),
+                                  _mt=Depends(require_main_tenant)):
+    import accounting
+    try:
+        return accounting.ledger_summary(db, from_date, to_date)
+    except ValueError as exc:
+        raise HTTPException(400, tr(str(exc)))
+
+
+@app.get("/api/accounting/ledger/entries")
+def api_accounting_ledger_entries(from_date: str = None, to_date: str = None,
+                                  entry_type: str = None, category: str = None,
+                                  q: str = None, offset: int = 0, limit: int = 50,
+                                  admin=Depends(require_permission("catalog")),
+                                  _mt=Depends(require_main_tenant)):
+    import accounting
+    try:
+        return accounting.list_ledger_entries(db, from_date, to_date, entry_type,
+                                              category, q, offset, limit)
+    except ValueError as exc:
+        raise HTTPException(400, tr(str(exc)))
+
+
+@app.post("/api/accounting/ledger/entries")
+async def api_accounting_ledger_create(request: Request,
+                                       admin=Depends(require_permission("catalog")),
+                                       _mt=Depends(require_main_tenant)):
+    import accounting
+    try:
+        body = await request.json()
+        result = accounting.create_ledger_entry(db, body, admin.get("id"))
+        db.log_admin_action(admin["id"], "accounting_ledger_create",
+                            f"type={result['entry_type']} amount={result['amount']} (پنل وب - {admin['username']})",
+                            "accounting_ledger", str(result["id"]))
+        return {"ok": True, "item": result}
+    except ValueError as exc:
+        raise HTTPException(400, tr(str(exc)))
+
+
+@app.put("/api/accounting/ledger/entries/{entry_id}")
+async def api_accounting_ledger_update(entry_id: int, request: Request,
+                                       admin=Depends(require_permission("catalog")),
+                                       _mt=Depends(require_main_tenant)):
+    import accounting
+    try:
+        body = await request.json()
+        result = accounting.update_ledger_entry(db, entry_id, body)
+        db.log_admin_action(admin["id"], "accounting_ledger_update",
+                            f"entry={entry_id} amount={result['amount']} (پنل وب - {admin['username']})",
+                            "accounting_ledger", str(entry_id))
+        return {"ok": True, "item": result}
+    except KeyError as exc:
+        raise HTTPException(404, tr(str(exc)))
+    except ValueError as exc:
+        raise HTTPException(400, tr(str(exc)))
+
+
+@app.delete("/api/accounting/ledger/entries/{entry_id}")
+def api_accounting_ledger_delete(entry_id: int,
+                                 admin=Depends(require_permission("catalog")),
+                                 _mt=Depends(require_main_tenant)):
+    import accounting
+    if not accounting.delete_ledger_entry(db, entry_id):
+        raise HTTPException(404, tr("سند مالی موردنظر پیدا نشد."))
+    db.log_admin_action(admin["id"], "accounting_ledger_delete",
+                        f"entry={entry_id} (پنل وب - {admin['username']})",
+                        "accounting_ledger", str(entry_id))
+    return {"ok": True}
+
+
+@app.get("/api/accounting/ledger/export.csv")
+def api_accounting_ledger_export(from_date: str = None, to_date: str = None,
+                                 entry_type: str = None,
+                                 admin=Depends(require_permission("catalog")),
+                                 _mt=Depends(require_main_tenant)):
+    import accounting
+    try:
+        content = accounting.export_ledger_csv(db, from_date, to_date, entry_type)
+    except ValueError as exc:
+        raise HTTPException(400, tr(str(exc)))
+    return Response(content=content, media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="shopvpn-accounting.csv"'})
