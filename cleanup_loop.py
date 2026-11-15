@@ -74,6 +74,55 @@ async def _notify_admins(bot: Bot, db, text: str):
             pass
 
 
+# --- اعلان یک‌پیامی پاکسازی در گروه تاپیک‌دار ---------------------------------
+CLEANUP_REPORT_TOPIC = "service"   # تاپیک «🛠 سرویس» (رویدادهای پاکسازی خودکار)
+REPORT_MAX_ITEMS = 15              # سقف ردیف‌های لیست داخل یک پیام (پیام همیشه کوتاه می‌ماند)
+MAX_INTERVAL_HOURS = 720
+
+
+def _interval_hours(db) -> int:
+    """فاصله‌ی اجرای پاکسازی و اعلام (ساعت)؛ حداقل ۱ و حداکثر ۷۲۰."""
+    return min(max(_safe_int(db, "expired_cleanup_interval_hours", 1), 1), MAX_INTERVAL_HOURS)
+
+
+def _cleanup_due(db, now) -> bool:
+    """True اگر از آخرین اجرای پاکسازی حداقل «فاصله‌ی تنظیم‌شده» گذشته باشد.
+    ۲ دقیقه تلورانس برای جلوگیری از جاماندن یک دور به‌خاطر لغزش زمان حلقه."""
+    last = _parse_iso(db.get_setting("expired_cleanup_last_run", "") or "")
+    if last is None:
+        return True
+    return (now - last).total_seconds() >= _interval_hours(db) * 3600 - 120
+
+
+async def _announce(bot: Bot, db, text: str) -> bool:
+    """اعلام پاکسازی؛ همیشه فقط یک پیام، داخل تاپیک گروه گزارش
+    (اگر گروه تنظیم نباشد یا خطا بدهد، مثل بقیه‌ی گزارش‌ها پیام خصوصی به مدیران)."""
+    if not _safe_bool(db, "expired_cleanup_report_enabled", True):
+        return False
+    try:
+        return await report_router.report(bot, db, CLEANUP_REPORT_TOPIC, text)
+    except Exception:
+        logger.warning("ارسال اعلان پاکسازی ناموفق بود.", exc_info=True)
+        return False
+
+
+def _item_line(row, is_test: bool) -> str:
+    return f"{'🧪 تست' if is_test else '📦 سرویس'} #{row['id']} · کاربر {row['user_id']}"
+
+
+def _compact_list(items) -> list:
+    """items = [(row, is_test), ...] → حداکثر REPORT_MAX_ITEMS ردیف + یک خط «و N مورد دیگر»."""
+    lines = [_item_line(r, t) for r, t in items[:REPORT_MAX_ITEMS]]
+    if len(items) > REPORT_MAX_ITEMS:
+        lines.append(f"… و {len(items) - REPORT_MAX_ITEMS} مورد دیگر")
+    return lines
+
+
+def _count_summary(items) -> str:
+    tests = sum(1 for _r, t in items if t)
+    return f"{len(items)} مورد (🧪 تست: {tests} | 📦 سرویس: {len(items) - tests})"
+
+
 async def _primary_action(db, row, action):
     server = await asyncio.to_thread(db.get_panel_server, row["panel_server_id"])
     if not server or not server["is_active"]:
@@ -159,7 +208,7 @@ async def delete_inactive_configs_once(bot: Bot, db):
                 pass
 
     if deleted or failed:
-        await _notify_admins(
+        await _announce(
             bot, db,
             f"🧹 F138 — حذف زمان‌بندی‌شده کانفیگ‌های غیرفعال\n\n"
             f"🗑 حذف‌شده: {deleted}\n❌ ناموفق: {failed}\n🕐 ساعت اجرا: {schedule[0]:02d}:{schedule[1]:02d} تهران",
@@ -167,8 +216,11 @@ async def delete_inactive_configs_once(bot: Bot, db):
     return {"deleted": deleted, "failed": failed, "disabled": False, "due": True}
 
 
-async def cleanup_once(bot: Bot, db):
-    """یک دور پاکسازی را اجرا می‌کند. برای تست واحد نیز قابل فراخوانی است."""
+async def cleanup_once(bot: Bot, db, run_cleanup: bool = True):
+    """یک دور پاکسازی را اجرا می‌کند. برای تست واحد نیز قابل فراخوانی است.
+
+    run_cleanup=False یعنی فقط اعلان اتمام سرویس‌ها (که باید به‌موقع برود) انجام شود و
+    مرحله‌ی پاکسازی/حذف رد شود؛ حلقه‌ی اصلی این مرحله را فقط هر «N ساعت تنظیم‌شده» اجرا می‌کند."""
     now = _utcnow()
     now_iso = now.isoformat()
     expired_days = _safe_int(db, "expired_delete_days", 0)
@@ -189,7 +241,7 @@ async def cleanup_once(bot: Bot, db):
                 f"⏰ اتمام کانفیگ\n\n👤 کاربر: {row['user_id']}\n🔗 سرویس #{row['id']}\n📌 نام کاربری پنل: {row['username']}\n📅 زمان انقضا: {exp.strftime('%Y-%m-%d %H:%M') if exp else row['expires_at']}"
             )
 
-    if expired_days == 0 and test_days == 0:
+    if not run_cleanup or (expired_days == 0 and test_days == 0):
         return {"soft": 0, "deleted": 0, "warned": 0, "expiry_notified": expiry_notified, "dry_run": dry_run, "candidates": []}
 
     # dry-run: هیچ تغییر روی پنل/DB انجام نمی‌دهیم و فقط فهرست نامزدها را به ادمین می‌دهیم.
@@ -206,19 +258,29 @@ async def cleanup_once(bot: Bot, db):
         candidates.append((row, is_test, grace_days, exp))
 
     if dry_run:
-        if candidates:
-            lines = ["🧪 F14 — dry-run پاکسازی سرویس‌های منقضی", ""]
-            for row, is_test, grace, exp in candidates[:30]:
-                lines.append(
-                    f"{'🧪 تست' if is_test else '📦 سرویس'} #{row['id']} | "
-                    f"کاربر {row['user_id']} | انقضا {exp.strftime('%Y-%m-%d %H:%M')} | مهلت حذف {grace} روز"
-                )
-            if len(candidates) > 30:
-                lines.append(f"… و {len(candidates) - 30} مورد دیگر")
-            await _notify_admins(bot, db, "\n".join(lines))
+        # فقط وقتی فهرست نامزدها نسبت به دفعه‌ی قبل تغییر کرده اعلام می‌کنیم؛ دیگر هر دوره
+        # همان پیام تکراری ارسال نمی‌شود. فهرست خالی شد → دفعه‌ی بعد که نامزد آمد دوباره اعلام می‌شود.
+        sig = ",".join(str(r[0]["id"]) for r in sorted(candidates, key=lambda c: c[0]["id"]))
+        last_sig = await asyncio.to_thread(db.get_setting, "expired_cleanup_dryrun_sig", "") or ""
+        if candidates and sig != last_sig:
+            items = [(c[0], c[1]) for c in candidates]
+            grace_set = sorted({c[2] for c in candidates})
+            lines = [
+                "🧪 پاکسازی سرویس‌های منقضی — حالت آزمایشی (dry-run)",
+                f"🔎 نامزد حذف: {_count_summary(items)}",
+                f"⏱ مهلت حذف: {'، '.join(str(g) for g in grace_set)} روز بعد از انقضا",
+                "",
+            ]
+            lines += _compact_list(items)
+            lines += ["", f"🔁 بررسی بعدی: هر {_interval_hours(db)} ساعت (پیام فقط وقتی فهرست تغییر کند تکرار می‌شود)"]
+            if await _announce(bot, db, "\n".join(lines)):
+                await asyncio.to_thread(db.set_setting, "expired_cleanup_dryrun_sig", sig)
+        elif not candidates and last_sig:
+            await asyncio.to_thread(db.set_setting, "expired_cleanup_dryrun_sig", "")
         return {"soft": 0, "deleted": 0, "warned": 0, "dry_run": True, "candidates": [r[0]["id"] for r in candidates]}
 
-    soft_count = deleted_count = warned_count = 0
+    soft_count = deleted_count = warned_count = failed_count = 0
+    soft_items, deleted_items = [], []
 
     # هشدار قبل از انقضا؛ هشدار صرفاً وقتی سرویس هنوز active است ارسال می‌شود.‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
     warning_to = (now + timedelta(days=warning_days)).isoformat()
@@ -244,9 +306,11 @@ async def cleanup_once(bot: Bot, db):
             ok, reason = await _provider_action(db, row, "disable")
             if not ok:
                 logger.warning("F14: soft-disable سرویس #%s ناموفق: %s", row["id"], reason)
+                failed_count += 1
                 continue
             if await asyncio.to_thread(db.mark_cleanup_soft_disabled, row["id"], now_iso):
                 soft_count += 1
+                soft_items.append((row, is_test))
                 await asyncio.to_thread(
                     db.add_custom_config_history,
                     row["id"], "cleanup_soft_disable",
@@ -261,9 +325,11 @@ async def cleanup_once(bot: Bot, db):
         ok, reason = await _provider_action(db, row, "delete")
         if not ok:
             logger.warning("F14: حذف سرویس #%s ناموفق: %s", row["id"], reason)
+            failed_count += 1
             continue
         if await asyncio.to_thread(db.mark_cleanup_deleted, row["id"], now_iso):
             deleted_count += 1
+            deleted_items.append((row, is_test))
             await asyncio.to_thread(
                 db.add_custom_config_history,
                 row["id"], "cleanup_delete",
@@ -287,17 +353,22 @@ async def cleanup_once(bot: Bot, db):
                 )
 
     if soft_count or deleted_count:
-        lines = ["📋 F14 — گزارش پاکسازی سرویس‌های منقضی", ""]
-        if soft_count:
-            lines.append(f"🔕 غیرفعال‌شده (soft-disable): {soft_count} سرویس")
+        # یک پیام تجمیعی برای کل این دور (به‌جای چند پیام جدا)
+        lines = ["📋 گزارش پاکسازی سرویس‌های منقضی", ""]
         if deleted_count:
-            lines.append(f"🗑 حذف‌شده از پنل: {deleted_count} سرویس")
+            lines.append(f"🗑 حذف‌شده از پنل: {_count_summary(deleted_items)}")
+        if soft_count:
+            lines.append(f"🔕 غیرفعال‌شده (soft-disable): {_count_summary(soft_items)}")
         if warned_count:
             lines.append(f"⚠️ هشدار پیش از انقضا برای: {warned_count} سرویس")
-        try:
-            await report_router.report(bot, db, "service", "\n".join(lines))
-        except Exception:
-            logger.warning("ارسال گزارش پاکسازی F14 ناموفق بود.", exc_info=True)
+        if failed_count:
+            lines.append(f"❌ ناموفق: {failed_count} مورد (جزئیات در لاگ)")
+        if deleted_items:
+            lines += ["", "🗑 فهرست حذف‌شده‌ها:"] + _compact_list(deleted_items)
+        if soft_items:
+            lines += ["", "🔕 فهرست غیرفعال‌شده‌ها:"] + _compact_list(soft_items)
+        lines += ["", f"🔁 اجرای بعدی: حدود {_interval_hours(db)} ساعت دیگر"]
+        await _announce(bot, db, "\n".join(lines))
 
     return {
         "soft": soft_count,
@@ -336,7 +407,8 @@ async def expire_stale_discount_orders_once(bot: Bot, db):
 
 
 async def cleanup_loop(bot: Bot, db, interval: int = 3600):
-    """حلقه‌ی ساعتی پاکسازی؛ تنظیمات هر دور دوباره خوانده می‌شوند."""
+    """حلقه‌ی بررسی (هر ساعت). اعلان اتمام سرویس هر دور انجام می‌شود، اما پاکسازی/حذف و اعلام
+    آن فقط هر «expired_cleanup_interval_hours» ساعت؛ تنظیمات هر دور دوباره خوانده می‌شوند."""
     while True:
         try:
             import multi_target
@@ -346,7 +418,10 @@ async def cleanup_loop(bot: Bot, db, interval: int = 3600):
         except Exception:
             logger.exception("خطا در تلاش مجدد حذف کاربران پنل‌های اضافه")
         try:
-            await cleanup_once(bot, db)
+            due = await asyncio.to_thread(_cleanup_due, db, _utcnow())
+            await cleanup_once(bot, db, run_cleanup=due)
+            if due:
+                await asyncio.to_thread(db.set_setting, "expired_cleanup_last_run", _utcnow().isoformat())
             await delete_inactive_configs_once(bot, db)
         except asyncio.CancelledError:
             raise

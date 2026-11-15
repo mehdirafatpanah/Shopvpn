@@ -82,6 +82,7 @@ import admin_channel_posts
 import admin_post_brand
 import bulk_gifts
 import report_router
+import bot_commands
 from test_config_provision import format_plan_amount
 import tutorial_hub
 import category_media
@@ -3337,7 +3338,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             "۰ یعنی خاموش. در حالت dry-run هیچ سرویس روی پنل تغییر یا حذف نمی‌شود و فقط نامزدها به ادمین گزارش می‌شوند.\n\n"
             f"📦 مهلت سرویس: {await asyncio.to_thread(db.get_setting, 'expired_delete_days', '0')} روز\n"
             f"🧪 مهلت تست: {await asyncio.to_thread(db.get_setting, 'test_delete_days', '0')} روز\n"
-            f"⚠️ هشدار: {await asyncio.to_thread(db.get_setting, 'expired_cleanup_warning_days', '3')} روز"
+            f"⚠️ هشدار: {await asyncio.to_thread(db.get_setting, 'expired_cleanup_warning_days', '3')} روز\n"
+            f"⏱ فاصله‌ی پاکسازی و اعلام: هر {await asyncio.to_thread(db.get_setting, 'expired_cleanup_interval_hours', '1')} ساعت\n"
+            f"📢 اعلام در گروه تاپیک: {'روشن' if await asyncio.to_thread(db.get_setting, 'expired_cleanup_report_enabled', '1') == '1' else 'خاموش'}"
         )
         await replace_admin_view(call, text, reply_markup=kb.admin_cleanup_settings_kb(db))
         await call.answer()
@@ -3416,6 +3419,48 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await asyncio.to_thread(db.set_setting, "expired_cleanup_warning_days", str(value))
         await state.clear()
         await message.answer(db.get_text('handlers_admin.auto_5c9177fb', '✅ مدت هشدار ذخیره شد.'), reply_markup=kb.admin_cleanup_settings_kb(db))
+
+    @router.callback_query(F.data == "adm_cleanup_interval")
+    async def cb_admin_cleanup_interval(call: CallbackQuery, state: FSMContext):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        await state.set_state(AdminCleanupSettings.waiting_interval_hours)
+        current = await asyncio.to_thread(db.get_setting, "expired_cleanup_interval_hours", "1")
+        await safe_edit(
+            call,
+            tr("⏱ هر چند ساعت یک‌بار پاکسازی انجام شود و نتیجه اعلام شود؟\n"
+               "عددی بین ۱ تا ۷۲۰ بفرستید (مثلاً 6 یعنی هر ۶ ساعت).\n"
+               "اعلام همیشه فقط در قالب یک پیام در تاپیک «سرویس» گروه گزارش ارسال می‌شود.") +
+            f"\n\n{tr('مقدار فعلی')}: {current}",
+            reply_markup=kb.admin_back_kb("adm_cleanup_settings"),
+        )
+        await call.answer()
+
+    @router.message(AdminCleanupSettings.waiting_interval_hours)
+    async def msg_admin_cleanup_interval(message: Message, state: FSMContext):
+        if not senior_admin_only(message.from_user.id):
+            return
+        try:
+            raw = (message.text or "").strip().translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
+            value = int(raw)
+            if value < 1 or value > 720:
+                raise ValueError
+        except Exception:
+            return await message.answer(tr("❌ عددی بین ۱ تا ۷۲۰ بفرستید."))
+        await asyncio.to_thread(db.set_setting, "expired_cleanup_interval_hours", str(value))
+        # دور بعدی از همین لحظه‌ی تغییر حساب می‌شود، نه از آخرین اجرای قبلی.
+        await asyncio.to_thread(db.set_setting, "expired_cleanup_last_run", "")
+        await state.clear()
+        await message.answer(tr(f"✅ از این پس پاکسازی و اعلام هر {value} ساعت انجام می‌شود."), reply_markup=kb.admin_cleanup_settings_kb(db))
+
+    @router.callback_query(F.data == "adm_cleanup_report_toggle")
+    async def cb_admin_cleanup_report_toggle(call: CallbackQuery):
+        if not senior_admin_only(call.from_user.id):
+            return await deny_mid(call)
+        cur = await asyncio.to_thread(db.get_setting, "expired_cleanup_report_enabled", "1")
+        await asyncio.to_thread(db.set_setting, "expired_cleanup_report_enabled", "0" if cur == "1" else "1")
+        await safe_edit(call, tr("🧹 پاکسازی خودکار سرویس‌های منقضی:"), reply_markup=kb.admin_cleanup_settings_kb(db))
+        await call.answer(tr("اعلام پاکسازی خاموش شد.") if cur == "1" else tr("اعلام پاکسازی روشن شد."))
 
     @router.callback_query(F.data == "adm_cleanup_orphans")
     async def cb_admin_cleanup_orphans(call: CallbackQuery):
@@ -13958,7 +14003,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             sender_label = "👤 کاربر" if m["sender"] == "user" else "🛠 پشتیبانی"
             lines.append(f"{sender_label}: {m['message']}")
         text = "\n".join(lines)
-        markup = kb.admin_ticket_view_kb(ticket_id, ticket["status"], active_status)
+        # گروه تاپیک فعال: پاسخ‌دادن فقط از دکمه‌ی «پاسخ به تیکت» داخل گروه انجام می‌شود، نه از ربات.
+        markup = kb.admin_ticket_view_kb(ticket_id, ticket["status"], active_status,
+                                         show_reply=not report_router.group_active(db))
         return text, markup
 
     @router.callback_query(F.data == "adm_tickets_menu")
@@ -14003,6 +14050,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         ticket_id = callback_id(call.data, "adm_ticket_reply")
         if ticket_id is None:
             await call.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
+            return
+        if report_router.group_active(db):
+            await call.answer(tr("↩️ پاسخ به تیکت‌ها فقط از داخل تاپیک پشتیبانی گروه انجام می‌شود."), show_alert=True)
             return
         ticket = (await asyncio.to_thread(db.get_ticket, ticket_id))
         if not ticket:
@@ -17874,12 +17924,33 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             parse_mode=ParseMode.HTML,
         )
 
+    _cmd_menu_synced: set = set()
+
+    async def _ensure_admin_command_menu(bot: Bot, user_id: int):
+        """منوی «/» مدیرِ تازه‌اضافه‌شده را یک‌بار در هر اجرا ست می‌کند (مدیرها در طول اجرا اضافه می‌شوند)."""
+        if user_id in _cmd_menu_synced:
+            return
+        _cmd_menu_synced.add(user_id)
+        await bot_commands.sync_admin_commands(bot, db, user_id, is_main_bot)
+
     @router.message(Command("admin"))
-    async def cmd_admin(message: Message, state: FSMContext):
+    async def cmd_admin(message: Message, state: FSMContext, bot: Bot):
         if not admin_only(message.from_user.id):
             return
         await state.clear()
         await message.answer(db.get_text('handlers_admin.auto_4741add8', '🔧 پنل مدیریت:'), reply_markup=kb.admin_panel_kb(db, is_main_bot))
+        await _ensure_admin_command_menu(bot, message.from_user.id)
+
+    @router.message(Command("commands"))
+    async def cmd_admin_commands_list(message: Message, state: FSMContext, bot: Bot):
+        """لیست همه‌ی دستورهای «/» ربات برای مدیر."""
+        if not admin_only(message.from_user.id):
+            return
+        await state.clear()
+        text = bot_commands.build_commands_text(is_main_bot, senior_admin_only(message.from_user.id))
+        await message.answer(text, parse_mode=ParseMode.HTML)
+        _cmd_menu_synced.discard(message.from_user.id)
+        await _ensure_admin_command_menu(bot, message.from_user.id)
 
     def _ai_admin_end_kb():
         return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ پایان گفتگو", callback_data="adm_ai_end")]])

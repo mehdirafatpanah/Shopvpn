@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 import aiohttp
 from aiogram import BaseMiddleware
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramRetryAfter
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +112,7 @@ GROUP_CALLBACK_PREFIXES = (
     "qa_profile:", "qa_block:", "qa_block_go:", "qa_cancel", "qa_msg:",
     "lk:rot:", "lk:warn:", "lk:ign:",
     "adm_user_configs:",
+    "grp_tk_view:", "grp_tk_reply:",
 )
 RETRY_AFTER_CAP = 30
 
@@ -613,10 +614,35 @@ async def notify(bot, db, topic_key: str, text: str, reply_markup=None) -> bool:
         return False
 
 
-async def notify_ticket(bot, db, ticket_id: int, text: str, reply_markup=None) -> bool:
-    """ارسال اعلان تیکت به تاپیک «پشتیبانی» و ثبت شناسه‌ی پیام برای پاسخ با ریپلای مدیران."""
+def ticket_group_kb(ticket_id: int) -> InlineKeyboardMarkup:
+    """دکمه‌های زیر اعلان تیکت در تاپیک پشتیبانی گروه: مشاهده کامل + پاسخ."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=tr("👁 مشاهده کامل تیکت"), callback_data=f"grp_tk_view:{ticket_id}"),
+        InlineKeyboardButton(text=tr("↩️ پاسخ به تیکت"), callback_data=f"grp_tk_reply:{ticket_id}"),
+    ]])
+
+
+def ticket_group_kb_json(ticket_id: int) -> dict:
+    """همان دکمه‌ها به‌صورت JSON خام برای پردازه‌هایی که شیء Bot ندارند (مینی‌اپ)."""
+    return {"inline_keyboard": [[
+        {"text": tr("👁 مشاهده کامل تیکت"), "callback_data": f"grp_tk_view:{ticket_id}"},
+        {"text": tr("↩️ پاسخ به تیکت"), "callback_data": f"grp_tk_reply:{ticket_id}"},
+    ]]}
+
+
+def group_active(db) -> bool:
+    """True اگر گروه گزارش (تاپیک‌ها) تنظیم شده باشد؛ در این حالت اعلان و پاسخ تیکت در گروه انجام می‌شود."""
     try:
-        sent = await send_text(bot, db, "support", text, reply_markup)
+        return get_chat_id(db) is not None
+    except Exception:
+        return False
+
+
+async def notify_ticket(bot, db, ticket_id: int, text: str, reply_markup=None) -> bool:
+    """ارسال اعلان تیکت به تاپیک «پشتیبانی» همراه با دکمه‌های «مشاهده کامل» و «پاسخ»؛ شناسه‌ی پیام برای
+    پاسخ با ریپلای مدیران ثبت می‌شود. True یعنی اعلان واقعاً در گروه نشست (فراخوان دیگر پیام خصوصی نمی‌فرستد)."""
+    try:
+        sent = await send_text(bot, db, "support", text, reply_markup or ticket_group_kb(ticket_id))
         if sent is None:
             return False
         try:
@@ -626,6 +652,27 @@ async def notify_ticket(bot, db, ticket_id: int, text: str, reply_markup=None) -
         return True
     except Exception:
         logger.warning("notify_ticket(#%s) ناموفق بود.", ticket_id, exc_info=True)
+        return False
+
+
+async def notify_ticket_raw(bot_token: str, db, ticket_id: int, text: str, parse_mode: str = "HTML") -> bool:
+    """مثل notify_ticket ولی با HTTP خام (برای مینی‌اپ). True یعنی اعلان در گروه نشست."""
+    try:
+        result = await send_raw_to_group(
+            bot_token, db, "support", text, parse_mode,
+            reply_markup=ticket_group_kb_json(ticket_id), want_result=True,
+        )
+        if not result:
+            return False
+        if isinstance(result, dict) and result.get("message_id"):
+            try:
+                chat_id = (result.get("chat") or {}).get("id") or get_chat_id(db)
+                await _db(db.link_ticket_group_message, chat_id, result["message_id"], ticket_id)
+            except Exception:
+                logger.warning("ثبت پیام گروه برای تیکت #%s ناموفق بود.", ticket_id, exc_info=True)
+        return True
+    except Exception:
+        logger.warning("notify_ticket_raw(#%s) ناموفق بود.", ticket_id, exc_info=True)
         return False
 
 
@@ -677,6 +724,119 @@ async def handle_group_ticket_reply(bot, db, message) -> bool:
         await _say(tr("⛔️ ارسال پاسخ با خطا مواجه شد."))
         return True
     await _say(tr(f"✅ پاسخ به تیکت #{ticket_id} ارسال شد."))
+    return True
+
+
+async def _ticket_group_access_error(db, user_id: int, ticket, for_reply: bool):
+    """متن خطا اگر این مدیر اجازه‌ی کار روی تیکت را ندارد، وگرنه None."""
+    if not await _db(db.is_admin, user_id):
+        return tr("⛔️ این دکمه‌ها فقط برای مدیران فعال است.")
+    allowed = await _db(db.list_ticket_admin_ids_for_department, ticket["department_id"])
+    is_owner = await _db(db.is_owner, user_id)
+    if user_id not in set(allowed) and not is_owner:
+        return tr("⛔️ شما به این بخش از تیکت‌ها دسترسی ندارید.")
+    if for_reply:
+        if ticket["status"] == "closed":
+            return tr("⛔️ این تیکت بسته شده است.")
+        if ticket["claimed_by"] and ticket["claimed_by"] != user_id and not is_owner:
+            return tr("⛔️ این تیکت توسط ادمین دیگری در حال پاسخ است.")
+    return None
+
+
+async def build_ticket_thread_html(db, ticket) -> str:
+    """متن کامل گفتگوی تیکت (HTML امن)؛ اگر از سقف تلگرام بلندتر شد، قدیمی‌ترین پیام‌ها کوتاه می‌شوند."""
+    messages = await _db(db.get_ticket_messages, ticket["id"])
+    user = await _db(db.get_user, ticket["user_id"])
+    department = await _db(db.get_ticket_department, ticket["department_id"]) if ticket["department_id"] else None
+    keys = ticket.keys() if hasattr(ticket, "keys") else []
+    prio_labels = {"high": "زیاد", "medium": "متوسط", "low": "کم"}
+    status_labels = {"open": "باز", "answered": "پاسخ داده شده", "closed": "بسته"}
+    head = [
+        f"🎫 <b>تیکت #{ticket['id']}</b> — {html.escape(status_labels.get(ticket['status'], str(ticket['status'])))}",
+        f"👤 کاربر: {user_link(ticket['user_id'], (user['first_name'] if user else '') or '', (user['username'] if user else '') or '')}",
+        f"📌 موضوع: {html.escape(str(ticket['subject'] or ''))}",
+        f"🧩 بخش: {html.escape(department['name'] if department else 'عمومی')}",
+    ]
+    if "priority" in keys and ticket["priority"]:
+        head.append(f"🚦 اولویت: {prio_labels.get(ticket['priority'], '')}")
+    if "ref_label" in keys and ticket["ref_label"]:
+        head.append(f"📦 سرویس: {html.escape(str(ticket['ref_label']))}")
+    body = []
+    for m in messages:
+        who = "👤 کاربر" if m["sender"] == "user" else "🛠 پشتیبانی"
+        body.append(f"{who}: {html.escape(str(m['message'] or ''))}")
+    limit = 3900 - sum(len(x) + 1 for x in head)
+    kept, used = [], 0
+    for line in reversed(body):
+        if used + len(line) + 2 > limit:
+            if not kept:
+                kept.append(line[: max(0, limit - 1)] + "…")
+            kept.append("… (پیام‌های قدیمی‌تر نمایش داده نشد)")
+            break
+        kept.append(line)
+        used += len(line) + 2
+    return "\n".join(head) + "\n\n" + "\n\n".join(reversed(kept))
+
+
+async def handle_group_ticket_callback(bot, db, call) -> bool:
+    """دکمه‌های «مشاهده کامل تیکت» و «پاسخ به تیکت» زیر اعلان تیکت در گروه. True یعنی مصرف شد."""
+    data = call.data or ""
+    action, _, raw_id = data.partition(":")
+    if action not in ("grp_tk_view", "grp_tk_reply"):
+        return False
+    msg = call.message
+    user = call.from_user
+    if not raw_id.isdigit() or msg is None or user is None:
+        await call.answer(tr("❌ درخواست نامعتبر است."), show_alert=True)
+        return True
+    ticket_id = int(raw_id)
+    ticket = await _db(db.get_ticket, ticket_id)
+    if not ticket:
+        await call.answer(tr("تیکت یافت نشد."), show_alert=True)
+        return True
+    err = await _ticket_group_access_error(db, user.id, ticket, for_reply=(action == "grp_tk_reply"))
+    if err:
+        await call.answer(err, show_alert=True)
+        return True
+    thread_id = getattr(msg, "message_thread_id", None)
+
+    async def _send(text: str, markup=None):
+        sent = await bot.send_message(
+            msg.chat.id, text, message_thread_id=thread_id, reply_to_message_id=msg.message_id,
+            parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True,
+        )
+        try:
+            await _db(db.link_ticket_group_message, sent.chat.id, sent.message_id, ticket_id)
+        except Exception:
+            logger.warning("ثبت پیام گروه برای تیکت #%s ناموفق بود.", ticket_id, exc_info=True)
+        return sent
+
+    try:
+        if action == "grp_tk_view":
+            await _db(db.mark_ticket_read_by_admin, ticket_id)
+            text = await build_ticket_thread_html(db, ticket)
+            markup = None
+            if ticket["status"] != "closed":
+                markup = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text=tr("↩️ پاسخ به تیکت"), callback_data=f"grp_tk_reply:{ticket_id}"),
+                ]])
+            await _send(text, markup)
+            await call.answer()
+        else:
+            label = html.escape(user.first_name or str(user.id))
+            prompt = (
+                f'<a href="tg://user?id={user.id}">{label}</a> '
+                f"{html.escape(tr('پاسخ خود را برای تیکت'))} #{ticket_id} "
+                f"{html.escape(tr('روی همین پیام ریپلای کنید و بنویسید.'))}"
+            )
+            await _send(prompt, ForceReply(selective=True, input_field_placeholder=tr(f"پاسخ تیکت #{ticket_id}…")))
+            await call.answer()
+    except Exception:
+        logger.warning("پردازش دکمه‌ی تیکت #%s در گروه ناموفق بود.", ticket_id, exc_info=True)
+        try:
+            await call.answer(tr("⛔️ انجام عملیات با خطا مواجه شد."), show_alert=True)
+        except Exception:
+            pass
     return True
 
 
@@ -1015,7 +1175,8 @@ async def _raw_create_topic(bot_token: str, chat_id: int, topic_key: str, name: 
     return thread_id
 
 
-async def _raw_send_message(bot_token: str, chat_id: int, text: str, thread_id: int = None, parse_mode: str = None, silent: bool = False) -> bool:
+async def _raw_send_message(bot_token: str, chat_id: int, text: str, thread_id: int = None, parse_mode: str = None, silent: bool = False,
+                            reply_markup: dict = None, want_result: bool = False):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {"chat_id": chat_id, "text": text}
     if thread_id:
@@ -1024,10 +1185,17 @@ async def _raw_send_message(bot_token: str, chat_id: int, text: str, thread_id: 
         payload["parse_mode"] = parse_mode
     if silent:
         payload["disable_notification"] = True
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status == 200:
+                    if want_result:
+                        try:
+                            return (await resp.json()).get("result") or True
+                        except Exception:
+                            return True
                     return True
                 body = (await resp.text()).lower()
                 if thread_id and any(marker in body for marker in MISSING_THREAD_MARKERS):
@@ -1045,7 +1213,8 @@ async def _raw_fallback_thread(db, chat_id: int, key: str):
     return (await _db(db.get_report_topics, chat_id)).get(DEFAULT_TOPIC)
 
 
-async def send_raw_to_group(bot_token: str, db, topic_key: str, text: str, parse_mode: str = None) -> bool:
+async def send_raw_to_group(bot_token: str, db, topic_key: str, text: str, parse_mode: str = None,
+                            reply_markup: dict = None, want_result: bool = False):
     """فقط تلاش برای ارسال به تاپیک گروه گزارش با HTTP خام؛ اگر گروه تنظیم
     نباشد یا ارسال ناموفق باشد False برمی‌گرداند (بدون فالبک به پیام خصوصی -
     آن تصمیم به عهده‌ی فراخوان است). تاپیک غیرفعال به «سایر» می‌رود."""
@@ -1069,15 +1238,15 @@ async def send_raw_to_group(bot_token: str, db, topic_key: str, text: str, parse
         thread_id = await _create() or await _raw_fallback_thread(db, chat_id, key)
     if not thread_id:
         return False
-    result = await _raw_send_message(bot_token, chat_id, text, thread_id, parse_mode, silent)
+    result = await _raw_send_message(bot_token, chat_id, text, thread_id, parse_mode, silent, reply_markup, want_result)
     if result is None:
         thread_id = await _create()
         if not thread_id:
             return False
-        result = await _raw_send_message(bot_token, chat_id, text, thread_id, parse_mode, silent)
+        result = await _raw_send_message(bot_token, chat_id, text, thread_id, parse_mode, silent, reply_markup, want_result)
     if result:
         await _db(_bump_stat, db, chat_id, key)
-    return bool(result)
+    return result if want_result else bool(result)
 
 
 async def _raw_send_photo(bot_token: str, chat_id: int, thread_id: int, caption: str, reply_markup: str,
@@ -1189,6 +1358,14 @@ class ReportGroupGuardMiddleware(BaseMiddleware):
                         await event.answer(tr("⛔️ این دکمه‌ها فقط برای مدیران فعال است."), show_alert=True)
                     except Exception:
                         logger.warning("پاسخ به دکمه‌ی غیرمجاز در گروه گزارش ناموفق بود.", exc_info=True)
+                    return None
+                if (event.data or "").startswith(("grp_tk_view:", "grp_tk_reply:")):
+                    bot = data.get("bot")
+                    if bot is not None:
+                        try:
+                            await handle_group_ticket_callback(bot, self.db, event)
+                        except Exception:
+                            logger.warning("پردازش دکمه‌ی تیکت در گروه گزارش ناموفق بود.", exc_info=True)
                     return None
                 if not (event.data or "").startswith(GROUP_CALLBACK_PREFIXES):
                     try:

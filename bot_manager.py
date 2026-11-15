@@ -63,6 +63,7 @@ from engagement_handlers import create_engagement_router
 import report_router
 import updater
 from report_router import ReportGroupGuardMiddleware
+import bot_commands
 from audit_forwarder import audit_forward_loop
 from global_switch import GlobalBotSwitchMiddleware
 import keyboards as kb
@@ -581,6 +582,7 @@ class BotManager:
                 )
             task = asyncio.create_task(dp.start_polling(bot, allowed_updates=widgets.allowed_updates(dp)))
         await self._sync_menu_button(bot, db)
+        bot_commands.schedule_sync(bot, db, is_main_bot)
         try:
             await bot_profile.apply_profile(token, db)
         except Exception:

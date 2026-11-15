@@ -29,6 +29,14 @@ def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def is_free_payg_user(db, user_id) -> bool:
+    """مالک و مدیر کل بدون شارژ کیف پول و بدون کسر هزینه از PayG استفاده می‌کنند."""
+    try:
+        return bool(db.is_senior_admin(int(user_id)))
+    except Exception:
+        return False
+
+
 def ensure_schema(db):
     with db._get_conn() as conn:
         conn.executescript("""
@@ -589,8 +597,9 @@ def _bill_panel_fixed_costs(db, uid: int, pool_id: int, service: dict) -> bool:
 def activate_payg(db, user_id: int, existing_pool_id: int = None):
     if db.get_setting("payg_enabled", "1") != "1":
         return {"ok": False, "reason": "disabled"}
+    free = is_free_payg_user(db, user_id)
     balance = int(db.get_wallet_credit(user_id) or 0)
-    if balance <= 0:
+    if balance <= 0 and not free:
         return {"ok": False, "reason": "balance"}
     with db._get_conn() as conn:
         existing = conn.execute("SELECT * FROM payg_accounts WHERE user_id=?", (int(user_id),)).fetchone()
@@ -605,7 +614,7 @@ def activate_payg(db, user_id: int, existing_pool_id: int = None):
         except Exception:
             active_rates = get_rates(db)
         active_month_used = int(existing['month_used_bytes'] or 0) if existing['month_key'] == _month_key() else 0
-        limit_bytes = _affordable_payg_limit(db, user_id, balance, _billing_base_bytes(db, user_id), active_month_used, active_rates)
+        limit_bytes = 0 if free else _affordable_payg_limit(db, user_id, balance, _billing_base_bytes(db, user_id), active_month_used, active_rates)
         db.set_quota_pool_limit(int(existing['quota_pool_id']), limit_bytes / GIB)
         return {"ok": True, "existing": True, **sync}
     rates = get_rates(db)
@@ -630,7 +639,7 @@ def activate_payg(db, user_id: int, existing_pool_id: int = None):
         db.delete_quota_pool(pool_id)
         return {"ok": False, "reason": "no_services", **sync}
     billed_base = _billing_base_bytes(db, user_id)
-    initial_limit = _affordable_payg_limit(db, user_id, balance, billed_base, 0, rates)
+    initial_limit = 0 if free else _affordable_payg_limit(db, user_id, balance, billed_base, 0, rates)
     db.set_quota_pool_limit(pool_id, initial_limit / GIB)
     return {"ok": True, "existing": False, "pool_id": pool_id, **sync}
 
@@ -767,6 +776,9 @@ def refresh_payg_quota(db, user_id: int):
         rates = get_rates(db)
     balance = int(db.get_wallet_credit(user_id) or 0)
     month_used = int(account.get("month_used_bytes") or 0) if account.get("month_key") == month else 0
+    if is_free_payg_user(db, user_id):
+        db.set_quota_pool_limit(int(account["quota_pool_id"]), 0)
+        return True
     limit = _affordable_payg_limit(db, user_id, balance, _billing_base_bytes(db, user_id), month_used, [int(x) for x in rates])
     db.set_quota_pool_limit(int(account["quota_pool_id"]), limit / GIB)
     with db._get_conn() as conn:
@@ -775,6 +787,52 @@ def refresh_payg_quota(db, user_id: int):
                          (balance, balance, _now(), int(user_id)))
     return True
 
+
+
+def _settle_free_account(db, uid: int, pool_id: int, month: str) -> None:
+    """ثبت مصرف مدیر/مالک با مبلغ صفر؛ شمارنده‌ها جلو می‌روند و سقف استخر نامحدود می‌ماند."""
+    _sync_services(db, uid, pool_id)
+    db.set_quota_pool_limit(pool_id, 0)
+    now = time.time()
+    with db._get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        acc = conn.execute("SELECT month_key FROM payg_accounts WHERE user_id=?", (uid,)).fetchone()
+        if not acc:
+            return
+        if acc["month_key"] != month:
+            conn.execute("UPDATE payg_accounts SET month_key=?,month_used_bytes=0,month_cost=0 WHERE user_id=?",
+                         (month, uid))
+        services = [dict(r) for r in conn.execute(
+            "SELECT ps.*,s.used_bytes,s.reported_at FROM payg_services ps LEFT JOIN usage_snapshots s "
+            "ON s.service_kind=ps.service_kind AND s.service_id=ps.service_id WHERE ps.user_id=? ORDER BY ps.id",
+            (uid,)).fetchall()]
+        total_delta = 0
+        for service in services:
+            if service.get("panel_server_id"):
+                capacity = max(1, int(service.get("user_capacity") or 1))
+                day_until = float(service.get("day_billed_until") or _epoch(service.get("active_since") or service.get("created_at")))
+                elapsed = max(0, int((now - day_until) // 86400)) if service.get("is_active", 1) else 0
+                conn.execute("UPDATE payg_services SET charged_users=MAX(charged_users,?),day_billed_until=? WHERE id=?",
+                             (capacity, day_until + elapsed * 86400, service["id"]))
+            if service["used_bytes"] is None:
+                continue
+            current_bytes = max(0, int(service["used_bytes"] or 0))
+            previous = int(service["last_billed_bytes"] if service["last_billed_bytes"] is not None else -1)
+            delta = current_bytes - previous if previous >= 0 and current_bytes >= previous else 0
+            if current_bytes != previous:
+                conn.execute("UPDATE payg_services SET last_billed_bytes=? WHERE id=?", (current_bytes, service["id"]))
+            if delta > 0:
+                total_delta += delta
+                conn.execute(
+                    "INSERT OR IGNORE INTO payg_transactions(user_id,cycle_key,service_kind,service_id,used_bytes,amount,rate_snapshot,created_at) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (uid, f"{month}:{service['service_kind']}:{service['service_id']}:{current_bytes}",
+                     service["service_kind"], service["service_id"], delta, 0,
+                     json.dumps({"type": "traffic", "free": "admin"}), _now()))
+        if total_delta:
+            conn.execute("UPDATE payg_accounts SET month_used_bytes=month_used_bytes+?,updated_at=? WHERE user_id=?",
+                         (total_delta, _now(), uid))
+        conn.execute("UPDATE payg_accounts SET last_alert_level=0,updated_at=? WHERE user_id=?", (_now(), uid))
 
 
 class PaygEngine:
@@ -796,6 +854,9 @@ class PaygEngine:
         for account in accounts:
             uid, pool_id = int(account['user_id']), int(account['quota_pool_id'])
             try:
+                if is_free_payg_user(self.db, uid):
+                    _settle_free_account(self.db, uid, pool_id, _month_key())
+                    continue
                 current_balance = int(self.db.get_wallet_credit(uid) or 0)
                 month = _month_key()
                 try:
@@ -1233,9 +1294,11 @@ def create_payg_router(db, is_main_bot=True):
                 "WHERE p.user_id=? AND cc.status='active' ORDER BY cc.id DESC",
                 (int(user_id),),
             ).fetchall()
+        free = is_free_payg_user(db, user_id)
         if status['active']:
             text = ("💳 <b>Pay As You Go</b>\n\n"
-                    f"وضعیت: فعال\nموجودی کیف پول: {balance:,} تومان\n"
+                    + ("🎁 حالت رایگان مدیریت: بدون کسر از کیف پول و بدون سقف حجم\n" if free else "")
+                    + f"وضعیت: فعال\nموجودی کیف پول: {balance:,} تومان\n"
                     f"هزینه این ماه: {status['spent']:,} تومان\n"
                     f"مصرف ثبت‌شده: {status['month_used_bytes']/GIB:.3f} GB\n"
                     f"سرویس‌های متصل: {status['services']}\n"
@@ -1247,7 +1310,8 @@ def create_payg_router(db, is_main_bot=True):
                     f"موجودی کیف پول: {balance:,} تومان\n"
                     + rate_text + supported_text
                     + "با ساخت سرویس مصرفی، حجم و زمان ثابت نخواهید داشت و هزینه از کیف پول کسر می‌شود.\n"
-                    "برای شروع، کیف پول باید موجودی مثبت داشته باشد.")
+                    + ("🎁 حساب شما مدیریتی است؛ بدون شارژ کیف پول و بدون هزینه می‌توانید سرویس بسازید."
+                       if free else "برای شروع، کیف پول باید موجودی مثبت داشته باشد."))
         if not panel_names:
             text += "\n\n⚠️ هنوز پنل فعال ساخت سرویس توسط مدیریت انتخاب نشده است."
         if service_rows:
@@ -1336,7 +1400,7 @@ def create_payg_router(db, is_main_bot=True):
                     f"👤 نام کاربری: <code>{result['username']}</code>\n"
                     f"🧩 مقصدها: {result['panels']} پنل + {result['nodes']} نود\n"
                     "📦 حجم: پرداخت به‌ازای مصرف\n⏳ مدت: بدون انقضای ثابت\n"
-                    "💳 هزینه از کیف پول تومانی شما کسر می‌شود.\n\n"
+                    + ("🎁 رایگان برای مدیریت؛ هزینه‌ای کسر نمی‌شود.\n\n" if is_free_payg_user(db, uid) else "💳 هزینه از کیف پول تومانی شما کسر می‌شود.\n\n") +
                     f"🔗 <a href=\"{safe_url}\">دریافت لینک اشتراک</a>\n\n"
                     "مصرف همه مقصدها با هم جمع و هر ۱۰ دقیقه تسویه می‌شود.",
                     parse_mode="HTML", disable_web_page_preview=True)
@@ -1362,7 +1426,7 @@ def create_payg_router(db, is_main_bot=True):
         if existing_account and existing_account["status"] == "suspended_admin":
             await call.message.answer("⛔️ حساب Pay As You Go شما توسط مدیریت تعلیق شده است. برای پیگیری با پشتیبانی تماس بگیرید.")
             return
-        if int(db.get_wallet_credit(uid) or 0) <= 0:
+        if int(db.get_wallet_credit(uid) or 0) <= 0 and not is_free_payg_user(db, uid):
             await call.message.answer("برای ساخت سرویس مصرفی، ابتدا کیف پول تومانی خود را شارژ کنید.")
             return
         try:
@@ -1445,7 +1509,7 @@ def create_payg_router(db, is_main_bot=True):
                 "✅ <b>سرویس Pay As You Go ساخته شد.</b>\n\n"
                 f"👤 نام کاربری: <code>{provisioned['username']}</code>\n"
                 "📦 حجم: پرداخت به‌ازای مصرف\n⏳ مدت: بدون انقضای ثابت\n"
-                "💳 هزینه از کیف پول تومانی شما کسر می‌شود.\n\n"
+                + ("🎁 رایگان برای مدیریت؛ هزینه‌ای کسر نمی‌شود.\n\n" if is_free_payg_user(db, uid) else "💳 هزینه از کیف پول تومانی شما کسر می‌شود.\n\n") +
                 f"🔗 <a href=\"{safe_url}\">دریافت لینک اشتراک</a>\n\n"
                 "مصرف هر ۱۰ دقیقه محاسبه و تسویه می‌شود.", parse_mode="HTML", disable_web_page_preview=True)
             await show(call.message, uid)

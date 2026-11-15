@@ -9465,14 +9465,15 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             ref_kind="custom", ref_id=cc["id"], ref_label=str(cc["display_name"] or cc["username"])[:120],
         )
         await call.message.answer(tr(f"✅ گزارش اختلال ثبت شد. شماره تیکت: #{ticket_id}\nبخش فنی در حال بررسی است."))
-        await report_router.notify_ticket(bot, db, ticket_id, report_router.format_event(
+        grp_ok = await report_router.notify_ticket(bot, db, ticket_id, report_router.format_event(
             "گزارش اختلال سرویس", [
                 ("تیکت", report_router.code(f"#{ticket_id}")),
                 ("کاربر", report_router.user_link(call.from_user.id, call.from_user.first_name or "", call.from_user.username or "")),
                 ("سرویس", cc["display_name"] or cc["username"]),
                 ("بخش", dep["name"] if dep else "عمومی"),
-            ], icon="⚠️", note="↩️ برای پاسخ، روی همین پیام ریپلای کنید."))
-        for admin_id in await asyncio.to_thread(db.list_ticket_admin_ids_for_department, dep["id"] if dep else None):
+            ], icon="⚠️", note="↩️ برای پاسخ، از دکمه‌ی «پاسخ به تیکت» یا ریپلای روی همین پیام استفاده کنید."))
+        # گروه تاپیک فعال و اعلان نشست: دیگر پیام خصوصی به ادمین‌ها نمی‌رود.
+        for admin_id in ([] if grp_ok else await asyncio.to_thread(db.list_ticket_admin_ids_for_department, dep["id"] if dep else None)):
             try:
                 await bot.send_message(admin_id, tr(f"⚠️ گزارش اختلال جدید #{ticket_id}\n👤 {call.from_user.id}\n📌 {subject}\n\n{ticket_text}"), reply_markup=kb.ticket_admin_notify_kb(ticket_id))
             except Exception:
@@ -9652,9 +9653,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if ref_label:
             event_rows.append(("سرویس", ref_label))
         event_rows += [("موضوع", subject), ("متن", (message.text or "")[:300])]
-        await report_router.notify_ticket(bot, db, ticket_id, report_router.format_event(
-            "تیکت جدید", event_rows, icon="🎫", note="↩️ برای پاسخ، روی همین پیام ریپلای کنید."))
-        for admin_id in (await asyncio.to_thread(db.list_ticket_admin_ids_for_department, department_id)):
+        grp_ok = await report_router.notify_ticket(bot, db, ticket_id, report_router.format_event(
+            "تیکت جدید", event_rows, icon="🎫", note="↩️ برای پاسخ، از دکمه‌ی «پاسخ به تیکت» یا ریپلای روی همین پیام استفاده کنید."))
+        # گروه تاپیک فعال و اعلان نشست: دیگر پیام خصوصی به ادمین‌ها نمی‌رود.
+        for admin_id in ([] if grp_ok else await asyncio.to_thread(db.list_ticket_admin_ids_for_department, department_id)):
             try:
                 await bot.send_message(admin_id, text, reply_markup=kb.ticket_admin_notify_kb(ticket_id))
             except Exception:
@@ -9758,15 +9760,16 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             f"🆔 {user.id}\n\n"
             f"✉️ {message.text}"
         )
-        await report_router.notify_ticket(bot, db, ticket_id, report_router.format_event(
+        grp_ok = await report_router.notify_ticket(bot, db, ticket_id, report_router.format_event(
             "پیام جدید در تیکت", [
                 ("شماره", report_router.code(f"#{ticket_id}")),
                 ("کاربر", report_router.user_link(user.id, user.first_name or "", user.username or "")),
                 ("موضوع", ticket["subject"]),
                 ("متن", (message.text or "")[:300]),
-            ], icon="💬", note="↩️ برای پاسخ، روی همین پیام ریپلای کنید."))
+            ], icon="💬", note="↩️ برای پاسخ، از دکمه‌ی «پاسخ به تیکت» یا ریپلای روی همین پیام استفاده کنید."))
         admin_ids = [ticket["claimed_by"]] if ticket["claimed_by"] else (await asyncio.to_thread(db.list_ticket_admin_ids_for_department, ticket["department_id"]))
-        for admin_id in admin_ids:
+        # گروه تاپیک فعال و اعلان نشست: دیگر پیام خصوصی به ادمین‌ها نمی‌رود.
+        for admin_id in ([] if grp_ok else admin_ids):
             try:
                 await bot.send_message(admin_id, text, reply_markup=kb.ticket_admin_notify_kb(ticket_id))
             except Exception:
@@ -9795,9 +9798,16 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 f"👤 {call.from_user.first_name or ''} (@{call.from_user.username or '---'})\n"
                 f"🆔 {call.from_user.id}"
             )
+            grp_ok = await report_router.notify_ticket(bot, db, ticket_id, report_router.format_event(
+                "تیکت دوباره باز شد", [
+                    ("شماره", report_router.code(f"#{ticket_id}")),
+                    ("کاربر", report_router.user_link(call.from_user.id, call.from_user.first_name or "", call.from_user.username or "")),
+                    ("موضوع", ticket["subject"]),
+                ], icon="🔓", note="↩️ برای پاسخ، از دکمه‌ی «پاسخ به تیکت» یا ریپلای روی همین پیام استفاده کنید."))
             admin_ids = [ticket["claimed_by"]] if ticket["claimed_by"] else (
                 await asyncio.to_thread(db.list_ticket_admin_ids_for_department, ticket["department_id"]))
-            for admin_id in admin_ids:
+            # گروه تاپیک فعال و اعلان نشست: دیگر پیام خصوصی به ادمین‌ها نمی‌رود.
+            for admin_id in ([] if grp_ok else admin_ids):
                 try:
                     await bot.send_message(admin_id, admin_text, reply_markup=kb.ticket_admin_notify_kb(ticket_id))
                 except Exception:

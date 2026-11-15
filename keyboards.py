@@ -1803,10 +1803,11 @@ def admin_tickets_list_kb(tickets, active_status: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_ticket_view_kb(ticket_id: int, status: str, active_status: str) -> InlineKeyboardMarkup:
+def admin_ticket_view_kb(ticket_id: int, status: str, active_status: str, show_reply: bool = True) -> InlineKeyboardMarkup:
     rows = []
     if status != "closed":
-        rows.append([InlineKeyboardButton(text=tr("↩️ پاسخ به تیکت"), callback_data=f"adm_ticket_reply:{ticket_id}")])
+        if show_reply:
+            rows.append([InlineKeyboardButton(text=tr("↩️ پاسخ به تیکت"), callback_data=f"adm_ticket_reply:{ticket_id}")])
         rows.append([InlineKeyboardButton(text=tr("🔒 بستن تیکت"), callback_data=f"adm_ticket_close:{ticket_id}")])
     rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت به لیست"), callback_data=f"adm_tickets_list:{active_status}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -3797,11 +3798,15 @@ def admin_cleanup_settings_kb(db) -> InlineKeyboardMarkup:
     warning = db.get_setting("expired_cleanup_warning_days", "3")
     dry = db.get_setting("expired_cleanup_dry_run", "1") == "1"
     inactive_time = db.get_setting("inactive_config_delete_time", "") or "خاموش"
+    interval = db.get_setting("expired_cleanup_interval_hours", "1") or "1"
+    report_on = db.get_setting("expired_cleanup_report_enabled", "1") == "1"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=tr(f"📦 مهلت حذف سرویس: {expired} روز (۰=خاموش)"), callback_data="adm_cleanup_expired")],
         [InlineKeyboardButton(text=tr(f"🧪 مهلت حذف تست: {tests} روز (۰=خاموش)"), callback_data="adm_cleanup_test")],
         [InlineKeyboardButton(text=tr(f"⚠️ هشدار قبل از انقضا: {warning} روز"), callback_data="adm_cleanup_warning")],
         [InlineKeyboardButton(text=("🟢 dry-run روشن" if dry else "🔴 dry-run خاموش"), callback_data="adm_cleanup_dryrun")],
+        [InlineKeyboardButton(text=tr(f"⏱ پاکسازی و اعلام هر {interval} ساعت"), callback_data="adm_cleanup_interval")],
+        [InlineKeyboardButton(text=tr("📢 اعلام در گروه تاپیک: ") + (tr("🟢 روشن") if report_on else tr("🔴 خاموش")), callback_data="adm_cleanup_report_toggle")],
         [InlineKeyboardButton(text=tr(f"🕐 حذف کانفیگ‌های غیرفعال: {inactive_time}"), callback_data="adm_cleanup_inactive_time")],
         [InlineKeyboardButton(text=tr("🗑 پاکسازی کانفیگ‌های یتیم (F147)"), callback_data="adm_cleanup_orphans")],
         [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:products")],

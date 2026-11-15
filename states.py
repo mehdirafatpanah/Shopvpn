@@ -213,6 +213,7 @@ class AdminCleanupSettings(StatesGroup):
     waiting_test_days = State()
     waiting_warning_days = State()
     waiting_inactive_time = State()
+    waiting_interval_hours = State()
 
 
 class AdminForceJoin(StatesGroup):

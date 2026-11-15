@@ -62,6 +62,12 @@ def _sel(key, label, options, default="", hint=""):
     return {"key": key, "label": label, "type": "select", "default": default, "hint": hint, "options": options}
 
 
+def _dyn_sel(key, label, source, default="0", hint=""):
+    """select با گزینه‌های پویا که در زمان درخواست از دیتابیس همان مستأجر ساخته می‌شود (resolve_options)."""
+    return {"key": key, "label": label, "type": "select", "default": default, "hint": hint,
+            "options": [["0", "— انتخاب کنید —"]], "dynamic": source}
+
+
 # ---------------------------------------------------------------------------
 # فیلدهایی که از منبع حقیقیِ خودِ بات ساخته می‌شوند تا بین سه سطح از هم جدا نشوند.
 # ---------------------------------------------------------------------------
@@ -146,7 +152,8 @@ EXTRA_SETTINGS_GROUPS: List[Dict[str, Any]] = [
         "id": "welcome_gift", "title": "🎁 هدیه‌ی کانفیگ عضویت (ارسال سرویس به کاربر تازه‌عضو)", "web": True, "mini": True,
         "fields": [
             _b("welcome_gift_enabled", "فعال بودن هدیه‌ی کانفیگ عضویت", "0", "فقط کاربرانی که بعد از فعال‌سازی عضو شوند هدیه می‌گیرند."),
-            _n("welcome_gift_product_id", "شناسه‌ی محصول هدیه (متصل به پنل/نود)", "0", min=0),
+            _dyn_sel("welcome_gift_product_id", "محصول هدیه (متصل به پنل/نود)", "giftable_products", "0",
+                     "از بین محصولات متصل به پنل/نود انتخاب کنید."),
             _t("welcome_gift_volume_gb", "حجم هدیه (گیگابایت)", "", "خالی = حجم پیش‌فرض محصول، 0 = نامحدود"),
             _t("welcome_gift_days", "مدت هدیه (روز)", "", "خالی = مدت پیش‌فرض محصول، 0 = نامحدود"),
             _n("welcome_gift_delay_minutes", "ارسال چند دقیقه بعد از عضویت", "0", "0 = بلافاصله (مثلاً 60 = یک ساعت، 1440 = یک روز)", min=0, max=525600),
@@ -241,6 +248,8 @@ EXTRA_SETTINGS_GROUPS: List[Dict[str, Any]] = [
             _n("expired_cleanup_warning_days", "اخطار قبل از حذف (روز)", "3", min=0),
             _b("expired_cleanup_dry_run", "حالت آزمایشی (فقط گزارش می‌دهد، حذف نمی‌کند)", "1",
                "قبل از خاموش کردن، گزارش آزمایشی را بررسی کن."),
+            _n("expired_cleanup_interval_hours", "پاکسازی و اعلام هر N ساعت (۱ تا ۷۲۰)", "1", min=1, max=720),
+            _b("expired_cleanup_report_enabled", "اعلام پاکسازی در گروه تاپیک‌دار (یک پیام تجمیعی در تاپیک «سرویس»)", "1"),
             _t("inactive_config_delete_time", "ساعت اجرای حذف کانفیگ‌های غیرفعال (HH:MM، خالی = غیرفعال)", ""),
         ],
     },
@@ -663,9 +672,61 @@ _FIELD_INDEX: Dict[str, Dict[str, Any]] = {
 }
 
 
-def groups_for(surface: str) -> List[Dict[str, Any]]:
-    """surface: 'web'، 'mini' یا 'bot' (ادمین بات؛ فقط گروه‌هایی که "bot": True دارند)"""
-    return [g for g in EXTRA_SETTINGS_GROUPS if g.get(surface)]
+def _product_is_giftable(db, product) -> bool:
+    """همان قاعده‌ی welcome_gift.product_is_giftable (بدون import ماژول بات): محصول باید به پنل یا نود وصل باشد."""
+    if not product:
+        return False
+    targets = db.product_target_counts(product)
+    return bool(targets["panels"] or targets["ssh"])
+
+
+def _giftable_product_options(db) -> List[List[str]]:
+    """همان فهرستی که بات برای انتخاب محصول هدیه نشان می‌دهد: محصولات نمایان و متصل به پنل/نود.
+    محصول فعلیِ ذخیره‌شده (مثلاً محصول مخفیِ مخصوص هدیه) همیشه در فهرست می‌ماند."""
+    opts: List[List[str]] = [["0", "— انتخاب کنید —"]]
+    seen = {"0"}
+    for p in db.get_all_products():
+        if _product_is_giftable(db, p):
+            seen.add(str(p["id"]))
+            opts.append([str(p["id"]), f"{p['category_name']} | {p['name']}"[:80]])
+    try:
+        cur = int(float(db.get_setting("welcome_gift_product_id", "0") or 0))
+    except (TypeError, ValueError):
+        cur = 0
+    if cur > 0 and str(cur) not in seen:
+        prod = db.get_product(cur)
+        if not prod:
+            label = f"⚠️ محصول #{cur} (پیدا نشد)"
+        elif prod["is_hidden"]:
+            label = f"🎁 {prod['name']} (محصول مخصوص هدیه)"
+        else:
+            label = f"⚠️ {prod['name']} (به پنل/نود متصل نیست)"
+        opts.append([str(cur), label])
+    return opts
+
+
+_DYNAMIC_OPTION_SOURCES = {"giftable_products": _giftable_product_options}
+
+
+def groups_for(surface: str, db=None) -> List[Dict[str, Any]]:
+    """surface: 'web'، 'mini' یا 'bot' (ادمین بات؛ فقط گروه‌هایی که "bot": True دارند).
+    اگر db داده شود، گزینه‌های فیلدهای پویا (مثل فهرست محصولات) از همان دیتابیس پر می‌شوند."""
+    groups = [g for g in EXTRA_SETTINGS_GROUPS if g.get(surface)]
+    if db is None:
+        return groups
+    out = []
+    for g in groups:
+        if not any(f.get("dynamic") for f in g["fields"]):
+            out.append(g)
+            continue
+        fields = []
+        for f in g["fields"]:
+            src = _DYNAMIC_OPTION_SOURCES.get(f.get("dynamic"))
+            if src:
+                f = dict(f, options=src(db))
+            fields.append(f)
+        out.append(dict(g, fields=fields))
+    return out
 
 
 def allowed_keys(surface: str) -> set:
@@ -733,6 +794,12 @@ def _clean(field: Dict[str, Any], value: Any) -> Optional[str]:
         if "max" in field and num > field["max"]:
             raise SettingsValidationError(f"«{label}» نباید بیشتر از {field['max']} باشد.")
         return str(int(num)) if num == int(num) and "." not in str(field["default"]) else str(num)
+    if t == "select" and field.get("dynamic"):
+        # گزینه‌ها پویا هستند؛ وجود/قابل‌استفاده‌بودن مقدار در _cross_check (با دسترسی به db) بررسی می‌شود.
+        value = value.strip() or str(field["default"])
+        if not value.isdigit():
+            raise SettingsValidationError(f"«{label}» نامعتبر است.")
+        return str(int(value))
     if t == "select":
         allowed = {o[0] for o in field.get("options", [])}
         if value not in allowed:
@@ -762,7 +829,12 @@ def _cross_check(values: Dict[str, str], db) -> None:
             raise SettingsValidationError("برای فعال‌سازی هدیه‌ی ثبت‌نام، مبلغ باید بزرگ‌تر از صفر باشد.")
     if "welcome_gift_enabled" in values or "welcome_gift_product_id" in values:
         if cur("welcome_gift_enabled") == "1" and int(float(cur("welcome_gift_product_id") or 0)) <= 0:
-            raise SettingsValidationError("برای فعال‌سازی هدیه‌ی کانفیگ عضویت، شناسه‌ی محصول را وارد کنید.")
+            raise SettingsValidationError("برای فعال‌سازی هدیه‌ی کانفیگ عضویت، یک محصول از فهرست انتخاب کنید.")
+    if "welcome_gift_product_id" in values and int(values["welcome_gift_product_id"] or 0) > 0:
+        _pid = int(values["welcome_gift_product_id"])
+        _prod = db.get_product(_pid)
+        if not _prod or not _product_is_giftable(db, _prod):
+            raise SettingsValidationError("محصول انتخاب‌شده برای هدیه معتبر نیست (باید به پنل/نود متصل باشد).")
     for _key in ("welcome_gift_volume_gb", "welcome_gift_days"):
         if _key in values:
             _val = str(values[_key]).strip()
@@ -905,6 +977,9 @@ def save_values(db, surface: str, payload: Dict[str, Any]) -> List[str]:
         except Exception:
             import logging
             logging.getLogger("extra_settings").exception("season auto start failed")
+    # همان اثر جانبی انتخاب محصول در بات (adm_wgift_pick): انتخاب از فهرست یعنی محصول موجود، نه محصول مخصوص هدیه.
+    if "welcome_gift_product_id" in changed:
+        db.set_setting("welcome_gift_product_mode", "existing")
     if "terms_text" in changed:
         from datetime import datetime
         db.set_setting("terms_updated_at", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
