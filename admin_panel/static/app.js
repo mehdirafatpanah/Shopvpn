@@ -11331,6 +11331,64 @@ function mobileTokenRowsHtml(tokens) {
 // آیکون کاشی‌های صفحه‌ی خانه و ظاهر مینی‌اپ (تم، نام فروشگاه، متن بنر، لوگوی هدر).
 // داده همان است که پنل مدیریت داخل خود مینی‌اپ هم ویرایش می‌کند. نکته: عمداً از
 // data-key/data-type استفاده نشده تا «ذخیره تغییرات» عمومی تنظیمات این فیلدها را برنگیرد.
+/* ---------------------------------------------- لوگوی فروشگاه وب (آپلود) -- */
+// عمداً بدون data-key تا «ذخیره تغییرات» عمومی دست نزند؛ آپلود/حذف مستقیم و فوری ذخیره می‌شود.
+function webLogoCardHtml() {
+  return `
+  <div class="card" id="web-logo-card" style="margin-bottom:14px">
+    <h3 style="margin:0 0 4px">🖼 لوگوی فروشگاه وب</h3>
+    <p class="card-sub" style="margin:0 0 10px">لوگو را مستقیم آپلود کن (PNG، JPG، WEBP یا GIF، حداکثر ۱ مگابایت). لوگوی آپلودشده روی «آدرس لوگو (HTTPS)» در بخش برندینگ اولویت دارد.</p>
+    <div class="card-sub" id="web-logo-status">در حال بررسی...</div>
+    <img id="web-logo-preview" alt="" style="display:none;max-width:200px;max-height:90px;object-fit:contain;border-radius:10px;margin:8px 0;background:rgba(127,127,127,.12);padding:6px">
+    <input type="file" class="input" id="web-logo-file" accept="image/png,image/jpeg,image/webp,image/gif" style="margin-top:6px">
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button type="button" class="btn btn-primary" id="web-logo-upload">آپلود لوگو</button>
+      <button type="button" class="btn" id="web-logo-remove" style="display:none">حذف لوگوی آپلودشده</button>
+    </div>
+  </div>`;
+}
+
+async function bindWebLogoCard(root) {
+  const card = $('#web-logo-card', root);
+  if (!card) return;
+  const statusEl = $('#web-logo-status', card), img = $('#web-logo-preview', card);
+  const rm = $('#web-logo-remove', card), up = $('#web-logo-upload', card), fileEl = $('#web-logo-file', card);
+  const refresh = async () => {
+    try {
+      const st = await apiGet('/settings/web-store/logo');
+      if (st.has_upload) {
+        statusEl.textContent = '✅ لوگوی آپلودشده فعال است.';
+        img.src = st.preview; img.style.display = '';
+      } else {
+        statusEl.textContent = st.url ? 'لوگوی آپلودشده‌ای نیست؛ از آدرس HTTPS برندینگ استفاده می‌شود.' : 'لوگویی تنظیم نشده؛ لوگوی پیش‌فرض نمایش داده می‌شود.';
+        img.style.display = 'none';
+      }
+      rm.style.display = st.has_upload ? '' : 'none';
+    } catch (e) { statusEl.textContent = ''; handleErr(e); }
+  };
+  up.addEventListener('click', async () => {
+    const file = fileEl.files[0];
+    if (!file) { toast('ابتدا یک تصویر انتخاب کن.', true); return; }
+    const fd = new FormData();
+    fd.append('photo', file);
+    up.disabled = true;
+    try {
+      const res = await fetch('/api/settings/web-store/logo', { method: 'POST', credentials: 'include', body: fd });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(formatApiError(data.detail));
+      fileEl.value = '';
+      toast('لوگو آپلود شد.');
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+    finally { up.disabled = false; }
+  });
+  rm.addEventListener('click', async () => {
+    try { await apiDelete('/settings/web-store/logo'); toast('لوگوی آپلودشده حذف شد.'); await refresh(); }
+    catch (e) { handleErr(e); }
+  });
+  refresh();
+}
+
 const MA = { state: null, icons: {} };
 
 function miniappSectionHtml() {
@@ -13648,6 +13706,7 @@ async function renderSettings() {
       ${mobileAppCardHtml(mobileTokens)}
     </div>
     <div data-settings-tab="webcustom" style="${settingsActiveTab === 'webcustom' ? '' : 'display:none'}">
+      <div data-wc-sub="store">${webLogoCardHtml()}</div>
       <div data-wc-sub="miniapp">${miniappSectionHtml()}</div>
       <div data-wc-sub="sub">${subPageSettingsHtml(settings)}</div>
     </div>
@@ -13665,6 +13724,7 @@ async function renderSettings() {
   bindSubPageColorPickers(content());
   bindSubscriptionLivePreview(content());
   bindMiniappSection(content());
+  bindWebLogoCard(content());
   syncExtraSettingsTab(content());
   bindPaymentExtrasEvents(content(), pay);
   bindMobileAppEvents(content(), renderSettings);
@@ -13783,6 +13843,7 @@ function renderSettingsBento(settings, rate, mainMenuDisplay, pay, mobileTokens)
       ${mobileAppCardHtml(mobileTokens)}
     </div>
     <div data-settings-tab="webcustom" style="${settingsActiveTab === 'webcustom' ? '' : 'display:none'}">
+      <div data-wc-sub="store">${webLogoCardHtml()}</div>
       <div data-wc-sub="miniapp">${miniappSectionHtml()}</div>
       <div data-wc-sub="sub">${subPageSettingsHtml(settings)}</div>
     </div>
@@ -13797,6 +13858,7 @@ function renderSettingsBento(settings, rate, mainMenuDisplay, pay, mobileTokens)
   bindSubPageColorPickers(content());
   bindSubscriptionLivePreview(content());
   bindMiniappSection(content());
+  bindWebLogoCard(content());
   syncExtraSettingsTab(content());
   bindPaymentExtrasEvents(content(), pay);
   bindMobileAppEvents(content(), renderSettings);
@@ -13849,6 +13911,7 @@ function renderSettingsBrutalist(settings, rate, mainMenuDisplay, pay, mobileTok
           ${mobileAppCardHtml(mobileTokens)}
         </div>
         <div data-settings-tab="webcustom" style="${settingsActiveTab === 'webcustom' ? '' : 'display:none'}">
+          <div data-wc-sub="store">${webLogoCardHtml()}</div>
           <div data-wc-sub="miniapp">${miniappSectionHtml()}</div>
           <div data-wc-sub="sub">${subPageSettingsHtml(settings)}</div>
         </div>
@@ -13865,6 +13928,7 @@ function renderSettingsBrutalist(settings, rate, mainMenuDisplay, pay, mobileTok
   bindSubPageColorPickers(content());
   bindSubscriptionLivePreview(content());
   bindMiniappSection(content());
+  bindWebLogoCard(content());
   syncExtraSettingsTab(content());
   bindPaymentExtrasEvents(content(), pay);
   bindMobileAppEvents(content(), renderSettings);
