@@ -789,7 +789,7 @@ function tenantParam() {
 }
 
 async function boot() {
-  if (location.pathname === '/setup') return boot_setup();
+  if (/\/setup\/?$/.test(location.pathname)) return boot_setup();
   try {
     ME = await apiGet('/me');
     if (ME.language) localStorage.setItem('sv-lang', ME.language);
@@ -846,7 +846,7 @@ async function boot_setup() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(formatApiError(data.detail));
       ME = data;
-      history.replaceState(null, '', `/?b=${encodeURIComponent(b)}`);
+      history.replaceState(null, '', `${location.pathname.replace(/setup\/?$/, '')}?b=${encodeURIComponent(b)}`);
       $('#setup-screen').hidden = true;
       showApp();
     } catch (e) {
