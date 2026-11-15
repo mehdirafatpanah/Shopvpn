@@ -92,6 +92,7 @@ import dedicated_sub
 import card_to_card_payment
 from asset_versioning import static_version, ApiNoStoreMiddleware
 from database import Database, MENU_BUTTON_META, DEFAULT_MENU_ORDER, PAYMENT_METHOD_META
+from db.tickets import normalize_priority as ticket_priority
 from service_alerts import send_service_alert_sync
 from admin_panel.config_delivery_web import deliver_config_to_user_web
 from miniapp.auth import validate_init_data
@@ -105,7 +106,7 @@ from stock_alerts import check_and_notify_low_stock
 import leak_index
 from panel_providers import (
     get_provider, PanelError, PanelUsernameTakenError, PROVIDERS,
-    SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES, parse_xui_inbound_ids,
+    SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES, parse_xui_inbound_ids, connect_needs_template, panel_server_is_ready,
     SINGLE_INBOUND_PANEL_TYPES, TOKEN_ONLY_PANEL_TYPES, NO_SETUP_PANEL_TYPES,
 )
 from reseller_auto_provision import provision_auto_config, provision_test_config, is_volume_credit_bot, ProvisionError
@@ -155,14 +156,7 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
 # تم‌های قابل انتخاب برای مینی‌اپ (هر تننت/نماینده جدا انتخاب می‌کند)
-MINIAPP_THEMES = {
-    "clean-light": "🌿 مینیمال روشن (پیش‌فرض)",
-    "synthwave": "🌅 سینت‌ویو",
-    "neon-mint": "🟢 نئون مینت",
-    "royal-violet": "👑 بنفش سلطنتی",
-    "blood-moon": "🔴 ماه خونین",
-    "aurora-ice": "🧊 یخ شمالی",
-}
+from home_tiles import MINIAPP_THEMES  # منبع واحد با پنل وب ادمین
 MAX_HEADER_IMAGE_BYTES = 2 * 1024 * 1024  # 2 مگابایت
 
 # دیتابیس بات اصلی - هم برای سرویس‌دهی مستقیم به بات اصلی، هم برای پیدا کردن
@@ -2004,6 +1998,10 @@ class SupportMessageCreate(BaseModel):
     message: str
     service_kind: Optional[str] = None
     service_id: Optional[int] = None
+    priority: Optional[str] = None  # low | medium | high (اختیاری؛ کاربر در چت زنده تعیین می‌کند)
+
+
+_SUPPORT_PRIORITY_FA = {"low": "🟢 کم", "medium": "🟡 متوسط", "high": "🔴 زیاد"}
 
 
 @app.get("/api/support/services")
@@ -2018,7 +2016,7 @@ def api_support_state(auth=Depends(get_verified_user)):
     tg_id, db, _ = auth
     state = db.get_support_conversation_state(tg_id)
     return {"status": state["status"], "ref_kind": state["ref_kind"], "ref_id": state["ref_id"],
-            "ref_label": state["ref_label"]}
+            "ref_label": state["ref_label"], "priority": state["priority"]}
 
 
 @app.post("/api/support/close")
@@ -2048,6 +2046,13 @@ async def api_support_send(body: SupportMessageCreate, auth=Depends(get_verified
     was_closed = prev_state["status"] == "closed"
     msg_id = db.add_support_message(tg_id, "user", text)  # پیام کاربر، چت بسته را خودکار باز می‌کند
 
+    # اولویتی که کاربر انتخاب کرده (اگر نفرستاده باشد، اولویت فعلی گفتگو حفظ می‌شود)
+    cur_priority = prev_state["priority"]
+    if body.priority:
+        cur_priority = ticket_priority(body.priority)
+        if cur_priority != prev_state["priority"]:
+            db.set_support_priority(tg_id, cur_priority)
+
     # اشاره‌ی اختیاری به سرویس خریداری‌شده (فقط سرویسِ خودِ کاربر پذیرفته می‌شود)
     ref_label = prev_state["ref_label"]
     if body.service_kind and body.service_id is not None:
@@ -2066,6 +2071,7 @@ async def api_support_send(body: SupportMessageCreate, auth=Depends(get_verified
         f"🆔 `{tg_id}`\n"
         + ("🔓 این گفتگو قبلاً بسته شده بود و دوباره باز شد.\n" if was_closed else "")
         + (f"📦 سرویس: {escape_md(ref_label)}\n" if ref_label else "")
+        + (f"🚦 اولویت: {_SUPPORT_PRIORITY_FA[cur_priority]}\n" if cur_priority != "medium" else "")
         + f"\n✉️ {text}"
     )
     reply_markup = {
@@ -2101,6 +2107,7 @@ class TicketCreate(BaseModel):
     department_id: Optional[int] = None
     service_kind: Optional[str] = None
     service_id: Optional[int] = None
+    priority: Optional[str] = None  # low | medium | high؛ نامعتبر/خالی = medium
 
 
 class TicketMessageCreate(BaseModel):
@@ -2150,14 +2157,16 @@ async def api_create_ticket(body: TicketCreate, auth=Depends(get_verified_user))
     if body.service_kind and body.service_id is not None:
         ref_kind, ref_id, ref_label = db.resolve_support_service_ref(tg_id, body.service_kind, body.service_id)
 
+    priority = ticket_priority(body.priority)
     ticket_id = db.create_ticket(tg_id, subject, message, department_id,
-                                 ref_kind=ref_kind, ref_id=ref_id, ref_label=ref_label)
+                                 ref_kind=ref_kind, ref_id=ref_id, ref_label=ref_label, priority=priority)
 
     user = db.get_user(tg_id)
     caption = (
         f"🎫 تیکت جدید #{ticket_id}\n"
         f"👤 {(user['first_name'] if user else '') or ''} (@{(user['username'] if user else '') or '---'})\n"
         f"🆔 `{tg_id}`\n"
+        + f"🚦 اولویت: {_SUPPORT_PRIORITY_FA[priority]}\n"
         + (f"📦 سرویس: {escape_md(ref_label)}\n" if ref_label else "")
         + f"\n📌 {subject}\n✉️ {message}"
     )
@@ -5187,16 +5196,7 @@ def api_admin_save_banners(body: BannersUpdate, auth=Depends(require_senior_admi
 # آیکون دکمه‌های دسترسی سریع خانه + کلیدهای سفارشی بات در مینی‌اپ
 # ---------------------------------------------------------------------------
 
-HOME_TILE_LABELS = {
-    "store": "خرید سرویس جدید",
-    "services": "سرویس‌های من",
-    "wallet": "کیف پول",
-    "profile": "حساب کاربری",
-    "test": "دریافت اشتراک تست رایگان",
-    "support": "پشتیبانی",
-    "reseller": "مرکز نمایندگی",
-}
-MAX_HOME_ICON_BYTES = 256 * 1024
+from home_tiles import HOME_TILE_LABELS, MAX_HOME_ICON_BYTES  # منبع واحد با پنل وب ادمین
 _HOME_ICON_DATA_RE = re.compile(r"^data:image/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$")
 
 
@@ -5349,6 +5349,7 @@ class ProductCreate(BaseModel):
     renew_rules: Optional[dict] = None  # قوانین تمدید کامل (renewal_rules.py)
     ai_description: str = ""  # توضیح برای راهنمای خرید هوشمند
     product_kind: str = "config"  # config | panel_account
+    start_on_first_use: Optional[bool] = None  # True=از اولین اتصال، False=از لحظه خرید، None=طبق تنظیم پنل
 
 
 class ProductUpdate(BaseModel):
@@ -5368,6 +5369,21 @@ class ProductUpdate(BaseModel):
     max_users: Optional[int] = None
     renew_rules: Optional[dict] = None
     ai_description: Optional[str] = None
+    start_on_first_use: Optional[bool] = None
+
+
+_ONHOLD_PANEL_TYPES = {"marzban", "pasarguard", "rebecca", "marzneshin", "3xui", "threexui"}
+
+
+def _checked_product_first_use(db, value, server_id, multi=False):
+    """None برای محصول بدون پنل مستقیم یا چندپنلی (اثری ندارد)؛ وگرنه bool معتبر."""
+    if value is None or not server_id or multi:
+        return None
+    if value:
+        server = db.get_panel_server(int(server_id))
+        if server and server["panel_type"] not in _ONHOLD_PANEL_TYPES:
+            raise HTTPException(status_code=400, detail=tr("این نوع پنل شروع زمان از اولین اتصال را پشتیبانی نمی‌کند."))
+    return bool(value)
 
 
 class ConfigsAdd(BaseModel):
@@ -5537,13 +5553,15 @@ class CustomConfigSettingsUpdate(BaseModel):
 def _panel_server_public(s, db) -> dict:
     is_sub_base_type = s["panel_type"] in SUB_BASE_URL_PANEL_TYPES
     xui_inbound_ids = parse_xui_inbound_ids(s) if s["panel_type"] in INBOUND_SELECT_PANEL_TYPES else []
+    # اینباند/گروه دیگر در اتصال انتخاب نمی‌شود (در ساخت محصول انتخاب می‌شود)
     if is_sub_base_type:
-        needs_inbound = s["panel_type"] in INBOUND_SELECT_PANEL_TYPES
-        configured = bool(s["xui_sub_base_url"]) and (bool(xui_inbound_ids) if needs_inbound else True)
+        configured = bool(s["xui_sub_base_url"])
     elif s["panel_type"] in NO_SETUP_PANEL_TYPES:
         configured = True
+    elif connect_needs_template(s["panel_type"]):
+        configured = bool(s["group_ids"])
     else:
-        configured = bool(s["group_ids"] and s["proxy_settings"])
+        configured = True
     cap = None
     try:
         cap = db.get_panel_capacity_info(s["id"])
@@ -5584,7 +5602,10 @@ async def api_admin_add_panel_server(body: PanelServerCreate, auth=Depends(requi
     if body.panel_type not in PROVIDERS:
         raise HTTPException(status_code=400, detail=tr("نوع پنل پشتیبانی نمی‌شود."))
 
-    if body.panel_type in INBOUND_SELECT_PANEL_TYPES:
+    if connect_needs_template(body.panel_type):
+        # Rebecca / IBSng: لیست زنده‌ی سرویس/گروه ندارند؛ فقط برای همین دو، «کاربر نمونه» لازم است.
+        if not body.template_username or not body.template_username.strip():
+            raise HTTPException(status_code=400, detail=tr("نام کاربری نمونه الزامی است."))
         server_id = db.add_panel_server(
             body.name.strip(), body.panel_type, body.api_url.strip(),
             body.api_username.strip(), body.api_password,
@@ -5592,48 +5613,36 @@ async def api_admin_add_panel_server(body: PanelServerCreate, auth=Depends(requi
         server = db.get_panel_server(server_id)
         try:
             provider = get_provider(server)
-            inbounds = await provider.list_inbounds()
+            template = await provider.fetch_template_from_user(body.template_username.strip())
         except PanelError as e:
             db.delete_panel_server(server_id)
             raise HTTPException(status_code=400, detail=str(e))
-        if not inbounds:
-            db.delete_panel_server(server_id)
-            raise HTTPException(status_code=400, detail=tr("این پنل هیچ inbound ای ندارد. اول از داخل پنل یک inbound بساز."))
-        db.log_admin_action(admin_id, "panel_server_add", f"سرور «{body.name}» (3X-UI, #{server_id}) از مینی‌اپ")
-        return {"id": server_id, "inbounds": inbounds}
-
-    if body.panel_type in SUB_BASE_URL_PANEL_TYPES:
-        # مثل Hiddify: inbound لازم نیست؛ سرور همین‌جا ساخته می‌شود و بعد باید
-        # با فراخوانی /xui-config (فقط با sub_base_url، بدون inbound_id) تکمیل شود.
-        server_id = db.add_panel_server(
-            body.name.strip(), body.panel_type, body.api_url.strip(),
-            body.api_username.strip(), body.api_password,
+        db.update_panel_server(
+            server_id, group_ids=json.dumps(template["group_ids"]),
+            proxy_settings=json.dumps(template["proxy_settings"]),
+            template_username=body.template_username.strip(),
         )
         db.log_admin_action(admin_id, "panel_server_add", f"سرور «{body.name}» (#{server_id}) از مینی‌اپ")
-        return {"id": server_id, "needs_sub_base_url": True}
+        import dedicated_sub as _ds
+        return {"id": server_id, "warning": _ds.wui_dsub_warning(db, body.panel_type)}
 
-    # پنل‌های خانواده‌ی PasarGuard/Marzban/Marzneshin
-    if not body.template_username or not body.template_username.strip():
-        raise HTTPException(status_code=400, detail=tr("نام کاربری نمونه الزامی است."))
+    # بقیه‌ی پنل‌ها: بدون اینباند/گروه/کاربر نمونه؛ فقط تست اتصال و ذخیره.
+    # مقصد (گروه یا اینباند) موقع ساخت محصول از لیست زنده‌ی پنل انتخاب می‌شود.
     server_id = db.add_panel_server(
         body.name.strip(), body.panel_type, body.api_url.strip(),
         body.api_username.strip(), body.api_password,
     )
-    server = db.get_panel_server(server_id)
-    try:
-        provider = get_provider(server)
-        template = await provider.fetch_template_from_user(body.template_username.strip())
-    except PanelError as e:
+    ok, err = await get_provider(db.get_panel_server(server_id)).check_connection()
+    if not ok:
         db.delete_panel_server(server_id)
-        raise HTTPException(status_code=400, detail=str(e))
-    db.update_panel_server(
-        server_id, group_ids=json.dumps(template["group_ids"]),
-        proxy_settings=json.dumps(template["proxy_settings"]),
-        template_username=body.template_username.strip(),
-    )
+        raise HTTPException(status_code=400, detail=tr("اتصال به پنل ناموفق بود: ") + str(err))
     db.log_admin_action(admin_id, "panel_server_add", f"سرور «{body.name}» (#{server_id}) از مینی‌اپ")
     import dedicated_sub as _ds
-    return {"id": server_id, "warning": _ds.wui_dsub_warning(db, body.panel_type)}
+    return {
+        "id": server_id,
+        "needs_sub_base_url": body.panel_type in SUB_BASE_URL_PANEL_TYPES,
+        "warning": _ds.wui_dsub_warning(db, body.panel_type),
+    }
 
 
 @app.get("/api/admin/panel-servers/{server_id}/xui-inbounds")
@@ -5660,8 +5669,7 @@ async def api_admin_set_xui_config(server_id: int, body: PanelServerXuiConfig, a
         raise HTTPException(status_code=404, detail=tr("سرور یافت نشد."))
     if server["panel_type"] not in SUB_BASE_URL_PANEL_TYPES:
         raise HTTPException(status_code=400, detail=tr("این سرور به این تنظیمات نیاز ندارد."))
-    if server["panel_type"] in INBOUND_SELECT_PANEL_TYPES and not body.inbound_ids:
-        raise HTTPException(status_code=400, detail=tr("انتخاب حداقل یک inbound برای این نوع پنل الزامی است."))
+    # انتخاب inbound دیگر اینجا نیست (در ساخت محصول انتخاب می‌شود)؛ inbound_ids فقط برای سازگاری با کلاینت‌های قدیمی پذیرفته می‌شود.
     if server["panel_type"] in SINGLE_INBOUND_PANEL_TYPES and len(body.inbound_ids or []) > 1:
         raise HTTPException(status_code=400, detail=tr("برای این نوع پنل فقط یک inbound قابل انتخاب است."))
     url = body.sub_base_url.strip()
@@ -5725,6 +5733,10 @@ def api_admin_toggle_panel_server_usage(server_id: int, kind: str, auth=Depends(
     if not server:
         raise HTTPException(status_code=404, detail=tr("سرور یافت نشد."))
     field = "used_for_custom_config" if kind == "custom" else "used_for_test_config"
+    if kind == "custom" and not server[field]:
+        from panel_providers import server_has_default_target, CUSTOM_CONFIG_NEEDS_TARGET_MSG
+        if not server_has_default_target(server):
+            raise HTTPException(status_code=400, detail=tr(CUSTOM_CONFIG_NEEDS_TARGET_MSG))
     db.update_panel_server(server_id, **{field: 0 if server[field] else 1})
     return {"status": "ok"}
 
@@ -5895,7 +5907,9 @@ def api_admin_panel_servers_lite(auth=Depends(require_senior_admin)):
         raise HTTPException(status_code=403, detail=tr("این بخش فقط برای بات اصلی یا نمایندگی کامل در دسترس است."))
     from panel_capabilities import provider_capabilities, USER_LIMIT
     return [{"id": s["id"], "name": s["name"], "panel_type": s["panel_type"],
-             "supports_user_limit": provider_capabilities(s["panel_type"])[USER_LIMIT]}
+             "supports_user_limit": provider_capabilities(s["panel_type"])[USER_LIMIT],
+             "onhold_supported": s["panel_type"] in _ONHOLD_PANEL_TYPES,
+             "start_on_first_use": bool(s["start_on_first_use"]) if "start_on_first_use" in s.keys() else False}
             for s in db.get_panel_servers(active_only=True)]
 
 
@@ -5926,6 +5940,7 @@ def api_admin_list_products(cat_id: int, auth=Depends(require_senior_admin)):
             "stock": None if p["is_auto_provision"] else db.count_available_configs(p["id"]),
             "product_kind": (p["product_kind"] if "product_kind" in p.keys() else "config") or "config",
             "base_users": p["base_users"] or 0, "extra_user_price": p["extra_user_price"] or 0, "max_users": p["max_users"] or 0,
+            "start_on_first_use": (p["start_on_first_use"] if "start_on_first_use" in p.keys() else None),
             **renewal_rules.product_rules(p),
         }
         for p in products
@@ -6060,6 +6075,8 @@ async def api_admin_create_product(body: ProductCreate, auth=Depends(require_sen
         extra_panel_target_configs=extra_panel_target_configs,
         renew_rules=body.renew_rules, ai_description=body.ai_description,
         product_kind="panel_account" if is_panel_kind else "config",
+        start_on_first_use=_checked_product_first_use(
+            db, body.start_on_first_use, provision_server_id, multi=bool(extra_panel_ids)),
     )
     if int(body.compare_price or 0) > 0 and (body.discount_days is not None or body.discount_max_uses is not None):
         db.edit_product(product_id, compare_price=int(body.compare_price),
@@ -6202,6 +6219,11 @@ async def api_admin_edit_product(product_id: int, body: ProductUpdate, auth=Depe
         edit_kwargs["auto_provision_volume_gb"] = body.auto_provision_volume_gb
     if target_config_update is not ...:
         edit_kwargs["provision_target_config"] = target_config_update
+    if body.start_on_first_use is not None:
+        old_extra = db.get_product_extra_targets(product_id)
+        edit_kwargs["start_on_first_use"] = _checked_product_first_use(
+            db, body.start_on_first_use, effective_server_id,
+            multi=bool(old_extra.get("panels") or old_extra.get("ssh")))
     effective_product_server = provision_server_id if provision_server_id is not None else old_product["provision_server_id"]
     desired_base = body.base_users if body.base_users is not None else old_product["base_users"]
     desired_extra = body.extra_user_price if body.extra_user_price is not None else old_product["extra_user_price"]
@@ -6828,6 +6850,7 @@ class CryptoSettingsUpdate(BaseModel):
 class CardSettingsUpdate(BaseModel):
     card_number: str
     card_holder: str
+    card_bank_name: Optional[str] = None
 
 
 class ExtraSettingsUpdate(BaseModel):
@@ -7131,6 +7154,7 @@ def api_admin_get_card_settings(auth=Depends(require_senior_admin)):
     return {
         "card_number": db.get_setting("card_number", "") or "",
         "card_holder": db.get_setting("card_holder", "") or "",
+        "card_bank_name": db.get_setting("card_bank_name", "") or "",
     }
 
 
@@ -7143,6 +7167,8 @@ def api_admin_set_card_settings(body: CardSettingsUpdate, auth=Depends(require_s
         raise HTTPException(status_code=400, detail=tr("شماره کارت و نام صاحب کارت نمی‌توانند خالی باشند."))
     db.set_setting("card_number", card_number)
     db.set_setting("card_holder", card_holder)
+    if body.card_bank_name is not None:
+        db.set_setting("card_bank_name", body.card_bank_name.strip())
     db.log_admin_action(admin_id, "card_change", f"شماره کارت جدید: {card_number} | به نام: {card_holder} (مینی‌اپ)")
     return {"status": "ok"}
 
