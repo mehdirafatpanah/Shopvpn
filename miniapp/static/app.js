@@ -1062,6 +1062,7 @@ async function renderHome() {
         return out.join("");
       }).join("");
     }
+    homeTilesHtml += `<div class="quick-item full" data-nav="game"><span class="q-label">🎮 بازی پین‌بال</span><span class="q-ic" style="font-size:20px">🕹</span></div>`;
     setHeaderWallet(me.wallet_credit);
     const active = orders.filter((o) => o.status === "approved" && !o.is_custom_config);
     const customCards = customConfigs.map((c) => ({
@@ -3021,6 +3022,40 @@ async function submitCustomConfig(username, volumeGb, useCredit, info) {
 const SLOT_SYMBOLS = ["🍒", "🍋", "🔔", "⭐", "💎", "7️⃣"];
 const JACKPOT_SYMBOL = "💎";
 
+let pinballCtl = null;
+
+function stopPinball() {
+  if (pinballCtl) {
+    try { pinballCtl.destroy(); } catch (_) {}
+    pinballCtl = null;
+  }
+}
+
+function loadPinballScript() {
+  if (window.ShopVPNPinball) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const el = document.createElement("script");
+    const meta = document.querySelector('meta[name="asset-version"]');
+    const v = meta && meta.content ? "?v=" + encodeURIComponent(meta.content) : "";
+    el.src = "pinball.js" + v;
+    el.onload = resolve;
+    el.onerror = () => reject(new Error("بارگذاری بازی ناموفق بود."));
+    document.head.appendChild(el);
+  });
+}
+
+async function renderPinball() {
+  stopPinball();
+  content.innerHTML = skeleton(1);
+  try {
+    await loadPinballScript();
+    content.innerHTML = "";
+    pinballCtl = window.ShopVPNPinball.mount(content);
+  } catch (e) {
+    content.innerHTML = errorState(e.message);
+  }
+}
+
 async function renderWheel() {
   content.innerHTML = skeleton(1);
   try {
@@ -3237,13 +3272,14 @@ const PANEL_SUBURL_ONLY_TYPES = ["hiddify"];
 // اینباند/گروه دیگر در مرحله‌ی اتصال انتخاب نمی‌شود (موقع ساخت محصول انتخاب می‌شود).
 // فقط Rebecca و IBSng (بدون لیست زنده‌ی گروه/سرویس) هنوز «کاربر نمونه» لازم دارند.
 const PANEL_TEMPLATE_REQUIRED_TYPES = ["rebecca", "ibsng"];
-const PANEL_NO_TEMPLATE_TYPES = ["pasarguard", "3xui", "marzban", "marzneshin", "hiddify", "alireza", "sui", "wgdashboard", "mikrotik", "wui"];
-const PANEL_TOKEN_ONLY_TYPES = { "3xui": "3xui", rebecca: "rebecca", sui: "sui", wgdashboard: "wgdashboard", wui: "wui" };
+const PANEL_NO_TEMPLATE_TYPES = ["pasarguard", "3xui", "marzban", "marzneshin", "hiddify", "alireza", "sui", "wgdashboard", "mikrotik", "wui", "doctordns"];
+const PANEL_TOKEN_ONLY_TYPES = { "3xui": "3xui", rebecca: "rebecca", sui: "sui", wgdashboard: "wgdashboard", wui: "wui", doctordns: "doctordns" };
 const PANEL_SECRET_LABELS = {
   rebecca: "توکن ادمین (Bearer token)",
   sui: "API Token (Admin ← API Token در پنل)",
   wgdashboard: "API Key (Settings ← API Keys در پنل)",
   wui: "API Token (Settings ← Authentication ← API Token در پنل)",
+  doctordns: "کلید API پنل Doctor DNS (شروع با dd_ ؛ با تیک «دسترسی ادمین» ساخته شود)",
 };
 const PANEL_TEMPLATE_LABELS = {
   sui: "نام یک کاربر (client) که از قبل روی پنل موجود است",
@@ -3260,6 +3296,9 @@ const PANEL_TEMPLATE_HINTS = {
   wui: "interface های همین مشتری برای کاربرهای جدید استفاده می‌شود. آدرس API باید شامل Web Base Path پنل باشد.",
   mikrotik: "حجم و مدت را profile تعیین می‌کند و مقدار حجم/مدت محصول اعمال نمی‌شود.",
   ibsng: "حجم و مدت را گروه تعیین می‌کند و مقدار حجم/مدت محصول اعمال نمی‌شود.",
+};
+const PANEL_LATER_HINT_OVERRIDES = {
+  doctordns: "فقط کلید API ادمین (dd_...) لازم است. پلن هر محصول موقع ساخت محصول از لیست زنده‌ی پنل انتخاب می‌شود و حجم/مدت را همان پلن تعیین می‌کند. برای نمایش آدرس‌های DNS به کاربر، «ساب اختصاصی» باید فعال باشد.",
 };
 const PANEL_TEMPLATE_VALUE_LABELS = { wgdashboard: "configuration", mikrotik: "profile", ibsng: "گروه" };
 let adminTicketView = { level: "list" }; // list | thread
@@ -5222,6 +5261,7 @@ async function renderAdminPanelsSection() {
             <option value="mikrotik">MikroTik</option>
             <option value="ibsng">IBSng</option>
             <option value="wui">W-UI</option>
+            <option value="doctordns">Doctor DNS</option>
           </select>
           <label class="field-label">آدرس API (مثلاً https://panel.example.com)</label>
           <input class="input" id="ps-url" type="text" placeholder="https://..." style="direction:ltr;text-align:left;margin-bottom:10px" />
@@ -5249,6 +5289,7 @@ async function renderAdminPanelsSection() {
       const psType = document.getElementById("ps-type");
       const DEFAULT_TEMPLATE_LABEL = document.getElementById("ps-template-label").textContent;
       const DEFAULT_TEMPLATE_HINT = document.getElementById("ps-template-hint").textContent;
+      const DEFAULT_LATER_HINT = document.getElementById("ps-later-hint").textContent;
       const syncPsType = () => {
         const needsTemplate = !PANEL_NO_TEMPLATE_TYPES.includes(psType.value);
         document.getElementById("ps-template-wrap").style.display = needsTemplate ? "block" : "none";
@@ -5257,6 +5298,7 @@ async function renderAdminPanelsSection() {
         document.getElementById("ps-username-wrap").style.display = PANEL_TOKEN_ONLY_TYPES[psType.value] ? "none" : "block";
         document.getElementById("ps-password-label").textContent = PANEL_SECRET_LABELS[psType.value] || "رمز عبور ادمین پنل";
         document.getElementById("ps-xui-hint").style.display = PANEL_INBOUND_TYPES.includes(psType.value) ? "block" : "none";
+        document.getElementById("ps-later-hint").textContent = PANEL_LATER_HINT_OVERRIDES[psType.value] || DEFAULT_LATER_HINT;
         document.getElementById("ps-later-hint").style.display = needsTemplate ? "none" : "block";
         document.getElementById("ps-hiddify-hint").style.display = psType.value === "hiddify" ? "block" : "none";
       };
@@ -8582,6 +8624,7 @@ const tabs = {
   profile: renderProfile,
   test: renderTestConfig,
   wheel: renderWheel,
+  game: renderPinball,
   referral: renderReferral,
   support: renderSupport,
   wallet: renderWallet,
@@ -8591,6 +8634,7 @@ const tabs = {
 
 function switchTab(name) {
   document.querySelectorAll("#tabbar button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+  if (name !== "game") stopPinball();
   if (name !== "support") clearInterval(supportPollTimer);
   if (name !== "admin") {
     clearInterval(adminPresenceTimer);

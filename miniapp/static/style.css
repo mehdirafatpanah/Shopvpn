@@ -1183,5 +1183,23 @@ html.reseller-owner.tier-vip .brand { color:#e6dcff; }
 @media(max-width:380px){.reseller-mini-actions{grid-template-columns:1fr}.reseller-mini-title h2{font-size:18px}}
 
 .lang-toggle{border:1px solid currentColor;background:transparent;color:inherit;border-radius:999px;padding:5px 9px;font:inherit;font-size:11px;cursor:pointer;white-space:nowrap}
+
+.pb-wrap { display:flex; flex-direction:column; align-items:center; gap:8px; }
+.pb-hud { display:flex; gap:8px; width:100%; max-width:420px; direction:rtl; }
+.pb-stat { flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; padding:6px 4px; border-radius:var(--radius-sm); background:var(--glass); border:1px solid var(--glass-brd); }
+.pb-stat span { font-size:10.5px; color:var(--text-muted); }
+.pb-stat b { font-size:15px; font-weight:800; color:var(--text); letter-spacing:1px; }
+.pb-stage { position:relative; display:flex; justify-content:center; width:100%; }
+.pb-canvas { display:block; border-radius:var(--radius-lg); border:1px solid var(--glass-brd); box-shadow:0 10px 34px -10px rgba(126,249,255,0.35); touch-action:none; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; background:#0b0624; }
+.pb-hint { position:absolute; left:50%; bottom:22%; transform:translateX(-50%); max-width:70%; text-align:center; padding:8px 14px; border-radius:999px; background:rgba(10,6,32,0.78); color:#fff; font-size:12.5px; font-weight:700; pointer-events:none; animation:pbPulse 1.6s ease-in-out infinite; }
+.pb-hint[hidden], .pb-over[hidden], .pb-over-best[hidden] { display:none; }
+.pb-over { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(5,3,18,0.62); border-radius:var(--radius-lg); }
+.pb-over-card { width:78%; max-width:280px; padding:20px 16px; text-align:center; border-radius:var(--radius-lg); background:var(--bg-elevated); border:1px solid var(--glass-brd); color:var(--text); }
+.pb-over-title { font-size:17px; font-weight:800; margin-bottom:8px; }
+.pb-over-score { font-size:30px; font-weight:800; color:var(--amber); margin-bottom:6px; }
+.pb-over-best { font-size:13px; font-weight:700; color:var(--cyan); margin-bottom:10px; }
+.pb-over-card .btn { margin-top:10px; }
+.pb-help { font-size:11px; color:var(--text-muted); text-align:center; max-width:340px; }
+@keyframes pbPulse { 0%,100% { opacity:1; } 50% { opacity:0.55; } }
 /*‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍*/
 /* 		   		 		  	 	 		 		   		  	 	 		 			  		 				 			  	 */
