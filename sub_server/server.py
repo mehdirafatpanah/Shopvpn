@@ -33,7 +33,7 @@ from typing import Dict, List, Optional, Tuple
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 import dedicated_sub as ds
@@ -235,11 +235,16 @@ async def _linked_panel_uris(cc, query: Dict[str, str], ua: str, ttl: int) -> Li
         return []
 
     async def one(link):
+        # فرمت کلاینت (Clash/sing-box/JSON) قابل ادغام نیست؛ پنل‌های اضافه همیشه به‌صورت لیست لینک گرفته می‌شوند.
         try:
-            up = await cache.get(_forward_query(link["subscription_url"], query), ua, ttl)
-        except Exception:
+            up = await cache.get(_forward_query(link["subscription_url"], query), PAGE_UA, ttl)
+        except Exception as exc:
+            log.warning("linked panel fetch failed cc=%s link=%s: %s", cc["id"], link["id"], type(exc).__name__)
             return []
-        return ds.extract_uris(up.body) if up.status == 200 and up.body else []
+        uris = ds.extract_uris(up.body) if up.status == 200 and up.body else []
+        if not uris:
+            log.warning("linked panel returned no configs cc=%s link=%s status=%s", cc["id"], link["id"], up.status)
+        return uris
 
     out, seen = [], set()
     for part in await asyncio.gather(*[one(l) for l in links]):
@@ -248,6 +253,22 @@ async def _linked_panel_uris(cc, query: Dict[str, str], ua: str, ttl: int) -> Li
                 seen.add(uri)
                 out.append(uri)
     return out
+
+
+async def _mergeable_primary(up, upstream_url: str, ttl: int, extra_uris) -> "Upstream":
+    """اگر کلاینت فرمت غیرلینکی (Clash/JSON) خواسته و سرویس چندپنلی است، ساب پنل اصلی هم به‌صورت لیست لینک گرفته می‌شود
+    تا ادغام با پنل‌های اضافه ممکن باشد (وگرنه فقط پنل اول برمی‌گشت)."""
+    if not extra_uris or up is None or up.status != 200 or not up.body:
+        return up
+    if ds.parse_body(up.body).kind == "uris" or ds.extract_uris(up.body):
+        return up
+    try:
+        alt = await cache.get(upstream_url, PAGE_UA, ttl)
+    except Exception:
+        return up
+    if alt.status == 200 and alt.body and ds.extract_uris(alt.body):
+        return Upstream(alt.status, dict(up.headers), alt.body, fresh=alt.fresh, stale=alt.stale)
+    return up
 
 
 _WUI_LABELS = {"wireguard": "WireGuard", "amneziawg": "AmneziaWG", "openvpn": "OpenVPN"}
@@ -313,10 +334,74 @@ async def _wui_bundle(cc, ttl: float = _WUI_TTL) -> Optional[dict]:
     return bundle
 
 
+_dns_cache: Dict[int, tuple] = {}
+
+
+async def _dns_server(cc):
+    try:
+        server = await asyncio.to_thread(panel_resync._server_for, db, cc)
+    except Exception:
+        return None
+    if server and str(server["panel_type"] or "").lower() == "doctordns":
+        return server
+    return None
+
+
+async def _dns_bundle(cc, ttl: float = _WUI_TTL) -> Optional[dict]:
+    """داده‌ی سرویس Doctor DNS؛ None یعنی سرویس DNS نیست."""
+    server = await _dns_server(cc)
+    if server is None:
+        return None
+    cid = int(cc["id"])
+    hit = _dns_cache.get(cid)
+    now = time.monotonic()
+    if hit and now - hit[0] < ttl:
+        return hit[1]
+    try:
+        bundle = dict(await get_provider(server).get_dns_bundle(cc["username"]), live=True)
+    except Exception as exc:
+        log.warning("dns bundle failed cc=%s: %s", cid, type(exc).__name__)
+        if hit and now - hit[0] < STALE_MAX_AGE:
+            return hit[1]
+        return {"servers": [], "ips": [], "max_ips": 0, "wg": [], "info": {}, "live": False}
+    for pos, item in enumerate(bundle["wg"], start=1):
+        item["index"] = pos
+    if len(_dns_cache) > 2000:
+        _dns_cache.clear()
+    _dns_cache[cid] = (now, bundle)
+    return bundle
+
+
 async def _wg_files(cc) -> List[dict]:
     base = await asyncio.to_thread(ds.wg_files_for_config, db, cc["id"], cc)
     wui = await _wui_bundle(cc)
-    return _merge_files(base, wui["wg"]) if wui else base
+    if wui:
+        return _merge_files(base, wui["wg"])
+    dns = await _dns_bundle(cc)
+    return _merge_files(base, dns["wg"]) if dns else base
+
+
+async def _dns_page(request: Request, cc, dns: dict, settings, brand: str, page_url: str, ttl: float) -> Response:
+    pool_info = await asyncio.to_thread(ds.quota_info_for_config, db, cc["id"])
+    info = pool_info or dns["info"]
+    if dns.get("live") and info:
+        try:
+            await asyncio.to_thread(db.ds_record_usage, cc["id"], (info.get("upload") or 0) + (info.get("download") or 0))
+        except Exception:
+            log.exception("usage snapshot failed")
+    wg = _merge_files(await asyncio.to_thread(ds.wg_files_for_config, db, cc["id"], cc), dns["wg"])
+    series = None
+    if settings["dsub_show_chart"] == "1":
+        now = int(time.time())
+        points = await asyncio.to_thread(db.ds_usage_points, cc["id"], now - 31 * 86400)
+        series = ds.build_series(points, now)
+    uris = list(await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc))
+    uris.extend(await _linked_panel_uris(cc, {}, PAGE_UA, ttl))
+    data = ds.build_page_data(cc, info, uris, settings, brand, page_url or str(request.url).split("?")[0],
+                              series, wg=wg, dns=dns)
+    data["live"] = bool(dns.get("live"))
+    await _log(cc["id"], request, "page", 200, settings)
+    return render_page(data, f"{brand} · اشتراک {ds.service_name(cc)}".strip(" ·"), settings)
 
 
 async def _ovpn_files(cc) -> List[dict]:
@@ -402,6 +487,7 @@ async def sub_endpoint(request: Request) -> Response:
             up = None
         extra_uris = await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc)
         extra_uris = list(extra_uris) + await _linked_panel_uris(cc, query, ua, ttl)
+        up = await _mergeable_primary(up, upstream_url, ttl, extra_uris)
         if extra_uris:
             primary_ok = up is not None and up.status == 200 and bool(up.body)
             merged = ds.merge_extra_uris(up.body if primary_ok else b"", extra_uris)
@@ -427,6 +513,9 @@ async def sub_endpoint(request: Request) -> Response:
         wui = await _wui_bundle(cc, ttl)
         if wui is not None:
             return await _wui_page(request, cc, wui, settings, brand, page_url, ttl)
+        dns = await _dns_bundle(cc, ttl)
+        if dns is not None:
+            return await _dns_page(request, cc, dns, settings, brand, page_url, ttl)
         try:
             up = await cache.get(_forward_query(cc["subscription_url"], {}), PAGE_UA, ttl)
         except Exception:
@@ -471,6 +560,15 @@ async def sub_endpoint(request: Request) -> Response:
         await _log(cc["id"], request, "page", 200, settings)
         return render_page(data, f"{brand} · اشتراک {ds.service_name(cc)}".strip(" ·"), settings)
 
+    dns = await _dns_bundle(cc, ttl)
+    if dns is not None:
+        lines = [f"{'DNS' if k == 'ip' else k.upper()} {s['n']}: {s[k]}"
+                 for s in ds.dns_for_page(dns)["servers"] for k in ("ip", "dot", "doh") if s[k]]
+        extra = list(await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc))
+        extra.extend(await _linked_panel_uris(cc, query, ua, ttl))
+        await _log(cc["id"], request, "sub", 200, settings)
+        return _raw(200, {"cache-control": "no-store"}, "text/plain; charset=utf-8", "\n".join(lines + extra).encode("utf-8"))
+
     # --- اپ VPN
     try:
         up = await cache.get(upstream_url, ua, ttl)
@@ -494,6 +592,7 @@ async def sub_endpoint(request: Request) -> Response:
         )
     extra_uris = await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc)
     extra_uris = list(extra_uris) + await _linked_panel_uris(cc, query, ua, ttl)
+    up = await _mergeable_primary(up, upstream_url, ttl, extra_uris)
     reply = ds.compose_client_reply(up.status, up.headers, up.body, cc, settings, brand, page_url,
                                     extra_uris=extra_uris)
     if reply is None:
@@ -605,6 +704,29 @@ async def wg_endpoint(request: Request) -> Response:
     await _log(cc["id"], request, "wg", 200, settings)
     headers = {"cache-control": "no-store", "content-disposition": f'attachment; filename="{item["filename"]}"'}
     return _raw(200, headers, "application/x-wireguard-profile", item["profile"].encode("utf-8"))
+
+
+async def dns_login_endpoint(request: Request) -> Response:
+    ip = client_ip(request)
+    if not limiter.allow("ok:" + ip, RATE_OK):
+        return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
+    token = request.path_params["token"]
+    cc = await asyncio.to_thread(db.ds_get_config_by_token, token)
+    server = await _dns_server(cc) if cc is not None and str(cc["status"] or "").lower() != "deleted" else None
+    if server is None or not ds.is_enabled(db):
+        if not limiter.allow("miss:" + ip, RATE_MISS):
+            return PlainTextResponse("Too many requests", status_code=429)
+        return _not_found()
+    if not limiter.allow(f"dnslogin:{cc['id']}", 10):
+        return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
+    try:
+        url = await get_provider(server).login_link(cc["username"])
+    except Exception as exc:
+        log.warning("dns login link failed cc=%s: %s", cc["id"], type(exc).__name__)
+        return PlainTextResponse("Upstream unavailable", status_code=502, headers={"cache-control": "no-store"})
+    settings = await asyncio.to_thread(ds.all_settings, db)
+    await _log(cc["id"], request, "dns-login", 302, settings)
+    return RedirectResponse(url, status_code=302, headers={"cache-control": "no-store", "referrer-policy": "no-referrer"})
 
 
 # ---------------------------------------------------------------------------
@@ -816,6 +938,7 @@ app = Starlette(
         Route("/s/{token}/qr.png", qr_endpoint, methods=["GET"]),
         Route("/s/{token}/ovpn/{n:int}", ovpn_endpoint, methods=["GET"]),
         Route("/s/{token}/wg/{n:int}", wg_endpoint, methods=["GET"]),
+        Route("/s/{token}/dns/login", dns_login_endpoint, methods=["GET"]),
         Route("/s/{token}/vpn/{n:int}/ca", vpn_ca_endpoint, methods=["GET"]),
         Route("/s/{token}/reveal", vpn_reveal_endpoint, methods=["POST"]),
         Route("/sub/smart/{token}", smart_endpoint, methods=["GET", "HEAD"]),

@@ -86,6 +86,8 @@ h3{font-size:17px;font-weight:800;margin:0 0 12px;display:flex;justify-content:s
 .vr code{flex:1;min-width:0;direction:ltr;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:13px ui-monospace,Menlo,monospace}
 .vh{margin:8px 0 0;color:var(--mute);font-size:13px;overflow-wrap:anywhere}
 .vh.warn{color:inherit}
+.vc .r{display:flex;align-items:center;gap:8px;margin-top:6px}
+.vc .r .n{flex:1;min-width:0;direction:ltr;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .vh .sm{margin-inline-start:6px}
 details{border-bottom:1px solid var(--line)}
 details:first-of-type{border-top:1px solid var(--line)}
@@ -278,6 +280,13 @@ html:root[data-style="cyberpunk"]{--rc:8px;--bg:#06060d;--ink:#e6fbff;--mute:#7f
   <ul class="cfg" id="ovl"></ul>
 </section>
 
+<section class="sec" id="dnssec" hidden>
+  <h3>DNS</h3>
+  <div class="vpn" id="dnsl"></div>
+  <p class="vh" id="dnsip"></p>
+  <p class="vh"><a class="sm k" id="dnslogin" href="#">ورود به پنل (ثبت آی‌پی، مصرف، تیکت)</a></p>
+</section>
+
 <section class="sec" id="wgsec" hidden>
   <h3>WireGuard</h3>
   <ul class="cfg" id="wgl"></ul>
@@ -457,6 +466,16 @@ if(D.show.configs&&D.configs.length){
 if(D.show.ovpn&&D.ovpn&&D.ovpn.length){
   $('#ovsec').hidden=false;
   $('#ovl').innerHTML=D.ovpn.map(o=>`<li><span class="f">🔒</span><span class="n">${esc(o.n)}</span><span class="tag">.ovpn</span><a class="sm k" href="${esc(D.sub)}/ovpn/${Number(o.i)}" download="${esc(o.f)}">دانلود فایل</a></li>`).join('');
+}
+
+/* DNS (Doctor DNS): آدرس‌ها با دکمه‌ی کپی؛ سرویس فقط روی آی‌پی ثبت‌شده کار می‌کند */
+if(D.show.dns&&D.dns){
+  $('#dnssec').hidden=false;
+  const rows=(s)=>[['DNS',s.ip],['DoT',s.dot],['DoH',s.doh]].filter(r=>r[1]).map(r=>`<div class="r"><span class="tag">${r[0]}</span><span class="n">${esc(r[1])}</span><button class="sm" data-c="${esc(r[1])}">کپی</button></div>`).join('');
+  $('#dnsl').innerHTML=D.dns.servers.map(s=>`<div class="vc"><h4><span class="tag">سرور ${Number(s.n)}</span><span class="n">${esc(s.note)}</span></h4>${rows(s)}</div>`).join('');
+  $('#dnsl').onclick=e=>{const b=e.target.closest('button[data-c]');if(b)copy(b.dataset.c,'کپی شد',b)};
+  $('#dnsip').textContent=D.dns.ips.length?'آی‌پی‌های ثبت‌شده: '+D.dns.ips.join('، '):'هنوز آی‌پی ثبت نشده؛ بدون ثبت آی‌پی DNS کار نمی‌کند. از «ورود به پنل» آی‌پی را ثبت کنید.';
+  $('#dnslogin').href=D.sub+'/dns/login';
 }
 
 /* WireGuard */
