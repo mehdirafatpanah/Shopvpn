@@ -50,18 +50,20 @@
     ];
     const posts = [
       { x: 60, y: 420, r: 5 },
-      { x: 308, y: 420, r: 5 },
+      { x: 308, y: 440, r: 5 },
       { x: 100, y: 650, r: 7 },
       { x: 268, y: 650, r: 7 },
-      { x: 90, y: 160, r: 5 },
-      { x: 278, y: 160, r: 5 },
     ];
+    [88, 152, 216, 280].forEach((x) => seg(x, 98, x, 136, { e: 0.3 }));
+    const lanes = [120, 184, 248].map((x) => ({ x, y: 114 }));
+    const targets = [330, 372, 414].map((y) => ({ x: 322, y, r: 7 }));
+    const ramp = { x: 72, y: 243, r: 20 };
     const flippers = [
       { px: 100, py: 650, len: 66, rest: 0.42, up: -0.5, dir: 1 },
       { px: 268, py: 650, len: 66, rest: 0.42, up: -0.5, dir: -1 },
     ].map((f) => Object.assign(f, { angle: f.rest, pressed: false, aDot: 0 }));
 
-    return { segments, slings, bumpers, posts, flippers };
+    return { segments, slings, bumpers, posts, flippers, lanes, targets, ramp };
   }
 
   function createEngine(options) {
@@ -79,6 +81,10 @@
       events: [],
       idle: 0,
       launchGrace: 0,
+      lanes: [false, false, false],
+      targets: [false, false, false],
+      mission: { idx: 0, progress: 0, level: 1 },
+      rampCool: 0,
     };
 
     function emit(type, data) {
@@ -99,6 +105,9 @@
     function newGame() {
       state.score = 0;
       state.ballsLeft = BALLS_PER_GAME;
+      state.lanes = [false, false, false];
+      state.targets = [false, false, false];
+      state.mission = { idx: 0, progress: 0, level: 1 };
       resetBallToLane();
       emit("newgame");
     }
@@ -218,6 +227,7 @@
         addScore(scoreVal, c.x, c.y - c.r);
         state.flash[id] = 0.2;
         emit("bump", { id });
+        hit(id);
       } else if (impact > 160) {
         emit("wall");
       }
@@ -299,8 +309,10 @@
         for (let i = 0; i < table.segments.length; i++) collideSegment(b, table.segments[i]);
         for (let i = 0; i < table.posts.length; i++) collideCircle(b, table.posts[i], 0.5, 0, 0, "");
         for (let i = 0; i < table.bumpers.length; i++) collideCircle(b, table.bumpers[i], 0.6, 560, table.bumpers[i].score, "b" + i);
+        for (let i = 0; i < table.targets.length; i++) collideCircle(b, table.targets[i], 0.55, 240, 50, "t" + i);
         for (let i = 0; i < table.flippers.length; i++) collideFlipper(b, table.flippers[i]);
       }
+      sensors(b, dt);
 
       const speed = Math.hypot(b.vx, b.vy);
       const inLane = b.x > LANE_WALL_X && b.y > 400;
@@ -330,6 +342,66 @@
       }
     }
 
+    const MISSIONS = [
+      { id: "ramp", goal: 1, reward: 1000 },
+      { id: "lanes", goal: 3, reward: 1500 },
+      { id: "targets", goal: 3, reward: 2000 },
+      { id: "bumpers", goal: 10, reward: 2500 },
+    ];
+
+    function missionProgress(kind) {
+      const m = MISSIONS[state.mission.idx % MISSIONS.length];
+      if (m.id !== kind) return;
+      state.mission.progress += 1;
+      if (state.mission.progress < m.goal) return;
+      const reward = m.reward * state.mission.level;
+      state.score += reward;
+      emit("mission", { reward, idx: state.mission.idx });
+      state.mission.idx += 1;
+      state.mission.progress = 0;
+      state.mission.level = 1 + Math.floor(state.mission.idx / MISSIONS.length);
+    }
+
+    function hit(id) {
+      if (id[0] === "b") {
+        missionProgress("bumpers");
+      } else if (id[0] === "t") {
+        const i = parseInt(id.slice(1), 10);
+        if (state.targets[i]) return;
+        state.targets[i] = true;
+        missionProgress("targets");
+        if (state.targets.every(Boolean)) {
+          addScore(300, table.targets[i].x, table.targets[i].y - 12);
+          state.targets = [false, false, false];
+          emit("targetsDone");
+        }
+      }
+    }
+
+    function sensors(b, dt) {
+      if (state.rampCool > 0) state.rampCool -= dt;
+      const r = table.ramp;
+      if (state.rampCool <= 0 && b.vy < -220 && Math.hypot(b.x - r.x, b.y - r.y) < r.r) {
+        state.rampCool = 0.9;
+        state.flash.ramp = 0.7;
+        addScore(250, r.x, r.y - 14);
+        emit("ramp");
+        missionProgress("ramp");
+      }
+      table.lanes.forEach((l, i) => {
+        if (state.lanes[i] || Math.hypot(b.x - l.x, b.y - l.y) > 14) return;
+        state.lanes[i] = true;
+        addScore(50, l.x, l.y - 12);
+        emit("lane");
+        missionProgress("lanes");
+        if (state.lanes.every(Boolean)) {
+          addScore(500, l.x, l.y - 24);
+          state.lanes = [false, false, false];
+          emit("lanesDone");
+        }
+      });
+    }
+
     function update(dtSeconds) {
       let remaining = Math.min(dtSeconds, 0.05);
       while (remaining > 1e-9) {
@@ -355,7 +427,7 @@
       setFlipper,
       drainEvents,
       flipperTip,
-      constants: { W, H, BALL_R, FLIPPER_R, LANE_X, LANE_REST_Y, BALLS_PER_GAME },
+      constants: { W, H, BALL_R, FLIPPER_R, LANE_X, LANE_REST_Y, BALLS_PER_GAME, MISSIONS },
     };
   }
 
@@ -391,10 +463,10 @@
 
     root.innerHTML = `
       <div class="pb-wrap">
-        <div class="pb-hud">
-          <div class="pb-stat"><span>امتیاز</span><b data-pb="score">${fmt(0)}</b></div>
-          <div class="pb-stat"><span>توپ</span><b data-pb="balls"></b></div>
-          <div class="pb-stat"><span>رکورد</span><b data-pb="best">${fmt(best)}</b></div>
+        <div class="pb-bar">
+          <div class="pb-mission"><i class="pb-menu"><u></u><u></u><u></u></i><span data-pb="mission"></span></div>
+          <div class="pb-box"><small>امتیاز</small><b data-pb="score">${fmt(0)}</b></div>
+          <div class="pb-box pb-ballbox"><small>توپ</small><b data-pb="balls"></b></div>
         </div>
         <div class="pb-stage" data-pb="stage">
           <canvas class="pb-canvas" data-pb="canvas"></canvas>
@@ -408,7 +480,7 @@
             </div>
           </div>
         </div>
-        <div class="pb-help">بعد از پرتاب، لمس نیمه‌ی چپ یا راست صفحه فلیپر همان طرف را می‌زند</div>
+        <div class="pb-help">لمس نیمه‌ی چپ یا راست صفحه = فلیپر همان طرف · رکورد: <b data-pb="best">${fmt(best)}</b></div>
       </div>`;
 
     const q = (k) => root.querySelector(`[data-pb="${k}"]`);
@@ -422,6 +494,10 @@
     const elOver = q("over");
     const elFinal = q("finalScore");
     const elNewBest = q("newBest");
+    const elMission = q("mission");
+    let banner = null;
+    let trail = [];
+    let bgCache = null;
 
     const cs = getComputedStyle(document.documentElement);
     const css = (name, fb) => (cs.getPropertyValue(name) || "").trim() || fb;
@@ -431,6 +507,7 @@
       violet: css("--violet", "#b06bff"),
       amber: css("--amber", "#ffcf6b"),
       orange: css("--orange", "#ff8a3d"),
+      red: "#ff3b3b",
     };
 
     let scale = 1;
@@ -453,9 +530,22 @@
       canvas.width = Math.round(cssW * dpr);
       canvas.height = Math.round(cssH * dpr);
       scale = cssW / W;
+      bgCache = null;
     }
 
-    const hudCache = { score: -1, best: -1, balls: -1 };
+    const hudCache = { score: -1, best: -1, balls: -1, mission: "" };
+    const MTXT = {
+      ramp: "رمپ را بزن تا مأموریت آغاز شود",
+      lanes: "هر ۳ مسیر بالا را روشن کن",
+      targets: "هر ۳ هدف سمت راست را بزن",
+      bumpers: "به بامپرها ضربه بزن",
+    };
+
+    function missionText() {
+      const ms = engine.constants.MISSIONS;
+      const m = ms[st.mission.idx % ms.length];
+      return MTXT[m.id] + " (" + fmt(st.mission.progress) + "/" + fmt(m.goal) + ")";
+    }
 
     function updateHud() {
       if (hudCache.score !== st.score) {
@@ -469,9 +559,12 @@
       }
       if (hudCache.balls !== st.ballsLeft) {
         hudCache.balls = st.ballsLeft;
-        let dots = "";
-        for (let i = 0; i < engine.constants.BALLS_PER_GAME; i++) dots += i < st.ballsLeft ? "●" : "○";
-        elBalls.textContent = dots;
+        elBalls.textContent = fmt(Math.max(0, st.ballsLeft));
+      }
+      const mt = missionText();
+      if (hudCache.mission !== mt) {
+        hudCache.mission = mt;
+        elMission.textContent = mt;
       }
     }
 
@@ -514,6 +607,13 @@
       engine.drainEvents().forEach((ev) => {
         if (ev.type === "score") {
           popups.push({ text: "+" + ev.points, x: ev.x, y: ev.y, life: 0.8 });
+        } else if (ev.type === "mission") {
+          banner = { text: "مأموریت انجام شد! +" + fmt(ev.reward), life: 2.2 };
+          haptic("drain");
+        } else if (ev.type === "lanesDone" || ev.type === "targetsDone") {
+          banner = { text: "پاداش! +" + fmt(ev.type === "lanesDone" ? 500 : 300), life: 1.4 };
+        } else if (ev.type === "ramp" || ev.type === "lane") {
+          haptic("light");
         } else if (ev.type === "launch") {
           elHint.hidden = true;
         } else if (ev.type === "bump" || ev.type === "kick") {
@@ -534,6 +634,66 @@
       });
     }
 
+    function buildBg() {
+      const c = document.createElement("canvas");
+      c.width = Math.round(W * scale * dpr);
+      c.height = Math.round(H * scale * dpr);
+      const g = c.getContext("2d");
+      g.setTransform(scale * dpr, 0, 0, scale * dpr, 0, 0);
+      const base = g.createLinearGradient(0, 0, 0, H);
+      base.addColorStop(0, "#050b24");
+      base.addColorStop(0.5, "#0b1240");
+      base.addColorStop(1, "#080a26");
+      g.fillStyle = base;
+      g.fillRect(0, 0, W, H);
+      [[120, 260, 150, "rgba(120,70,255,0.35)"], [270, 200, 140, "rgba(40,200,255,0.22)"], [200, 470, 170, "rgba(60,110,255,0.30)"], [80, 570, 120, "rgba(255,60,160,0.18)"]].forEach((n) => {
+        const rg = g.createRadialGradient(n[0], n[1], 0, n[0], n[1], n[2]);
+        rg.addColorStop(0, n[3]);
+        rg.addColorStop(1, "rgba(0,0,0,0)");
+        g.fillStyle = rg;
+        g.fillRect(0, 0, W, H);
+      });
+      let seed = 7;
+      const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+      for (let i = 0; i < 150; i++) {
+        const sz = 0.8 + rnd() * 1.2;
+        g.fillStyle = "rgba(255,255,255," + (0.2 + rnd() * 0.6).toFixed(2) + ")";
+        g.fillRect(rnd() * W, rnd() * H, sz, sz);
+      }
+      const orb = g.createRadialGradient(190, 420, 4, 200, 430, 56);
+      orb.addColorStop(0, "#d8f6ff");
+      orb.addColorStop(0.45, "#3aa0ff");
+      orb.addColorStop(1, "rgba(20,40,160,0.1)");
+      g.fillStyle = orb;
+      g.beginPath();
+      g.arc(200, 430, 56, 0, Math.PI * 2);
+      g.fill();
+      g.strokeStyle = "rgba(160,220,255,0.55)";
+      g.lineWidth = 2;
+      g.beginPath();
+      g.ellipse(200, 430, 92, 20, -0.35, 0, Math.PI * 2);
+      g.stroke();
+      g.lineCap = "round";
+      g.lineWidth = 3;
+      g.strokeStyle = "#ff9d3a";
+      g.beginPath();
+      g.arc(200, 200, 172, Math.PI, Math.PI * 1.9);
+      g.stroke();
+      g.strokeStyle = "#ff4fa3";
+      g.beginPath();
+      g.moveTo(28, 200); g.lineTo(28, 520);
+      g.moveTo(340, 230); g.lineTo(340, 520);
+      g.stroke();
+      g.strokeStyle = "rgba(255,255,255,0.18)";
+      g.lineWidth = 2;
+      for (let y = 440; y <= 640; y += 40) {
+        g.beginPath();
+        g.moveTo(364, y + 10); g.lineTo(370, y); g.lineTo(376, y + 10);
+        g.stroke();
+      }
+      return c;
+    }
+
     function pathSegments(list) {
       list.forEach((s) => {
         ctx.moveTo(s.x1, s.y1);
@@ -541,29 +701,48 @@
       });
     }
 
-    function draw() {
-      ctx.setTransform(scale * dpr, 0, 0, scale * dpr, 0, 0);
-      const bg = ctx.createLinearGradient(0, 0, 0, H);
-      bg.addColorStop(0, "#0b0624");
-      bg.addColorStop(1, "#16093a");
-      ctx.fillStyle = bg;
-      ctx.fillRect(0, 0, W, H);
-
-      ctx.strokeStyle = "rgba(255,255,255,0.035)";
-      ctx.lineWidth = 1;
+    function glowDot(x, y, r, on, color) {
       ctx.beginPath();
-      for (let x = 0; x <= W; x += 40) {
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, H);
-      }
-      for (let y = 0; y <= H; y += 40) {
-        ctx.moveTo(0, y);
-        ctx.lineTo(W, y);
-      }
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = on ? color : "rgba(255,255,255,0.08)";
+      ctx.shadowColor = color;
+      ctx.shadowBlur = on ? 14 : 0;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = on ? "#fff" : "rgba(255,255,255,0.3)";
       ctx.stroke();
+    }
 
+    function draw() {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      if (!bgCache) bgCache = buildBg();
+      ctx.drawImage(bgCache, 0, 0);
+      ctx.setTransform(scale * dpr, 0, 0, scale * dpr, 0, 0);
       const tbl = engine.table;
+
+      // ramp
+      const rampOn = st.flash.ramp > 0 || engine.constants.MISSIONS[st.mission.idx % 4].id === "ramp";
       ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(50, 400);
+      ctx.bezierCurveTo(48, 270, 80, 200, 140, 135);
+      ctx.strokeStyle = "rgba(150,90,255,0.35)";
+      ctx.lineWidth = 26;
+      ctx.stroke();
+      ctx.shadowColor = rampOn ? col.amber : col.violet;
+      ctx.shadowBlur = rampOn ? 16 : 8;
+      ctx.strokeStyle = rampOn ? col.amber : col.violet;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(38, 400);
+      ctx.bezierCurveTo(36, 268, 68, 192, 130, 126);
+      ctx.moveTo(62, 400);
+      ctx.bezierCurveTo(60, 272, 92, 208, 150, 144);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      // walls
       ctx.lineJoin = "round";
       ctx.shadowColor = col.cyan;
       ctx.shadowBlur = 10;
@@ -573,7 +752,6 @@
       pathSegments(tbl.segments.filter((s) => !s.id && !s.gate));
       ctx.stroke();
       ctx.shadowBlur = 0;
-
       ctx.strokeStyle = col.amber;
       ctx.lineWidth = 2;
       ctx.setLineDash([4, 4]);
@@ -582,6 +760,13 @@
       ctx.stroke();
       ctx.setLineDash([]);
 
+      // top lanes, targets
+      tbl.lanes.forEach((l, i) => glowDot(l.x, l.y, 6, st.lanes[i], col.cyan));
+      tbl.targets.forEach((t, i) => {
+        const hot = st.targets[i] || st.flash["t" + i] > 0;
+        glowDot(t.x, t.y, t.r, hot, col.amber);
+      });
+
       tbl.slings.forEach((s, i) => {
         const on = st.flash["sling" + i] > 0;
         ctx.beginPath();
@@ -589,11 +774,11 @@
         ctx.lineTo(s.c[0], s.c[1]);
         ctx.lineTo(s.b[0], s.b[1]);
         ctx.closePath();
-        ctx.fillStyle = on ? col.amber : "rgba(176,107,255,0.28)";
+        ctx.fillStyle = on ? col.amber : "rgba(255,47,146,0.25)";
         ctx.fill();
-        ctx.shadowColor = on ? col.amber : col.violet;
+        ctx.shadowColor = on ? col.amber : col.pink;
         ctx.shadowBlur = on ? 18 : 8;
-        ctx.strokeStyle = on ? col.amber : col.violet;
+        ctx.strokeStyle = on ? col.amber : col.pink;
         ctx.lineWidth = 3;
         ctx.stroke();
         ctx.shadowBlur = 0;
@@ -625,22 +810,12 @@
         ctx.stroke();
       });
 
+      // plunger
       const plungerY = engine.constants.LANE_REST_Y + st.power * 26 + BALL_R;
       ctx.fillStyle = "rgba(255,255,255,0.12)";
       ctx.fillRect(LANE_WALL_X + 4, plungerY + 6, 28, 702 - plungerY - 8);
       ctx.fillStyle = col.orange;
       ctx.fillRect(LANE_WALL_X + 6, plungerY, 24, 5);
-      ctx.strokeStyle = "rgba(255,255,255,0.35)";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      const coils = 6;
-      for (let i = 0; i <= coils; i++) {
-        const y = plungerY + 8 + ((702 - plungerY - 12) * i) / coils;
-        ctx.moveTo(LANE_WALL_X + 9, y);
-        ctx.lineTo(LANE_WALL_X + 27, y);
-      }
-      ctx.stroke();
-
       if (st.phase === "ready") {
         ctx.fillStyle = "rgba(255,255,255,0.1)";
         ctx.fillRect(392, 560, 4, 140);
@@ -648,24 +823,43 @@
         ctx.fillRect(392, 700 - 140 * st.power, 4, 140 * st.power);
       }
 
+      // flippers
       tbl.flippers.forEach((f) => {
         const tip = engine.flipperTip(f);
-        const g = ctx.createLinearGradient(f.px, f.py, tip.x, tip.y);
-        g.addColorStop(0, col.violet);
-        g.addColorStop(1, f.pressed ? col.amber : col.cyan);
-        ctx.shadowColor = f.pressed ? col.amber : col.cyan;
+        ctx.lineCap = "round";
+        ctx.shadowColor = f.pressed ? col.amber : col.pink;
         ctx.shadowBlur = f.pressed ? 16 : 8;
-        ctx.strokeStyle = g;
-        ctx.lineWidth = FLIPPER_R * 2;
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = FLIPPER_R * 2 + 3;
         ctx.beginPath();
         ctx.moveTo(f.px, f.py);
         ctx.lineTo(tip.x, tip.y);
         ctx.stroke();
         ctx.shadowBlur = 0;
+        const g = ctx.createLinearGradient(f.px, f.py, tip.x, tip.y);
+        g.addColorStop(0, col.violet);
+        g.addColorStop(1, f.pressed ? col.amber : col.cyan);
+        ctx.strokeStyle = g;
+        ctx.lineWidth = FLIPPER_R * 2 - 1;
+        ctx.beginPath();
+        ctx.moveTo(f.px, f.py);
+        ctx.lineTo(tip.x, tip.y);
+        ctx.stroke();
       });
 
+      // ball + short trail
       if (st.phase !== "over") {
         const b = st.ball;
+        trail.push({ x: b.x, y: b.y });
+        if (trail.length > 7) trail.shift();
+        trail.forEach((t, i) => {
+          ctx.globalAlpha = (i / trail.length) * 0.25;
+          ctx.beginPath();
+          ctx.arc(t.x, t.y, BALL_R * (0.4 + i / 14), 0, Math.PI * 2);
+          ctx.fillStyle = col.cyan;
+          ctx.fill();
+        });
+        ctx.globalAlpha = 1;
         const bg2 = ctx.createRadialGradient(b.x - 3, b.y - 3, 1, b.x, b.y, BALL_R);
         bg2.addColorStop(0, "#ffffff");
         bg2.addColorStop(1, "#8f9bb8");
@@ -685,6 +879,15 @@
         ctx.fillStyle = col.amber;
         ctx.fillText(p.text, p.x, p.y - (0.8 - p.life) * 40);
       });
+      if (banner) {
+        ctx.globalAlpha = Math.min(1, banner.life);
+        ctx.font = "800 22px Vazirmatn, Rajdhani, sans-serif";
+        ctx.shadowColor = col.pink;
+        ctx.shadowBlur = 16;
+        ctx.fillStyle = "#fff";
+        ctx.fillText(banner.text, W / 2 - 14, 300);
+        ctx.shadowBlur = 0;
+      }
       ctx.globalAlpha = 1;
     }
 
@@ -698,6 +901,7 @@
       lastTs = ts;
       engine.update(dt);
       popups.forEach((p) => (p.life -= dt));
+      if (banner && (banner.life -= dt) <= 0) banner = null;
       popups = popups.filter((p) => p.life > 0);
       handleEvents();
       updateHud();
@@ -775,6 +979,8 @@
     function again() {
       elOver.hidden = true;
       popups = [];
+      banner = null;
+      trail = [];
       pointers.clear();
       keys.clear();
       applyFlippers();
