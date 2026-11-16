@@ -20,6 +20,7 @@ USER_COMMANDS = (
     ("buy", "خرید سرویس", "Buy a service", False, True, ""),
     ("charge", "شارژ کیف پول", "Top up wallet", False, True, ""),
     ("help", "راهنما و آموزش", "Help and tutorials", False, True, ""),
+    ("source", "سورس‌کد و لایسنس", "Source code and license", False, True, ""),
     ("language", "تغییر زبان", "Change language", False, True, ""),
     ("smartsub", "لینک اشتراک هوشمند", "Smart subscription link", False, True, "حداقل دو سرویس فعال لازم است"),
     ("myssh", "اطلاعات سرویس‌های SSH من", "My SSH accounts", False, True, "فقط در گفتگوی خصوصی"),

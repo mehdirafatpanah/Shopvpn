@@ -1,6 +1,6 @@
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 from i18n import tr
-from notification_i18n import send_telegram
+from notification_i18n import send_telegram, localized
 # -*- coding: utf-8 -*-
 """
 یادآوری خودکار اتمام سرویس + کد تخفیف تشویقی تمدید
@@ -24,6 +24,7 @@ STATUS_KEY_LAST_VOLUME_SENT = "_job_renewal_last_volume_sent"
 
 from sub_info import fetch_sub_info
 from jalali import to_jalali_str
+from md_utils import escape_md
 import report_router
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 
@@ -54,7 +55,40 @@ async def _prefetch_live_info(rows, cache, limit: int = 10) -> None:
         await asyncio.gather(*(one(link) for link in links))
 
 
-async def _send_single_reminder(bot, db, row, mark_fn, cache) -> bool:
+async def _renew_markup(db, kind, config_id, user_id):
+    """Renewal button for a reminder: full renewal for panel services, time renewal for stock configs."""
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+    if kind == "custom":
+        label, key, cb_data = "🛠 تمدید کامل سرویس", "svc_show_renew_full", f"svc_renew:full:x{int(config_id)}"
+    else:
+        label, key, cb_data = "⏱ تمدید زمان سرویس", "svc_show_renew_time", f"svc_renew:time:c{int(config_id)}"
+    if (await _db(db.get_setting, key, "1")) != "1":
+        return None, ""
+    if kind == "custom":
+        try:
+            def _is_payg():
+                with db._get_conn() as conn:
+                    return conn.execute(
+                        "SELECT 1 FROM payg_provisioned_services WHERE service_kind='vpn' AND service_id=?",
+                        (f"custom_config:{int(config_id)}",),
+                    ).fetchone() is not None
+            if await _db(_is_payg):
+                return None, ""
+        except Exception:
+            pass
+    button_text = localized(label, db, user_id)
+    markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=button_text, callback_data=cb_data)]])
+    return markup, label
+
+
+def _renew_instruction(label):
+    if label:
+        return f"برای تمدید همین سرویس، دکمه «{label}» زیر را بزنید."
+    return "برای تمدید، از «حساب کاربری ← سرویس‌ها و سفارش‌های من» همین سرویس را انتخاب و تمدید کنید."
+
+
+async def _send_single_reminder(bot, db, row, mark_fn, cache, kind="custom") -> bool:
     user_id = row["assigned_user_id"]
     if not user_id:
         return False
@@ -121,16 +155,17 @@ async def _send_single_reminder(bot, db, row, mark_fn, cache) -> bool:
         if days_left is not None else ""
     )
 
+    markup, renew_label = await _renew_markup(db, kind, row["config_id"], user_id)
     text = (
         "⏰ یادآوری اتمام سرویس\n\n"
-        f"📦 سرویس «{row['product_name']}» شما به‌زودی منقضی می‌شود.\n\n"
+        f"📦 سرویس «{escape_md(row['product_name'])}» شما به‌زودی منقضی می‌شود.\n\n"
         f"{days_line}"
         f"{discount_line}"
-        "برای تمدید، از منوی اصلی «🛒 خرید کانفیگ» را بزنید و سرویس خود را تمدید کنید."
+        f"{_renew_instruction(renew_label)}"
     )
 
     try:
-        await send_telegram(bot, db, user_id, text, parse_mode="Markdown")
+        await send_telegram(bot, db, user_id, text, parse_mode="Markdown", reply_markup=markup)
     except Exception:
         logger.warning("ارسال یادآوری تمدید به کاربر %s ناموفق بود.", user_id)
 
@@ -158,16 +193,16 @@ async def check_and_send_renewal_reminders(bot, db, cache=None) -> int:
     await _prefetch_live_info(list(rows) + list(custom_rows), cache)
 
     for row in rows:
-        if await _send_single_reminder(bot, db, row, db.mark_renewal_reminder_sent, cache):
+        if await _send_single_reminder(bot, db, row, db.mark_renewal_reminder_sent, cache, "config"):
             sent += 1
     for row in custom_rows:
-        if await _send_single_reminder(bot, db, row, db.mark_custom_config_renewal_reminder_sent, cache):
+        if await _send_single_reminder(bot, db, row, db.mark_custom_config_renewal_reminder_sent, cache, "custom"):
             sent += 1
 
     return sent
 
 
-async def _send_single_volume_reminder(bot, db, row, mark_fn, cache) -> bool:
+async def _send_single_volume_reminder(bot, db, row, mark_fn, cache, kind="custom") -> bool:
     user_id = row["assigned_user_id"]
     if not user_id:
         return False
@@ -216,16 +251,17 @@ async def _send_single_volume_reminder(bot, db, row, mark_fn, cache) -> bool:
             f"⏳ این کد فقط تا {expiry_hours} ساعت آینده معتبر است.\n\n"
         )
 
+    markup, renew_label = await _renew_markup(db, kind, row["config_id"], user_id)
     text = (
         "📉 یادآوری اتمام حجم\n\n"
-        f"📦 حجم سرویس «{row['product_name']}» شما رو به اتمام است.\n\n"
+        f"📦 حجم سرویس «{escape_md(row['product_name'])}» شما رو به اتمام است.\n\n"
         f"📊 حدود {remaining_gb:.2f} گیگابایت ({100 - round(percent_used)}٪) از حجم شما باقی مانده.\n\n"
         f"{discount_line}"
-        "برای تمدید، از منوی اصلی «🛒 خرید کانفیگ» را بزنید و سرویس خود را تمدید کنید."
+        f"{_renew_instruction(renew_label)}"
     )
 
     try:
-        await send_telegram(bot, db, user_id, text, parse_mode="Markdown")
+        await send_telegram(bot, db, user_id, text, parse_mode="Markdown", reply_markup=markup)
     except Exception:
         logger.warning("ارسال یادآوری اتمام حجم به کاربر %s ناموفق بود.", user_id)
 
@@ -252,10 +288,10 @@ async def check_and_send_volume_reminders(bot, db, cache=None) -> int:
     await _prefetch_live_info(list(rows) + list(custom_rows), cache)
 
     for row in rows:
-        if await _send_single_volume_reminder(bot, db, row, db.mark_volume_reminder_sent, cache):
+        if await _send_single_volume_reminder(bot, db, row, db.mark_volume_reminder_sent, cache, "config"):
             sent += 1
     for row in custom_rows:
-        if await _send_single_volume_reminder(bot, db, row, db.mark_custom_config_volume_reminder_sent, cache):
+        if await _send_single_volume_reminder(bot, db, row, db.mark_custom_config_volume_reminder_sent, cache, "custom"):
             sent += 1
 
     return sent

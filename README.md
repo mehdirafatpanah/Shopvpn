@@ -10,7 +10,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![aiogram](https://img.shields.io/badge/aiogram-3.x-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://docs.aiogram.dev/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-MiniApp%20%2B%20Panel-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
+[![License](https://img.shields.io/badge/License-ShopVPN%20Network%20Copyleft-red.svg?style=for-the-badge)](LICENSE)
 
 </div>
 
@@ -518,6 +518,7 @@ The backend provides infrastructure for a native Android management application.
 | MikroTik / User Manager | ⚠️ Limited | Profile-based |
 | IBSng | ⚠️ Limited | Admin-panel integration |
 | W-UI | ✅ Full | Interface-based (WireGuard/AmneziaWG/OpenVPN), API token |
+| Doctor DNS | ✅ Full | Bot API with an admin key (`dd_...`); a plan is chosen instead of a group/inbound; DNS/DoT/DoH + WireGuard |
 | Other panels | ➕ Extensible | Add a provider |
 
 </details>
@@ -643,6 +644,7 @@ The exact variables depend on enabled features. Common configuration areas inclu
 | AI | provider API keys |
 | Backups | destinations and SFTP credentials |
 | Android | FCM credentials |
+| Source offer | `SHOPVPN_SOURCE_URL` — public repository of your *modified* version (License §6); empty = official repository |
 
 Keep production secrets outside the repository.
 
@@ -754,6 +756,44 @@ Shopvpn/
 
 <details>
 <summary><strong>Click to expand</strong></summary>
+
+### 🛰️ Doctor DNS Panel
+
+A new panel type, **Doctor DNS**, is supported (`panel_providers/doctordns_provider.py`).
+
+- Connect it from **Admin → VPN panels → Doctor DNS** with an admin API key (starts with `dd_`; Doctor DNS admin panel → API → new key, with "admin access" ticked).
+- A **plan** is chosen at product creation instead of a group/inbound.
+- Users get their DNS / DoT / DoH addresses, registered IPs and **WireGuard profile files** (sent as documents at delivery).
+- The dedicated subscription page shows a DNS section (servers, DoT/DoH, registered IPs). **The dedicated sub must be switched on** for this page, IP registration and the WireGuard files; the bot warns you when it is off.
+- Has its own delivery message template (`delivery_message_template_doctordns`).
+
+### 🎮 Pinball Game in the Mini App
+
+A **Game** page in the mini app with a touch-controlled pinball table (`miniapp/static/pinball.js`, loaded only when opened).
+
+- 3 balls per game: hold and release to launch, then touch the left or right half of the screen to hit that flipper.
+- Score, balls left and **best score** (saved on the device); "New record" and "Play again" screens; fully translated through the mini app i18n.
+
+### 💳 Pay As You Go (PayG)
+
+Usage-based billing from the wallet, for the **main bot only** (`payg.py`, commands `/payg` and `/payg_history`).
+
+- Customers create a **PayG service** and are billed for what they actually use: per GB, per day and per extra user, with tiered rates that can differ per panel and per group/inbound (a default rate is used when a target has none).
+- Billing runs every cycle (default 10 minutes, `payg_cycle_seconds`); a service is capped to what the wallet can cover, and low-balance alerts are sent once per threshold (no spam).
+- Limits and switches: `payg_enabled`, `payg_rates`, `payg_max_services_per_user` (default 5), `payg_panel_server_id`; admins can suspend an account.
+- Only services provisioned by PayG itself are billed; existing purchased services are never enrolled implicitly. Customers see status, usage details and the withdrawal history in the bot.
+
+### 🔗 Multi-Panel Services in the Dedicated Subscription Server
+
+Services linked to more than one panel now return **all panels** in the dedicated sub output, including for Clash / sing-box / JSON clients (the main panel's sub is fetched as a link list so it can be merged with the extra panels), and the sub web page lists every panel (including Doctor DNS).
+
+### 🔔 Renew Button in Expiry Reminders
+
+Expiry reminders now carry a one-tap button: **full renewal** for panel services or **time renewal** for stock configs (controlled by `svc_show_renew_full` / `svc_show_renew_time`). PayG services never show it.
+
+### 📦 Source-Code Offer and the New License
+
+ShopVPN is now under the **ShopVPN Source-Available Network Copyleft License 1.0** (see [License](#contributing)). To satisfy its §6, users can send `/source` to the bot and see a "Source code & License" link in the mini app and the web store (`/source`). Set `SHOPVPN_SOURCE_URL` if you run a modified version.
 
 ### 🧾 AI Fake/Duplicate Receipt Detection
 
@@ -1102,7 +1142,19 @@ Before opening a pull request:
 
 ### 📄 License
 
-This project is released under the **MIT License**.
+This project is released under the **ShopVPN Source-Available Network Copyleft License 1.0** (see [LICENSE](LICENSE) and [LICENSE.fa.md](LICENSE.fa.md) for the Persian summary).
+
+| | |
+|---|---|
+| ✅ **Allowed** | Run and modify ShopVPN, and **sell VPN configurations and subscriptions** to your own customers (LICENSE §2) |
+| ✅ **Allowed** | Free, public sharing of the source code, with the license, notices and credits kept (§4, §5) |
+| 🔁 **Copyleft** | Modified versions stay under this same license; if users use your modified version through a bot, mini app or web panel, you must offer them its source (§5, §6) |
+| ❌ **Not allowed** | Selling, renting or sublicensing the software; hosting it as a service for other shop owners; paid install / setup / support / customization; paid add-ons or activation keys; paywalling it (§3) |
+| ❌ **Not allowed** | Removing credits, the NOTICE file, donation addresses or ownership markers (§8, §9) |
+
+**Source offer (§6):** every install answers `/source` in the bot and serves a "Source code & License" link in the mini app and web store (`/source`). If you run a **modified** version, set `SHOPVPN_SOURCE_URL=https://github.com/you/your-fork` in `.env` so users get the source of *your* version; unmodified installs can leave it empty (it points to the official repository).
+
+Anything marked ❌ needs a separate written commercial license: Telegram [@celenor](https://t.me/celenor). Copies obtained earlier under MIT or PolyForm Noncommercial stay under those terms for those copies (§16).
 
 ### 👤 Author
 

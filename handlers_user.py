@@ -86,7 +86,7 @@ from reseller_auto_provision import provision_auto_config, provision_test_config
 from direct_panel_provision import provision_direct, planned_usernames, ProvisionError as DirectProvisionError
 from test_config_provision import provision_test_plan, format_plan_amount, ProvisionError as TestPlanProvisionError
 from notification_i18n import send_telegram
-from i18n import set_language, reset_language, language_label, normalize_language, is_language_enabled, tr, language_scope
+from i18n import get_language, set_language, reset_language, language_label, normalize_language, is_language_enabled, tr, language_scope
 
 
 _CHANNEL_POST_TOKEN = re.compile(r"cp\d{1,9}")
@@ -874,6 +874,13 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     @router.message(Command("help"))
     async def help_cmd(message: Message):
         await tutorial_menu_entry(message)
+
+    @router.message(Command("source"))
+    async def source_cmd(message: Message):
+        """LICENSE section 6: source-code offer for users of the running version."""
+        import source_offer
+        lang = "fa" if normalize_language(get_language()) == "fa" else "en"
+        await message.answer(source_offer.build_text(lang), parse_mode="HTML", disable_web_page_preview=True)
 
     async def _smartsub_build(user_id: int) -> tuple:
         """(متن پیام، موفق؟) - مشترک بین /smartsub و دکمه‌ی حساب کاربری."""
@@ -4812,7 +4819,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                     f"💰 موجودی کیف پول: {int(st.get('balance') or 0):,} تومان\n"
                     f"📊 مصرف این سرویس: {svc_gb:.2f} GB\n"
                     f"🧾 هزینه این ماه (همه سرویس‌های مصرفی): {int(st.get('spent') or 0):,} تومان\n"
-                    "ℹ️ هزینه هر ۱۰ دقیقه بر اساس مصرف از کیف پول کسر می‌شود؛ تمدید ندارد، فقط کیف پول را شارژ نگه دارید.\n"
+                    f"ℹ️ هزینه هر {_payg.cycle_text(db)} بر اساس مصرف از کیف پول کسر می‌شود؛ تمدید ندارد، فقط کیف پول را شارژ نگه دارید.\n"
                 )
             else:
               text = (

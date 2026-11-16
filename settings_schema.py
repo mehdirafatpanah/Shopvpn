@@ -43,6 +43,7 @@ SETTINGS_FORM_SECTIONS = [
                     {"key": "delivery_message_template_ibsng", "label": "قالب تحویل — IBSng", "type": "textarea"},
                     {"key": "delivery_message_template_wui", "label": "قالب تحویل — WUI", "type": "textarea"},
                     {"key": "delivery_message_template_stealth", "label": "قالب تحویل — Stealth", "type": "textarea"},
+                    {"key": "delivery_message_template_doctordns", "label": "قالب تحویل — Doctor DNS", "type": "textarea"},
                 ],
             },
             {

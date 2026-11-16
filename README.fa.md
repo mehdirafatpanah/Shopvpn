@@ -10,7 +10,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![aiogram](https://img.shields.io/badge/aiogram-3.x-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://docs.aiogram.dev/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-MiniApp%20%2B%20Panel-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
+[![License](https://img.shields.io/badge/License-ShopVPN%20Network%20Copyleft-red.svg?style=for-the-badge)](LICENSE)
 [![Made by](https://img.shields.io/badge/Made%20by-Mehdi%20Rafatpanah-orange?style=for-the-badge)](https://github.com/mehdirafatpanah)
 
 </div>
@@ -501,6 +501,7 @@ python -m admin_panel.generate_vapid_keys
 | MikroTik (User Manager) | ⚠️ محدود | REST API با یوزر/پس روتر؛ حجم/مدت را profile تعیین می‌کند؛ خروجی نام کاربری/رمز است؛ تمدید و قطع دسترسی پشتیبانی نمی‌شود |
 | IBSng | ⚠️ محدود | وب‌اسکرپینگ پنل ادمین؛ حجم/مدت را گروه تعیین می‌کند؛ خروجی نام کاربری/رمز است؛ تمدید و قطع دسترسی پشتیبانی نمی‌شود |
 | W-UI | ✅ پشتیبانی کامل | احراز هویت با API Token؛ interface های یک مشتری نمونه به‌عنوان قالب گرفته می‌شود؛ حجم/انقضا/تمدید/قطع دسترسی/لینک جدید پشتیبانی می‌شود و خروجی لینک Subscription است |
+| Doctor DNS | ✅ پشتیبانی کامل | Bot API با کلید ادمین (`dd_...`)؛ به‌جای گروه/inbound، پلن انتخاب می‌شود؛ DNS/DoT/DoH و WireGuard |
 | پنل‌های دیگر | ➕ قابل افزودن | با پیاده‌سازی یک provider جدید طبق اینترفیس `panel_providers/base.py` و رجیستر آن در `panel_providers/__init__.py` |
 
 > 💡 دریافت **اطلاعات زنده‌ی اشتراک** (حجم/انقضا از روی لینک ساب کاربر — `sub_info.py`) کاملاً مستقل از این لایه است و با هر نوع پنلی کار می‌کند، چون مستقیم خروجی ساب را می‌خواند نه API پنل را.
@@ -643,6 +644,7 @@ nohup python main.py > bot.log 2>&1 &
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | ➖ | کلیدهای اعلان Push مرورگر برای پنل وب مستقل؛ با `python -m admin_panel.generate_vapid_keys` ساخته می‌شوند |
 | `VAPID_CLAIM_EMAIL` | ➖ | ایمیل تماس همراه کلید VAPID (پیش‌فرض: `admin@example.com`) |
 | `FIREBASE_SERVICE_ACCOUNT_PATH` | ➖ | مسیر فایل JSON سرویس‌اکانت فایربیس برای Push اپ اندروید، به‌عنوان جایگزین سراسری (روش پیشنهادی، تنظیم per-tenant از پنل وب → تنظیمات → اپ موبایل است) |
+| `SHOPVPN_SOURCE_URL` | ➖ | آدرس مخزن عمومی نسخه‌ی *تغییرداده‌شده‌ی* شما برای دستور `/source` و لینک «Source code & License» (بند ۶ لایسنس)؛ خالی یعنی مخزن رسمی پروژه |
 
 </details>
 
@@ -813,6 +815,44 @@ bash <(curl -fsSL https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn/main
 
 <details>
 <summary><strong>(کلیک کن برای باز شدن)</strong></summary>
+
+### 🛰️ پنل Doctor DNS
+
+نوع پنل جدید **Doctor DNS** پشتیبانی می‌شود (`panel_providers/doctordns_provider.py`).
+
+- اتصال از **پنل مدیریت ← پنل‌های VPN ← Doctor DNS** با کلید API ادمین (با `dd_` شروع می‌شود؛ پنل ادمین Doctor DNS ← API ← کلید تازه، با تیک «دسترسی ادمین»).
+- هنگام ساخت محصول، به‌جای گروه/inbound یک **پلن** انتخاب می‌شود.
+- کاربر آدرس‌های DNS / DoT / DoH، آی‌پی‌های ثبت‌شده و **فایل‌های پروفایل WireGuard** را می‌گیرد (فایل‌ها هنگام تحویل به‌صورت سند ارسال می‌شوند).
+- صفحه‌ی ساب اختصاصی بخش DNS دارد (سرورها، DoT/DoH و آی‌پی‌های ثبت‌شده). برای این صفحه، ثبت آی‌پی و فایل‌های WireGuard **ساب اختصاصی باید روشن باشد**؛ اگر خاموش باشد ربات هشدار می‌دهد.
+- قالب پیام تحویل جداگانه دارد (`delivery_message_template_doctordns`).
+
+### 🎮 بازی پین‌بال در مینی‌اپ
+
+صفحه‌ی **بازی** در مینی‌اپ با یک میز پین‌بال لمسی (`miniapp/static/pinball.js`، فقط هنگام باز شدن بارگذاری می‌شود).
+
+- هر بازی ۳ توپ دارد: نگه دار و رها کن تا توپ پرتاب شود، سپس لمس نیمه‌ی چپ یا راست صفحه فلیپر همان طرف را می‌زند.
+- امتیاز، توپ‌های باقی‌مانده و **رکورد** (روی همان دستگاه ذخیره می‌شود)؛ صفحه‌های «رکورد جدید» و «بازی دوباره»؛ کاملاً ترجمه‌شده از طریق i18n مینی‌اپ.
+
+### 💳 پرداخت به‌ازای مصرف (PayG)
+
+صورت‌حساب مبتنی بر مصرف از کیف پول، **فقط برای ربات اصلی** (`payg.py`، دستورهای `/payg` و `/payg_history`).
+
+- مشتری یک **سرویس مصرفی** می‌سازد و فقط بابت مصرف واقعی پول می‌دهد: به‌ازای هر گیگابایت، هر روز و هر کاربر اضافه، با نرخ‌های پله‌ای که برای هر پنل و هر گروه/inbound می‌تواند فرق کند (اگر مقصدی نرخ نداشته باشد نرخ پیش‌فرض اعمال می‌شود).
+- محاسبه در هر چرخه انجام می‌شود (پیش‌فرض ۱۰ دقیقه، `payg_cycle_seconds`)؛ سقف سرویس به اندازه‌ای است که کیف پول پوشش می‌دهد و هشدار موجودی کم برای هر آستانه فقط یک‌بار ارسال می‌شود (بدون اسپم).
+- تنظیمات: `payg_enabled`، `payg_rates`، `payg_max_services_per_user` (پیش‌فرض ۵)، `payg_panel_server_id`؛ مدیر می‌تواند یک حساب را تعلیق کند.
+- فقط سرویس‌هایی که خود PayG ساخته محاسبه می‌شوند؛ سرویس‌های خریداری‌شده‌ی قبلی هرگز خودکار وارد این سیستم نمی‌شوند. مشتری وضعیت، جزئیات مصرف و تاریخچه‌ی برداشت‌ها را در ربات می‌بیند.
+
+### 🔗 سرویس‌های چندپنلی در ساب اختصاصی
+
+سرویسی که به بیش از یک پنل وصل است، حالا **همه‌ی پنل‌ها** را در خروجی ساب اختصاصی برمی‌گرداند، حتی برای کلاینت‌های Clash / sing-box / JSON (ساب پنل اصلی به‌صورت لیست لینک گرفته می‌شود تا با پنل‌های اضافه ادغام شود)، و صفحه‌ی وب ساب همه‌ی پنل‌ها (از جمله Doctor DNS) را نشان می‌دهد.
+
+### 🔔 دکمه‌ی تمدید در یادآوری انقضا
+
+پیام‌های یادآوری انقضا حالا یک دکمه‌ی تک‌لمسی دارند: **تمدید کامل** برای سرویس‌های متصل به پنل یا **تمدید زمان** برای کانفیگ‌های استوک‌دار (با `svc_show_renew_full` و `svc_show_renew_time` کنترل می‌شود). سرویس‌های PayG این دکمه را نمی‌بینند.
+
+### 📦 پیشنهاد سورس‌کد و لایسنس جدید
+
+ShopVPN حالا تحت **ShopVPN Source-Available Network Copyleft License 1.0** است (بخش [مجوز](#contributing) را ببینید). برای رعایت بند ۶ آن، کاربران می‌توانند دستور `/source` را به ربات بفرستند و در مینی‌اپ و فروشگاه وب لینک «Source code & License» (`/source`) را ببینند. اگر نسخه‌ی تغییرداده‌شده اجرا می‌کنید، `SHOPVPN_SOURCE_URL` را تنظیم کنید.
 
 ### 🧾 تشخیص رسید جعلی/تکراری با هوش مصنوعی
 
@@ -1150,7 +1190,19 @@ bash <(curl -fsSL https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn/main
 
 ## 📄 مجوز
 
-این پروژه تحت مجوز [MIT](LICENSE) منتشر شده است.
+این پروژه تحت **ShopVPN Source-Available Network Copyleft License 1.0** منتشر شده است (متن کامل: [LICENSE](LICENSE)؛ خلاصه‌ی فارسی غیررسمی: [LICENSE.fa.md](LICENSE.fa.md)).
+
+| | |
+|---|---|
+| ✅ **مجاز** | اجرا و تغییر ShopVPN و **فروش کانفیگ و اشتراک VPN** به مشتریان خودتان (بند ۲) |
+| ✅ **مجاز** | اشتراک‌گذاری رایگان و عمومی سورس‌کد با حفظ لایسنس، اطلاعیه‌ها و نام نویسنده (بندهای ۴ و ۵) |
+| 🔁 **کپی‌لفت** | نسخه‌های تغییرداده‌شده باید با همین لایسنس بمانند؛ اگر کاربران از طریق ربات، مینی‌اپ یا پنل وب از نسخه‌ی تغییرداده‌شده‌ی شما استفاده می‌کنند، باید سورس آن را در اختیارشان بگذارید (بندهای ۵ و ۶) |
+| ❌ **ممنوع** | فروش، اجاره یا ساب‌لایسنس خود نرم‌افزار؛ میزبانی آن به‌عنوان سرویس برای صاحبان فروشگاه دیگر؛ دریافت پول برای نصب، راه‌اندازی، پشتیبانی یا سفارشی‌سازی؛ افزونه یا کلید فعال‌سازی پولی؛ قرار دادن پروژه پشت پی‌وال (بند ۳) |
+| ❌ **ممنوع** | حذف نام نویسنده، NOTICE، آدرس‌های حمایت مالی یا نشانه‌های مالکیت (بندهای ۸ و ۹) |
+
+**پیشنهاد سورس (بند ۶):** هر نصب به دستور `/source` در ربات پاسخ می‌دهد و در مینی‌اپ و فروشگاه وب لینک «Source code & License» (`/source`) دارد. اگر نسخه‌ی **تغییرداده‌شده** اجرا می‌کنید، `SHOPVPN_SOURCE_URL=https://github.com/you/your-fork` را در `.env` بگذارید؛ نصب‌های بدون تغییر می‌توانند آن را خالی بگذارند (به مخزن رسمی اشاره می‌کند).
+
+هر مورد ❌ به لایسنس تجاری کتبی جداگانه نیاز دارد: تلگرام [@celenor](https://t.me/celenor). نسخه‌هایی که قبلاً با MIT یا PolyForm Noncommercial گرفته شده‌اند، برای همان نسخه‌ها تحت همان شرایط می‌مانند (بند ۱۶).
 
 ## 👤 سازنده
 
@@ -1167,14 +1219,23 @@ bash <(curl -fsSL https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn/main
 
 ## پشتیبانی چندزبانه (fa / en / ru / zh / ...)
 
-The project now includes a shared multilingual foundation:
-- per-user language is persisted in SQLite (`users.language_code`)
-- first `/start` follows Telegram's language, falling back to English (`en`) as the default when the user's Telegram language isn't Persian
-- `/language` and the main-menu language button switch between the languages enabled for the bot
-- Telegram update middleware applies the selected language safely per request
-- bot text overrides continue to work without data loss; translated catalog entries are used where available
-- the web admin panel includes a language toggle and switches document direction (RTL/LTR) automatically
-- the built-in catalog has 16 languages (fa, en, tr, ar, ru, de, fr, es, it, pt, zh, ja, ko, nl, pl, uk); they are chosen at install time and admins manage them from the admin panel's language manager, where the bot auto-generates the translations
+پروژه یک زیرساخت چندزبانه‌ی مشترک دارد:
+- زبان هر کاربر در SQLite ذخیره می‌شود (`users.language_code`)
+- اولین `/start` زبان تلگرام کاربر را دنبال می‌کند و اگر زبان تلگرام او فارسی نباشد، انگلیسی (`en`) پیش‌فرض است
+- دستور `/language` و دکمه‌ی زبان در منوی اصلی بین زبان‌های فعال‌شده برای بات جابه‌جا می‌شوند
+- میان‌افزار به‌روزرسانی‌های تلگرام، زبان انتخاب‌شده را برای هر درخواست به‌صورت امن اعمال می‌کند
+- بازنویسی متن‌های بات بدون از دست رفتن داده کار می‌کند؛ در صورت وجود، از ورودی‌های کاتالوگ ترجمه‌شده استفاده می‌شود
+- پنل مدیریت وب کلید تغییر زبان دارد و جهت سند (RTL/LTR) را خودکار عوض می‌کند
+- کاتالوگ داخلی ۱۶ زبان دارد (fa، en، tr، ar، ru، de، fr، es، it، pt، zh، ja، ko، nl، pl، uk)؛ هنگام نصب انتخاب می‌شوند و مدیر از «مدیریت زبان‌ها» در پنل مدیریت آن‌ها را اداره می‌کند و بات ترجمه‌ها را خودکار تولید می‌کند
+
+---
+
+## 🌍 زبان‌های مستندات
+
+- 🇬🇧 **English:** `README.md`
+- 🇮🇷 **فارسی:** `README.fa.md`
+- 🇷🇺 **Русский:** `README.ru.md`
+- 🇨🇳 **中文:** `README.zh.md`
 <!--‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍-->
 <!-- 		   		 		  	 	 		 		   		  	 	 		 			  		 				 			  	 -->
 

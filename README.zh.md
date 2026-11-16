@@ -10,7 +10,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![aiogram](https://img.shields.io/badge/aiogram-3.x-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://docs.aiogram.dev/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-MiniApp%20%2B%20Panel-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
+[![License](https://img.shields.io/badge/License-ShopVPN%20Network%20Copyleft-red.svg?style=for-the-badge)](LICENSE)
 
 </div>
 
@@ -518,6 +518,7 @@ uvicorn admin_panel.server:app --host 127.0.0.1 --port 8002
 | MikroTik / User Manager | ⚠️ 有限支持 | 基于配置档案 |
 | IBSng | ⚠️ 有限支持 | 通过管理面板集成 |
 | W-UI | ✅ 完全支持 | 基于 interface（WireGuard/AmneziaWG/OpenVPN），API Token |
+| Doctor DNS | ✅ 完全支持 | 使用管理员密钥（`dd_...`）的 Bot API；选择套餐而不是分组/inbound；DNS/DoT/DoH 与 WireGuard |
 | 其他面板 | ➕ 可扩展 | 可自行添加提供方 |
 
 </details>
@@ -642,6 +643,7 @@ python main.py
 | AI | 服务商 API 密钥 |
 | 备份 | 目标地址与 SFTP 凭证 |
 | Android | FCM 凭证 |
+| 源代码提供 | `SHOPVPN_SOURCE_URL` — 您**修改版**的公开仓库（许可证 §6）；留空则使用官方仓库 |
 
 请将生产环境的密钥保存在代码仓库之外。
 
@@ -753,6 +755,44 @@ Shopvpn/
 
 <details>
 <summary><strong>点击展开</strong></summary>
+
+### 🛰️ Doctor DNS 面板
+
+新增支持 **Doctor DNS** 面板类型（`panel_providers/doctordns_provider.py`）。
+
+- 在 **管理面板 → VPN 面板 → Doctor DNS** 中使用管理员 API 密钥连接（以 `dd_` 开头；Doctor DNS 管理后台 → API → 新建密钥，并勾选“管理员权限”）。
+- 创建商品时选择**套餐**，而不是分组/inbound。
+- 用户会收到 DNS / DoT / DoH 地址、已登记的 IP 以及 **WireGuard 配置文件**（交付时作为文档发送）。
+- 专属订阅页面包含 DNS 区块（服务器、DoT/DoH、已登记 IP）。该页面、IP 登记和 WireGuard 文件**需要开启专属订阅**；关闭时机器人会提示。
+- 拥有独立的交付消息模板（`delivery_message_template_doctordns`）。
+
+### 🎮 小程序中的弹珠台游戏
+
+小程序新增**游戏**页面，提供触控弹珠台（`miniapp/static/pinball.js`，仅在打开时加载）。
+
+- 每局 3 个球：按住并松开发射，然后触摸屏幕左半边或右半边来击打对应的挡板。
+- 显示得分、剩余球数和**最高分**（保存在本机）；有“新纪录”和“再玩一次”界面；通过小程序 i18n 完整翻译。
+
+### 💳 按用量付费（PayG）
+
+基于钱包的按用量计费，**仅限主机器人**（`payg.py`，命令 `/payg` 和 `/payg_history`）。
+
+- 客户创建 **PayG 服务**，只为实际用量付费：按 GB、按天和按额外用户计费，阶梯费率可按面板及分组/inbound 分别设置（目标未设置费率时使用默认费率）。
+- 每个周期结算一次（默认 10 分钟，`payg_cycle_seconds`）；服务额度受钱包可承担金额限制，低余额提醒每个阈值只发送一次（不刷屏）。
+- 设置项：`payg_enabled`、`payg_rates`、`payg_max_services_per_user`（默认 5）、`payg_panel_server_id`；管理员可暂停账户。
+- 只对由 PayG 自己创建的服务计费；已购买的现有服务不会被自动纳入。客户可在机器人中查看状态、用量详情和扣费历史。
+
+### 🔗 专属订阅服务器中的多面板服务
+
+绑定多个面板的服务现在会在专属订阅输出中返回**所有面板**，包括 Clash / sing-box / JSON 客户端（主面板订阅会以链接列表方式获取，以便与额外面板合并），订阅网页也会列出每个面板（包括 Doctor DNS）。
+
+### 🔔 到期提醒中的续费按钮
+
+到期提醒现在带有一键按钮：面板服务为**完整续费**，库存配置为**时间续费**（由 `svc_show_renew_full` / `svc_show_renew_time` 控制）。PayG 服务不显示该按钮。
+
+### 📦 源代码提供与新许可证
+
+ShopVPN 现采用 **ShopVPN Source-Available Network Copyleft License 1.0**（见[许可证](#contributing)一节）。为满足其第 6 条，用户可向机器人发送 `/source`，并在小程序和网页商店中看到“Source code & License”链接（`/source`）。如果您运行修改版，请设置 `SHOPVPN_SOURCE_URL`。
 
 ### 🧾 AI 假/重复回单检测
 
@@ -1102,7 +1142,19 @@ Shopvpn/
 
 ### 📄 许可证
 
-本项目基于 **MIT 许可证** 发布。
+本项目基于 **ShopVPN Source-Available Network Copyleft License 1.0** 发布（完整文本：[LICENSE](LICENSE)；波斯语非官方摘要：[LICENSE.fa.md](LICENSE.fa.md)）。
+
+| | |
+|---|---|
+| ✅ **允许** | 运行和修改 ShopVPN，并向您自己的客户**销售 VPN 配置和订阅**（第 2 条） |
+| ✅ **允许** | 在保留许可证、声明和作者署名的前提下免费公开分享源代码（第 4、5 条） |
+| 🔁 **Copyleft** | 修改版必须继续使用本许可证；如果用户通过机器人、小程序或网页面板使用您的修改版，您必须向他们提供其源代码（第 5、6 条） |
+| ❌ **禁止** | 销售、出租或再许可软件本身；将其作为服务托管给其他商店经营者；收费提供安装、配置、支持或定制；付费插件或激活密钥；将项目置于付费墙之后（第 3 条） |
+| ❌ **禁止** | 删除作者署名、NOTICE、捐赠地址或所有权标记（第 8、9 条） |
+
+**源代码提供（第 6 条）：** 每个安装都会响应机器人中的 `/source`，并在小程序和网页商店中提供“Source code & License”链接（`/source`）。如果您运行的是**修改版**，请在 `.env` 中设置 `SHOPVPN_SOURCE_URL=https://github.com/you/your-fork`；未修改的安装可留空（指向官方仓库）。
+
+标有 ❌ 的事项需要单独的书面商业许可证：Telegram [@celenor](https://t.me/celenor)。此前在 MIT 或 PolyForm Noncommercial 下获得的副本，仅对这些副本继续适用原条款（第 16 条）。
 
 ### 👤 作者
 

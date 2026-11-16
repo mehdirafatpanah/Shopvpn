@@ -105,7 +105,15 @@ async def collect_vpn_files(db, link: str) -> list:
     try:
         server_id = _row_get(cc, "panel_server_id")
         server = await asyncio.to_thread(db.get_panel_server, int(server_id)) if server_id else None
-        if server and str(_row_get(server, "panel_type", "") or "").lower() == "wui":
+        server_type = str(_row_get(server, "panel_type", "") or "").lower() if server else ""
+        if server and server_type == "doctordns":
+            from panel_providers import get_provider
+            bundle = await get_provider(server).get_dns_bundle(cc["username"])
+            for item in bundle.get("wg") or []:
+                out.append({"filename": _safe_filename(item.get("filename"), "doctor-dns.conf"),
+                            "content": str(item.get("profile") or "").encode("utf-8"),
+                            "label": item.get("remark") or "WireGuard"})
+        if server and server_type == "wui":
             from panel_providers import get_provider
             provider = get_provider(server)
             files = await provider.get_config_files(cc["username"])
@@ -117,7 +125,7 @@ async def collect_vpn_files(db, link: str) -> list:
                             "content": str(f.get("text") or "").encode("utf-8"),
                             "label": f"{str(f.get('filename') or '').rsplit('.', 1)[0]} ({label})"})
     except Exception:
-        logger.warning("دریافت فایل‌های کانفیگ از پنل W-UI ناموفق بود.", exc_info=True)
+        logger.warning("دریافت فایل‌های کانفیگ از پنل (W-UI / Doctor DNS) ناموفق بود.", exc_info=True)
 
     # حذف فایل خالی/عجیب، یکتاسازی نام فایل، سقف تعداد
     final, seen = [], {}

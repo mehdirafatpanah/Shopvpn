@@ -1,117 +1,338 @@
-ShopVPN
+SHOPVPN SOURCE-AVAILABLE NETWORK COPYLEFT LICENSE
+Version 1.0, 16 November 2026
+
 Copyright (c) Mehdi Rafatpanah. All rights reserved.
 
 Required Notice: Copyright (c) Mehdi Rafatpanah (https://github.com/mehdirafatpanah/Shopvpn)
 
-This software is licensed under the PolyForm Noncommercial License 1.0.0
-reproduced below, together with the Additional Terms at the end of this
-file. The Additional Terms are part of the license.
+Everyone is permitted to copy and distribute verbatim copies of this license
+document, but changing it is not allowed.
 
+                               Preamble
 
-# PolyForm Noncommercial License 1.0.0
+  ShopVPN is a Telegram bot, mini app, admin web panel, web store and related
+tooling for running a VPN-configuration shop. The author publishes the source
+code so that people can read it, run it, learn from it and improve it.
 
-<https://polyformproject.org/licenses/noncommercial/1.0.0>
+  This license has one purpose: to let you SELL VPN CONFIGURATIONS AND
+SUBSCRIPTIONS to your own customers using ShopVPN, while keeping everything
+else about the software, including selling, hosting, renting, repackaging or
+making money from the software itself, reserved to the author.
 
-## Acceptance
+  Like the GNU Affero General Public License, it is a copyleft license with a
+network clause: if you change the software and let other people use your
+version over a network (a Telegram bot, a mini app, a web panel, a web store),
+you must give those people the source code of your version, under this same
+license. Unlike the AGPL, it does not grant general commercial rights.
 
-In order to get any license under these terms, you must agree to them as both strict obligations and conditions to all your licenses.
+  The precise terms and conditions follow.
 
-## Copyright License
+                         TERMS AND CONDITIONS
 
-The licensor grants you a copyright license for the software to do everything you might do with the software that would otherwise infringe the licensor's copyright in it for any permitted purpose. However, you may only distribute the software according to Distribution License and make changes or new works based on the software according to Changes and New Works License.
+  0. Definitions.
 
-## Distribution License
+  "This License" means this document, version 1.0.
 
-The licensor grants you an additional copyright license to distribute copies of the software. Your license to distribute covers distributing the software with changes and new works permitted by Changes and New Works License.
+  "The Software" means ShopVPN, every file the author distributes under this
+License, and every work based on it.
 
-## Notices
+  "The Author" or "the Licensor" means Mehdi Rafatpanah (Telegram @celenor,
+https://github.com/mehdirafatpanah/Shopvpn), and any person to whom the Author
+assigns these rights in writing.
 
-You must ensure that anyone who gets a copy of any part of the software from you also gets a copy of these terms or the URL for them above, as well as copies of any plain-text lines beginning with `Required Notice:` that the licensor provided with the software. For example:
+  "You" means each individual or organization using the Software under this
+License. "Your Company" means every organization you work for, plus every
+organization that controls, is controlled by, or is under common control with
+it.
 
-> Required Notice: Copyright Yoyodyne, Inc. (http://example.com)
+  "Modify" means to copy from or adapt all or part of the Software in a way
+that needs permission under copyright law, other than making an exact copy.
+The result is a "Modified Version".
 
-## Changes and New Works License
+  "Convey" means any act that lets other people receive a copy of the Software
+(sending, publishing, uploading, selling, lending, hosting a download).
 
-The licensor grants you an additional copyright license to make changes and new works based on the software for any permitted purpose.
+  "Interact Remotely" means to use the Software through a computer network
+without receiving a copy: a Telegram bot, a Telegram mini app, an admin or
+user web panel, a web store, a subscription page, an API, or any similar
+interface.
 
-## Patent License
+  "Corresponding Source" means all the source code needed to generate, install,
+run and modify the Software or your Modified Version, including build scripts,
+configuration templates, translation files, database migrations and
+deployment files, but not the secrets of your own installation (tokens,
+passwords, API keys, private keys, user data, payment data).
 
-The licensor grants you a patent license for the software that covers patent claims the licensor can license, or becomes able to license, that you would infringe by using the software.
+  "Configuration Service" means the activity of selling or giving to end users
+VPN, proxy, tunnel, SSH or similar access in the form of configurations,
+links, subscriptions, accounts or credentials (including top-ups, renewals and
+extra traffic or time for them), where the thing delivered is the access and
+not the Software.
 
-## Noncommercial Purposes
+  "Ownership Marker" means any visible or hidden identifier, string, comment,
+signature, token, hash, fingerprint or invisible character placed in the
+Software or in the output it produces to identify the Author or the origin of
+the Software.
 
-Any noncommercial purpose is a permitted purpose.
+  1. Permitted Use.
 
-## Personal Uses
+  Subject to this License, the Author grants you a worldwide, royalty-free,
+non-exclusive, non-transferable license to:
 
-Personal use for research, experiment, and testing for the benefit of public knowledge, personal study, private entertainment, hobby projects, amateur pursuits, or religious observance, without any anticipated commercial application, is use for a permitted purpose.
+    a) run the Software, for any purpose that Section 3 allows;
+    b) read, study, copy and Modify the Software;
+    c) Convey the Software and your Modified Versions, but only under
+       Sections 4, 5, 6 and 7.
 
-## Noncommercial Organizations
+  2. The One Commercial Right: Selling Configurations.
 
-Use by any charitable organization, educational institution, public research organization, public safety or health organization, environmental protection organization, or government institution is use for a permitted purpose regardless of the source of funding or obligations resulting from the funding.
+  You may run the Software, unmodified or Modified, as your own business and
+charge your customers money, goods or crypto-currency for the Configuration
+Service. This includes using the Software's own payment, wallet, reseller,
+agent, discount, referral and delivery features for that business. Your own
+revenue from the Configuration Service is yours. The Author claims none of it.
 
-## Fair Use
+  This right covers selling access. It does not cover selling the Software
+(see Section 3).
 
-You may have "fair use" rights for the software under the law. These terms do not limit them.
+  3. Reserved Commercial Rights (Prohibited Without Written License).
 
-## No Other Rights
+  Except for Section 2, any commercial use of the Software is not licensed. You
+must not, and must not let anyone else, do any of the following without a
+separate written commercial license from the Author:
 
-These terms do not allow you to sublicense or transfer any of your licenses to anyone else, or prevent the licensor from granting licenses to anyone else. These terms do not imply any other licenses.
+    a) sell, resell, rent, lease, license, sublicense or give as a paid
+       bonus, the Software or any Modified Version, in source or binary form,
+       alone or in a bundle;
+    b) charge for access to a hosted, managed or "as-a-service" copy of the
+       Software itself (for example, renting a ready-made ShopVPN bot, panel or
+       web store to other shop owners, or running a white-label bot factory);
+    c) charge for installing, configuring, customizing, translating, hosting,
+       maintaining, supporting or training people to use the Software;
+    d) sell, rent or share activation keys, licenses, accounts, templates,
+       themes, plug-ins, add-ons, courses or any other product that is derived
+       from, or depends on, the Software, for a fee;
+    e) use the Software, in whole or in part, to build, train or improve a
+       different product, library or service that competes with the Software
+       or is offered for money;
+    f) put the Software or any Modified Version behind a paywall, a donation
+       wall, a membership, a private paid channel or a paid group;
+    g) use the Software to provide a Configuration Service while hiding from
+       your own customers the information that Section 8 requires you to
+       show, or while removing anything that Section 9 forbids you to remove.
 
-## Patent Defense
+  Free, public, non-commercial Conveying under Sections 4 to 7 is not
+prohibited by this Section.
 
-If you make any written claim that the software infringes or contributes to infringement of any patent, your patent license for the software granted under these terms ends immediately. If your company makes such a claim, your patent license ends immediately for work on behalf of your company.
+  4. Conveying Unmodified Copies.
 
-## Violations
+  You may Convey verbatim copies of the Software's source code as you receive
+it, in any medium, free of charge, provided that you:
 
-The first time you are notified in writing that you have violated any of these terms, or done anything with the software not covered by your licenses, your licenses can nonetheless continue if you come into full compliance with these terms, and take practical steps to correct past violations, within 32 days of receiving notice. Otherwise, all your licenses end immediately.
+    a) keep intact the LICENSE and NOTICE files, every copyright notice, every
+       `Required Notice:` line and every Ownership Marker;
+    b) give every recipient a copy of this License;
+    c) do not charge any fee for the copy beyond your reasonable cost of the
+       medium or transfer.
 
-## No Liability
+  5. Conveying Modified Versions (Copyleft).
 
-As far as the law allows, the software comes as is, without any warranty or condition, and the licensor will not be liable to you for any damages arising out of these terms or the use or nature of the software, under any kind of legal claim.
+  You may Convey a Modified Version, free of charge, in source code form,
+provided that you also meet all of these conditions:
 
-## Definitions
+    a) The Modified Version must carry prominent notices stating that you
+       changed it, who changed it, and the date.
+    b) The whole Modified Version must be licensed under this License, and only
+       this License, to everyone who receives a copy. You must not add any
+       further restriction on the rights this License gives, and you must not
+       relicense it under any other license (including MIT, GPL, AGPL or any
+       other open-source or closed-source license).
+    c) The Modified Version must still carry the notices, Ownership Markers,
+       the NOTICE file and the displays that Sections 8 and 9 require.
+    d) You must make the Corresponding Source of the Modified Version
+       available as Section 6 describes.
 
-The licensor is the individual or entity offering these terms, and the software is the software the licensor makes available under these terms.
+  A work that is not based on the Software and only talks to it through its
+documented public interfaces (for example a separate monitoring script) is
+not a Modified Version.
 
-You refers to the individual or entity agreeing to these terms.
+  6. Network Interaction and Source Offer.
 
-Your company is any legal entity, sole proprietorship, or other kind of organization that you work for, plus all organizations that have control over, are under the control of, or are under common control with that organization. Control means ownership of substantially all the assets of an entity, or the power to direct its management and policies by vote, contract, or otherwise. Control can be direct or indirect.
+  If you Modify the Software and let other people Interact Remotely with your
+Modified Version, you must offer all those users, free of charge and in a
+prominent place in the interface (for a Telegram bot, a command, a menu
+button or the bot's description; for a web page, a visible link), a way to
+receive the Corresponding Source of the exact version you are running. The
+offer must stay available for as long as the Modified Version is in use and
+for at least three years after you last offered it. Hosting the Corresponding
+Source in a public repository and linking to it satisfies this Section.
 
-Your licenses are all the licenses granted to you for the software under these terms.
+  Running an unmodified Software and linking users to the Author's
+official repository satisfies this Section.
 
-Use means anything you do with the software requiring one of your licenses.
+  7. No Other Distribution.
 
+  You must not Convey the Software in compiled, obfuscated, encrypted,
+minified-only or otherwise non-source form that hides the source code from
+the people you give it to. Any form you Convey must include the preferred form
+for making modifications.
 
-# Additional Terms
+  8. Notices and Information You Must Show.
 
-These Additional Terms apply together with the PolyForm Noncommercial License 1.0.0 above. If they conflict, these Additional Terms control to the extent the law allows. Doing anything the Additional Terms forbid is doing something not covered by your licenses, and the Violations section applies.
+  Anyone who Conveys the Software, and anyone who runs it for customers, must
+keep these, unmodified, wherever the Software already shows them:
 
-## 1. Attribution
+    a) The LICENSE file and the NOTICE file.
+    b) Every copyright notice and every `Required Notice:` line, including
+       the name of the Author (Mehdi Rafatpanah, Telegram @celenor) and the
+       official channel (@celenorbot).
+    c) The copyright header at the top of each source file.
+    d) The donation addresses listed in the NOTICE file, unmodified and
+       visible, in the NOTICE file and in the "Official Links" section of the
+       README, and on every screen of the Software that shows author or
+       project information. This clause requires the addresses to stay
+       displayed. It does not require anybody to send a donation.
+    e) The "About" and "Source code" information that the Software shows to
+       users, including the link to the Author's repository.
 
-Anyone who distributes any part of the software, or any work based on it, must keep:
+  9. Ownership Markers and Anti-Circumvention.
 
-- this LICENSE file, unmodified;
-- the NOTICE file, unmodified;
-- every copyright notice, every `Required Notice:` line, and the name of the author (Mehdi Rafatpanah, Telegram @celenor);
-- the copyright header at the top of each source file.
+  You must not remove, alter, obscure, disable or circumvent any Ownership
+Marker, whether visible or hidden. Renaming, rewriting, translating,
+reformatting, refactoring or restructuring the code with the purpose or the
+effect of removing or hiding an Ownership Marker, or of hiding that your work
+is based on the Software, is also forbidden. You must not claim, state or
+suggest that you are the author of the Software or of any part of it that you
+did not write, and you must not use the Author's name, Telegram accounts,
+channel names or logos to suggest that the Author endorses you or your
+service.
 
-## 2. Ownership markers
+  Where the Software uses Ownership Markers, or any technical measure, to detect
+unlicensed use, you must not build tools to defeat that detection. The Author
+may use such markers as evidence that a copy is based on the Software.
 
-You must not remove, alter, obscure, disable, or circumvent any ownership marker in the software, whether visible or hidden. Ownership markers include identifiers, strings, comments, signatures, tokens, hashes, fingerprints, and invisible characters placed in the software or in the output it produces. Renaming, rewriting, or restructuring code with the purpose or effect of removing or hiding an ownership marker is also forbidden.
+  10. Your Own Content and Your Own Data.
 
-## 3. Donation addresses
+  This License covers the Software. It does not claim ownership of your
+customers' data, your own product names, prices, configurations, branding
+that you wrote yourself, or the VPN servers and panels (Hiddify, Marzban,
+3x-ui and others) that the Software connects to. Those panels and services
+have their own licenses. You are responsible for following them, and for
+following the laws that apply to you and to your service.
 
-Any fork, public repository, or public redistribution of the software must keep the donation addresses listed in the NOTICE file, unmodified and visible, in the NOTICE file and in the "Official Links" section of the README. Any screen of the software that shows author or project information to users must also keep them. This term requires the addresses to stay displayed. It does not require anyone to send a donation.
+  Output produced by running the Software (for example the messages, receipts
+and subscription pages it generates) is yours, as long as it keeps the
+notices that Section 8 requires.
 
-## 4. Commercial use
+  11. Patents.
 
-Operating a business or any revenue-generating service with the software, including selling or reselling VPN configurations or subscriptions, charging for hosting, installation, or support of the software, or selling, renting, or sublicensing the software itself, is not a permitted purpose under the PolyForm Noncommercial License 1.0.0. It requires a separate written commercial license from the licensor. Contact: Telegram @celenor.
+  The Author grants you a patent license for the Software that covers the
+patent claims the Author can license and that you would infringe by using the
+Software as this License permits. If you make any written claim that the
+Software infringes or contributes to infringement of any patent, your
+licenses end immediately. If Your Company makes such a claim, your licenses
+end immediately for work done on behalf of Your Company.
 
-## 5. Earlier copies
+  12. Termination.
 
-Copies of the software that were obtained under the MIT License before the commit that introduced this license remain under the MIT License for those copies only. Everything published from that commit on is under this license.
+  If you do anything this License does not allow, then all your licenses end
+automatically. The first time the Author notifies you in writing, by message,
+email or public notice, that you violated this License, your licenses are
+reinstated provisionally if you come into full compliance, and take practical
+steps to correct past violations, within 30 days of receiving the notice. If
+you do not, or if you violate this License again, your licenses end
+permanently and the Author may refuse to grant you any new license.
+Termination of your licenses does not end the licenses of anyone who
+received copies from you and who is not violating this License themselves.
 
-## 6. Licensor
+  13. Enforcement.
 
-The licensor keeps all rights not granted here and may use, license, or relicense the software under other terms.
+  The Author may enforce this License through every remedy that the law
+allows, including injunctions, damages, takedown notices (such as DMCA and
+similar notices to hosting providers, code-hosting platforms and messenger
+platforms), and recovery of profits made from a breach. You agree that
+breaching Sections 3, 7 or 9 may cause the Author harm that money cannot fully
+repair, and that the Author may seek an injunction without having to prove
+actual damages, as far as the law allows.
+
+  14. Acceptance.
+
+  You are not required to accept this License to read the source code. But
+nothing else gives you permission to run, Modify or Convey the Software. These
+actions are forbidden by copyright law if you do not accept this License.
+Therefore, by running, Modifying or Conveying the Software, you indicate your
+acceptance of this License, and you accept it as both strict obligations and
+conditions of all your licenses.
+
+  15. Automatic Licensing of Recipients.
+
+  Each time you Convey the Software or a Modified Version under this
+License, the recipient automatically receives a license from the Author on
+these same terms. You are not responsible for enforcing this License against
+third parties. You may not impose any further restriction, fee or royalty on
+the recipient's exercise of the rights granted here (apart from what Section
+3 reserves to the Author).
+
+  16. Earlier Copies and Versions.
+
+  Copies of the Software that were obtained under the MIT License remain under
+the MIT License for those copies only. Copies obtained under the PolyForm
+Noncommercial License 1.0.0 with the earlier Additional Terms remain under
+those terms for those copies, but their holders may choose to use them under
+this License instead. Everything the Author publishes after the date at the
+top of this License is under this License, unless the Author says otherwise
+in writing.
+
+  17. New Versions of This License.
+
+  The Author may publish new versions of this License. Each version has its own
+number. You may use a version of the Software under the version of the
+License that came with it. The Author may also publish a later version, and
+you may then choose to follow that one. No new version retroactively removes
+a right already granted to you in a version you are complying with.
+
+  18. Commercial Licenses.
+
+  The Author may grant, for a fee or free of charge, a separate written license
+that allows what Section 3 reserves, to any person, on any terms. Contact:
+Telegram @celenor (https://t.me/celenor). The Author keeps all rights not
+granted here and may use, license or relicense the Software under other terms.
+
+  19. Disclaimer of Warranty.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+PURPOSE, TITLE AND NON-INFRINGEMENT. THE ENTIRE RISK AS TO THE QUALITY AND
+PERFORMANCE OF THE SOFTWARE IS WITH YOU.
+
+  20. Limitation of Liability.
+
+  IN NO EVENT, AS FAR AS THE LAW ALLOWS, WILL THE AUTHOR BE LIABLE FOR ANY
+DAMAGES, INCLUDING DIRECT, INDIRECT, SPECIAL, INCIDENTAL OR CONSEQUENTIAL
+DAMAGES, LOST PROFITS, LOST DATA OR SERVICE INTERRUPTIONS, ARISING FROM THIS
+LICENSE OR FROM THE USE OR INABILITY TO USE THE SOFTWARE, EVEN IF THE AUTHOR
+HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES. You are solely
+responsible for your service, your customers, your payments, your servers and
+your compliance with the laws that apply to you.
+
+  21. Interpretation.
+
+  If any part of this License is held invalid or unenforceable, the rest stays
+in force, and the invalid part is applied to the greatest extent the law
+allows. If this License and a translation of it differ, the English text
+controls. Section headings are for convenience and do not change the meaning.
+Where this License gives a specific right (Section 2) and a general
+restriction (Section 3), the restriction controls everything the specific
+right does not clearly cover.
+
+                     END OF TERMS AND CONDITIONS
+
+              How to Apply These Terms to Your Own Changes
+
+  If you Modify ShopVPN and Convey it, keep this LICENSE and the NOTICE file,
+add a line to your own files such as
+
+    Modified by <name> on <date>. Licensed under the ShopVPN
+    Source-Available Network Copyleft License 1.0.
+
+and publish your Corresponding Source as Section 6 describes.

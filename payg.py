@@ -410,6 +410,23 @@ def calculate_target_cost(used_bytes: int, active_days: int, user_capacity: int,
     return {"traffic_cost": traffic_cost, "day_cost": day_cost, "user_cost": user_cost,
             "total": traffic_cost + day_cost + user_cost, "new_users": new_users}
 
+def cycle_text(db) -> str:
+    """Settlement interval from the admin setting as a Persian phrase (e.g. «۱۰ دقیقه»)."""
+    try:
+        seconds = int(db.get_setting("payg_cycle_seconds", "600") or 600)
+    except (TypeError, ValueError):
+        seconds = 600
+    seconds = max(60, min(86400, seconds))
+    if seconds % 3600 == 0:
+        count, unit = seconds // 3600, "ساعت"
+    elif seconds % 60 == 0:
+        count, unit = seconds // 60, "دقیقه"
+    else:
+        count, unit = seconds, "ثانیه"
+    digits = "یک" if count == 1 else str(count).translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
+    return f"{digits} {unit}"
+
+
 def get_rates(db):
     try:
         rates = json.loads(db.get_setting("payg_rates", json.dumps(DEFAULT_RATES)))
@@ -1302,7 +1319,7 @@ def create_payg_router(db, is_main_bot=True):
                     f"هزینه این ماه: {status['spent']:,} تومان\n"
                     f"مصرف ثبت‌شده: {status['month_used_bytes']/GIB:.3f} GB\n"
                     f"سرویس‌های متصل: {status['services']}\n"
-                    + rate_text + supported_text + "تسویه مصرف هر ۱۰ دقیقه انجام می‌شود.\n"
+                    + rate_text + supported_text + f"تسویه مصرف هر {cycle_text(db)} انجام می‌شود.\n"
                     + (f"پنل‌های فعال ساخت سرویس: {', '.join(panel_names)}\n" if panel_names else "⚠️ پنل فعالی برای ساخت سرویس انتخاب نشده است.\n")
                     + "برای ساخت سرویس مصرفی جدید از دکمه زیر استفاده کنید.")
         else:
@@ -1402,7 +1419,7 @@ def create_payg_router(db, is_main_bot=True):
                     "📦 حجم: پرداخت به‌ازای مصرف\n⏳ مدت: بدون انقضای ثابت\n"
                     + ("🎁 رایگان برای مدیریت؛ هزینه‌ای کسر نمی‌شود.\n\n" if is_free_payg_user(db, uid) else "💳 هزینه از کیف پول تومانی شما کسر می‌شود.\n\n") +
                     f"🔗 <a href=\"{safe_url}\">دریافت لینک اشتراک</a>\n\n"
-                    "مصرف همه مقصدها با هم جمع و هر ۱۰ دقیقه تسویه می‌شود.",
+                    f"مصرف همه مقصدها با هم جمع و هر {cycle_text(db)} تسویه می‌شود.",
                     parse_mode="HTML", disable_web_page_preview=True)
                 await show(call.message, uid)
             except Exception:
@@ -1511,7 +1528,7 @@ def create_payg_router(db, is_main_bot=True):
                 "📦 حجم: پرداخت به‌ازای مصرف\n⏳ مدت: بدون انقضای ثابت\n"
                 + ("🎁 رایگان برای مدیریت؛ هزینه‌ای کسر نمی‌شود.\n\n" if is_free_payg_user(db, uid) else "💳 هزینه از کیف پول تومانی شما کسر می‌شود.\n\n") +
                 f"🔗 <a href=\"{safe_url}\">دریافت لینک اشتراک</a>\n\n"
-                "مصرف هر ۱۰ دقیقه محاسبه و تسویه می‌شود.", parse_mode="HTML", disable_web_page_preview=True)
+                f"مصرف هر {cycle_text(db)} محاسبه و تسویه می‌شود.", parse_mode="HTML", disable_web_page_preview=True)
             await show(call.message, uid)
         except Exception as exc:
             logger.exception("PAYG service provisioning/notification failed for user=%s", uid)
@@ -1557,7 +1574,7 @@ def create_payg_router(db, is_main_bot=True):
                 reason = "برای فعال‌سازی ابتدا کیف پول را شارژ کنید."
             await call.message.answer(reason)
             return
-        confirmation = "✅ Pay As You Go فعال شد. سرویس‌های دارای اندازه‌گیری مصرف معتبر متصل شدند.\nتسویه هر ۱۰ دقیقه انجام می‌شود."
+        confirmation = f"✅ Pay As You Go فعال شد. سرویس‌های دارای اندازه‌گیری مصرف معتبر متصل شدند.\nتسویه هر {cycle_text(db)} انجام می‌شود."
         if result.get('conflicts'):
             confirmation += (f"\n\n⚠️ تعداد {result['conflicts']} سرویس به دلیل اتصال به استخر سهمیه‌ی دیگری وارد Pay As You Go نشد؛ "
                              "برای جلوگیری از تداخل سهمیه‌ها، انتقال آن‌ها خودکار انجام نشد.")

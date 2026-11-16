@@ -198,9 +198,20 @@ WUI_DSUB_WARNING = ("⚠️ برای پنل W-UI ساب اختصاصی باید 
                     "ساب اختصاصی را از تنظیمات روشن کن.")
 
 
+DNS_DSUB_WARNING = ("⚠️ برای پنل Doctor DNS ساب اختصاصی باید روشن باشد: صفحه‌ی آدرس‌های DNS/DoT/DoH، "
+                    "ثبت آی‌پی و فایل‌های WireGuard فقط با ساب اختصاصی روشن (و آدرس پایه‌ی تنظیم‌شده) به کاربر نشان داده می‌شود. "
+                    "ساب اختصاصی را از تنظیمات روشن کن.")
+
+
 def wui_dsub_warning(db, panel_type: str) -> str:
-    """متن هشدار اگر پنل W-UI است و ساب اختصاصی خاموش است؛ وگرنه رشته‌ی خالی."""
-    return WUI_DSUB_WARNING if panel_type == "wui" and not is_enabled(db) else ""
+    """متن هشدار اگر پنل W-UI یا Doctor DNS است و ساب اختصاصی خاموش است؛ وگرنه رشته‌ی خالی."""
+    if is_enabled(db):
+        return ""
+    if panel_type == "wui":
+        return WUI_DSUB_WARNING
+    if panel_type == "doctordns":
+        return DNS_DSUB_WARNING
+    return ""
 
 
 def link_for_token(db, token: str) -> str:
@@ -945,6 +956,24 @@ def vpn_items_for_page(entries: Optional[List[dict]]) -> List[dict]:
     return out
 
 
+DNS_ITEMS_MAX = 10
+
+
+def dns_for_page(dns: Optional[dict]) -> Optional[dict]:
+    """بخش DNS صفحه (پنل Doctor DNS): سرورها با آدرس DNS/DoT/DoH و آی‌پی‌های ثبت‌شده؛ None یعنی سرویس DNS نیست."""
+    if not dns:
+        return None
+    servers = []
+    for e in (dns.get("servers") or [])[:DNS_ITEMS_MAX]:
+        ip = str(e.get("ip") or "")
+        if not ip:
+            continue
+        servers.append({"n": int(e.get("n") or len(servers) + 1), "ip": ip, "note": str(e.get("note") or ""),
+                        "dot": str(e.get("dot") or ""), "doh": str(e.get("doh") or "")})
+    return {"servers": servers, "ips": [str(x) for x in (dns.get("ips") or [])][:10],
+            "maxIps": int(dns.get("max_ips") or 0)}
+
+
 def vpn_secret(entries: Optional[List[dict]], index: int, what: str) -> Optional[str]:
     """مقدار یک راز (user/pass/psk) برای ردیف شماره‌ی index (۱-پایه)؛ None اگر نبود."""
     key = VPN_SECRETS.get(what)
@@ -971,7 +1000,7 @@ def vpn_ca_file(entries: Optional[List[dict]], index: int) -> Optional[dict]:
 def build_page_data(cc, info: dict, uris: List[str], settings: Dict[str, str], brand: str,
                     sub_link: str, series: Optional[dict], now: Optional[int] = None,
                     ovpn: Optional[List[dict]] = None, wg: Optional[List[dict]] = None,
-                    vpn: Optional[List[dict]] = None) -> dict:
+                    vpn: Optional[List[dict]] = None, dns: Optional[dict] = None) -> dict:
     now = now or int(time.time())
     state = compute_state(cc, info, now)
     total = info.get("total") or 0
@@ -994,6 +1023,7 @@ def build_page_data(cc, info: dict, uris: List[str], settings: Dict[str, str], b
     ovpn_items = [{"n": f["remark"], "f": f["filename"], "i": f["index"]} for f in (ovpn or [])[:20]]
     wg_items = [{"n": f["remark"], "f": f["filename"], "i": f["index"]} for f in (wg or [])[:20]]
     vpn_items = vpn_items_for_page(vpn)
+    dns_item = dns_for_page(dns)
     return {
         "user": service_name(cc), "brand": brand, "logo": logo,
         "state": state, "online": False,
@@ -1018,11 +1048,13 @@ def build_page_data(cc, info: dict, uris: List[str], settings: Dict[str, str], b
             "ovpn": bool(ovpn_items),
             "wg": bool(wg_items),
             "vpn": bool(vpn_items),
+            "dns": bool(dns_item and dns_item["servers"]),
         },
         "configs": configs,
         "ovpn": ovpn_items,
         "wg": wg_items,
         "vpn": vpn_items,
+        "dns": dns_item,
         "apps": resolve_apps(settings),
         "faq": [list(x) for x in resolve_faq(settings)],
         "series": series,
