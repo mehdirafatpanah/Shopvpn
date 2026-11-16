@@ -23,6 +23,7 @@ from .mikrotik_provider import MikroTikProvider
 from .ibsng_provider import IBSngProvider
 from .wui_provider import WUIProvider
 from .stealth_provider import StealthProvider
+from .doctordns_provider import DoctorDNSProvider
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 
 PROVIDERS = {
@@ -39,6 +40,7 @@ PROVIDERS = {
     "ibsng": IBSngProvider,
     "wui": WUIProvider,
     "stealth": StealthProvider,
+    "doctordns": DoctorDNSProvider,
 }
 
 PANEL_TYPE_LABELS = {
@@ -55,6 +57,7 @@ PANEL_TYPE_LABELS = {
     "ibsng": "IBSng",
     "wui": "W-UI",
     "stealth": "Stealth VLESS",
+    "doctordns": "Doctor DNS",
 }
 
 # پنل‌هایی که مثل PasarGuard با «کاربر نمونه» قالب می‌گیرند (group_ids/proxy_settings)
@@ -91,7 +94,7 @@ def panel_server_is_ready(server) -> bool:
         return bool(server["group_ids"])
     return True
 
-TOKEN_ONLY_PANEL_TYPES = {"3xui": "3xui", "rebecca": "rebecca", "sui": "sui", "wgdashboard": "wgdashboard", "wui": "wui", "stealth": "stealth"}
+TOKEN_ONLY_PANEL_TYPES = {"3xui": "3xui", "rebecca": "rebecca", "sui": "sui", "wgdashboard": "wgdashboard", "wui": "wui", "stealth": "stealth", "doctordns": "doctordns"}
 # پنل‌هایی که بعد از آدرس و توکن هیچ تنظیم دیگری (قالب/inbound/ساب) نمی‌خواهند؛ فقط تست اتصال و ذخیره
 NO_SETUP_PANEL_TYPES = {"stealth"}
 
@@ -100,6 +103,7 @@ SECRET_PROMPTS = {
     "sui": "API Token پنل S-UI را بفرست (از بخش Admin ← API Token داخل پنل):",
     "wgdashboard": "API Key پنل WGDashboard را بفرست (از Settings ← API Keys داخل پنل):",
     "stealth": "توکن API نود Stealth را بفرست (نصاب موقع پایان نصب چاپ می‌کند؛ آدرس API هم همان است که نصاب نشان داد):",
+    "doctordns": "کلید API پنل Doctor DNS را بفرست (پنل ادمین ← API ← کلید تازه، با تیک «دسترسی ادمین»؛ شروع با dd_):",
     "wui": "API Token پنل W-UI را بفرست (از Settings ← Authentication ← API Token داخل پنل؛ همان توکنی که نصب‌کننده نشان داد):",
 }
 
