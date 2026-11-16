@@ -8702,7 +8702,7 @@ function renderResellerCohortBlock(data) {
 const PANEL_TYPE_OPTIONS_HTML = [
   ['pasarguard', 'PasarGuard'], ['3xui', '3X-UI'], ['marzban', 'Marzban'],
   ['marzneshin', 'Marzneshin'], ['hiddify', 'Hiddify'], ['alireza', 'Alireza X-UI'],
-  ['rebecca', 'Rebecca'], ['sui', 'S-UI'], ['wgdashboard', 'WGDashboard'], ['mikrotik', 'MikroTik'], ['ibsng', 'IBSng'], ['wui', 'W-UI'], ['stealth', 'Stealth VLESS'],
+  ['rebecca', 'Rebecca'], ['sui', 'S-UI'], ['wgdashboard', 'WGDashboard'], ['mikrotik', 'MikroTik'], ['ibsng', 'IBSng'], ['wui', 'W-UI'], ['doctordns', 'Doctor DNS'], ['stealth', 'Stealth VLESS'],
 ].map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
 const PANEL_INBOUND_SELECT_TYPES = ['3xui', 'alireza'];
 const PANEL_SUB_BASE_URL_TYPES = ['3xui', 'hiddify', 'alireza'];
@@ -8711,13 +8711,14 @@ const PANEL_TEMPLATE_BASED_TYPES = ['pasarguard', 'marzban', 'marzneshin', 'rebe
 // برای بقیه، گروه/اینباند موقع ساخت محصول انتخاب می‌شود.
 const PANEL_CONNECT_TEMPLATE_TYPES = ['rebecca', 'ibsng'];
 const PANEL_LATER_NOTE = 'ℹ️ در اتصال فقط آدرس و اطلاعات ورود پنل را می‌گیریم. انتخاب گروه/اینباند اینجا نیست؛ موقع ساخت هر محصول مشخص می‌کنی آن محصول روی کدام گروه/اینباندِ این پنل ساخته شود (لیست از خود پنل خوانده می‌شود).';
-const PANEL_TOKEN_ONLY_TYPES = ['3xui', 'rebecca', 'sui', 'wgdashboard', 'wui', 'stealth'];
+const PANEL_TOKEN_ONLY_TYPES = ['3xui', 'rebecca', 'sui', 'wgdashboard', 'wui', 'stealth', 'doctordns'];
 const PANEL_SECRET_PLACEHOLDERS = {
   rebecca: 'توکن ادمین (Bearer token)',
   sui: 'API Token (Admin ← API Token در پنل)',
   wgdashboard: 'API Key (Settings ← API Keys در پنل)',
   wui: 'API Token (Settings ← Authentication ← API Token در پنل)',
   stealth: 'توکن API نود (نصاب در پایان نصب چاپ می‌کند)',
+  doctordns: 'کلید API پنل Doctor DNS (شروع با dd_ ؛ با تیک «دسترسی ادمین» ساخته شود)',
 };
 const PANEL_TEMPLATE_PLACEHOLDERS = {
   sui: 'نام یک کاربر (client) موجود روی پنل',
@@ -8734,6 +8735,7 @@ const PANEL_TEMPLATE_HINTS = {
   wui: 'فقط API Token لازم است. interface ها موقع ساخت محصول انتخاب می‌شوند. آدرس API باید شامل Web Base Path پنل باشد.',
   mikrotik: 'یوزر/پس ادمین روتر (REST API) لازم است. profile (که حجم و مدت را تعیین می‌کند) موقع ساخت محصول انتخاب می‌شود.',
   ibsng: 'این پنل لیست زنده‌ی گروه ندارد؛ برای همین فقط در همین یک مورد نام یک گروه (Group) لازم است. حجم و مدت را گروه تعیین می‌کند. یوزر/پس ادمین IBSng لازم است.',
+  doctordns: 'فقط کلید API ادمین (dd_...) لازم است؛ یوزرنیم لازم نیست. پلن هر محصول موقع ساخت محصول از لیست زنده‌ی پنل انتخاب می‌شود و حجم/مدت را همان پلن تعیین می‌کند. برای نمایش آدرس‌های DNS به کاربر، «ساب اختصاصی» باید فعال باشد.',
 };
 
 // ---- نصب خودکار نود Stealth VLESS (مشترک بین «پنل‌ها» و «نودها و سهمیه SSH») ----
@@ -10577,6 +10579,7 @@ const SETTINGS_GROUPS = [
     { key: 'delivery_message_template_ibsng', label: 'قالب تحویل — IBSng', type: 'textarea' },
     { key: 'delivery_message_template_wui', label: 'قالب تحویل — WUI', type: 'textarea' },
     { key: 'delivery_message_template_stealth', label: 'قالب تحویل — Stealth', type: 'textarea' },
+    { key: 'delivery_message_template_doctordns', label: 'قالب تحویل — Doctor DNS', type: 'textarea' },
   ]},
   { tab: 'webcustom', title: '🏷 برندینگ و ظاهر فروشگاه وب', fields: [
     { key: 'web_store_logo', label: 'آدرس لوگوی فروشگاه وب (فقط HTTPS؛ خالی = لوگوی پیش‌فرض)', type: 'text' },
