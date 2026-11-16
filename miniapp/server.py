@@ -667,6 +667,14 @@ def api_i18n_translate_batch(payload: Dict[str, Any], auth=Depends(get_verified_
 # حساب کاربری
 # ---------------------------------------------------------------------------
 
+@app.get("/source", include_in_schema=False)
+def source_redirect():
+    """LICENSE section 6: public link to the source code of the running version."""
+    import source_offer
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(source_offer.source_url(), status_code=302)
+
+
 @app.get("/api/me")
 def api_me(auth=Depends(get_verified_user)):
     tg_id, db, tenant = auth
