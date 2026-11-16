@@ -588,6 +588,14 @@ async def web_network_map(request: Request, tenant: Tenant = Depends(get_tenant)
     return {**data, "origin": origin}
 
 
+@router.get("/source", include_in_schema=False)
+def source_redirect():
+    """LICENSE section 6: public link to the source code of the running version."""
+    import source_offer
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(source_offer.source_url(), status_code=302)
+
+
 @router.get("/robots.txt", include_in_schema=False)
 def seo_robots(request: Request):
     body = (
