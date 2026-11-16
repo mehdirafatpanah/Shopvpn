@@ -1628,6 +1628,7 @@ async function renderDashboard() {
   else if (theme === 'cyberpunk') await renderDashboardCyberpunk(s, sys);
   else if (theme === 'streetops') await renderDashboardStreetOps(s, sys);
   else if (theme === 'android') await renderDashboardAndroid(s, sys);
+  else if (theme === 'glassops') await renderDashboardGlassOps(s, sys);
   else await renderDashboardBento(s, sys);
   const root = content();
   if (root) root.insertAdjacentHTML('afterbegin', dashRangeBarHtml(s));
@@ -2439,6 +2440,157 @@ function renderDashboardBento(s, sys) {
       seg.style.strokeDashoffset = seg.dataset.final;
     });
     $$('.bw-res-fill[data-w]', root).forEach(b => { b.style.width = b.dataset.w + '%'; });
+  }, 60));
+  mountServerMap();
+}
+
+/* ------------------------------------------------- dashboard: glass ops --- */
+// داشبورد اختصاصی Glass Ops — «نبض عملیات»: به‌جای کاشی‌های آماری، یک نمودار ستونیِ
+// درآمد روزانه (فروش + شارژ کیف پول) با مقایسه با بازه‌ی قبل، خط لوله‌ی تصمیم سفارش‌ها،
+// ظرفیت سرور با آستانه‌ی هشدار، و نوار مشتریان/سرویس‌ها. میان‌برها و هشدارها را
+// appendDashboardCommandCenter مشترک نشان می‌دهد و اینجا تکرار نمی‌شوند.
+function goTier(p) { return p >= 90 ? 'crit' : p >= 75 ? 'warn' : 'ok'; }
+function goDeltaHtml(pct) {
+  if (pct === null || pct === undefined) return '<span class="go-delta flat">بدون مبنای مقایسه</span>';
+  const up = pct >= 0;
+  return `<span class="go-delta ${up ? 'up' : 'down'}">${up ? '▲' : '▼'} ${fmt(Math.abs(pct))}٪ نسبت به بازه‌ی قبل</span>`;
+}
+function renderDashboardGlassOps(s, sys) {
+  const series = s.daily_series || [];
+  const maxDay = Math.max(...series.map(d => d.revenue || 0), 1);
+  let bestIdx = -1, bestVal = 0;
+  series.forEach((d, i) => { if ((d.revenue || 0) > bestVal) { bestVal = d.revenue; bestIdx = i; } });
+  const dense = series.length > 45;
+  const cols = series.map((d, i) => {
+    const total = d.revenue || 0;
+    const topup = Math.min(d.topup || 0, total);
+    const sales = total - topup;
+    const label = `${fmtDateOnly(d.date)}: ${fmt(total)}`;
+    return `<div class="go-col${i === bestIdx ? ' best' : ''}" role="listitem" tabindex="0"
+        data-label="${esc(fmtDateOnly(d.date))}" data-total="${total}" data-sales="${sales}" data-topup="${topup}" data-orders="${d.orders || 0}"
+        aria-label="${esc(label)}">
+      <span class="go-col-bar" data-h="${total > 0 ? Math.max(2, (total / maxDay) * 100) : 0}">
+        <i class="go-col-topup" style="flex:${topup} 1 0"></i><i class="go-col-sales" style="flex:${sales} 1 0"></i>
+      </span></div>`;
+  }).join('') || '<span class="card-sub">در این بازه داده‌ای ثبت نشده است.</span>';
+
+  const prev = Number(s.prev_revenue || 0), cur = Number(s.revenue || 0);
+  const cmpMax = Math.max(prev, cur, 1);
+
+  const pend = Number(s.pending || 0), appr = Number(s.approved || 0), rej = Number(s.rejected || 0);
+  const decTotal = pend + appr + rej;
+  const seg = (v, cls) => v > 0 ? `<span class="go-seg ${cls}" style="flex:${v} 1 0"></span>` : '';
+  const canOrders = canSee(NAV.find(n => n.key === 'orders')?.role || 'any');
+  const pendTag = canOrders ? 'button type="button" data-go="orders"' : 'div';
+  const pendEnd = canOrders ? 'button' : 'div';
+
+  let capacity;
+  if (sys) {
+    const rows = [
+      { name: 'پردازنده', pct: sys.cpu.percent, sub: `${fmt(sys.cpu.cores)} هسته` },
+      { name: 'حافظه', pct: sys.ram.percent, sub: `${sys.ram.used_gb} از ${sys.ram.total_gb} گیگابایت` },
+      { name: 'دیسک', pct: sys.disk.percent, sub: `${sys.disk.used_gb} از ${sys.disk.total_gb} گیگابایت` },
+    ];
+    capacity = rows.map(r => `
+      <div class="go-cap-row" data-tier="${goTier(r.pct)}">
+        <div class="go-cap-top"><b>${r.name}</b><span class="go-cap-pct mono">${fmt(Math.round(r.pct))}٪</span></div>
+        <span class="go-cap-track"><span class="go-cap-fill" data-w="${Math.max(0, Math.min(100, r.pct))}"></span><i style="inset-inline-start:75%"></i><i style="inset-inline-start:90%"></i></span>
+        <small>${r.sub}</small>
+      </div>`).join('');
+  } else {
+    capacity = '<p class="card-sub">آمار منابع سرور در دسترس نیست (ماژول psutil نصب نشده است).</p>';
+  }
+
+  const maxCat = Math.max(...(s.category_breakdown || []).map(c => c.revenue), 1);
+  const catRows = (s.category_breakdown || []).slice(0, 6).map(c => `
+    <div class="go-bar-row"><span class="go-bar-name">${esc(c.name)}</span>
+      <span class="go-bar-track"><span class="go-bar-fill" data-w="${(c.revenue / maxCat) * 100}"></span></span>
+      <b class="go-bar-val mono">${fmt(c.revenue)}</b></div>`).join('') || '<span class="card-sub">داده‌ای نیست</span>';
+  const prodRows = (s.top_products || []).slice(0, 5).map(p => `
+    <div class="go-prod"><span class="go-prod-name">${esc(p.name)}</span>
+      <span class="go-prod-meta"><b class="mono">${fmt(p.orders)}</b> سفارش</span>
+      <span class="go-prod-rev mono">${fmt(p.revenue)}</span></div>`).join('') || '<span class="card-sub">داده‌ای نیست</span>';
+
+  const ordRev = Number(s.orders_revenue || 0), topRev = Number(s.topup_revenue || 0);
+  const dirRev = Number(s.direct_revenue || 0), refRev = Number(s.referral_revenue || 0);
+  const splitBar = (a, b, la, lb, ca, cb) => (a + b) > 0 ? `
+    <div class="go-split"><div class="go-split-bar"><span style="flex:${a} 1 0;background:${ca}"></span><span style="flex:${b} 1 0;background:${cb}"></span></div>
+    <div class="go-split-leg"><span><i style="background:${ca}"></i>${la} <b class="mono">${fmt(a)}</b></span><span><i style="background:${cb}"></i>${lb} <b class="mono">${fmt(b)}</b></span></div></div>` : '';
+
+  setContent(`
+    <div class="go-board">
+      <section class="card go-hero" aria-label="درآمد">
+        <div class="go-hero-main">
+          <span class="go-hero-label">درآمد بازه‌ی انتخابی</span>
+          <span class="go-hero-value mono" data-count="${s.revenue}">۰</span>
+          ${goDeltaHtml(s.revenue_change_pct)}
+          <div class="go-cmp">
+            <div class="go-cmp-row"><span>این بازه</span><span class="go-cmp-track"><span class="go-cmp-fill now" data-w="${(cur / cmpMax) * 100}"></span></span><b class="mono">${fmt(cur)}</b></div>
+            <div class="go-cmp-row"><span>بازه‌ی قبل</span><span class="go-cmp-track"><span class="go-cmp-fill before" data-w="${(prev / cmpMax) * 100}"></span></span><b class="mono">${fmt(prev)}</b></div>
+          </div>
+          ${splitBar(ordRev, topRev, 'فروش سفارش', 'شارژ کیف پول', 'var(--primary)', 'var(--cyan)')}
+        </div>
+        <div class="go-hero-chart">
+          <div class="go-readout" id="go-readout" aria-live="polite"></div>
+          <div class="go-chart${dense ? ' dense' : ''}" role="list" aria-label="درآمد روزانه">${cols}</div>
+          <div class="go-axis"><span>${series.length ? fmtDateOnly(series[0].date) : ''}</span><span>${series.length ? fmtDateOnly(series[series.length - 1].date) : ''}</span></div>
+        </div>
+      </section>
+
+      <section class="card go-pipeline" aria-label="خط لوله سفارش‌ها">
+        <div class="card-head"><h3>تصمیم سفارش‌ها</h3><span class="card-sub">نرخ تایید ${fmt(s.conversion_rate)}٪ از سفارش‌های تصمیم‌گرفته‌شده</span></div>
+        <div class="go-flow" role="img" aria-label="در انتظار ${pend}، تایید شده ${appr}، رد شده ${rej}">${decTotal ? seg(pend, 'wait') + seg(appr, 'ok') + seg(rej, 'no') : '<span class="go-seg empty"></span>'}</div>
+        <div class="go-flow-stats">
+          <${pendTag} class="go-fstat wait"><span>در انتظار تصمیم</span><b class="mono" data-count="${pend}">۰</b>${canOrders ? '<small>باز کردن صف سفارش‌ها</small>' : ''}</${pendEnd}>
+          <div class="go-fstat ok"><span>تایید شده</span><b class="mono" data-count="${appr}">۰</b></div>
+          <div class="go-fstat no"><span>رد شده</span><b class="mono" data-count="${rej}">۰</b></div>
+        </div>
+      </section>
+
+      <section class="card go-capacity" aria-label="ظرفیت سرور">
+        <div class="card-head"><h3>ظرفیت سرور</h3><span class="card-sub">هشدار از ۷۵٪، بحرانی از ۹۰٪</span></div>
+        ${capacity}
+      </section>
+
+      <section class="card go-strip" aria-label="مشتریان و سرویس‌ها">
+        <div class="go-strip-item"><span>کاربران</span><b class="mono" data-count="${s.total_users}">۰</b><small>${fmt(s.new_users)} نفر جدید در این بازه</small></div>
+        <div class="go-strip-item"><span>کانفیگ فعال</span><b class="mono" data-count="${s.active_configs}">۰</b><small>${fmt(s.open_tickets)} تیکت باز</small></div>
+        <div class="go-strip-item"><span>میانگین سبد خرید</span><b class="mono">${fmt(s.aov)}</b><small>فقط سفارش‌ها، بدون شارژ کیف پول</small></div>
+        <div class="go-strip-item"><span>اعتبار کیف پول کاربران</span><b class="mono">${fmt(s.wallet_total)}</b><small>جمع موجودی فعلی</small></div>
+      </section>
+
+      <section class="card go-cats"><div class="card-head"><h3>درآمد به تفکیک دسته</h3></div>${catRows}${splitBar(dirRev, refRev, 'مستقیم', 'از طریق دعوت', 'var(--violet)', 'var(--amber)')}</section>
+      <section class="card go-prods"><div class="card-head"><h3>پرفروش‌ترین محصولات</h3></div>${prodRows}</section>
+    </div>
+
+    ${serverMapCardHtml()}
+  `);
+
+  const root = content();
+  $$('[data-count]', root).forEach(el => animateCount(el, Number(el.dataset.count)));
+  $$('.go-fstat[data-go]', root).forEach(b => b.addEventListener('click', () => goTo(b.dataset.go)));
+
+  // خوانش لحظه‌ای نمودار با هاور/فوکوس (پیش‌فرض: بهترین روز بازه)
+  const readout = $('#go-readout', root);
+  const showCol = col => {
+    if (!readout) return;
+    if (!col) { readout.innerHTML = '<span class="card-sub">روی هر ستون بروید تا جزئیات روز را ببینید</span>'; return; }
+    readout.innerHTML = `<b>${col.dataset.label}</b><span class="mono">${fmt(Number(col.dataset.total))}</span>
+      <small><i class="d-sales"></i>فروش ${fmt(Number(col.dataset.sales))}</small><small><i class="d-topup"></i>شارژ ${fmt(Number(col.dataset.topup))}</small><small>${fmt(Number(col.dataset.orders))} سفارش</small>`;
+  };
+  const bestCol = $('.go-col.best', root);
+  showCol(bestCol);
+  $$('.go-col', root).forEach(col => {
+    col.addEventListener('mouseenter', () => showCol(col));
+    col.addEventListener('focus', () => showCol(col));
+    col.addEventListener('mouseleave', () => showCol(bestCol));
+    col.addEventListener('blur', () => showCol(bestCol));
+  });
+
+  // یک حرکت هماهنگ: ستون‌ها و نوارها بعد از mount رشد می‌کنند
+  requestAnimationFrame(() => setTimeout(() => {
+    $$('.go-col-bar[data-h]', root).forEach(b => { b.style.height = b.dataset.h + '%'; });
+    $$('[data-w]', root).forEach(b => { b.style.width = b.dataset.w + '%'; });
   }, 60));
   mountServerMap();
 }
