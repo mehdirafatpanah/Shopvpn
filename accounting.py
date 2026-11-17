@@ -276,6 +276,107 @@ def suggest_tariff(db, panel_id: int) -> dict:
 # دفتر مالی پنل وب: ثبت درآمد/هزینه، گردش مالی و گزارش‌های دوره‌ای
 # ---------------------------------------------------------------------------
 
+def suggest_service_addon(db, custom_config: dict, amount: float, addon_kind: str) -> dict:
+    """محاسبه قیمت افزونه برای سرویس خریداری‌شده؛ چندپنلی/چندنودی با میانگین نرخ مقصدها."""
+    if addon_kind not in ("gb", "user"):
+        raise ValueError("نوع افزونه نامعتبر است.")
+    cfg = get_config(db)
+    rates = []
+    panel_ids = []
+    primary_id = custom_config.get("panel_server_id")
+    if primary_id:
+        panel_ids.append(int(primary_id))
+    try:
+        links = db.panel_links_for_config(int(custom_config.get("id")), active_only=True)
+    except Exception as exc:
+        raise ValueError("خواندن پنل‌های متصل به سرویس برای محاسبه حسابداری ناموفق بود.") from exc
+    for link in links or []:
+        pid = link.get("panel_server_id") if isinstance(link, dict) else None
+        if pid:
+            panel_ids.append(int(pid))
+    panel_ids = list(dict.fromkeys(panel_ids))
+    link_targets = {}
+    for link in links or []:
+        if isinstance(link, dict) and link.get("panel_server_id"):
+            link_targets[int(link["panel_server_id"])] = link.get("target_config")
+    panel_cost_map = panel_costs(db)
+    for pid in panel_ids:
+        server = db.get_panel_server(pid)
+        if not server:
+            continue
+        target = custom_config.get("panel_target_config") if pid == int(primary_id or 0) else link_targets.get(pid)
+        targets = []
+        if target:
+            try:
+                parsed = json.loads(target) if isinstance(target, str) else target
+                if isinstance(parsed, dict):
+                    targets = parsed.get("targets") or parsed.get("inbounds") or parsed.get("groups") or []
+                    if not targets and "value" in parsed:
+                        value = parsed.get("value")
+                        if isinstance(value, dict):
+                            targets = [f"{proto}::{item}" for proto, items in value.items() for item in (items or [])]
+                        elif isinstance(value, list):
+                            targets = value
+                        elif value not in (None, ""):
+                            targets = [value]
+                elif isinstance(parsed, list):
+                    targets = parsed
+            except Exception:
+                targets = []
+        targets = [str(x.get("value") if isinstance(x, dict) else x) for x in targets if x not in (None, "")]
+        panel_entries = panel_cost_map.get(str(pid), {})
+        if targets:
+            missing = [t for t in targets if t not in panel_entries and "*" not in panel_entries]
+            if missing:
+                raise ValueError("برای همه گروه‌ها یا اینباندهای انتخاب‌شده تعرفه حسابداری ثبت نشده است.")
+            selected_rates = [panel_entries.get(t) if t in panel_entries else panel_entries.get("*") for t in targets]
+        elif panel_entries.get("*"):
+            selected_rates = [panel_entries["*"]]
+        else:
+            selected_rates = [v for k, v in panel_entries.items() if k != "*" and isinstance(v, dict)] or [_zero()]
+        # تعرفه مقصدهای متعدد یک پنل با هم جمع می‌شود؛ سپس بین پنل‌های مختلف میانگین گرفته می‌شود.
+        rates.append({field: sum(int(r.get(field, 0) or 0) for r in selected_rates) for field in RATE_FIELDS})
+    # سرویس ترکیبی VPN+SSH: نودهای متصل به استخر سهمیه نیز در میانگین قیمت لحاظ می‌شوند.
+    node_ids = []
+    try:
+        pool = db.quota_pool_for_custom_config(int(custom_config.get("id")))
+        if pool:
+            usage = db.get_quota_usage(int(pool["id"]))
+            if usage is None:
+                raise ValueError("اطلاعات استخر سهمیه سرویس برای محاسبه حسابداری در دسترس نیست.")
+            node_cost_map = get_node_costs(db)
+            for service in usage.get("services", []):
+                node_id = service.get("node_id")
+                if node_id:
+                    node_ids.append(int(node_id))
+            # هر نود فقط یک بار در میانگین قیمت لحاظ شود.
+            for node_id in dict.fromkeys(node_ids):
+                rates.append(node_cost_map.get(str(node_id), _zero()))
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError("خواندن نودهای استخر سهمیه برای محاسبه حسابداری ناموفق بود.") from exc
+    # تک‌پنلی: نرخ همان پنل/مجموع گروه‌های انتخاب‌شده؛ چندپنلی یا ترکیبی با نود: میانگین پنل‌ها و نودها.
+    field = "gb_rate" if addon_kind == "gb" else "user_rate"
+    if not rates or any(int(r.get(field, 0) or 0) <= 0 for r in rates):
+        raise ValueError("تعرفه حسابداری برای همه پنل‌ها، نودها و مقصدهای این سرویس ثبت نشده است.")
+    cost = int(rates[0].get(field, 0) or 0) if len(rates) == 1 else _pick([r.get(field, 0) for r in rates], "average")
+    if cost <= 0:
+        raise ValueError("تعرفه این افزونه برای مقصد سرویس ثبت نشده است.")
+    env = {name: 0 for name in BASE_VARS}
+    env.update({"gb": 1 if addon_kind == "gb" else 0,
+                "users": 1 if addon_kind == "user" else 0,
+                "panels": len(panel_ids), "nodes": len(set(node_ids)),
+                "cost_gb": cost if addon_kind == "gb" else 0,
+                "cost_day": 0, "cost_user": cost if addon_kind == "user" else 0})
+    env.update(cfg["constants"])
+    formula_key = "payg_gb" if addon_kind == "gb" else "payg_user"
+    raw = evaluate(cfg["formulas"][formula_key], env) * float(amount)
+    return {"price": _round(raw, cfg["round_to"]), "raw": round(raw, 2),
+            "unit_cost": cost, "panels": len(panel_ids), "nodes": len(set(node_ids)), "formula": cfg["formulas"][formula_key],
+            "calc_mode": "average" if len(rates) > 1 else "single"}
+
+
 LEDGER_TYPES = ("income", "expense")
 LEDGER_CATEGORIES = {
     "income": ["فروش نقدی", "درآمد متفرقه", "سایر درآمد"],

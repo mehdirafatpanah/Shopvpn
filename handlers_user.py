@@ -448,7 +448,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         markup = _card_pay_markup(cfg, card_number, card_holder, int(final_price), back_cb=back_cb)
         if _card.get("photo_file_id"):
             try:
-                await target.answer_photo(_card["photo_file_id"])
+                _photo_msg = await target.answer_photo(
+                    _card["photo_file_id"], protect_content=bool(cfg["protect"]) or None,
+                )
+                await _schedule_card_msg_autodelete(_photo_msg.chat.id, _photo_msg.message_id)
             except Exception:
                 logger.warning("ارسال تصویر کارت‌به‌کارت ناموفق بود.", exc_info=True)
         sent = await target.answer(
@@ -488,7 +491,10 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         )
         if invoice.get("photo_file_id"):
             try:
-                await target.answer_photo(invoice["photo_file_id"])
+                _photo_msg = await target.answer_photo(
+                    invoice["photo_file_id"], protect_content=bool(cfg["protect"]) or None,
+                )
+                await _schedule_card_msg_autodelete(_photo_msg.chat.id, _photo_msg.message_id)
             except Exception:
                 logger.warning("ارسال تصویر کارت خودکار ناموفق بود.", exc_info=True)
         status_row = [InlineKeyboardButton(text=tr("🔄 بررسی وضعیت پرداخت"), callback_data=f"check_c2c:{invoice['invoice_id']}")]
@@ -5994,7 +6000,15 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         # تنظیم کرده (نه قیمت کامل یک پلن)، از کاربر مقدار مورد نظر پرسیده می‌شود.
         rate_key = "renewal_price_per_gb" if mode == "volume" else "renewal_price_per_day"
         rate = int((await asyncio.to_thread(db.get_setting, rate_key, "0")) or "0")
-        if rate <= 0:
+        accounting_enabled = False
+        if mode == "volume" and item["kind"] == "custom":
+            try:
+                import accounting
+                accounting.suggest_service_addon(db, item["custom"], 1, "gb")
+                accounting_enabled = True
+            except (ValueError, KeyError, TypeError):
+                pass
+        if rate <= 0 and not accounting_enabled:
             await call.answer(db.get_text('handlers_user.auto_bc026085', 'قیمت\u200cگذاری این بخش هنوز توسط ادمین تنظیم نشده است.'), show_alert=True)
             return
 
@@ -6004,13 +6018,14 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         await state.update_data(
             renew_mode=mode, renew_cb_id=cb_id,
             renew_target_kind=item["kind"], renew_target_id=target_id, renew_rate=rate,
+            renew_accounting=accounting_enabled,
         )
         unit_label = "گیگابایت" if mode == "volume" else "روز"
         await _safe_edit(
             call.message,
             f"🔄 {_RENEW_MODE_LABEL[mode]}\n\n"
-            f"نرخ: {rate:,} تومان به ازای هر {unit_label}\n\n"
-            f"لطفاً مقداری که می‌خواهید اضافه شود را به {unit_label} وارد کنید (فقط عدد صحیح):",
+            + (f"نرخ: {rate:,} تومان به ازای هر {unit_label}\n\n" if rate > 0 else "💰 قیمت بر اساس تعرفه حسابداری سرویس شما محاسبه می‌شود.\n\n")
+            + f"لطفاً مقداری که می‌خواهید اضافه شود را به {unit_label} وارد کنید (فقط عدد صحیح):",
             reply_markup=kb.cancel_kb(),
         )
 
@@ -6028,7 +6043,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         target_kind = data.get("renew_target_kind")
         target_id = data.get("renew_target_id")
         rate = data.get("renew_rate", 0)
-        if not mode or not cb_id or not rate:
+        accounting_enabled = bool(data.get("renew_accounting"))
+        if not mode or not cb_id or (not rate and not accounting_enabled):
             await message.answer(db.get_text('handlers_user.auto_32ccba24', 'سفارش معتبر یافت نشد. لطفاً دوباره از منو شروع کنید.'))
             await state.clear()
             return
@@ -6042,6 +6058,13 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         add_volume = amount if mode == "volume" else 0
         add_days = amount if mode == "time" else 0
         price = amount * rate
+        if accounting_enabled and mode == "volume" and item["kind"] == "custom":
+            try:
+                import accounting
+                price = int(accounting.suggest_service_addon(db, item["custom"], amount, "gb")["price"])
+            except (ValueError, KeyError, TypeError) as exc:
+                await message.answer(f"❌ محاسبه قیمت افزونه ممکن نشد: {exc}")
+                return
         unit_label = "گیگابایت" if mode == "volume" else "روز"
         summary_label = f"{amount:,} {unit_label}"
 
@@ -6090,6 +6113,11 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await call.answer(db.get_text('handlers_user.auto_f4122f85', 'این گزینه در دسترس نیست.'), show_alert=True)
             return
         price = ul.upgrade_price(info["product"], info["current"], users)
+        try:
+            import accounting
+            price = int(accounting.suggest_service_addon(db, item["custom"], users - info["current"], "user")["price"])
+        except (ValueError, KeyError, TypeError):
+            pass
         await call.answer()
 
         async def edit_fn(t, **kw):

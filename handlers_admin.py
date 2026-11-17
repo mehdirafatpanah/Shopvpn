@@ -17532,6 +17532,26 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             reply_markup=kb.admin_backup_sync_menu_kb(db),
         )
 
+    @router.callback_query(F.data == "adm_backup_dm_toggle")
+    async def cb_backup_dm_toggle(call: CallbackQuery):
+        if not owner_only(call.from_user.id):
+            return await deny_support(call)
+        skip_dm = (db.get_setting("backup_skip_admin_dm", "1") or "1") == "1"
+        skip_dm = not skip_dm
+        await asyncio.to_thread(db.set_setting, "backup_skip_admin_dm", "1" if skip_dm else "0")
+        await asyncio.to_thread(
+            db.log_admin_action, call.from_user.id, "backup_dm_toggle",
+            "ارسال بکاپ به چت خصوصی ربات: " + ("خاموش" if skip_dm else "روشن"),
+        )
+        note = "" if report_router.group_active(db) else "\n⚠️ گروه گزارش هنوز تنظیم نشده؛ تا آن موقع بکاپ به چت ادمین‌ها می‌رود."
+        await safe_edit(
+            call,
+            tr("✅ بکاپ خودکار فقط در تاپیک «بکاپ» گروه گزارش ارسال می‌شود." if skip_dm
+               else "✅ بکاپ خودکار به چت خصوصی ادمین‌ها هم ارسال می‌شود.") + tr(note),
+            reply_markup=kb.admin_backup_sync_menu_kb(db),
+        )
+        await call.answer()
+
     # --- چت دوم تلگرام ---
 
     @router.callback_query(F.data == "adm_backup_chat2_menu")

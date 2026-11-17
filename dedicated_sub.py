@@ -218,8 +218,59 @@ def link_for_token(db, token: str) -> str:
     return f"{base_url(db)}/s/{token}"
 
 
+PANEL_DSUB_REQUIRED_TYPES = ("wui", "doctordns")
+
+PANEL_DSUB_OFF_MESSAGE = "ساب اختصاصی برای پنل «{names}» غیرفعال است؛ ابتدا آن را از تنظیمات پیشرفته‌ی پنل روشن کنید."
+
+
+def panel_enabled(db, server_id) -> bool:
+    """False فقط وقتی ساب اختصاصی همین پنل به‌صورت جداگانه خاموش شده باشد (پیش‌فرض: روشن)."""
+    try:
+        row = db.get_panel_server(int(server_id))
+    except (TypeError, ValueError):
+        return True
+    if not row:
+        return True
+    try:
+        value = row["dsub_enabled"]
+    except (KeyError, IndexError):
+        return True
+    return value is None or int(value) != 0
+
+
+def panels_dsub_off(db, server_ids) -> list:
+    """نام پنل‌هایی از لیست که ساب اختصاصی‌شان خاموش است."""
+    names = []
+    for sid in dict.fromkeys(int(x) for x in (server_ids or []) if x):
+        if not panel_enabled(db, sid):
+            row = db.get_panel_server(sid)
+            names.append(str(row["name"] if row else sid))
+    return names
+
+
+def panels_dsub_off_message(db, server_ids) -> str:
+    """پیام خطا برای پنل‌های دارای ساب اختصاصی خاموش؛ اگر همه روشن باشند رشته‌ی خالی."""
+    names = panels_dsub_off(db, server_ids)
+    return PANEL_DSUB_OFF_MESSAGE.format(names="، ".join(names)) if names else ""
+
+
+def _is_multi_target_config(db, config_id: int) -> bool:
+    with db._get_conn() as conn:
+        linked = conn.execute("SELECT 1 FROM config_panel_links WHERE custom_config_id=? AND status='active' LIMIT 1",
+                              (int(config_id),)).fetchone()
+        ssh = conn.execute("SELECT 1 FROM ssh_accounts WHERE custom_config_id=? AND status='active' LIMIT 1",
+                           (int(config_id),)).fetchone()
+    return bool(linked or ssh)
+
+
 def link_for_config(db, config_id: int) -> Optional[str]:
     if not is_enabled(db):
+        return None
+    cc = db.ds_get_config(config_id)
+    if cc is None:
+        return None
+    panel_id = _row(cc, "panel_server_id")
+    if panel_id and not panel_enabled(db, panel_id) and not _is_multi_target_config(db, config_id):
         return None
     token = db.ds_get_or_create_token(config_id)
     return link_for_token(db, token) if token else None

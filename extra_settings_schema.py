@@ -188,6 +188,7 @@ EXTRA_SETTINGS_GROUPS: List[Dict[str, Any]] = [
         "id": "backup", "title": "💾 بکاپ خودکار و SFTP", "web": True, "mini": True,
         "fields": [
             _n("backup_interval_hours", "فاصله‌ی بکاپ خودکار (ساعت)", "24", min=1, max=720),
+            _b("backup_skip_admin_dm", "عدم ارسال بکاپ به چت خصوصی ربات (وقتی گروه گزارش تنظیم است، فقط در تاپیک «بکاپ» ارسال شود)", "1"),
             _t("backup_secondary_chat_id", "آیدی چت دوم برای ارسال نسخه‌ی بکاپ", ""),
             _b("backup_sftp_enabled", "ارسال بکاپ به سرور دوم با SFTP", "0"),
             _t("backup_sftp_host", "هاست SFTP", ""),

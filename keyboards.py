@@ -45,10 +45,11 @@ def _miniapp_url(db, language: str = "") -> str:
     """آدرس مینی‌اپ مخصوص همین بات (اصلی یا نمایندگی) را می‌سازد.
     برای بات‌های نمایندگی، شناسه‌ی تننت به‌صورت پارامتر ?b= اضافه می‌شود تا
     سرور مینی‌اپ (چندمستأجر) بداند دیتابیس و توکن کدام بات را استفاده کند."""
-    if not MINIAPP_URL:
+    base_url = (db.get_setting("miniapp_public_url", "") or MINIAPP_URL or "").strip().rstrip("/")
+    if not base_url:
         return ""
     tenant_id = db.get_setting("miniapp_tenant_id", "")
-    url = MINIAPP_URL
+    url = base_url
     if tenant_id:
         sep = "&" if "?" in url else "?"
         url = f"{url}{sep}b={tenant_id}"
@@ -2528,10 +2529,15 @@ def admin_backup_menu_kb(show_full_backup: bool = False) -> InlineKeyboardMarkup
 def admin_backup_sync_menu_kb(db) -> InlineKeyboardMarkup:
     interval_hours = (db.get_setting("backup_interval_hours", "") or "24").strip() or "24"
     chat2 = (db.get_setting("backup_secondary_chat_id", "") or "").strip()
+    skip_dm = (db.get_setting("backup_skip_admin_dm", "1") or "1") == "1"
     sftp_on = (db.get_setting("backup_sftp_enabled", "0") or "0") == "1"
     sftp_host = (db.get_setting("backup_sftp_host", "") or "").strip()
     rows = [
         [InlineKeyboardButton(text=tr(f"⏱ فاصله‌ی بکاپ خودکار: هر {interval_hours} ساعت"), callback_data="adm_backup_interval_menu")],
+        [InlineKeyboardButton(
+            text=tr(f"🗄 ارسال بکاپ به چت خصوصی ربات: {'خاموش (فقط تاپیک بکاپ گروه)' if skip_dm else 'روشن'}"),
+            callback_data="adm_backup_dm_toggle",
+        )],
         [InlineKeyboardButton(
             text=tr(f"📨 چت دوم تلگرام: {'فعال' if chat2 else 'غیرفعال'}"),
             callback_data="adm_backup_chat2_menu",

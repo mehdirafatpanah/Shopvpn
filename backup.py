@@ -280,8 +280,8 @@ def _raw_replace_db_file(src_path: str, target_path: str) -> str:
 
 
 async def backup_and_notify(bot, db, db_path: str, backup_dir: str, keep: int = 14) -> None:
-    """یک بکاپ می‌گیرد، برای همه‌ی ادمین‌های همین بات ارسال می‌کند، و در صورت تنظیم‌بودن،
-    یک کپی هم به چت تلگرام دوم و/یا سرور دوم (از طریق SFTP) می‌فرستد."""
+    """یک بکاپ می‌گیرد و می‌فرستد: به تاپیک «بکاپ» گروه گزارش (در صورت تنظیم) یا PV ادمین‌های همین
+    بات، و در صورت تنظیم‌بودن یک کپی هم به چت تلگرام دوم و/یا سرور دوم (از طریق SFTP)."""
     try:
         backup_path = await asyncio.to_thread(create_backup, db_path, backup_dir, keep)
     except Exception:
@@ -302,13 +302,32 @@ async def backup_and_notify(bot, db, db_path: str, backup_dir: str, keep: int = 
         f"📦 حجم: {file_size_mb:.1f} مگابایت"
     )
 
-    admin_ids = await _db(db.list_admins)
-    for admin_id in admin_ids:
-        try:
-            await bot.send_document(admin_id, FSInputFile(backup_path), caption=caption)
-        except Exception:
-            logger.warning("ارسال بکاپ به ادمین %s ناموفق بود.", admin_id)
-    await report_router.send_text(bot, db, "backup", caption + "\n📨 فایل برای مدیران ارسال شد.")
+    # مقصد اصلی: تاپیک «بکاپ» گروه گزارش (اگر گروه گزارش تنظیم شده باشد). اگر ارسال به
+    # تاپیک موفق شود و «عدم ارسال به چت خصوصی» روشن باشد (پیش‌فرض)، فایل به PV ربات/ادمین‌ها
+    # فرستاده نمی‌شود. اگر گروه تنظیم نباشد یا ارسال شکست بخورد، برای اینکه بکاپ گم نشود
+    # مثل قبل به PV ادمین‌ها می‌رود.
+    sent_to_group = False
+    if await _db(report_router.group_active, db):
+        _key, silent = await _db(report_router.resolve_topic, db, "backup")
+        sent = await report_router.send_to_group(
+            bot, db, "backup",
+            lambda chat_id, thread_id: bot.send_document(
+                chat_id, FSInputFile(backup_path), caption=caption,
+                message_thread_id=thread_id, disable_notification=silent,
+            ),
+        )
+        sent_to_group = sent is not None
+    skip_admin_dm = sent_to_group and (await _db(db.get_setting, "backup_skip_admin_dm", "1") or "1") == "1"
+
+    if not skip_admin_dm:
+        warn = "\n⚠️ ارسال به تاپیک بکاپ گروه گزارش ناموفق بود." if (not sent_to_group and await _db(report_router.group_active, db)) else ""
+        admin_ids = await _db(db.list_admins)
+        for admin_id in admin_ids:
+            try:
+                await bot.send_document(admin_id, FSInputFile(backup_path), caption=caption + warn)
+            except Exception:
+                logger.warning("ارسال بکاپ به ادمین %s ناموفق بود.", admin_id)
+        await report_router.send_text(bot, db, "backup", caption + "\n📨 فایل برای مدیران ارسال شد.")
 
     # کپی جانبی: ارسال به یک چت تلگرام دوم (مثلاً ادمین/کانال روی سرور دوم)
     secondary_chat_id = (await _db(db.get_setting, "backup_secondary_chat_id", "") or "").strip()

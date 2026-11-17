@@ -26,6 +26,7 @@ class FakeDNS:
     def __init__(self):
         self.admin = True
         self.wg_admin_only = True
+        self.devices_supported = True
         self.users = {}
         self.calls = []
         self.next_id = 1
@@ -33,7 +34,7 @@ class FakeDNS:
     def view(self, u):
         return {"id": u["id"], "telegram_id": u["tg"], "status": u["status"], "plan": u.get("plan"),
                 "used_bytes": u.get("used", 0), "quota_bytes": u.get("quota", 0),
-                "panel_url": "https://u.example.com:8443/", "ips": ["5.120.1.2"], "max_ips": 1,
+                "panel_url": "https://u.example.com:8443/", "ips": ["5.120.1.2"], "max_ips": u.get("max_ips", 1),
                 "expires_at": "2026-12-01T10:00:00+00:00",
                 "servers": [{"ip": "203.0.113.4", "n": 1, "note": "تهران", "single": False,
                              "dot": "d1.example.com", "doh": "https://d1.example.com/dns-query/tok"}]}
@@ -76,7 +77,16 @@ class FakeDNS:
         if parts[0] == "admin" and parts[1] == "users":
             u = next(x for x in self.users.values() if x["id"] == int(parts[2]))
             if parts[3] == "plan":
-                u.update(status="active", plan={"id": body["plan_id"], "name": "p"}, quota=100)
+                same = (u.get("plan") or {}).get("id") == body["plan_id"]
+                keep = u.get("extra", 0) if same else 0
+                u.update(status="active", plan={"id": body["plan_id"], "name": "p"}, quota=100,
+                         max_ips=1 + keep, extra=keep)
+            if parts[3] == "devices":
+                if not self.devices_supported:
+                    return refused(404, "not_found", "نیست")
+                if not isinstance(body.get("devices"), int) or not 1 <= body["devices"] <= 10:
+                    return refused(400, "bad_devices", "devices باید عددی بین ۱ تا ۱۰ باشد")
+                u.update(max_ips=body["devices"], extra=max(0, body["devices"] - 1))
             if parts[3] == "status":
                 u["status"] = body["status"]
             return 200, {"ok": True, "user": self.view(u)}
@@ -214,6 +224,73 @@ class FlowTest(unittest.TestCase):
         self.fake.users[telegram_id_for("svpn_5")]["plan"] = {"id": 2, "name": "x"}
         self.run_(get_provider(row(plan=None)).update_user("svpn_5", add_days=30))
         self.assertEqual([c[2]["plan_id"] for c in self.fake.calls if c[1].endswith("/plan")][-1], 2)
+
+
+class UserLimitTest(unittest.TestCase):
+    def setUp(self):
+        self.fake = FakeDNS()
+        install(self.fake)
+
+    def run_(self, coro):
+        return asyncio.run(coro)
+
+    def devices_calls(self):
+        return [c for c in self.fake.calls if c[1].endswith("/devices")]
+
+    def max_ips(self, name):
+        return self.fake.users[telegram_id_for(name)]["max_ips"]
+
+    def test_capability(self):
+        from panel_capabilities import provider_capabilities, USER_LIMIT
+        self.assertTrue(DoctorDNSProvider.supports_user_limit)
+        self.assertTrue(provider_capabilities("doctordns")[USER_LIMIT])
+
+    def test_create_with_user_limit(self):
+        p = get_provider(row())
+        self.run_(p.create_user("svpn_ul1", 10, 30, user_limit=3))
+        self.assertEqual(self.max_ips("svpn_ul1"), 3)
+        self.assertEqual([c[2] for c in self.devices_calls()], [{"devices": 3}])
+
+    def test_create_without_or_same_as_plan_makes_no_call(self):
+        p = get_provider(row())
+        self.run_(p.create_user("svpn_ul2", 10, 30))
+        self.run_(p.create_user("svpn_ul3", 10, 30, user_limit=1))
+        self.assertEqual(self.devices_calls(), [])
+
+    def test_upgrade_users_only(self):
+        p = get_provider(row())
+        self.run_(p.create_user("svpn_ul4", 10, 30))
+        self.run_(p.update_user("svpn_ul4", user_limit=4))
+        self.assertEqual(self.max_ips("svpn_ul4"), 4)
+        self.assertEqual(len([c for c in self.fake.calls if c[1].endswith("/plan")]), 1)
+
+    def test_renew_with_user_limit(self):
+        p = get_provider(row())
+        self.run_(p.create_user("svpn_ul5", 10, 30, user_limit=3))
+        self.run_(p.update_user("svpn_ul5", add_days=30, user_limit=3))
+        self.assertEqual(self.max_ips("svpn_ul5"), 3)
+        self.run_(p.update_user("svpn_ul5", add_days=30, user_limit=2))
+        self.assertEqual(self.max_ips("svpn_ul5"), 2)
+
+    def test_renew_without_user_limit_keeps_extras(self):
+        p = get_provider(row())
+        self.run_(p.create_user("svpn_ul6", 10, 30, user_limit=3))
+        self.run_(p.update_user("svpn_ul6", add_days=30))
+        self.assertEqual(self.max_ips("svpn_ul6"), 3)
+
+    def test_over_the_panel_maximum(self):
+        p = get_provider(row())
+        with self.assertRaises(PanelError):
+            self.run_(p.create_user("svpn_ul7", 10, 30, user_limit=11))
+
+    def test_old_panel_without_devices_command(self):
+        self.fake.devices_supported = False
+        p = get_provider(row())
+        with self.assertRaises(PanelError) as ctx:
+            self.run_(p.create_user("svpn_ul8", 10, 30, user_limit=3))
+        self.assertIn("آپدیت", str(ctx.exception))
+        # بدون تعداد کاربر، پنل قدیمی مثل قبل کار می‌کند
+        self.assertTrue(self.run_(get_provider(row()).create_user("svpn_ul9", 10, 30)).subscription_url)
 
 
 class PageDataTest(unittest.TestCase):

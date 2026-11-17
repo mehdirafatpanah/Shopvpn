@@ -102,6 +102,9 @@ async def provision_direct(db, product, quantity: int = 1, user_id: int = None, 
         import dedicated_sub
         if not dedicated_sub.is_enabled(db):
             raise ProvisionError(MULTI_TARGET_NEEDS_DSUB)
+        off_message = dedicated_sub.panels_dsub_off_message(db, targets["panels"])
+        if off_message:
+            raise ProvisionError(off_message)
         if (len(targets["panels"]) == 1 and len(targets["ssh"]) == 1
                 and len(_product_ssh_protocols(product)) == 1):
             return await _provision_combined(db, product, quantity=quantity, user_id=user_id, order_id=order_id)
@@ -261,6 +264,9 @@ async def _provision_combined(db, product, quantity: int = 1, user_id: int = Non
     import dedicated_sub
     if not dedicated_sub.is_enabled(db):
         raise ProvisionError(MULTI_TARGET_NEEDS_DSUB)
+    off_message = dedicated_sub.panels_dsub_off_message(db, [product["provision_server_id"]])
+    if off_message:
+        raise ProvisionError(off_message)
     # ابتدا SSH (شکست‌پذیرتر: نیاز به شمارنده معتبر)، بعد VPN.
     ssh_items = await provision_ssh_direct(db, product, quantity=quantity, user_id=user_id, order_id=order_id,
                                            allow_openvpn=True)

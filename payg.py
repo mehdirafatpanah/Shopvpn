@@ -8,6 +8,7 @@ in usage_snapshots. Existing purchased services are never enrolled implicitly.
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import time
@@ -237,11 +238,25 @@ def get_payg_mode(db):
     return "all" if str(db.get_setting("payg_target_mode", "balance") or "") == "all" else "balance"
 
 
+def get_min_balance(db) -> int:
+    """حداقل موجودی کیف پول (تومان) برای ساخت سرویس مصرفی جدید؛ ۰ یعنی فقط موجودی مثبت لازم است."""
+    try:
+        return max(0, min(PAYG_MIN_BALANCE_MAX, int(db.get_setting(PAYG_MIN_BALANCE_KEY, "0") or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def get_usable_payg_panel_ids(db):
+    """پنل‌های PayG که ساب اختصاصی‌شان خاموش نشده است."""
+    import dedicated_sub
+    return [pid for pid in get_payg_panel_ids(db) if dedicated_sub.panel_enabled(db, pid)]
+
+
 def payg_multi_plan(db):
     """(panel_ids, node_ids, protocols) اگر ساخت چندمقصدی لازم است؛ وگرنه None."""
     if get_payg_mode(db) != "all":
         return None
-    panels = get_payg_panel_ids(db)
+    panels = get_usable_payg_panel_ids(db)
     nodes = get_payg_ssh_nodes(db)
     if not panels or len(panels) + len(nodes) < 2:
         return None
@@ -1127,6 +1142,9 @@ async def _provision_payg_multi(db, uid: int, panel_ids, node_ids, protocols) ->
 
     if not dedicated_sub.is_enabled(db):
         raise RuntimeError(MULTI_NEEDS_DSUB)
+    off_message = dedicated_sub.panels_dsub_off_message(db, panel_ids)
+    if off_message:
+        raise RuntimeError(off_message)
     targets = get_payg_targets(db)
     for sid in panel_ids:
         server = db.get_panel_server(int(sid))
@@ -1273,6 +1291,47 @@ def _is_multi_service(db, custom_config_id: int) -> bool:
     return bool(n or m)
 
 
+PAYG_MIN_BALANCE_KEY = "payg_min_balance"
+PAYG_MIN_BALANCE_MAX = 10**10
+PAYG_DELIVERY_TEXT_KEY = "payg_delivery_text"
+PAYG_DELIVERY_PHOTO_KEY = "payg_delivery_photo"
+PAYG_DELIVERY_TEXT_MAX = 3500
+_CAPTION_LIMIT = 1024
+
+
+def render_delivery_text(db, default_text: str, username: str, safe_url: str) -> str:
+    """Return the admin-defined delivery text with placeholders filled, or the default text."""
+    custom = str(db.get_setting(PAYG_DELIVERY_TEXT_KEY, "") or "").strip()
+    if not custom:
+        return default_text
+    link = f'<a href="{safe_url}">دریافت لینک اشتراک</a>'
+    text = (custom.replace("{username}", html.escape(str(username)))
+            .replace("{cycle}", cycle_text(db))
+            .replace("{link}", link)
+            .replace("{url}", safe_url))
+    if "{link}" not in custom and "{url}" not in custom:
+        text += f"\n\n🔗 {link}"
+    return text
+
+
+async def send_delivery_message(message, db, default_text: str, username: str, safe_url: str) -> None:
+    """Send the PayG config message with the admin-defined text and photo, falling back to the default."""
+    text = render_delivery_text(db, default_text, username, safe_url)
+    photo = str(db.get_setting(PAYG_DELIVERY_PHOTO_KEY, "") or "").strip()
+    try:
+        if photo:
+            if len(text) <= _CAPTION_LIMIT:
+                await message.answer_photo(photo, caption=text, parse_mode="HTML")
+                return
+            await message.answer_photo(photo)
+        await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+    except Exception:
+        if text == default_text and not photo:
+            raise
+        logger.exception("PAYG custom delivery message failed; falling back to default")
+        await message.answer(default_text, parse_mode="HTML", disable_web_page_preview=True)
+
+
 def create_payg_router(db, is_main_bot=True):
     router = Router(name="payg_router")
     if not is_main_bot:
@@ -1296,7 +1355,10 @@ def create_payg_router(db, is_main_bot=True):
         rate_text = ("تعرفه هر سرویس بر اساس پنل و گروه/اینباند محل ساخت محاسبه می‌شود؛ "
                      "هزینه ترافیک مصرفی، روزهای فعال و ظرفیت کاربران از کیف پول مشترک کسر خواهد شد.\n")
         supported_text = "سرویس‌های قابل صورتحساب فعلی: VPN و SSH با شمارنده مصرف معتبر.\n"
-        panel_ids = get_payg_panel_ids(db)
+        min_balance = get_min_balance(db)
+        if min_balance:
+            supported_text += f"حداقل موجودی کیف پول برای ساخت سرویس جدید: {min_balance:,} تومان\n"
+        panel_ids = get_usable_payg_panel_ids(db)
         panel_names = []
         for pid in panel_ids:
             panel = await asyncio.to_thread(db.get_panel_server, int(pid))
@@ -1412,15 +1474,15 @@ def create_payg_router(db, is_main_bot=True):
                 return
             try:
                 safe_url = str(result["subscription_url"]).replace("&", "&amp;").replace('"', "&quot;")
-                await call.message.answer(
+                default_text = (
                     "✅ <b>سرویس Pay As You Go ساخته شد.</b>\n\n"
                     f"👤 نام کاربری: <code>{result['username']}</code>\n"
                     f"🧩 مقصدها: {result['panels']} پنل + {result['nodes']} نود\n"
                     "📦 حجم: پرداخت به‌ازای مصرف\n⏳ مدت: بدون انقضای ثابت\n"
                     + ("🎁 رایگان برای مدیریت؛ هزینه‌ای کسر نمی‌شود.\n\n" if is_free_payg_user(db, uid) else "💳 هزینه از کیف پول تومانی شما کسر می‌شود.\n\n") +
                     f"🔗 <a href=\"{safe_url}\">دریافت لینک اشتراک</a>\n\n"
-                    f"مصرف همه مقصدها با هم جمع و هر {cycle_text(db)} تسویه می‌شود.",
-                    parse_mode="HTML", disable_web_page_preview=True)
+                    f"مصرف همه مقصدها با هم جمع و هر {cycle_text(db)} تسویه می‌شود.")
+                await send_delivery_message(call.message, db, default_text, result["username"], safe_url)
                 await show(call.message, uid)
             except Exception:
                 logger.exception("PAYG multi-target delivery message failed for user=%s", uid)
@@ -1443,8 +1505,14 @@ def create_payg_router(db, is_main_bot=True):
         if existing_account and existing_account["status"] == "suspended_admin":
             await call.message.answer("⛔️ حساب Pay As You Go شما توسط مدیریت تعلیق شده است. برای پیگیری با پشتیبانی تماس بگیرید.")
             return
-        if int(db.get_wallet_credit(uid) or 0) <= 0 and not is_free_payg_user(db, uid):
+        balance_now = int(db.get_wallet_credit(uid) or 0)
+        if balance_now <= 0 and not is_free_payg_user(db, uid):
             await call.message.answer("برای ساخت سرویس مصرفی، ابتدا کیف پول تومانی خود را شارژ کنید.")
+            return
+        min_balance = get_min_balance(db)
+        if min_balance and balance_now < min_balance and not is_free_payg_user(db, uid):
+            await call.message.answer(f"⛔️ برای ساخت سرویس مصرفی، موجودی کیف پول باید حداقل {min_balance:,} تومان باشد.\n"
+                                      f"موجودی فعلی شما: {balance_now:,} تومان")
             return
         try:
             max_services = max(1, min(100, int(db.get_setting("payg_max_services_per_user", "5") or 5)))
@@ -1460,9 +1528,13 @@ def create_payg_router(db, is_main_bot=True):
         if int(service_count or 0) >= max_services:
             await call.message.answer(f"⛔️ حداکثر {max_services} سرویس Pay As You Go برای هر کاربر مجاز است.")
             return
-        panel_ids = get_payg_panel_ids(db)
-        if not panel_ids:
+        selected_ids = get_payg_panel_ids(db)
+        if not selected_ids:
             await call.message.answer("⛔️ هیچ پنل فعالی برای ساخت سرویس Pay As You Go توسط مدیریت انتخاب نشده است.")
+            return
+        panel_ids = get_usable_payg_panel_ids(db)
+        if not panel_ids:
+            await call.message.answer("⛔️ ساب اختصاصی همه پنل‌های انتخاب‌شده برای Pay As You Go غیرفعال است؛ مدیریت باید آن را روشن کند.")
             return
         plan = payg_multi_plan(db)
         if plan:
@@ -1522,13 +1594,14 @@ def create_payg_router(db, is_main_bot=True):
                 raise RuntimeError("اتصال سرویس ساخته‌شده به حساب مصرفی ناموفق بود.")
             enrolled_ok = True
             safe_url = str(provisioned["subscription_url"]).replace("&", "&amp;").replace('"', "&quot;")
-            await call.message.answer(
+            default_text = (
                 "✅ <b>سرویس Pay As You Go ساخته شد.</b>\n\n"
                 f"👤 نام کاربری: <code>{provisioned['username']}</code>\n"
                 "📦 حجم: پرداخت به‌ازای مصرف\n⏳ مدت: بدون انقضای ثابت\n"
                 + ("🎁 رایگان برای مدیریت؛ هزینه‌ای کسر نمی‌شود.\n\n" if is_free_payg_user(db, uid) else "💳 هزینه از کیف پول تومانی شما کسر می‌شود.\n\n") +
                 f"🔗 <a href=\"{safe_url}\">دریافت لینک اشتراک</a>\n\n"
-                f"مصرف هر {cycle_text(db)} محاسبه و تسویه می‌شود.", parse_mode="HTML", disable_web_page_preview=True)
+                f"مصرف هر {cycle_text(db)} محاسبه و تسویه می‌شود.")
+            await send_delivery_message(call.message, db, default_text, provisioned["username"], safe_url)
             await show(call.message, uid)
         except Exception as exc:
             logger.exception("PAYG service provisioning/notification failed for user=%s", uid)

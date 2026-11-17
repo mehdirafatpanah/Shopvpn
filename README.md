@@ -766,6 +766,7 @@ A new panel type, **Doctor DNS**, is supported (`panel_providers/doctordns_provi
 - Users get their DNS / DoT / DoH addresses, registered IPs and **WireGuard profile files** (sent as documents at delivery).
 - The dedicated subscription page shows a DNS section (servers, DoT/DoH, registered IPs). **The dedicated sub must be switched on** for this page, IP registration and the WireGuard files; the bot warns you when it is off.
 - Has its own delivery message template (`delivery_message_template_doctordns`).
+- **User count** (device limit / `max_ips`) is supported: `base_users`, user-count upgrades and renewals are applied on the panel (1–10). This needs the Doctor DNS panel to have `POST /admin/users/{id}/devices` (new panel version); on an older panel, creating/renewing with a user count fails with an "update the panel" message, and products without a user count work as before.
 
 ### 🎮 Pinball Game in the Mini App
 
