@@ -161,7 +161,24 @@ MAX_HEADER_IMAGE_BYTES = 2 * 1024 * 1024  # 2 مگابایت
 
 # دیتابیس بات اصلی - هم برای سرویس‌دهی مستقیم به بات اصلی، هم برای پیدا کردن
 # دیتابیس/توکن بات‌های نمایندگی از روی جدول reseller_bots استفاده می‌شود.
+
 main_db = Database(DB_PATH)
+
+def _runtime_miniapp_url() -> str:
+    try:
+        return (main_db.get_setting("miniapp_public_url", "") or MINIAPP_URL or "").strip().rstrip("/")
+    except Exception:
+        return (MINIAPP_URL or "").strip().rstrip("/")
+
+def _runtime_api_base_url() -> str:
+    configured = _runtime_miniapp_url()
+    if configured:
+        from urllib.parse import urlparse
+        parsed = urlparse(configured)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+    return (API_BASE_URL or "").strip().rstrip("/")
+
 try:
     # اگر این پروسه (uvicorn مینی‌اپ) قبل از بات اصلی اجرا شده و فایل دیتابیس
     # هنوز جدول ندارد، این‌جا هم می‌سازیمش تا هیچ درخواستی با خطای ۵۰۰ مواجه نشود.
@@ -1243,9 +1260,9 @@ def api_custom_config_info(auth=Depends(get_verified_user)):
         "reseller_credit_gb": reseller_credit,
         "reseller_available": is_reseller and reseller_credit > 0 and bool(reseller_server),
         "crypto_enabled": db.get_setting("crypto_payment_enabled", "0") == "1"
-        and bool(_resolve_plisio_key(db)) and bool(API_BASE_URL) and db.payment_gate_passed(tg_id, "crypto"),
+        and bool(_resolve_plisio_key(db)) and bool(_runtime_api_base_url()) and db.payment_gate_passed(tg_id, "crypto"),
         "abangateway_enabled": db.get_setting("abangateway_payment_enabled", "0") == "1"
-        and bool(_resolve_abangateway_key(db)) and bool(API_BASE_URL) and db.payment_gate_passed(tg_id, "abangateway"),
+        and bool(_resolve_abangateway_key(db)) and bool(_runtime_api_base_url()) and db.payment_gate_passed(tg_id, "abangateway"),
         "blupal_enabled": blupal_payment.blupal_payment_available(db) and db.payment_gate_passed(tg_id, "blupal"),
         "noapay_enabled": noapay_payment.noapay_payment_available(db) and db.payment_gate_passed(tg_id, "noapay"),
         "card_to_card_enabled": db.get_setting("card_to_card_enabled", "1") == "1" and db.card_gate_passed(tg_id),
@@ -2529,9 +2546,9 @@ def _payment_flags(db: Database, amount: int, product_id: int = None, order=None
     return {
         "card_to_card_enabled": db.get_setting("card_to_card_enabled", "1") == "1" and _ok("card"),
         "crypto_enabled": db.get_setting("crypto_payment_enabled", "0") == "1"
-        and bool(_resolve_plisio_key(db)) and bool(API_BASE_URL) and _ok("crypto"),
+        and bool(_resolve_plisio_key(db)) and bool(_runtime_api_base_url()) and _ok("crypto"),
         "abangateway_enabled": db.get_setting("abangateway_payment_enabled", "0") == "1"
-        and bool(_resolve_abangateway_key(db)) and bool(API_BASE_URL) and _ok("abangateway"),
+        and bool(_resolve_abangateway_key(db)) and bool(_runtime_api_base_url()) and _ok("abangateway"),
         "blupal_enabled": blupal_payment.blupal_payment_available(db) and _ok("blupal"),
         "noapay_enabled": noapay_payment.noapay_payment_available(db) and _ok("noapay"),
         "card_to_card_auto_enabled": db.get_setting("card_to_card_auto_enabled", "0") == "1"
@@ -4010,7 +4027,7 @@ def api_admin_get_c2c_auto_settings(auth=Depends(require_admin)):
         "amount_unit": db.get_setting("card_to_card_sms_amount_unit", "rial"),
         "webhook_token_set": bool(token),
         "webhook_url": (f"{API_BASE_URL}/api/webhooks/sms-forwarder?b={tenant.tenant_id}"
-                        if API_BASE_URL else None),
+                        if _runtime_api_base_url() else None),
     }
 
 
@@ -4245,7 +4262,7 @@ async def _create_custom_gateway_invoice_for(db: Database, tenant: "Tenant", tg_
     row, config = _load_gateway(db, gateway_key=gateway_key)
     if not row["enabled"]:
         raise HTTPException(status_code=400, detail=tr("این درگاه فعال نیست."))
-    if not API_BASE_URL:
+    if not _runtime_api_base_url():
         raise HTTPException(status_code=400, detail=tr("آدرس مینی‌اپ (MINIAPP_URL) روی سرور تنظیم نشده است."))
 
     existing = db.get_pending_custom_gateway_invoice_for_ref(row["id"], kind, ref_id)
@@ -6066,6 +6083,9 @@ async def api_admin_create_product(body: ProductCreate, auth=Depends(require_sen
         import dedicated_sub
         if not dedicated_sub.is_enabled(db):
             raise HTTPException(status_code=400, detail="برای محصول چندپنلی باید ساب اختصاصی فعال باشد.")
+        off_message = dedicated_sub.panels_dsub_off_message(db, [provision_server_id] + [int(x) for x in body.extra_panel_ids])
+        if off_message:
+            raise HTTPException(status_code=400, detail=off_message)
         from product_targets import list_product_targets, build_target_config
         for raw_sid in body.extra_panel_ids:
             sid = int(raw_sid)
@@ -6397,10 +6417,10 @@ class ResellerTokenUpdate(BaseModel):
 
 def _reseller_miniapp_link(reseller_row) -> Optional[str]:
     """لینک اختصاصی مینی‌اپ همین نماینده (همان که در دکمه‌ی منوی بات نماینده استفاده می‌شود)."""
-    if not MINIAPP_URL:
+    if not _runtime_miniapp_url():
         return None
     b_value = reseller_row["link_slug"] or str(reseller_row["id"])
-    sep = "&" if "?" in MINIAPP_URL else "?"
+    sep = "&" if "?" in _runtime_miniapp_url() else "?"
     return f"{MINIAPP_URL}{sep}b={b_value}"
 
 
@@ -6757,7 +6777,7 @@ def api_admin_regenerate_reseller_link(reseller_id: int, auth=Depends(require_ma
     reseller_bot = db.get_reseller_bot(reseller_id)
     if not reseller_bot:
         raise HTTPException(status_code=404, detail=tr("نماینده یافت نشد."))
-    if not MINIAPP_URL:
+    if not _runtime_miniapp_url():
         raise HTTPException(status_code=400, detail=tr("آدرس MINIAPP_URL روی سرور تنظیم نشده است."))
     for _ in range(5):
         slug = secrets.token_urlsafe(8)
@@ -7111,7 +7131,7 @@ def api_admin_get_crypto_settings(auth=Depends(require_senior_admin)):
         "usd_to_toman_rate": int(float(db.get_setting("usd_to_toman_rate", "0") or 0)),
         "has_own_key": bool(db.get_setting("plisio_api_key", "")),
         "masked_key": (f"...{api_key[-4:]}" if api_key else ""),
-        "gateway_configured": bool(api_key) and bool(API_BASE_URL),
+        "gateway_configured": bool(api_key) and bool(_runtime_api_base_url()),
         "key_source": crypto_payment.resolve_plisio_key_source(db),
         "expire_min": crypto_payment.resolve_expire_min(db),
         "allowed_currencies": crypto_payment.resolve_allowed_currencies(db),
@@ -7130,7 +7150,7 @@ def api_admin_set_crypto_settings(body: CryptoSettingsUpdate, auth=Depends(requi
         db.set_setting("plisio_api_key", new_key)
         db.log_admin_action(admin_id, "plisio_key_change", "API Key کریپتو از مینی‌اپ تغییر کرد." if new_key else "API Key کریپتو از مینی‌اپ حذف شد.")
     api_key = _resolve_plisio_key(db)
-    if body.enabled and (not api_key or not API_BASE_URL):
+    if body.enabled and (not api_key or not _runtime_api_base_url()):
         raise HTTPException(status_code=400, detail=tr("ابتدا کلید API درگاه کریپتو را تنظیم کن. (اگر بازم فعال نمی‌شه، یعنی MINIAPP_URL روی سرور تنظیم نشده.)"))
     db.set_setting("crypto_payment_enabled", "1" if body.enabled else "0")
     db.set_setting("usd_to_toman_rate", str(body.usd_to_toman_rate))
@@ -7220,7 +7240,7 @@ def api_admin_get_abangateway_settings(auth=Depends(require_senior_admin)):
         "enabled": db.get_setting("abangateway_payment_enabled", "0") == "1",
         "has_own_key": bool(db.get_setting("abangateway_api_key", "")),
         "masked_key": (f"...{api_key[-4:]}" if api_key else ""),
-        "gateway_configured": bool(api_key) and bool(API_BASE_URL),
+        "gateway_configured": bool(api_key) and bool(_runtime_api_base_url()),
         "key_source": abangateway_payment.resolve_api_key_source(db),
         "problems": abangateway_payment.availability_problems(db),
     }
@@ -7236,7 +7256,7 @@ def api_admin_set_abangateway_settings(body: AbanGatewaySettingsUpdate, auth=Dep
     api_key = _resolve_abangateway_key(db)
     if body.enabled and not api_key:
         raise HTTPException(status_code=400, detail=tr("ابتدا کلید API آبان گیت وی را تنظیم کن."))
-    if body.enabled and not API_BASE_URL:
+    if body.enabled and not _runtime_api_base_url():
         raise HTTPException(status_code=400, detail=tr("آدرس مینی‌اپ روی سرور تنظیم نشده است؛ MINIAPP_URL (یا API_BASE_URL) را در فایل .env پر کن و سرویس را ری‌استارت کن."))
     db.set_setting("abangateway_payment_enabled", "1" if body.enabled else "0")
     return {"status": "ok"}
@@ -7317,7 +7337,7 @@ def api_admin_set_noapay_settings(body: NoapaySettingsUpdate, auth=Depends(requi
         _key_ok = bool(noapay_payment.resolve_api_key(db))
         _secret_ok = bool(noapay_payment.resolve_webhook_secret(db))
         _rate_ok = noapay_payment.resolve_rate(db) > 0
-        if not (_key_ok and _secret_ok and _rate_ok and API_BASE_URL):
+        if not (_key_ok and _secret_ok and _rate_ok and _runtime_api_base_url()):
             raise HTTPException(status_code=400, detail=tr("ابتدا کلید API، رمز وب‌هوک و نرخ تبدیل NoapayBot را تنظیم کن. (اگر بازم فعال نمی‌شه، یعنی MINIAPP_URL روی سرور تنظیم نشده.)"))
     db.set_setting("noapay_payment_enabled", "1" if body.enabled else "0")
     return {"status": "ok"}
@@ -7348,7 +7368,7 @@ def api_admin_get_extra_gateways(auth=Depends(require_senior_admin)):
                 "value": "" if field["secret"] else raw,
             })
         hint_url = ""
-        if API_BASE_URL and meta["needs_base_url"]:
+        if _runtime_api_base_url() and meta["needs_base_url"]:
             hint_url = (
                 extra_gateway_payment.ipn_url(tenant.tenant_id) if key == "nowpayments"
                 else extra_gateway_payment.callback_url(tenant.tenant_id, key)
@@ -7359,7 +7379,7 @@ def api_admin_get_extra_gateways(auth=Depends(require_senior_admin)):
             "configured": extra_gateway_payment.is_configured(db, key),
             "needs_base_url": meta["needs_base_url"], "hint_url": hint_url, "fields": fields,
         })
-    return {"supported": True, "base_url_ok": bool(API_BASE_URL), "gateways": gateways}
+    return {"supported": True, "base_url_ok": bool(_runtime_api_base_url()), "gateways": gateways}
 
 
 @app.post("/api/admin/settings/extra-gateways")
