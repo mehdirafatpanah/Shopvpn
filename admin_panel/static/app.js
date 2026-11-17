@@ -1256,6 +1256,7 @@ async function renderPage(tab) {
       case 'reseller_tiers': return await renderResellerTiers();
       case 'panels': return await renderPanels();
       case 'ssh': return await renderSSHManagement();
+      case 'links-ssl': return await renderLinksSSL();
       case 'system': return await renderSystem();
       case 'settings': settingsWebMode = false; return await renderSettings();
       case 'webcustomize': settingsWebMode = true; return await renderSettings();
@@ -1273,6 +1274,68 @@ async function renderPage(tab) {
   } catch (e) { handleErr(e); setContent(`<div class="empty-state">${esc(e.message)}</div>`); }
 }
 
+
+
+/* ============================================ links & SSL manager === */
+async function renderLinksSSL() {
+  const data = await apiGet('/links-ssl');
+  const u = data.urls || {};
+  setContent(`
+    <section class="hero"><div><h2>🔗 مدیریت لینک‌ها و SSL</h2>
+      <p>مدیریت آدرس‌های عمومی سرویس‌ها و گواهی‌های HTTPS از یک محل</p></div></section>
+    <div class="card">
+      <h3>آدرس‌های سرویس‌ها</h3>
+      <p class="card-sub">آدرس‌ها باید به دامنه‌ای اشاره کنند که DNS و Reverse Proxy آن از قبل به سرور ShopVPN هدایت شده باشد.</p>
+      <div class="form-grid">
+        <label class="field"><span>لینک ساب اختصاصی</span><input class="input" id="lm-dsub" dir="ltr" value="${esc(u.dedicated_sub_url || '')}" placeholder="https://sub.example.com"></label>
+        <label class="field"><span>آدرس وب‌شاپ</span><input class="input" id="lm-shop" dir="ltr" value="${esc(u.web_shop_url || '')}" placeholder="https://shop.example.com"></label>
+        <label class="field"><span>آدرس مینی‌اپ</span><input class="input" id="lm-miniapp" dir="ltr" value="${esc(u.miniapp_url || '')}" placeholder="https://app.example.com"></label>
+        <label class="field"><span>آدرس پنل وب ادمین</span><input class="input" id="lm-admin" dir="ltr" value="${esc(u.admin_panel_url || '')}" placeholder="https://admin.example.com"></label>
+      </div>
+      <p class="card-sub">با ذخیره آدرس مینی‌اپ، دکمه منوی ربات تلگرام نیز از طریق Bot API به آدرس جدید منتقل می‌شود. این کار جایگزین ثبت دامنه در BotFather یا تنظیم DNS و Nginx نیست.</p>
+      <button class="btn btn-primary" id="lm-save">ذخیره آدرس‌ها</button>
+    </div>
+    <div class="card">
+      <h3>🔐 مدیریت گواهی SSL</h3>
+      <p class="card-sub">${data.certbot_installed ? 'Certbot شناسایی شد.' : 'Certbot روی سرور شناسایی نشد؛ ابتدا Certbot و افزونه Nginx را نصب کنید.'}</p>
+      <pre class="mono" id="lm-certs" style="white-space:pre-wrap;max-height:260px;overflow:auto">${esc(data.certificates || 'اطلاعاتی از گواهی‌ها موجود نیست.')}</pre>
+      <div class="form-grid">
+        <label class="field"><span>دامنه برای صدور گواهی</span><input class="input" id="lm-domain" dir="ltr" placeholder="example.com"></label>
+        <label class="field"><span>ایمیل مالک دامنه</span><input class="input" id="lm-email" type="email" dir="ltr" placeholder="admin@example.com"></label>
+      </div>
+      <label class="field field-row"><input type="checkbox" id="lm-redirect" checked><span>انتقال خودکار HTTP به HTTPS</span></label>
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary" id="lm-issue" ${data.certbot_installed ? '' : 'disabled'}>صدور و نصب گواهی</button>
+        <button class="btn" id="lm-renew" ${data.certbot_installed ? '' : 'disabled'}>تمدید گواهی‌ها</button>
+      </div>
+      <p class="card-sub">صدور گواهی از افزونه Nginx در Certbot استفاده می‌کند؛ دامنه باید به IP سرور اشاره کند و پورت ۸۰ از اینترنت در دسترس باشد. قبل از اجرا از تنظیمات Nginx بکاپ بگیرید.</p>
+      <pre class="mono" id="lm-output" style="display:none;white-space:pre-wrap;margin-top:10px"></pre>
+    </div>`);
+  const val = id => document.getElementById(id)?.value?.trim() || '';
+  $('#lm-save').onclick = async () => {
+    const btn = $('#lm-save'); btn.disabled = true;
+    try {
+      const r = await apiPut('/links-ssl', {
+        dedicated_sub_url: val('#lm-dsub'), web_shop_url: val('#lm-shop'),
+        miniapp_url: val('#lm-miniapp'), admin_panel_url: val('#lm-admin')
+      });
+      toast(r.miniapp_menu_updated ? 'آدرس‌ها ذخیره و منوی مینی‌اپ تلگرام به‌روزرسانی شد.' :
+        (r.miniapp_menu_error ? 'آدرس‌ها ذخیره شد؛ به‌روزرسانی منوی تلگرام ناموفق بود: ' + r.miniapp_menu_error : 'آدرس‌ها ذخیره شد.'));
+    } catch (e) { handleErr(e); } finally { btn.disabled = false; }
+  };
+  $('#lm-issue').onclick = async () => {
+    const out = $('#lm-output'); out.style.display = 'block'; out.textContent = 'در حال صدور گواهی...';
+    try {
+      const r = await apiPost('/links-ssl/issue', {domain:val('#lm-domain'), email:val('#lm-email'), redirect_https:$('#lm-redirect').checked});
+      out.textContent = r.output || 'گواهی با موفقیت صادر شد.'; toast('گواهی SSL صادر شد.'); 
+    } catch (e) { out.textContent = e.message || String(e); handleErr(e); }
+  };
+  $('#lm-renew').onclick = async () => {
+    const out = $('#lm-output'); out.style.display = 'block'; out.textContent = 'در حال تمدید گواهی‌ها...';
+    try { const r = await apiPost('/links-ssl/renew', {}); out.textContent = r.output || 'عملیات تمدید انجام شد.'; toast('عملیات تمدید SSL انجام شد.'); }
+    catch (e) { out.textContent = e.message || String(e); handleErr(e); }
+  };
+}
 
 /* ================================================ database manager === */
 async function renderDatabaseManager() {
@@ -5066,7 +5129,7 @@ function productProvisionFieldsHtml(panelServers, sshNodes = [], prefill = null)
       <label class="field"><span>نوع مقصد</span><select class="input" id="prod-target-type"><option value="vpn" ${target === 'vpn' ? 'selected' : ''}>پنل VPN</option>${panelServers.some(s => s.panel_type === 'stealth') ? `<option value="vless" ${target === 'vless' ? 'selected' : ''}>نود VLESS</option>` : ''}${sshNodes.length || (prefill && prefill.provision_ssh_node_id) ? `<option value="ssh" ${target === 'ssh' ? 'selected' : ''}>نود SSH (Linux Agent)</option><option value="both" ${target === 'both' ? 'selected' : ''} ${comboLocked && target !== 'both' ? 'disabled' : ''}>ترکیبی VPN + SSH (حجم و زمان مشترک)${comboLocked ? ' — نیازمند ساب اختصاصی فعال' : ''}</option>` : ''}<option value="multi" ${target === 'multi' ? 'selected' : ''} ${comboLocked && target !== 'multi' ? 'disabled' : ''}>چند پنل / چند نود (حجم و زمان مشترک)${comboLocked ? ' — نیازمند ساب اختصاصی فعال' : ''}</option></select><span class="card-sub" id="prod-multi-hint" style="display:${comboLocked ? '' : 'none'}">ترکیب و چند مقصدی فقط وقتی ساب اختصاصی فعال باشد کار می‌کند.</span></label>
       <div id="prod-multi-fields" style="display:${target === 'multi' ? '' : 'none'}">
         <div class="card-sub">پنل‌های VPN (هر تعداد)</div>
-        ${panelServers.map(s2 => `<label class="field field-row"><span>${esc(s2.name)}</span><input type="checkbox" class="prod-multi-panel" value="${s2.id}" ${selPanels.includes(Number(s2.id)) ? 'checked' : ''}></label>`).join('') || '<div class="card-sub">پنلی نیست</div>'}
+        ${panelServers.map(s2 => `<label class="field field-row"><span>${esc(s2.name)}${s2.dsub_enabled === false ? ' — ساب اختصاصی این پنل خاموش است' : ''}</span><input type="checkbox" class="prod-multi-panel" value="${s2.id}" ${selPanels.includes(Number(s2.id)) ? 'checked' : ''} ${s2.dsub_enabled === false && !selPanels.includes(Number(s2.id)) ? 'disabled' : ''}></label>`).join('') || '<div class="card-sub">پنلی نیست</div>'}
         <div id="prod-multi-target-pickers" style="display:grid;gap:8px"></div>
         <div class="card-sub">نودهای SSH (هر تعداد)</div>
         ${sshNodes.map(n2 => `<label class="field field-row"><span>${esc(n2.name)} · ${esc(n2.host || '')}</span><input type="checkbox" class="prod-multi-node" value="${n2.id}" data-protocols="${esc((n2.protocols || ['ssh']).join(','))}" ${selNodes.includes(Number(n2.id)) ? 'checked' : ''}></label>`).join('') || '<div class="card-sub">نودی نیست</div>'}
@@ -8934,6 +8997,53 @@ function wireStealthAutoBox(root, getName, onDone) {
   });
 }
 
+function doctorDNSAutoBoxHtml() {
+  return `
+    <div class="card" style="padding:12px">
+      <b>🔐 اتصال و راه‌اندازی خودکار Doctor DNS</b>
+      <p class="card-sub">اطلاعات SSH فقط برای همین عملیات در حافظه استفاده می‌شود. ShopVPN روی سرور موجود کلید API ادمین اختصاصی و محدود به IP خروجی خودش می‌سازد؛ رمز SSH ذخیره نمی‌شود.</p>
+      <div class="form-grid">
+        <input class="input" id="p-dd-host" placeholder="IP یا دامنه سرور Doctor DNS" dir="ltr">
+        <input class="input" id="p-dd-port" type="number" min="1" max="65535" value="22" placeholder="پورت SSH">
+        <input class="input" id="p-dd-user" value="root" placeholder="نام کاربری SSH" dir="ltr">
+        <input class="input" id="p-dd-pass" type="password" autocomplete="new-password" placeholder="رمز SSH سرور" dir="ltr">
+        <textarea class="input" id="p-dd-key" rows="3" placeholder="یا کلید خصوصی SSH (اختیاری)" dir="ltr"></textarea>
+        <button class="btn btn-primary" id="p-dd-connect" type="button">بررسی سرور و اتصال خودکار</button>
+      </div>
+      <pre id="p-dd-log" class="mono" style="display:none;white-space:pre-wrap;margin-top:8px"></pre>
+      <p class="card-sub">این گزینه فقط روی سروری کار می‌کند که Doctor DNS از قبل روی آن نصب و سرویس smartdns-panel فعال باشد. در صورت قدیمی بودن API، ابتدا باید Doctor DNS به‌روزرسانی شود.</p>
+    </div>`;
+}
+
+function wireDoctorDNSAutoBox(root, close) {
+  $('#p-dd-connect', root).addEventListener('click', async e => {
+    const btn = e.currentTarget, logEl = $('#p-dd-log', root);
+    const v = id => $(id, root).value.trim();
+    const name = v('#p-name'), host = v('#p-dd-host');
+    const password = $('#p-dd-pass', root).value;
+    const private_key = $('#p-dd-key', root).value.trim();
+    if (!name || !host || (!password && !private_key)) return toast('نام، IP سرور و رمز SSH یا کلید خصوصی را وارد کنید.', true);
+    if (v('#p-dd-user') !== 'root') return toast('برای راه‌اندازی خودکار، نام کاربری SSH باید root باشد.', true);
+    btn.disabled = true; btn.textContent = 'در حال بررسی و اتصال...';
+    logEl.style.display = 'block'; logEl.textContent = '۱. اتصال SSH\n۲. بررسی نصب و نسخه Doctor DNS\n۳. ساخت کلید API ادمین محدودشده\n۴. تست API و قابلیت تنظیم دستگاه‌ها\n۵. ثبت پنل در ShopVPN';
+    try {
+      const r = await apiPost('/panel-servers/doctordns/auto-setup', {
+        name, host, ssh_port: Number(v('#p-dd-port')) || 22,
+        username: v('#p-dd-user') || 'root', password: password || null,
+        private_key: private_key || null,
+        panel_category_id: Number($('#p-cat', root)?.value) || undefined,
+      });
+      toast(r.message || 'Doctor DNS با موفقیت متصل شد.');
+      close(); renderPanels();
+    } catch (err) {
+      handleErr(err);
+      logEl.textContent = (err?.message || String(err)) + '\n\nرمز SSH در ShopVPN ذخیره نشده است.';
+    } finally {
+      btn.disabled = false; btn.textContent = 'بررسی سرور و اتصال خودکار';
+    }
+  });
+}
+
 function panelAddFormHtml() {
   return `
     <div class="form-grid">
@@ -8951,7 +9061,8 @@ function panelAddFormHtml() {
       <b>⚡ نصب خودکار نود Stealth روی سرور جدید</b>
       <p class="card-sub">نام را در فیلد بالای فرم بنویسید؛ فیلدهای آدرس/توکن بالا برای نصب خودکار لازم نیست.</p>
       ${stealthAutoBoxHtml(false)}
-    </div>`;
+    </div>
+    <div id="p-doctor-auto" style="display:none;margin-top:6px">${doctorDNSAutoBoxHtml()}</div>`;
 }
 
 function wirePanelAddForm(body, close) {
@@ -8959,9 +9070,22 @@ function wirePanelAddForm(body, close) {
   function syncTypeUI() {
     const t = typeSel.value;
     templateInp.style.display = 'none';
+    $('#p-url', body).style.display = t === 'doctordns' ? 'none' : '';
+    passInp.style.display = t === 'doctordns' ? 'none' : '';
+    $('#p-later-note', body).style.display = t === 'doctordns' ? 'none' : '';
     const autoBox = $('#p-stealth-auto', body);
     if (autoBox) autoBox.style.display = t === 'stealth' ? '' : 'none';
-    if (t === 'stealth') {
+    const doctorBox = $('#p-doctor-auto', body);
+    if (doctorBox) doctorBox.style.display = t === 'doctordns' ? '' : 'none';
+    const saveBtn = $('#p-save', body);
+    if (saveBtn) saveBtn.style.display = t === 'doctordns' ? 'none' : '';
+    if (t === 'doctordns') {
+      userInp.style.display = 'none'; userInp.value = '';
+      passInp.value = '';
+      $('#p-url', body).value = '';
+      hint.style.display = 'block';
+      hint.textContent = 'فقط نام و دسته‌بندی را مشخص کنید؛ اتصال با SSH و ساخت کلید API به‌صورت خودکار انجام می‌شود.';
+    } else if (t === 'stealth') {
       userInp.style.display = 'none'; userInp.value = '';
       passInp.placeholder = PANEL_SECRET_PLACEHOLDERS.stealth;
       hint.style.display = 'block';
@@ -8995,6 +9119,7 @@ function wirePanelAddForm(body, close) {
   typeSel.addEventListener('change', syncTypeUI);
   syncTypeUI();
   if ($('#sa-install', body)) wireStealthAutoBox(body, () => $('#p-name', body).value.trim(), () => { close(); renderPanels(); });
+  if ($('#p-dd-connect', body)) wireDoctorDNSAutoBox(body, close);
 
   $('#p-save', body).addEventListener('click', async () => {
     const name = $('#p-name', body).value.trim(), api_url = $('#p-url', body).value.trim();
@@ -9301,6 +9426,18 @@ async function paygSettingsHtml() {
         <div class="card-sub">نرخ جدید برای حساب‌های فعال از ابتدای ماه بعد اعمال می‌شود.</div>
         <label class="field"><span>چرخه تسویه (ثانیه، ۶۰ تا ۸۶۴۰۰)</span><input class="input" type="number" min="60" max="86400" dir="ltr" id="payg-cycle" value="${Number(d.cycle_seconds)}"></label>
         <label class="field"><span>حداکثر سرویس PayG برای هر کاربر</span><input class="input" type="number" min="1" max="100" dir="ltr" id="payg-max" value="${Number(d.max_services)}"></label>
+        <label class="field"><span>حداقل موجودی کیف پول برای ساخت سرویس مصرفی جدید (تومان، ۰ = فقط موجودی مثبت)</span><input class="input" type="number" min="0" dir="ltr" id="payg-min-balance" value="${Number(d.min_balance || 0)}"></label>
+        <b>پیام ارسال کانفیگ</b><div class="card-sub">متن و عکس پیامی که بعد از ساخت سرویس مصرفی همراه لینک اشتراک برای کاربر ارسال می‌شود. خالی بودن متن = متن پیش‌فرض، بدون عکس = فقط متن.</div>
+        <label class="field"><span>متن پیام (قابل استفاده: {username} نام کاربری، {link} لینک اشتراک، {url} آدرس لینک، {cycle} چرخه تسویه؛ اگر {link} یا {url} نباشد لینک انتها اضافه می‌شود)</span>
+          <textarea class="input" id="payg-delivery-text" rows="6" maxlength="${Number(d.delivery_text_max)}" placeholder="متن پیش‌فرض">${esc(d.delivery_text || '')}</textarea></label>
+        <div class="field"><span>🖼 عکس پیام</span>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            ${d.delivery_has_photo ? `<img src="/api/payg/delivery-photo?t=${Date.now()}" alt="" style="max-width:140px;max-height:100px;border-radius:8px;border:1px solid var(--border,#333)">
+            <button class="btn btn-sm btn-danger" type="button" id="payg-delivery-photo-del">حذف عکس</button>` : '<span class="hint-text">عکسی ثبت نشده.</span>'}
+          </div>
+          <input class="input" id="payg-delivery-photo" type="file" accept="image/jpeg,image/png,image/webp" style="margin-top:8px">
+          <span class="hint-text">انتخاب فایل جدید هنگام «ذخیره تنظیمات» جایگزین عکس فعلی می‌شود.</span>
+        </div>
         <button class="btn btn-primary" id="payg-save-settings">ذخیره تنظیمات</button>
       </div>
     </div>`;
@@ -9316,15 +9453,28 @@ function paygBindSettings() {
       $('#payg-suggest-note', root).textContent = `بر اساس بالاترین قیمت تمام‌شده‌ی هر گیگ (${fmt(r.cost_gb)} تومان). برای اعمال، ذخیره را بزنید.`;
     } catch (e) { handleErr(e); }
   });
+  $('#payg-delivery-photo-del', root)?.addEventListener('click', async () => {
+    if (!confirm('عکس پیام ارسال کانفیگ حذف شود؟')) return;
+    try { await apiDelete('/payg/delivery-photo'); toast('عکس حذف شد'); renderPayg().catch(handleErr); } catch (e) { handleErr(e); }
+  });
   $('#payg-save-settings', root)?.addEventListener('click', async () => {
     const rate = parseInt($('#payg-rate', root).value, 10);
+    const photo = $('#payg-delivery-photo', root).files[0];
     try {
+      if (photo && photo.size > 10 * 1024 * 1024) throw new Error('حجم تصویر نباید بیشتر از ۱۰ مگابایت باشد.');
       await apiPost('/payg/settings', {
         enabled: _swOn(root, 'payg_enabled'),
         rate,
         cycle_seconds: parseInt($('#payg-cycle', root).value, 10),
         max_services: parseInt($('#payg-max', root).value, 10),
+        min_balance: parseInt($('#payg-min-balance', root).value, 10) || 0,
+        delivery_text: $('#payg-delivery-text', root).value,
       });
+      if (photo) {
+        const fd = new FormData();
+        fd.append('photo', photo);
+        await apiMultipart('/payg/delivery-photo', fd);
+      }
       toast('تنظیمات PayG ذخیره شد');
       renderPayg().catch(handleErr);
     } catch (e) { handleErr(e); }
@@ -9337,14 +9487,15 @@ async function paygTargetsHtml() {
   const modeAll = d.mode === 'all';
   const panelRows = d.panels.map(p => {
     const load = p.max_services ? `${fmt(p.active_services)}/${fmt(p.max_services)} ظرفیت` : `${fmt(p.active_services)} سرویس`;
-    const state = !p.selected ? '<span class="chip">انتخاب نشده</span>'
+    const state = p.dsub_enabled === false ? '<span class="chip" style="color:#FB7185">ساب اختصاصی پنل خاموش است</span>'
+      : !p.selected ? '<span class="chip">انتخاب نشده</span>'
       : p.has_target ? `<span class="chip">🎯 ${fmt(p.target_count)} اینباند/گروه</span>`
       : '<span class="chip">انتخاب‌شده (بدون اینباند مستقل)</span>';
     return `<tr>
       <td><b>${esc(p.name)}</b><div class="card-sub">${esc(p.panel_type || '')} · #${Number(p.id)}</div></td>
       <td>${load}</td>
       <td>${state}</td>
-      <td><button class="btn btn-sm" data-payg-target="${Number(p.id)}">${p.selected ? 'ویرایش' : 'افزودن'}</button></td>
+      <td><button class="btn btn-sm" data-payg-target="${Number(p.id)}" ${p.dsub_enabled === false && !p.selected ? 'disabled' : ''}>${p.selected ? 'ویرایش' : 'افزودن'}</button></td>
     </tr>`;
   }).join('') || '<tr><td colspan="4" class="empty-state">پنل فعالی ثبت نشده است.</td></tr>';
   const nodeRows = d.ssh_nodes.map(n => `<label class="field field-row"><span>${esc(n.name)} · ${esc(n.host)}</span><input type="checkbox" data-payg-node="${Number(n.id)}" ${n.selected ? 'checked' : ''}></label>`).join('');
@@ -9416,7 +9567,7 @@ const COST_MODES = {
   payg: { api: '/payg/costs', modal: 'تعرفه فروش', title: 'تعرفه فروش مستقل هر پنل و مقصد', rerender: () => renderPayg(),
     intro: 'برای هر گروه یا اینباند، بهای فروش هر گیگ ترافیک مصرف‌شده، هر روز فعال‌بودن سرویس و هر کاربر ظرفیت را جداگانه تعیین کنید؛ این مبلغ از کیف پول مشتری PayG کم می‌شود. مقدار صفر یعنی آن جزء هزینه ندارد. اگر سرویس چند مقصد انتخاب کند، بالاترین تعرفه مقصدهای انتخاب‌شده مبناست؛ پلن شخصی بدون انتخاب مقصد نیز از تعرفه پیش‌فرض و در نبود آن از بالاترین تعرفه مقصدهای پنل استفاده می‌کند.' },
   acct: { api: '/accounting/panel-costs', modal: 'قیمت تمام‌شده', title: 'قیمت تمام‌شده‌ی واقعی هر پنل و مقصد', rerender: () => renderAccounting(),
-    intro: 'هزینه‌ی واقعی شما برای هر گیگ، هر روز فعال و هر کاربر. این مقادیر فقط مبنای پیشنهاد قیمت و گزارش‌های حسابداری هستند و روی مبلغی که از مشتری کم می‌شود اثری ندارند. مقدار صفر یعنی آن جزء هزینه ندارد.' },
+    intro: 'هزینه‌ی واقعی شما برای هر گیگ، هر روز فعال و هر کاربر. این تعرفه‌ها مبنای محاسبه قیمت افزایش حجم و کاربر سرویس‌های خریداری‌شده هستند؛ برای سرویس تک‌پنلی نرخ همان پنل و برای سرویس چندپنلی میانگین نرخ پنل‌های متصل استفاده می‌شود. مقدار صفر یعنی آن جزء هزینه ندارد.' },
 };
 let costMode = 'payg';
 
@@ -9662,7 +9813,7 @@ async function acctFormulasHtml() {
   return `
     <div class="card" style="padding:14px;margin-top:12px"><b>متغیرهای قابل استفاده در فرمول</b>
       <p class="card-sub" style="direction:ltr;text-align:left">${ACCT_VAR_HELP.map(([k, l]) => `<code>${k}</code> = ${esc(l)}`).join(' · ')}</p>
-      <p class="card-sub">توابع: <code>min max ceil floor round abs</code> و شرط <code>a if gb > 50 else b</code>. هزینه‌ها از «قیمت تمام‌شده» می‌آیند؛ در محصولات چندپنلی/چندنودی مجموع مقصدها و در بقیه بالاترین هزینه‌ی مقصدهای انتخابی استفاده می‌شود.</p></div>
+      <p class="card-sub">توابع: <code>min max ceil floor round abs</code> و شرط <code>a if gb > 50 else b</code>. در افزونه سرویس‌های خریداری‌شده، تعرفه مقصدهای انتخابی هر پنل جمع می‌شود و سپس میانگین پنل‌ها و نودهای متصل محاسبه می‌شود. اگر تعرفه یکی از مقصدهای انتخابی ثبت نشده باشد، محاسبه حسابداری انجام نمی‌شود و مسیر قیمت ثابت قبلی استفاده خواهد شد.</p></div>
     <div class="card" style="padding:14px;margin-top:12px"><b>ثابت‌ها</b>
       <p class="card-sub">هر ثابت (مثل margin درصد سود) با نام خودش در فرمول‌ها قابل استفاده است.</p>
       <div id="acct-consts" style="display:grid;gap:8px">${constRows}</div>
@@ -10294,6 +10445,8 @@ async function openPanelAdvancedModal(serverId) {
       <fieldset style="border:1px solid rgba(128,128,128,.25);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:10px">
         <legend style="font-size:12px;padding:0 6px">تنظیمات سرور</legend>
         ${chk('pa-target', '📍 مقصد انتقال لوکیشن (کاربران بتوانند به این سرور منتقل شوند)', s.allow_transfer_target)}
+        ${chk('pa-dsub', '🔗 لینک ساب اختصاصی برای این پنل', s.dsub_enabled, s.dsub_required ? 'disabled' : '')}
+        <div style="font-size:11px;opacity:.65">${s.dsub_required ? 'این نوع پنل بدون ساب اختصاصی کار نمی‌کند؛ همیشه روشن است.' : 'با خاموش‌بودن، سرویس‌های تک‌پنلی این پنل لینک خود پنل را می‌گیرند و این پنل در محصول چندپنلی/نودی/ترکیبی و Pay As You Go قابل استفاده نیست.'}</div>
         ${chk('pa-onhold', '⏱ انقضا از اولین اتصال (On-hold)', s.start_on_first_use, s.onhold_supported ? '' : 'disabled')}
         ${s.onhold_supported ? '' : '<div style="font-size:11px;opacity:.65">این نوع پنل از On-hold پشتیبانی نمی‌کند.</div>'}
         ${panelAdvancedRow('💰 هزینه تغییر لوکیشن به این سرور (تومان، ۰ = رایگان)', `<input class="input" id="pa-price" type="number" min="0" value="${Number(s.transfer_price || 0)}">`)}
@@ -10338,6 +10491,7 @@ async function openPanelAdvancedModal(serverId) {
       const max = Number($('#pa-max', body).value || 0);
       const payload = {
         allow_transfer_target: $('#pa-target', body).checked,
+        dsub_enabled: $('#pa-dsub', body).checked,
         transfer_price: Number($('#pa-price', body).value || 0),
         socks_proxy: $('#pa-socks', body).value.trim(),
       };
