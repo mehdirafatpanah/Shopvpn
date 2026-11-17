@@ -25,6 +25,9 @@ import sqlite3
 import threading
 import time
 import tempfile
+import subprocess
+import shutil
+from urllib.parse import urlparse
 from urllib.parse import quote
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -242,7 +245,20 @@ class _TenantDBProxy:
         return getattr(_current_tenant.get().db, name)
 
 
+
 db = _TenantDBProxy()
+
+def _runtime_api_base_url() -> str:
+    try:
+        configured = (db.get_setting("miniapp_public_url", "") or "").strip()
+        if configured:
+            parsed = urlparse(configured)
+            if parsed.scheme and parsed.netloc:
+                return f"{parsed.scheme}://{parsed.netloc}"
+    except Exception:
+        pass
+    return (API_BASE_URL or "").strip().rstrip("/")
+
 
 
 def _bot_token() -> str:
@@ -4985,7 +5001,8 @@ def api_panel_servers_lite(admin=Depends(require_permission("catalog"))):
     return [{"id": s["id"], "name": s["name"], "panel_type": s["panel_type"],
              "supports_user_limit": provider_capabilities(s["panel_type"])[USER_LIMIT],
              "onhold_supported": s["panel_type"] in PANEL_ONHOLD_TYPES,
-             "start_on_first_use": bool(_row_get(s, "start_on_first_use", 0))}
+             "start_on_first_use": bool(_row_get(s, "start_on_first_use", 0)),
+             "dsub_enabled": _row_get(s, "dsub_enabled", 1) is None or int(_row_get(s, "dsub_enabled", 1)) != 0}
             for s in db.get_panel_servers(active_only=True)]
 
 @app.get("/api/panel-servers/{server_id}/product-targets")
@@ -5007,6 +5024,8 @@ class PaygSettingsBody(BaseModel):
     rate: Optional[int] = None
     cycle_seconds: Optional[int] = None
     max_services: Optional[int] = None
+    delivery_text: Optional[str] = None
+    min_balance: Optional[int] = None
 
 
 class PaygTargetBody(BaseModel):
@@ -5062,8 +5081,11 @@ def _payg_prepare():
 
 
 def _payg_panel_rows(payg) -> list:
+    import dedicated_sub
     selected = set(payg.get_payg_panel_ids(db))
     targets = payg.get_payg_targets(db)
+    dsub_off = {int(server["id"]) for server in db.get_panel_servers(True)
+                if not dedicated_sub.panel_enabled(db, int(server["id"]))}
     rows = []
     for server in db.get_panel_servers(True):
         sid = int(server["id"])
@@ -5073,6 +5095,7 @@ def _payg_panel_rows(payg) -> list:
             "name": server["name"],
             "panel_type": server["panel_type"],
             "selected": sid in selected,
+            "dsub_enabled": sid not in dsub_off,
             "has_target": sid in targets,
             "target_count": payg._target_count(targets[sid]) if sid in targets else 0,
             "active_services": int(info.get("active_services") or 0),
@@ -5123,6 +5146,10 @@ def api_payg_overview(admin=Depends(require_permission("catalog")), _mt=Depends(
         "legacy_tiered": len(set(payg.get_rates(db))) > 1,
         "cycle_seconds": max(60, int(db.get_setting("payg_cycle_seconds", "600") or 600)),
         "max_services": int(db.get_setting("payg_max_services_per_user", "5") or 5),
+        "min_balance": payg.get_min_balance(db),
+        "delivery_text": db.get_setting(payg.PAYG_DELIVERY_TEXT_KEY, "") or "",
+        "delivery_has_photo": bool(db.get_setting(payg.PAYG_DELIVERY_PHOTO_KEY, "")),
+        "delivery_text_max": payg.PAYG_DELIVERY_TEXT_MAX,
         "mode": payg.get_payg_mode(db),
         "dsub_enabled": bool(dedicated_sub.is_enabled(db)),
         "ssh_protocols": payg.get_payg_ssh_protocols(db),
@@ -5163,9 +5190,61 @@ def api_payg_settings(body: PaygSettingsBody, admin=Depends(require_permission("
     if body.enabled is not None:
         db.set_setting("payg_enabled", "1" if body.enabled else "0")
         changes.append(f"enabled={int(bool(body.enabled))}")
+    if body.min_balance is not None:
+        if not 0 <= int(body.min_balance) <= payg.PAYG_MIN_BALANCE_MAX:
+            raise HTTPException(400, tr("حداقل موجودی باید عددی بین ۰ و ۱۰ میلیارد تومان باشد."))
+        db.set_setting(payg.PAYG_MIN_BALANCE_KEY, str(int(body.min_balance)))
+        changes.append(f"min_balance={int(body.min_balance)}")
+    if body.delivery_text is not None:
+        text = body.delivery_text.strip()
+        if len(text) > payg.PAYG_DELIVERY_TEXT_MAX:
+            raise HTTPException(400, tr(f"متن پیام نمی‌تواند بیشتر از {payg.PAYG_DELIVERY_TEXT_MAX} نویسه باشد."))
+        db.set_setting(payg.PAYG_DELIVERY_TEXT_KEY, text)
+        changes.append("delivery_text")
     if changes:
         db.log_admin_action(admin["id"], "payg_settings_change", f"{', '.join(changes)} (پنل وب - {admin['username']})", "setting", "payg")
     return {"ok": True}
+
+
+@app.post("/api/payg/delivery-photo")
+async def api_payg_delivery_photo_set(photo: UploadFile = File(...), admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    payg = _payg_prepare()
+    ctype = (photo.content_type or "").lower()
+    if ctype not in ("image/jpeg", "image/png", "image/webp"):
+        raise HTTPException(400, tr("فقط تصویر JPG، PNG یا WEBP مجاز است."))
+    content = await photo.read()
+    if not content:
+        raise HTTPException(400, tr("فایل انتخاب‌شده خالی است."))
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(400, tr("حجم تصویر نباید بیشتر از ۱۰ مگابایت باشد."))
+    file_id = await tg_upload_photo_get_file_id(_bot_token(), _tenant_owner_chat_id(), content,
+                                                filename=photo.filename or "payg.jpg", content_type=ctype)
+    if not file_id:
+        raise HTTPException(502, tr("آپلود تصویر در تلگرام ناموفق بود. ربات باید روشن باشد و مالک ربات را استارت کرده باشد."))
+    await asyncio.to_thread(db.set_setting, payg.PAYG_DELIVERY_PHOTO_KEY, file_id)
+    await asyncio.to_thread(db.log_admin_action, admin["id"], "payg_delivery_photo_set", f"(پنل وب - {admin['username']})", "setting", "payg")
+    return {"ok": True}
+
+
+@app.delete("/api/payg/delivery-photo")
+async def api_payg_delivery_photo_delete(admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    payg = _payg_prepare()
+    await asyncio.to_thread(db.set_setting, payg.PAYG_DELIVERY_PHOTO_KEY, "")
+    await asyncio.to_thread(db.log_admin_action, admin["id"], "payg_delivery_photo_delete", f"(پنل وب - {admin['username']})", "setting", "payg")
+    return {"ok": True}
+
+
+@app.get("/api/payg/delivery-photo")
+async def api_payg_delivery_photo_get(admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+    payg = _payg_prepare()
+    file_id = await asyncio.to_thread(db.get_setting, payg.PAYG_DELIVERY_PHOTO_KEY, "")
+    if not file_id:
+        raise HTTPException(404, tr("عکسی ثبت نشده است."))
+    result = await fetch_telegram_file(_bot_token(), file_id)
+    if not result:
+        raise HTTPException(502, tr("دریافت تصویر از تلگرام ناموفق بود."))
+    content, content_type = result
+    return Response(content=content, media_type=content_type, headers={"Cache-Control": "private, max-age=300"})
 
 
 def _payg_save_panels(payg, ids: set, targets: dict):
@@ -5181,6 +5260,10 @@ async def api_payg_set_target(server_id: int, body: PaygTargetBody, admin=Depend
     server = db.get_panel_server(server_id)
     if not server or not server["is_active"]:
         raise HTTPException(404, tr("پنل فعال یافت نشد."))
+    import dedicated_sub
+    off_message = dedicated_sub.panels_dsub_off_message(db, [server_id])
+    if off_message:
+        raise HTTPException(400, tr(off_message))
     try:
         from product_targets import list_product_targets, build_target_config
         info = await list_product_targets(server)
@@ -5762,6 +5845,9 @@ def _checked_extra_targets(server_id, node_id, extra_panels, extra_nodes, protoc
         raise HTTPException(403, tr("اتصال مستقیم به پنل یا نود فقط برای بات اصلی مجاز است."))
     if not dedicated_sub.is_enabled(db):
         raise HTTPException(400, tr("اتصال چند پنل/نود یا ترکیب پنل و نود به یک محصول فقط وقتی ساب اختصاصی فعال است ممکن است؛ ابتدا ساب اختصاصی را فعال کنید."))
+    off_message = dedicated_sub.panels_dsub_off_message(db, ([server_id] if server_id else []) + panels)
+    if off_message:
+        raise HTTPException(400, tr(off_message))
     if not (server_id or node_id):
         raise HTTPException(400, tr("ابتدا مقصد اصلی محصول را انتخاب کنید."))
     for sid in panels:
@@ -8236,6 +8322,16 @@ async def api_cancel_reseller_request(request_id: int, admin=Depends(require_per
 # ---------------------------------------------------------------- panels --
 
 
+class DoctorDNSAutoSetupBody(BaseModel):
+    name: str
+    host: str
+    ssh_port: int = 22
+    username: str = "root"
+    password: Optional[str] = None
+    private_key: Optional[str] = None
+    panel_category_id: Optional[int] = None
+
+
 class PanelServerBody(BaseModel):
     name: str
     panel_type: str
@@ -8274,6 +8370,11 @@ def _mask_proxy(value: str) -> str:
     return re.sub(r"://[^/@]*@", "://***@", value or "")
 
 
+def _dsub_module():
+    import dedicated_sub
+    return dedicated_sub
+
+
 def _row_get(row, key, default=None):
     try:
         return row[key] if key in row.keys() else default
@@ -8287,6 +8388,7 @@ class PanelServerAdvancedBody(BaseModel):
     allow_transfer_target: Optional[bool] = None
     used_for_reseller: Optional[bool] = None
     start_on_first_use: Optional[bool] = None
+    dsub_enabled: Optional[bool] = None
     max_services: Optional[int] = None
     clear_max_services: bool = False
 
@@ -8349,6 +8451,8 @@ def _panel_server_public(s, health=None) -> dict:
         "onhold_supported": s["panel_type"] in PANEL_ONHOLD_TYPES,
         "max_services": _row_get(s, "max_services", None),
         "allow_transfer_target": bool(_row_get(s, "allow_transfer_target", 0)),
+        "dsub_enabled": _row_get(s, "dsub_enabled", 1) is None or int(_row_get(s, "dsub_enabled", 1)) != 0,
+        "dsub_required": s["panel_type"] in _dsub_module().PANEL_DSUB_REQUIRED_TYPES,
         "transfer_price": int(_row_get(s, "transfer_price", 0) or 0),
         "naming_mode": account_naming.server_mode(s),
         "naming_prefix": account_naming.server_affix(s, "prefix"),
@@ -8703,6 +8807,47 @@ def api_panel_server_types(admin=Depends(require_permission("panels")), _fa=Depe
     ]
 
 
+@app.post("/api/panel-servers/doctordns/auto-setup")
+async def api_doctordns_auto_setup(body: DoctorDNSAutoSetupBody,
+                                   admin=Depends(require_permission("panels")),
+                                   _fa=Depends(require_full_access_tenant)):
+    """Bootstrap an already-installed Doctor DNS via SSH; persist only its scoped API key."""
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(400, "نام پنل الزامی است.")
+    if not (body.password or body.private_key):
+        raise HTTPException(400, "رمز SSH یا کلید خصوصی الزامی است.")
+    import doctor_dns_ssh_setup
+    try:
+        result = await doctor_dns_ssh_setup.setup_existing_panel(
+            host=body.host, ssh_port=body.ssh_port, username=(body.username or "root").strip(),
+            password=body.password, private_key=body.private_key, panel_name=name)
+    except doctor_dns_ssh_setup.DoctorDNSSetupError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        logger.exception("Doctor DNS SSH bootstrap failed")
+        raise HTTPException(500, "راه‌اندازی خودکار Doctor DNS ناموفق بود.") from exc
+
+    server_id = db.add_panel_server(name, "doctordns", result["api_url"],
+                                    result["api_username"], result["api_password"],
+                                    panel_category_id=body.panel_category_id)
+    try:
+        provider = get_provider(db.get_panel_server(server_id))
+        ok, err = await provider.check_connection()
+        if not ok:
+            db.delete_panel_server(server_id)
+            raise HTTPException(400, "کلید ساخته شد اما تست اتصال ShopVPN ناموفق بود: " + str(err))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.delete_panel_server(server_id)
+        raise HTTPException(400, "تست اتصال Doctor DNS ناموفق بود: " + str(exc)) from exc
+    db.log_admin_action(admin["id"], "doctordns_auto_setup",
+                        f"Doctor DNS auto-connected: {name} ({body.host})", "panels")
+    return {"ok": True, "id": server_id, "api_url": result["api_url"],
+            "message": "Doctor DNS با موفقیت آماده و متصل شد."}
+
+
 @app.post("/api/panel-servers")
 async def api_add_panel_server(body: PanelServerBody, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
     if not body.name.strip() or not body.api_url.strip() or not body.api_password.strip():
@@ -8954,6 +9099,11 @@ async def api_panel_server_advanced_update(server_id: int, body: PanelServerAdva
     if body.used_for_reseller is not None:
         fields["used_for_reseller"] = 1 if body.used_for_reseller else 0
         notes.append(f"used_for_reseller={fields['used_for_reseller']}")
+    if body.dsub_enabled is not None:
+        if not body.dsub_enabled and server["panel_type"] in _dsub_module().PANEL_DSUB_REQUIRED_TYPES:
+            raise HTTPException(400, tr("این نوع پنل بدون ساب اختصاصی کار نمی‌کند؛ خاموش‌کردن آن مجاز نیست."))
+        fields["dsub_enabled"] = 1 if body.dsub_enabled else 0
+        notes.append(f"dsub_enabled={fields['dsub_enabled']}")
     if body.start_on_first_use is not None:
         if body.start_on_first_use and server["panel_type"] not in PANEL_ONHOLD_TYPES:
             raise HTTPException(400, tr("این نوع پنل از On-hold پشتیبانی نمی‌کند."))
@@ -9209,6 +9359,137 @@ async def api_exchange_rate_refresh(admin=Depends(require_permission("panels")))
         f"نرخ دلار به {status['rate']:,} تومان (منبع: {status['source']}) رفرش شد (پنل وب - {admin['username']})",
     ))
     return _rate_response(True, status)
+
+
+
+
+# ---------------------------------------------------- link & SSL manager --
+LINK_SETTING_KEYS = {
+    "dedicated_sub_url": "dsub_base_url",
+    "web_shop_url": "web_shop_base_url",
+    "miniapp_url": "miniapp_public_url",
+    "admin_panel_url": "admin_panel_public_url",
+}
+def _normalize_public_url(value: str, field: str, *, allow_path: bool = True) -> str:
+    value = (value or "").strip().rstrip("/")
+    if not value:
+        return ""
+    parsed = urlparse(value)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+        raise HTTPException(400, f"آدرس {field} باید با http:// یا https:// شروع شود و معتبر باشد.")
+    try:
+        port = parsed.port
+    except ValueError:
+        raise HTTPException(400, f"پورت آدرس {field} معتبر نیست.")
+    if port and not (1 <= port <= 65535):
+        raise HTTPException(400, f"پورت آدرس {field} معتبر نیست.")
+    if not allow_path and parsed.path not in ("", "/"):
+        raise HTTPException(400, f"برای {field} فقط دامنه و پورت مجاز است.")
+    if any(ch.isspace() for ch in value):
+        raise HTTPException(400, f"آدرس {field} شامل فاصله است.")
+    return value
+
+class LinksManagerBody(BaseModel):
+    dedicated_sub_url: Optional[str] = None
+    web_shop_url: Optional[str] = None
+    miniapp_url: Optional[str] = None
+    admin_panel_url: Optional[str] = None
+
+class SSLIssueBody(BaseModel):
+    domain: str
+    email: str
+    redirect_https: bool = True
+
+@app.get("/api/links-ssl")
+def api_links_ssl_get(admin=Depends(require_permission("settings"))):
+    values = {key: (db.get_setting(dbkey, "") or "") for key, dbkey in LINK_SETTING_KEYS.items()}
+    # Dedicated subscription URL is also consumed by dedicated_sub.py.
+    values["dedicated_sub_url"] = values["dedicated_sub_url"] or ""
+    certbot = shutil.which("certbot")
+    certs = ""
+    if certbot:
+        try:
+            proc = subprocess.run([certbot, "certificates"], capture_output=True, text=True, timeout=15)
+            certs = (proc.stdout or proc.stderr or "")[-12000:]
+        except Exception as exc:
+            certs = f"خواندن وضعیت گواهی ناموفق بود: {exc}"
+    return {"urls": values, "certbot_installed": bool(certbot), "certificates": certs}
+
+@app.put("/api/links-ssl")
+async def api_links_ssl_save(body: LinksManagerBody, admin=Depends(require_permission("settings"))):
+    values = body.model_dump(exclude_none=True)
+    for key, value in values.items():
+        label = {"dedicated_sub_url":"ساب اختصاصی", "web_shop_url":"وب‌شاپ",
+                 "miniapp_url":"مینی‌اپ", "admin_panel_url":"پنل وب ادمین"}[key]
+        normalized = _normalize_public_url(value, label)
+        db.set_setting(LINK_SETTING_KEYS[key], normalized)
+    # Keep the existing dedicated-subscription setting in sync.
+    import dedicated_sub
+    if body.dedicated_sub_url is not None:
+        db.set_setting("dsub_base_url", _normalize_public_url(body.dedicated_sub_url, "ساب اختصاصی"))
+    # Telegram's global menu button supports changing the Mini App launch URL.
+    menu_updated = False
+    menu_error = ""
+    if body.miniapp_url is not None and body.miniapp_url.strip():
+        token = _bot_token()
+        if token:
+            try:
+                import urllib.request
+                payload = json.dumps({"menu_button": {"type":"web_app", "text":"ShopVPN", "web_app":{"url":_normalize_public_url(body.miniapp_url, "مینی‌اپ")}}}).encode()
+                req = urllib.request.Request(f"https://api.telegram.org/bot{token}/setChatMenuButton",
+                    data=payload, headers={"Content-Type":"application/json"}, method="POST")
+                with urllib.request.urlopen(req, timeout=12) as resp:
+                    result = json.loads(resp.read().decode("utf-8"))
+                menu_updated = bool(result.get("ok"))
+                if not menu_updated:
+                    menu_error = str(result.get("description") or "Telegram API خطا داد.")
+            except Exception as exc:
+                menu_error = str(exc)
+        else:
+            menu_error = "توکن ربات در دسترس نیست."
+    db.log_admin_action(admin["id"], "links_ssl_settings", "به‌روزرسانی آدرس‌های عمومی (پنل وب)", "setting", "links_ssl")
+    return {"ok": True, "miniapp_menu_updated": menu_updated, "miniapp_menu_error": menu_error}
+
+@app.post("/api/links-ssl/issue")
+async def api_links_ssl_issue(body: SSLIssueBody, admin=Depends(require_permission("settings"))):
+    domain = (body.domain or "").strip().lower().rstrip(".")
+    email = (body.email or "").strip()
+    if not re.fullmatch(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", domain):
+        raise HTTPException(400, "دامنه معتبر نیست؛ فقط نام دامنه وارد کنید.")
+    if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+        raise HTTPException(400, "ایمیل معتبر برای صدور گواهی وارد کنید.")
+    certbot = shutil.which("certbot")
+    if not certbot:
+        raise HTTPException(400, "Certbot روی سرور نصب نیست. ابتدا certbot و افزونه nginx را نصب کنید.")
+    # Nginx plugin validates the HTTP challenge and can optionally install HTTPS config.
+    cmd = [certbot, "--nginx", "-d", domain, "--non-interactive", "--agree-tos", "-m", email]
+    if body.redirect_https:
+        cmd.append("--redirect")
+    try:
+        proc = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(504, "مهلت صدور گواهی تمام شد؛ وضعیت را در بخش گواهی‌ها بررسی کنید.")
+    output = ((proc.stdout or "") + "\\n" + (proc.stderr or ""))[-10000:]
+    if proc.returncode != 0:
+        raise HTTPException(502, "صدور گواهی ناموفق بود:\\n" + output)
+    db.log_admin_action(admin["id"], "ssl_certificate_issued", f"گواهی SSL برای {domain} صادر شد (پنل وب)", "setting", "ssl")
+    return {"ok": True, "output": output}
+
+@app.post("/api/links-ssl/renew")
+async def api_links_ssl_renew(admin=Depends(require_permission("settings"))):
+    certbot = shutil.which("certbot")
+    if not certbot:
+        raise HTTPException(400, "Certbot روی سرور نصب نیست.")
+    try:
+        proc = await asyncio.to_thread(subprocess.run, [certbot, "renew", "--non-interactive"],
+                                       capture_output=True, text=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(504, "مهلت تمدید گواهی تمام شد.")
+    output = ((proc.stdout or "") + "\\n" + (proc.stderr or ""))[-10000:]
+    if proc.returncode != 0:
+        raise HTTPException(502, "تمدید گواهی ناموفق بود:\\n" + output)
+    db.log_admin_action(admin["id"], "ssl_certificates_renewed", "تمدید گواهی‌های SSL (پنل وب)", "setting", "ssl")
+    return {"ok": True, "output": output}
 
 
 # --------------------------------------------------------------- settings --
@@ -9639,7 +9920,7 @@ async def api_test_gateway(gateway_id: int, body: CustomGatewayTestRequest, admi
     شوی URL/هدر/بدنه و مسیرهای پاسخ درست تنظیم شده‌اند. توجه: چون این یک درخواست واقعی
     به API درگاه است، ممکن است یک فاکتور واقعی نزد آن درگاه بسازد."""
     row, config = _gw_load(gateway_id=gateway_id)
-    if not API_BASE_URL:
+    if not _runtime_api_base_url():
         return {"success": False, "error": tr("آدرس مینی‌اپ (MINIAPP_URL) روی سرور تنظیم نشده است.")}
     try:
         computed = await custom_gateway_payment.compute_send_amount(db, config, body.amount_toman)
@@ -9653,8 +9934,8 @@ async def api_test_gateway(gateway_id: int, body: CustomGatewayTestRequest, admi
             amount=computed["amount"], amount_toman=body.amount_toman,
             order_id=our_ref, currency=computed["currency"], description="تست اتصال درگاه",
             tenant_id=tenant.slug or "main",
-            callback_url=f"{API_BASE_URL}/api/pay/custom/{row['gateway_key']}/return?b={tenant.slug}&txn={our_ref}",
-            webhook_url=f"{API_BASE_URL}/api/webhooks/custom/{row['gateway_key']}?b={tenant.slug}",
+            callback_url=f"{_runtime_api_base_url()}/api/pay/custom/{row['gateway_key']}/return?b={tenant.slug}&txn={our_ref}",
+            webhook_url=f"{_runtime_api_base_url()}/api/webhooks/custom/{row['gateway_key']}?b={tenant.slug}",
         )
     except payment_engine.PaymentEngineError as e:
         return {"success": False, "error": str(e)}
@@ -9736,8 +10017,8 @@ def api_get_c2c_webhook_info(admin=Depends(require_permission("settings"))):
     token = db.get_setting("card_to_card_sms_webhook_token", "")
     return {
         "webhook_token_set": bool(token),
-        "webhook_url": (f"{API_BASE_URL}/api/webhooks/sms-forwarder?b={tenant.slug}"
-                        if API_BASE_URL else None),
+        "webhook_url": (f"{_runtime_api_base_url()}/api/webhooks/sms-forwarder?b={tenant.slug}"
+                        if _runtime_api_base_url() else None),
     }
 
 
@@ -10609,7 +10890,7 @@ def _apply_menu_button_toggles(buttons: Optional[list[MenuButtonToggle]]):
                         url = "https://t.me/" + url[1:]
                     if url and not re.match(r"^(https?://|tg://)", url, re.I):
                         url = "https://" + url
-                    if not url or len(url) > 512 or re.search(r"\\s", url) or not re.match(r"^(https?://|tg://)", url, re.I):
+                    if not url or len(url) > 512 or re.search(r"\s", url) or not re.match(r"^(https?://|tg://)", url, re.I):
                         raise HTTPException(400, tr("آدرس لینک نامعتبر است."))
                     fields["url"] = url
                 if btn.custom_content is not None:
