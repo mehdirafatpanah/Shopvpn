@@ -2114,6 +2114,7 @@ class DatabaseBase:
             ("panel_servers", "naming_prefix", "TEXT DEFAULT ''"),
             ("panel_servers", "naming_suffix", "TEXT DEFAULT ''"),
             ("panel_servers", "naming_counter", "INTEGER DEFAULT 0"),
+            ("panel_servers", "dsub_enabled", "INTEGER DEFAULT 1"),
             ("panel_servers", "api_key", "TEXT"),
             ("panel_servers", "api_username", "TEXT"),
             ("panel_servers", "api_password", "TEXT"),
