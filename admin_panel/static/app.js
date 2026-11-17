@@ -438,6 +438,7 @@ const NAV_GROUPS = [
   { id: 'infra', label: 'شبکه و زیرساخت', items: [
     { key: 'panels', label: 'پنل‌های VPN', icon: 'panels', role: 'panels' },
     { key: 'ssh', label: 'نودها و سهمیه SSH', icon: 'terminal', role: 'panels' },
+    { key: 'links-ssl', label: 'لینک‌ها و SSL', icon: 'globe', role: 'settings' },
   ] },
   { id: 'botcontent', label: 'محتوای ربات', items: [
     { key: 'buttons', label: 'دکمه‌های ربات', icon: 'buttons', role: 'settings' },
@@ -9813,7 +9814,7 @@ async function acctFormulasHtml() {
   return `
     <div class="card" style="padding:14px;margin-top:12px"><b>متغیرهای قابل استفاده در فرمول</b>
       <p class="card-sub" style="direction:ltr;text-align:left">${ACCT_VAR_HELP.map(([k, l]) => `<code>${k}</code> = ${esc(l)}`).join(' · ')}</p>
-      <p class="card-sub">توابع: <code>min max ceil floor round abs</code> و شرط <code>a if gb > 50 else b</code>. در افزونه سرویس‌های خریداری‌شده، تعرفه مقصدهای انتخابی هر پنل جمع می‌شود و سپس میانگین پنل‌ها و نودهای متصل محاسبه می‌شود. اگر تعرفه یکی از مقصدهای انتخابی ثبت نشده باشد، محاسبه حسابداری انجام نمی‌شود و مسیر قیمت ثابت قبلی استفاده خواهد شد.</p></div>
+      <p class="card-sub">توابع: <code>min max ceil floor round abs</code> و شرط <code>a if gb > 50 else b</code>. هزینه‌ها از «قیمت تمام‌شده» می‌آیند؛ در محصولات چندپنلی/چندنودی مجموع مقصدها و در بقیه بالاترین هزینه‌ی مقصدهای انتخابی استفاده می‌شود.</p></div>
     <div class="card" style="padding:14px;margin-top:12px"><b>ثابت‌ها</b>
       <p class="card-sub">هر ثابت (مثل margin درصد سود) با نام خودش در فرمول‌ها قابل استفاده است.</p>
       <div id="acct-consts" style="display:grid;gap:8px">${constRows}</div>
