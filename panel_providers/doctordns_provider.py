@@ -9,6 +9,7 @@ from .base import (
 )
 
 SYNTHETIC_ID_BASE = 10 ** 15
+MAX_DEVICES = 10  # سقف تعداد دستگاه (آی‌پی هم‌زمان) هر حساب روی پنل Doctor DNS
 
 STATUS_MAP = {
     "active": "active",
@@ -26,6 +27,8 @@ def telegram_id_for(username: str) -> int:
 
 
 class DoctorDNSProvider(BasePanelProvider):
+    # «تعداد کاربر» همان تعداد دستگاه (آی‌پی هم‌زمان، max_ips) حساب روی پنل است
+    supports_user_limit = True
 
     def _base(self) -> str:
         url = self.server["api_url"].rstrip("/")
@@ -48,6 +51,8 @@ class DoctorDNSProvider(BasePanelProvider):
             raise PanelPermissionError("کلید API باید با تیک «دسترسی ادمین» ساخته شود.")
         if status == 403 and payload.get("error") == "ip_not_allowed":
             raise PanelPermissionError("آی‌پی سرور بات برای این کلید مجاز نشده است.")
+        if status == 404 and payload.get("error") == "not_found" and path.endswith("/devices"):
+            raise PanelError("پنل Doctor DNS برای تنظیم تعداد کاربر باید آپدیت شود (دستور /admin/users/{id}/devices را ندارد).")
         if status >= 400 or not payload or payload.get("ok") is False:
             if payload.get("message"):
                 raise PanelError(f"{action}: {payload['message']}")
@@ -65,6 +70,17 @@ class DoctorDNSProvider(BasePanelProvider):
         if fallback:
             return int(fallback)
         raise PanelError("پلن این محصول روی پنل Doctor DNS انتخاب نشده است.")
+
+    async def _apply_devices(self, panel_user_id, user_limit, current=None) -> None:
+        """تعداد کل دستگاه‌های حساب را روی پنل تعیین می‌کند (۱ تا ۱۰)؛ اگر همان مقدار فعلی باشد کاری نمی‌کند."""
+        total = int(user_limit or 0)
+        if total < 1:
+            return
+        if total > MAX_DEVICES:
+            raise PanelError(f"پنل Doctor DNS حداکثر {MAX_DEVICES} دستگاه را پشتیبانی می‌کند.")
+        if current is not None and int(current or 0) == total:
+            return
+        await self._call("POST", f"/admin/users/{panel_user_id}/devices", "تنظیم تعداد کاربر", {"devices": total})
 
     async def list_product_targets(self):
         data = await self._call("GET", "/plans", "دریافت فهرست پلن‌ها")
@@ -135,7 +151,9 @@ class DoctorDNSProvider(BasePanelProvider):
         user = data["user"]
         if not data.get("created") and user.get("status") != "pending":
             raise PanelUsernameTakenError("این کاربر روی پنل Doctor DNS از قبل وجود دارد")
-        await self._call("POST", f"/admin/users/{user['id']}/plan", "اعمال پلن", {"plan_id": plan_id})
+        applied = await self._call("POST", f"/admin/users/{user['id']}/plan", "اعمال پلن", {"plan_id": plan_id})
+        if user_limit:
+            await self._apply_devices(user["id"], user_limit, (applied.get("user") or {}).get("max_ips"))
         try:
             await self._call("POST", f"/users/{telegram_id_for(username)}/wg", "ساخت کانفیگ وایرگارد")
         except PanelError:
@@ -159,14 +177,21 @@ class DoctorDNSProvider(BasePanelProvider):
 
     async def update_user(self, username: str, add_volume_gb: float = 0, add_days: int = 0,
                            reset_usage: bool = False, preserve_remaining: bool = False,
-                           unlimited_volume: bool = False) -> PanelUserResult:
-        if not add_days and not reset_usage:
+                           unlimited_volume: bool = False, user_limit: int = None) -> PanelUserResult:
+        renew = bool(add_days or reset_usage)
+        if not renew and user_limit is None:
             raise PanelError("پنل Doctor DNS حجم یا زمان جداگانه اضافه نمی‌کند؛ فقط تمدید با خرید دوباره‌ی پلن پشتیبانی می‌شود.")
         user = await self._account(username)
-        if user.get("status") == "suspended":
-            await self._call("POST", f"/admin/users/{user['id']}/status", "فعال‌سازی کاربر", {"status": "active"})
-        plan_id = self._plan_id(fallback=(user.get("plan") or {}).get("id"))
-        await self._call("POST", f"/admin/users/{user['id']}/plan", "تمدید پلن", {"plan_id": plan_id})
+        current = user.get("max_ips")
+        if renew:
+            if user.get("status") == "suspended":
+                await self._call("POST", f"/admin/users/{user['id']}/status", "فعال‌سازی کاربر", {"status": "active"})
+            plan_id = self._plan_id(fallback=(user.get("plan") or {}).get("id"))
+            applied = await self._call("POST", f"/admin/users/{user['id']}/plan", "تمدید پلن", {"plan_id": plan_id})
+            # تمدید تعداد دستگاه را به مقدار پلن (+ اضافه‌های همان پلن) برمی‌گرداند؛ مقدار فعلی از پاسخ پنل خوانده می‌شود
+            current = (applied.get("user") or {}).get("max_ips")
+        if user_limit is not None:
+            await self._apply_devices(user["id"], user_limit, current)
         return await self.get_user(username)
 
     async def revoke_credentials(self, username: str) -> PanelUserResult:
