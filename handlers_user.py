@@ -832,6 +832,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 f"<b>{escape_html(row.get('node_name') or 'SSH')} — {escape_html(row.get('username') or '')}</b>",
                 f"وضعیت: {escape_html(status_label)}",
                 f"سرور: <code>{escape_html(row.get('host') or '')}:{int(row.get('port') or 22)}</code>",
+                "UDPGW port در اپ: <code>7300</code>",
                 f"پروکسی SOCKS5 محلی: <code>127.0.0.1:1080</code>",
                 f"دستور تونل: <code>ssh -p {int(row.get('port') or 22)} -N -D 127.0.0.1:1080 {escape_html(row.get('username') or '')}@{escape_html(row.get('host') or '')}</code>",
             ]

@@ -756,18 +756,43 @@ class Agent:
         if not supplied.startswith(prefix) or not hmac.compare_digest(supplied[len(prefix):].encode(), self.token):
             raise web.HTTPUnauthorized(text="unauthorized")
 
+    @staticmethod
+    def _udpgw_status() -> dict:
+        """Return local UDPGW service/socket status without making health depend on it."""
+        import shutil
+        import subprocess
+        try:
+            service = subprocess.run(["systemctl", "is-active", "shopvpn-udpgw.service"],
+                                     capture_output=True, text=True, timeout=3).stdout.strip()
+        except Exception:
+            service = "unknown"
+        try:
+            sockets = subprocess.run(["ss", "-ltn"], capture_output=True, text=True, timeout=3).stdout
+            listening = any("127.0.0.1:7300" in line for line in sockets.splitlines())
+        except Exception:
+            listening = False
+        return {"enabled": "ssh" in getattr(self, "protocols", set()),
+                "service": service or "unknown", "listening": listening,
+                "host": "127.0.0.1", "port": 7300,
+                "ok": service == "active" and listening}
+
     async def health(self, request):
-        return web.json_response({"ok": True, "agent": "shopvpn-ssh", "version": 2, "protocols": sorted(self.protocols)})
+        result = {"ok": True, "agent": "shopvpn-ssh", "version": 2, "protocols": sorted(self.protocols)}
+        if "ssh" in self.protocols:
+            result["udpgw"] = self._udpgw_status()
+        return web.json_response(result)
 
     async def info(self, request):
         port, proto = self._ovpn_settings()
         low, high = self._default_ssh_port_range()
         features = ["ssh_port_range", "remote_uninstall"]
+        udpgw = self._udpgw_status() if "ssh" in self.protocols else None
         if self._ovpn_ready():
             features.append("openvpn_username_password")
         return web.json_response({"ok": True, "version": 3, "protocols": sorted(self.protocols),
                                   "features": features,
-                                  "ssh": {"port_min": low, "port_max": high},
+                                  "ssh": {"port_min": low, "port_max": high,
+                                          "udpgw": udpgw},
                                   "openvpn": {"ready": self._ovpn_ready(), "port": port, "transport": proto}
                                   if "openvpn" in self.protocols else None,
                                   "wireguard": {"ready": self._wg_ready(), "port": self._wg_port(), "transport": "udp"}

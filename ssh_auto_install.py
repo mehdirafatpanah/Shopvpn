@@ -227,6 +227,18 @@ async def _install(db, job, name, host, ssh_port, username, password, private_ke
             script_env += " SHOPVPN_ENABLE_NFT=1"
         await run(f"cd /tmp/shopvpn-install && {script_env} bash deploy/install-shopvpn-ssh-agent.sh {','.join(final_protocols)}",
                   timeout=1200)
+        if "ssh" in protocols:
+            _log(job, "بررسی سرویس UDPGW و پورت داخلی 7300...")
+            udpgw_check = await run(
+                "systemctl is-active shopvpn-udpgw.service 2>/dev/null || true; "
+                "ss -ltn 2>/dev/null | grep -E '127\\.0\\.0\\.1:7300([[:space:]]|$)' || true",
+                check=False)
+            udpgw_lines = [line.strip() for line in udpgw_check.splitlines() if line.strip()]
+            if not udpgw_lines or udpgw_lines[0] != "active" or not any("127.0.0.1:7300" in line for line in udpgw_lines[1:]):
+                detail = await run("journalctl -u shopvpn-udpgw.service -n 12 --no-pager -o cat", check=False)
+                raise InstallError("UDPGW نصب شد اما سرویس یا پورت 127.0.0.1:7300 آماده نیست. "
+                                   f"گزارش سرویس: {detail[-500:]}")
+            _log(job, "UDPGW فعال است و روی 127.0.0.1:7300 گوش می‌دهد ✅")
         await run("systemctl restart shopvpn-ssh-agent; sleep 4", check=False)
         state = await run("systemctl is-active shopvpn-ssh-agent", check=False)
         if state != "active":

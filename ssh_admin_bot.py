@@ -486,6 +486,7 @@ def register(router: Router, db, *, full_access_bot, senior_admin_only, deny_mid
                 f"نام کاربری: <code>{html.escape(r['username'])}</code>\n"
                 f"رمز: <code>{html.escape(str(r['password']))}</code>\n"
                 f"سرور: <code>{html.escape(str(r['host']))}:{int(r['port'])}</code>\n")
+        text += "\nتنظیمات اپ: UDPGW port = <code>7300</code>\n"
         if link:
             text += f"\nلینک:\n<code>{html.escape(link)}</code>\n"
         text += "\n⚠️ رمز فقط همین یک بار نمایش داده می‌شود."

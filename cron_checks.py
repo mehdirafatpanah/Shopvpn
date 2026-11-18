@@ -296,18 +296,32 @@ async def check_ssh_nodes(db, bot):
         try:
             provider = get_ssh_provider(node, secret_resolver=_env_secret_resolver)
             ok = await asyncio.wait_for(provider.test_connection(), 20)
-            return bool(ok), "" if ok else "پاسخ نامعتبر"
+            if not ok:
+                return False, "پاسخ نامعتبر", None
+            info = await asyncio.wait_for(provider.get_info(), 12)
+            ssh_info = (info.get("ssh") or {}) if isinstance(info, dict) else {}
+            udpgw = ssh_info.get("udpgw") if isinstance(ssh_info, dict) else None
+            protocols = info.get("protocols") or [] if isinstance(info, dict) else []
+            if "ssh" in protocols and isinstance(udpgw, dict) and not udpgw.get("ok"):
+                return True, "", f"{node.get('name') or node['id']} (UDPGW: {udpgw.get('service', 'unknown')}, پورت 7300 غیرفعال)"
+            return True, "", None
         except asyncio.TimeoutError:
-            return False, "timeout"
+            return False, "timeout", None
         except Exception as exc:
-            return False, (str(exc) or type(exc).__name__)[:80]
+            return False, (str(exc) or type(exc).__name__)[:80], None
 
     results = await asyncio.gather(*(probe(n) for n in nodes))
-    down = [f"{n.get('name') or n['id']} ({err})" for n, (ok, err) in zip(nodes, results) if not ok]
-    if not down:
-        return OK, f"هر {len(nodes)} نود در دسترس است."
+    down = [f"{n.get('name') or n['id']} ({err})" for n, (ok, err, _) in zip(nodes, results) if not ok]
+    udpgw_down = [warning for _, _, warning in results if warning]
+    if not down and not udpgw_down:
+        return OK, f"هر {len(nodes)} نود در دسترس است؛ UDPGW نودهای SSH نیز سالم است."
+    messages = []
+    if down:
+        messages.append(f"{len(down)} از {len(nodes)} نود در دسترس نیست: {_short(down, 3)}")
+    if udpgw_down:
+        messages.append(f"اختلال UDPGW: {_short(udpgw_down, 3)}")
     status = ERROR if len(down) == len(nodes) else WARN
-    return status, f"{len(down)} از {len(nodes)} نود در دسترس نیست: {_short(down, 3)}"
+    return status, " | ".join(messages)
 
 
 _GATEWAY_HOSTS = {
