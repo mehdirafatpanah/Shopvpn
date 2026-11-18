@@ -514,7 +514,7 @@ function hasPerm(perm) {
 }
 function canSee(navRole) {
   if (navRole === 'database') return ME?.role === 'owner' && !ME?.tenant;
-  if (navRole === 'payg') return !ME?.tenant && hasPerm('catalog');
+  if (navRole === 'payg') return hasPerm('catalog');
   const rp = ME?.reseller_profile;
   if (navRole === 'reseller-self') return !!(ME?.tenant && rp);
   if (ME?.tenant && rp) {
