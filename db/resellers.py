@@ -1033,6 +1033,26 @@ class ResellersMixin:
                 conn.execute("UPDATE users SET reseller_tier=NULL WHERE telegram_id=?", (user_tg_id,))
 
 
+    def get_reseller_membership_info(self, user_tg_id: int):
+        """سطح عضویت فعلی نماینده در دیتابیس اصلی (reseller_tier / انقضا / مدل تامین)."""
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT reseller_tier, reseller_expires_at, is_reseller, reseller_supply_model "
+                "FROM users WHERE telegram_id=?", (user_tg_id,),
+            ).fetchone()
+
+
+    def convert_reseller_to_full(self, user_tg_id: int) -> bool:
+        """نماینده‌ی دارای سطح (مثلاً VIP) را به «نماینده‌ی کامل» تبدیل می‌کند: سطح و انقضای عضویت
+        پاک می‌شود (دیگر منقضی/تنزل نمی‌شود)، فلگ نمایندگی روشن می‌ماند؛ اعتبار و پنل اختصاصی دست‌نخورده می‌ماند."""
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "UPDATE users SET reseller_tier=NULL, reseller_expires_at=NULL, reseller_reminder_sent='', "
+                "is_reseller=1 WHERE telegram_id=?", (user_tg_id,),
+            )
+            return cur.rowcount > 0
+
+
     def adjust_reseller_credit(self, user_tg_id: int, delta_gb: int, admin_id: int = None, reason: str = None):
         """شارژ/تنظیم اعتبار نماینده با تضمین اینکه موجودی هرگز منفی نشود.
 
