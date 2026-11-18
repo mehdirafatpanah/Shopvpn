@@ -74,7 +74,10 @@ def _renew_quota_pool(db, pool, mode, add_volume, add_days, fresh=False):
     else:
         new_limit_gb = old_limit / _GB
     expires_at = pool.get("expires_at")
-    if add_days and expires_at:
+    if add_days and db.quota_pool_first_use_pending(pool):
+        # هنوز شروع نشده: روزهای تمدید به مدتِ ذخیره‌شده اضافه می‌شود تا از اولین اتصال حساب شود.
+        db.add_quota_pool_first_use_days(pool_id, float(add_days))
+    elif add_days and expires_at:
         try:
             current = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
             if current.tzinfo is None:

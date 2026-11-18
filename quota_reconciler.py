@@ -311,6 +311,14 @@ class QuotaReconciler:
                 poll_results.append({"service_kind": member["service_kind"],
                                      "service_id": member["service_id"], "ok": False, "error": error})
 
+        # شروع زمان از اولین اتصال: اولین مصرفِ هر عضو (پنل یا نود) انقضای مشترک را شروع می‌کند.
+        if self.db.quota_pool_first_use_pending(pool) and any(
+                r.get("ok") and int(r.get("used_bytes") or 0) > 0 for r in poll_results):
+            started = self.db.activate_quota_pool_first_use(pool_id)
+            if started:
+                pool = dict(pool, expires_at=started)
+                await self.push_pool_expiry(pool_id)
+
         # Expiry is enforceable without usage data. For volume-limited pools, stale
         # accounting fails closed: suspend members until every counter is fresh again.
         expired = self._pool_is_expired(pool)

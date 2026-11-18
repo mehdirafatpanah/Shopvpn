@@ -2907,9 +2907,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return await deny_mid(call)
         product_id = int(call.data.split(":")[1])
         product = await asyncio.to_thread(db.get_product, product_id)
-        if not product or not product["provision_server_id"]:
+        if not product or not (product["provision_server_id"] or product["provision_ssh_node_id"]):
             return await call.answer(db.get_text('handlers_admin.auto_d6cec4a7', '⚠️ این محصول اتصال مستقیم به پنل ندارد.'), show_alert=True)
-        server = await asyncio.to_thread(db.get_panel_server, product["provision_server_id"])
+        server = await asyncio.to_thread(db.get_panel_server, product["provision_server_id"]) if product["provision_server_id"] else None
         current = product["start_on_first_use"] if "start_on_first_use" in product.keys() else None
         if current is None and server:
             current = int(server["start_on_first_use"] or 0)
@@ -2924,13 +2924,18 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         _, mode, product_id_s = call.data.split(":")
         product_id = int(product_id_s)
         product = await asyncio.to_thread(db.get_product, product_id)
-        if not product or not product["provision_server_id"]:
+        if not product or not (product["provision_server_id"] or product["provision_ssh_node_id"]):
             return await call.answer(db.get_text('handlers_admin.auto_d6cec4a7', '⚠️ این محصول اتصال مستقیم به پنل ندارد.'), show_alert=True)
-        server = await asyncio.to_thread(db.get_panel_server, product["provision_server_id"])
         from direct_panel_provision import ONHOLD_PANEL_TYPES
         first = mode == "first"
-        if first and server and server["panel_type"] not in ONHOLD_PANEL_TYPES:
-            return await call.answer(tr("این نوع پنل شروع زمان از اولین اتصال را پشتیبانی نمی‌کند."), show_alert=True)
+        if first:
+            # محصول چندپنلی/نودی: همه‌ی پنل‌های VPN (اصلی + اضافه) باید On-hold را پشتیبانی کنند.
+            extra_targets = await asyncio.to_thread(db.get_product_extra_targets, product_id)
+            check_ids = ([int(product["provision_server_id"])] if product["provision_server_id"] else []) + [int(x) for x in (extra_targets.get("panels") or [])]
+            for sid in check_ids:
+                srv = await asyncio.to_thread(db.get_panel_server, sid)
+                if srv and srv["panel_type"] not in ONHOLD_PANEL_TYPES:
+                    return await call.answer(tr("این نوع پنل شروع زمان از اولین اتصال را پشتیبانی نمی‌کند."), show_alert=True)
         await asyncio.to_thread(db.edit_product, product_id, start_on_first_use=first)
         await asyncio.to_thread(db.log_admin_action, call.from_user.id, "product_start_mode",
                                 f"محصول «{product['name']}» (#{product_id}) | شروع زمان: {'از اولین اتصال' if first else 'از لحظه خرید'}")

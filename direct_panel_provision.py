@@ -57,6 +57,43 @@ def product_first_use(product, server=None) -> bool:
         return True
 
 
+def pool_first_use(db, product, panel_ids=()) -> bool:
+    """شروع زمان از اولین اتصال برای محصولاتی که سهمیه/انقضای مشترک (استخر) دارند:
+    چندپنلی/نودی، ترکیبی VPN+SSH و SSH تنها. فقط وقتی True است که مدت > 0 باشد و
+    همه‌ی پنل‌های VPN محصول On-hold را پشتیبانی کنند (نود SSH/OpenVPN/WireGuard محدودیتی ندارد)."""
+    try:
+        days = product["duration_days"]
+    except (KeyError, IndexError, TypeError):
+        days = None
+    days = 30 if days is None else days
+    if not days or float(days) <= 0:
+        return False
+    ids = [int(x) for x in panel_ids if x]
+    try:
+        value = product["start_on_first_use"]
+    except (KeyError, IndexError, TypeError):
+        value = None
+    if value is None:
+        if not ids:
+            return False
+        first = db.get_panel_server(ids[0])
+        try:
+            value = first["start_on_first_use"] if first else 0
+        except (KeyError, IndexError, TypeError):
+            value = 0
+    if not int(value or 0):
+        return False
+    for sid in ids:
+        server = db.get_panel_server(sid)
+        if not server or str(server["panel_type"]).lower() not in ONHOLD_PANEL_TYPES:
+            return False
+    return True
+
+
+def _first_use_pool_meta(duration_days) -> dict:
+    return {"first_use_pending": True, "first_use_days": float(duration_days)}
+
+
 def _whole_or_fraction(value):
     number = float(value)
     return int(number) if number == int(number) else number
@@ -117,7 +154,8 @@ async def provision_direct(db, product, quantity: int = 1, user_id: int = None, 
 
 
 async def _provision_vpn(db, product, quantity: int = 1, user_id: int = None, order_id: int = None,
-                         shared_pool: bool = False, server_id: int = None, register: bool = True, target_config_override=...) -> list:
+                         shared_pool: bool = False, server_id: int = None, register: bool = True, target_config_override=...,
+                         first_use_override=None) -> list:
     """ساخت کاربر روی پنل VPN. با shared_pool=True حجم روی خود پنل نامحدود ساخته می‌شود
     (سقف حجم را استخر مشترک VPN+SSH اعمال می‌کند) ولی حجم محصول در custom_configs ثبت می‌شود."""
     if not isinstance(quantity, int) or quantity < 1:
@@ -138,7 +176,7 @@ async def _provision_vpn(db, product, quantity: int = 1, user_id: int = None, or
         effective_product = dict(product)
         effective_product["provision_target_config"] = target_config_override
     server = dict(apply_product_target(server, effective_product))
-    first_use = product_first_use(product, server)
+    first_use = product_first_use(product, server) if first_use_override is None else bool(first_use_override)
     server["start_on_first_use"] = 1 if first_use else 0
 
     if not db.panel_has_capacity(server_id, quantity):
@@ -289,7 +327,8 @@ async def _provision_combined(db, product, quantity: int = 1, user_id: int = Non
 
     try:
         vpn_items = await _provision_vpn(db, product, quantity=quantity, user_id=user_id,
-                                         order_id=order_id, shared_pool=True)
+                                         order_id=order_id, shared_pool=True,
+                                         first_use_override=pool_first_use(db, product, [product["provision_server_id"]]))
     except Exception:
         await _rollback_ssh()
         raise
@@ -345,14 +384,16 @@ async def _provision_multi(db, product, targets: dict, quantity: int = 1, user_i
     duration_days = _whole_or_fraction(product["duration_days"] if product["duration_days"] is not None else 30)
     if volume_gb < 0 or duration_days < 0:
         raise ProvisionError("حجم یا مدت محصول نامعتبر است.")
-    expires_at = (datetime.now(timezone.utc) + timedelta(days=duration_days)).isoformat() if duration_days else None
+    first_use = pool_first_use(db, product, panel_ids)
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=duration_days)).isoformat() if duration_days and not first_use else None
 
     finished = []
     output = []
     try:
         for _ in range(quantity):
             unit_items, unit_rollback = await _provision_multi_unit(
-                db, product, panel_ids, node_ids, user_id, order_id, volume_gb, expires_at)
+                db, product, panel_ids, node_ids, user_id, order_id, volume_gb, expires_at,
+                first_use=first_use, duration_days=duration_days)
             finished.append(unit_rollback)
             output.extend(unit_items)
     except Exception:
@@ -362,9 +403,11 @@ async def _provision_multi(db, product, targets: dict, quantity: int = 1, user_i
     return output
 
 
-async def _provision_multi_unit(db, product, panel_ids, node_ids, user_id, order_id, volume_gb, expires_at):
+async def _provision_multi_unit(db, product, panel_ids, node_ids, user_id, order_id, volume_gb, expires_at,
+                                first_use=False, duration_days=0):
     pool_id = db.create_quota_pool(int(user_id), volume_gb, expires_at,
-        label=f"{product['name']}" + (f" · order #{order_id}" if order_id else ""))
+        label=f"{product['name']}" + (f" · order #{order_id}" if order_id else ""),
+        metadata=_first_use_pool_meta(duration_days) if first_use else None)
     ssh_items, vpn_items = [], []
     primary_cc_id = None
 
@@ -408,7 +451,8 @@ async def _provision_multi_unit(db, product, panel_ids, node_ids, user_id, order
             for proto in node_picks:
                 ssh_items.extend(await provision_ssh_direct(
                     db, product, quantity=1, user_id=user_id, order_id=order_id,
-                    allow_openvpn=bool(panel_ids), node_id=node_id, pool_id=pool_id, protocol=proto))
+                    allow_openvpn=bool(panel_ids), node_id=node_id, pool_id=pool_id, protocol=proto,
+                    first_use=first_use))
         for index, server_id in enumerate(panel_ids):
             # هر پنل مقصد مستقل محصول را می‌گیرد؛ پنل اصلی از provision_target_config
             # و پنل‌های اضافه از product_extra_targets.target_config استفاده می‌کنند.
@@ -419,6 +463,7 @@ async def _provision_multi_unit(db, product, panel_ids, node_ids, user_id, order
                 db, product, quantity=1, user_id=user_id, order_id=order_id,
                 shared_pool=True, server_id=server_id, register=(index == 0),
                 target_config_override=(per_panel_config if index > 0 else ...),
+                first_use_override=first_use,
             )
             vpn_items.extend(built)
             if index == 0:
@@ -467,7 +512,7 @@ def _product_ssh_protocol(product) -> str:
 
 async def provision_ssh_direct(db, product, quantity: int = 1, user_id: int = None, order_id: int = None,
                                allow_openvpn: bool = False, node_id: int = None, pool_id: int = None,
-                               protocol: str = None) -> list:
+                               protocol: str = None, first_use: bool = None) -> list:
     """Provision a paid SSH product on a Linux Agent and create one shared quota pool.
 
     Commercial delivery fails closed unless the Agent reports a valid per-account
@@ -491,7 +536,11 @@ async def provision_ssh_direct(db, product, quantity: int = 1, user_id: int = No
     duration_days = _whole_or_fraction(product["duration_days"] if product["duration_days"] is not None else 30)
     if volume_gb < 0 or duration_days < 0:
         raise ProvisionError("حجم یا مدت محصول SSH نامعتبر است.")
-    expires_at = (datetime.now(timezone.utc) + timedelta(days=duration_days)).isoformat() if duration_days else None
+    if first_use is None:
+        first_use = pool_first_use(db, product, [product["provision_server_id"]] if product["provision_server_id"] else [])
+    first_use = bool(first_use and duration_days)
+    # از اولین اتصال: انقضا تا اولین مصرف خالی می‌ماند و quota_reconciler آن را شروع می‌کند.
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=duration_days)).isoformat() if duration_days and not first_use else None
 
     from ssh_providers import get_ssh_provider, SSHProviderError
     from quota_reconciler import _env_secret_resolver
@@ -505,7 +554,8 @@ async def provision_ssh_direct(db, product, quantity: int = 1, user_id: int = No
         provider = get_ssh_provider(node, secret_resolver=_env_secret_resolver)
         if pool_id is None:
             pool_id = db.create_quota_pool(int(user_id), volume_gb, expires_at,
-                label=f"{product['name']} SSH" + (f" · order #{order_id}" if order_id else ""))
+                label=f"{product['name']} SSH" + (f" · order #{order_id}" if order_id else ""),
+                metadata=_first_use_pool_meta(duration_days) if first_use else None)
             own_pool = True
     except Exception as exc:
         raise ProvisionError(f"آماده‌سازی محصول SSH ناموفق بود: {exc}") from exc

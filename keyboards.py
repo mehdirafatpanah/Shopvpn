@@ -3436,7 +3436,7 @@ def admin_products_list_kb(db, products, category_id=None) -> InlineKeyboardMark
                 edit_row.insert(0, InlineKeyboardButton(text=tr("🔌 تغییر پنل/اینباند"), callback_data=f"adm_prod_srv:{p['id']}"))
             rows.append(edit_row)
             rows.append([InlineKeyboardButton(text=tr("🔄 قوانین تمدید کامل"), callback_data=f"adm_prodrr:{p['id']}")])
-            if p["provision_server_id"]:
+            if p["provision_server_id"] or p["provision_ssh_node_id"]:
                 _first = p["start_on_first_use"] if "start_on_first_use" in p.keys() else None
                 _first_label = "⏱ شروع زمان: از اولین اتصال" if _first == 1 else ("⏱ شروع زمان: از لحظه خرید" if _first == 0 else "⏱ شروع زمان: طبق تنظیم پنل")
                 rows.append([InlineKeyboardButton(text=tr(_first_label), callback_data=f"adm_prod_start:{p['id']}")])
