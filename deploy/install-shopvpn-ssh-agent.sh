@@ -107,6 +107,32 @@ if [[ "${WANT_SSH}" -eq 1 ]]; then
   install -o root -g root -m 0644 "${SSHD_TEMPLATE_SOURCE}" /etc/systemd/system/shopvpn-sshd@.service
   groupadd --system shopvpnssh 2>/dev/null || true
 
+  # UDP gateway for SSH clients (V2Box, NetMod, ...): without it UDP/DNS cannot pass the tunnel.
+  # Listens on 127.0.0.1:7300 only; clients reach it through their own SSH connection.
+  apt-get install -y badvpn >/dev/null 2>&1 || true
+  UDPGW_BIN="$(command -v badvpn-udpgw || true)"
+  if [[ -n "${UDPGW_BIN}" ]]; then
+    cat > /etc/systemd/system/shopvpn-udpgw.service <<EOF
+[Unit]
+Description=ShopVPN UDP gateway for SSH accounts (127.0.0.1:7300)
+After=network.target
+
+[Service]
+ExecStart=${UDPGW_BIN} --listen-addr 127.0.0.1:7300 --max-clients 1000 --max-connections-for-client 64
+Restart=always
+RestartSec=2
+User=nobody
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now shopvpn-udpgw.service || echo "udpgw failed to start (non-fatal)" >&2
+  else
+    echo "badvpn-udpgw not available; SSH works for TCP only (install badvpn manually for UDP)." >&2
+  fi
+
   SSHD_CONFIG=/etc/ssh/sshd_config
   SSHD_BACKUP="${SSHD_CONFIG}.shopvpn-backup.$(date +%Y%m%d%H%M%S)"
   if ! grep -Fq '# BEGIN SHOPVPN SSH ACCOUNT RESTRICTIONS' "${SSHD_CONFIG}"; then
