@@ -8838,6 +8838,9 @@ async def api_ssh_create_account(body: SSHAccountCreateBody, admin=Depends(requi
     except ssh_service.SSHServiceError as exc:
         raise HTTPException(exc.status, str(exc))
     db.log_admin_action(admin["id"], "ssh_account_create", f"SSH account #{r['id']} for user {body.user_id}", "ssh")
+    if str(body.protocol or "ssh").lower() == "ssh":
+        r["udpgw_port"] = 7300
+        r["client_setup_note"] = "در اپ، UDPGW port را روی 7300 تنظیم کنید."
     return r
 
 
