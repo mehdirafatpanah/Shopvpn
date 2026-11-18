@@ -9971,6 +9971,66 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             )
             await call.answer()
 
+        @router.callback_query(F.data.startswith("adm_resbot_makefull:"))
+        async def cb_admin_resbot_makefull(call: CallbackQuery):
+            """تبدیل نماینده‌ی دارای سطح (VIP و ...) به نماینده‌ی کامل؛ اول تأیید می‌گیرد."""
+            if not is_main_bot or not senior_admin_only(call.from_user.id):
+                return await deny_mid(call)
+            bot_id = callback_id(call.data, "adm_resbot_makefull")
+            reseller_bot = (await asyncio.to_thread(db.get_reseller_bot, bot_id)) if bot_id is not None else None
+            if not reseller_bot:
+                return await call.answer(db.get_text('handlers_admin.auto_edca6d43', 'یافت نشد.'), show_alert=True)
+            info = await asyncio.to_thread(db.get_reseller_membership_info, reseller_bot["owner_telegram_id"])
+            tier_code = (info["reseller_tier"] if info else None) or ""
+            tier = await asyncio.to_thread(db.get_reseller_tier, tier_code) if tier_code else None
+            if info and (info["reseller_supply_model"] or "volume_credit") == "fixed_product":
+                return await call.answer(tr("این نماینده مدل «محصول آماده» (طلایی) دارد؛ فقط تبدیل نماینده‌های اعتبار حجمی (VIP) پشتیبانی می‌شود."), show_alert=True)
+            if not tier_code:
+                current = tr("بدون سطح (از قبل کامل است)")
+            else:
+                current = f"{tier['icon']} {tier['title']}" if tier else tier_code
+                if info and info["reseller_expires_at"]:
+                    current += f" — {tr('انقضا')}: {str(info['reseller_expires_at'])[:10]}"
+            await replace_admin_view(
+                call,
+                tr("⬆️ تبدیل به نماینده کامل") + f"\n\n@{reseller_bot['bot_username'] or '-'}\n"
+                + tr("سطح فعلی") + f": {current}\n\n"
+                + tr("با تبدیل، سطح و انقضای عضویت پاک می‌شود (دیگر منقضی یا تنزل نمی‌شود) و تنظیمات بات مثل نماینده‌ی کامل می‌شود. اعتبار حجمی، پنل اختصاصی، کاربران و دیتابیس بات دست‌نخورده می‌مانند."),
+                reply_markup=kb.resbot_makefull_confirm_kb(bot_id),
+            )
+            await call.answer()
+
+        @router.callback_query(F.data.startswith("adm_resbot_makefull_ok:"))
+        async def cb_admin_resbot_makefull_ok(call: CallbackQuery):
+            if not is_main_bot or not senior_admin_only(call.from_user.id):
+                return await deny_mid(call)
+            bot_id = callback_id(call.data, "adm_resbot_makefull_ok")
+            reseller_bot = (await asyncio.to_thread(db.get_reseller_bot, bot_id)) if bot_id is not None else None
+            if not reseller_bot:
+                return await call.answer(db.get_text('handlers_admin.auto_edca6d43', 'یافت نشد.'), show_alert=True)
+            owner_id = reseller_bot["owner_telegram_id"]
+            info = await asyncio.to_thread(db.get_reseller_membership_info, owner_id)
+            if info and (info["reseller_supply_model"] or "volume_credit") == "fixed_product":
+                return await call.answer(tr("این نماینده مدل «محصول آماده» دارد؛ تبدیل انجام نشد."), show_alert=True)
+            await asyncio.to_thread(db.convert_reseller_to_full, owner_id)
+            tenant_db = Database(resolve_db_path(reseller_bot["db_path"]))
+            await asyncio.to_thread(tenant_db.set_setting, "bot_role", "full_reseller")
+            await asyncio.to_thread(tenant_db.set_setting, "custom_config_enabled", "0")
+            if not await asyncio.to_thread(tenant_db.get_setting, "miniapp_tenant_id", ""):
+                await asyncio.to_thread(tenant_db.set_setting, "miniapp_tenant_id", str(bot_id))
+            await asyncio.to_thread(
+                db.log_admin_action, call.from_user.id, "reseller_make_full",
+                f"نماینده #{bot_id} (@{reseller_bot['bot_username'] or ''}) به نماینده کامل تبدیل شد",
+            )
+            bots = await asyncio.to_thread(db.list_reseller_bots)
+            await safe_edit(
+                call,
+                tr("✅ نماینده به «نماینده کامل» تبدیل شد؛ بات و پنل وبش بدون ری‌استارت همین‌طور ادامه می‌دهند.") + "\n\n"
+                + db.get_text('handlers_admin.auto_b842641a_title', '🏪 مدیریت بات‌های نمایندگی:'),
+                reply_markup=kb.resellers_kb(bots),
+            )
+            await call.answer(tr("تبدیل شد."))
+
         @router.callback_query(F.data.startswith("adm_resbot_webpanel_creds:"))
         async def cb_admin_resbot_webpanel_creds(call: CallbackQuery, state: FSMContext):
             """مدیر اصلی خودش یوزرنیم/رمز پنل وب نماینده را تعیین می‌کند (بدون لینک یک‌بارمصرف)."""

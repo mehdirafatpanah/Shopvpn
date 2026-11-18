@@ -5646,6 +5646,9 @@ def resellers_kb(resellers) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text=tr("🗑حذف"), callback_data=f"adm_resbot_del:{r['id']}"),
             ]
         )
+        rows.append(
+            [InlineKeyboardButton(text=tr("⬆️ تبدیل به نماینده کامل"), callback_data=f"adm_resbot_makefull:{r['id']}")]
+        )
         # پنل وب برای هر دو سطح قابل فعال‌سازی است؛ سطح ۲ هم ممکن است
         # پنل وب اختصاصی بخواهد (دسترسی‌ها در خود پنل با tenant/level محدود می‌شوند).
         web_panel_enabled = bool(r["web_panel_enabled"]) if "web_panel_enabled" in r.keys() else False
@@ -5659,6 +5662,13 @@ def resellers_kb(resellers) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text=tr("🗃 پاکسازی فایل‌های دیتابیس یتیم"), callback_data="adm_orphan_db_files")])
     rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:resellers")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def resbot_makefull_confirm_kb(bot_id) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=tr("✅ بله، تبدیل کن"), callback_data=f"adm_resbot_makefull_ok:{bot_id}")],
+        [InlineKeyboardButton(text=tr("⬅️ انصراف"), callback_data="adm_resellers_menu")],
+    ])
 
 
 def resbot_webpanel_kb(bot_id) -> InlineKeyboardMarkup:
