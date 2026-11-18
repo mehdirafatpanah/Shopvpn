@@ -1034,7 +1034,7 @@ async def get_current_admin(request: Request, response: Response):
     catalog = await asyncio.to_thread(tenant.db.translation_catalog, admin_language) if admin_language not in {"fa", "en"} else None
     set_language(admin_language, catalog)
     reseller_profile = None
-    if tenant.slug and tenant.bot_id:
+    if tenant.slug and tenant.bot_id and not await asyncio.to_thread(tenant.db.is_unrestricted_full):
         rb = await asyncio.to_thread(main_db.get_reseller_bot, tenant.bot_id)
         if rb:
             owner_tg_id = int(rb["owner_telegram_id"])
@@ -1134,6 +1134,20 @@ def require_full_access_tenant(admin=Depends(get_current_admin)):
     # Dedicated reseller tenants are full-access tenants; the separate
     # ``resellers`` permission remains main-tenant-only via require_permission.
     return admin
+
+
+def _tenant_is_unrestricted() -> bool:
+    """نماینده‌ی کامل واقعی (تبدیل‌شده با «تبدیل به نماینده کامل») = دقیقاً مثل بات اصلی."""
+    try:
+        return bool(_current_tenant.get().db.is_unrestricted_full())
+    except Exception:
+        return False
+
+
+def _tenant_restricted(admin) -> bool:
+    """tenant هست و «کامل واقعی» نیست؛ فقط این نمایندگی‌ها از اتصال مستقیم پنل/نود،
+    بانک کانفیگ دستی و فروش پنل منع می‌شوند."""
+    return bool(admin.get("tenant")) and not _tenant_is_unrestricted()
 
 
 def _tenant_is_vip_credit() -> bool:
@@ -5779,7 +5793,7 @@ async def api_add_product(body: ProductBody, admin=Depends(require_permission("c
     if direct_target:
         if body.auto_provision_volume_gb is None or body.auto_provision_volume_gb < 0:
             raise HTTPException(400, tr("برای محصول مستقیم باید حجم (گیگابایت) را مشخص کنید."))
-    if admin["tenant"]:
+    if _tenant_restricted(admin):
         # نمایندگی (بند ۳.۲ اسپک): نه پنل شخصی دارد، نه بانک کانفیگ دستی؛ فقط
         # محصول خودکار از اعتبار حجمی/موجودی خودش مجاز است (مطابق منطق طرف بات).
         if direct_target:
@@ -5790,7 +5804,7 @@ async def api_add_product(body: ProductBody, admin=Depends(require_permission("c
         raise HTTPException(403, tr("نمایندگی VIP بانک کانفیگ ندارد؛ محصول باید از اعتبار حجمی ساخته شود."))
     is_panel_kind = body.product_kind == "panel_account"
     if is_panel_kind:
-        if admin["tenant"] or _tenant_is_vip_credit():
+        if _tenant_restricted(admin) or _tenant_is_vip_credit():
             raise HTTPException(403, tr("فروش پنل فقط برای بات اصلی مجاز است."))
         if body.is_auto_provision or direct_target:
             raise HTTPException(400, tr("محصول فروش پنل نمی‌تواند خودکار یا مستقیم باشد."))
@@ -5841,7 +5855,7 @@ def _checked_extra_targets(server_id, node_id, extra_panels, extra_nodes, protoc
     total = (1 if server_id else 0) + (1 if node_id else 0) + len(panels) + len(nodes)
     if total <= 1 or not changed:
         return panels, nodes
-    if admin["tenant"]:
+    if _tenant_restricted(admin):
         raise HTTPException(403, tr("اتصال مستقیم به پنل یا نود فقط برای بات اصلی مجاز است."))
     if not dedicated_sub.is_enabled(db):
         raise HTTPException(400, tr("اتصال چند پنل/نود یا ترکیب پنل و نود به یک محصول فقط وقتی ساب اختصاصی فعال است ممکن است؛ ابتدا ساب اختصاصی را فعال کنید."))
@@ -5958,7 +5972,7 @@ async def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends
     auto_provision_volume_gb = ...
 
     if body.source == "direct":
-        if admin["tenant"]:
+        if _tenant_restricted(admin):
             raise HTTPException(status_code=403, detail=tr("اتصال مستقیم به پنل فقط برای بات اصلی مجاز است."))
         if body.provision_server_id and body.provision_ssh_node_id:
             # محصول ترکیبی VPN+SSH (سهمیه مشترک)
@@ -5982,7 +5996,7 @@ async def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends
             raise HTTPException(status_code=404, detail=tr("پنل VPN یا نود SSH یافت نشد."))
         if body.auto_provision_volume_gb is None or body.auto_provision_volume_gb < 0:
             raise HTTPException(status_code=400, detail=tr("برای محصول مستقیم باید حجم (گیگابایت) را مشخص کنید."))
-        if admin["tenant"]:
+        if _tenant_restricted(admin):
             raise HTTPException(status_code=403, detail=tr("محصول مستقیم فقط برای بات اصلی مجاز است."))
         is_auto_provision = True
         auto_provision_volume_gb = body.auto_provision_volume_gb
@@ -5999,13 +6013,13 @@ async def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends
         if not old_product["is_auto_provision"]:
             raise HTTPException(status_code=400, detail=tr("این محصول به‌صورت خودکار ساخته نمی‌شود."))
         if body.provision_server_id is not None:
-            if admin["tenant"]:
+            if _tenant_restricted(admin):
                 raise HTTPException(status_code=403, detail=tr("اتصال مستقیم فقط برای بات اصلی مجاز است."))
             _require_edit_panel(body.provision_server_id, old_product, 404, "سرور پنل یافت نشد.")
             provision_server_id = body.provision_server_id
             provision_ssh_node_id = None
         if body.provision_ssh_node_id is not None:
-            if admin["tenant"]:
+            if _tenant_restricted(admin):
                 raise HTTPException(status_code=403, detail="اتصال مستقیم SSH فقط برای بات اصلی مجاز است.")
             node = next((n for n in db.list_ssh_nodes(active_only=True) if int(n["id"]) == int(body.provision_ssh_node_id)), None)
             if not node or node.get("node_type") != "linux":
@@ -10464,7 +10478,7 @@ async def _test_plan_provision_spec(body: TestPlanBody, admin) -> dict:
             raise HTTPException(400, tr("پنل انتخاب‌شده یافت نشد یا غیرفعال است."))
     ssh_node = None
     if node_id:
-        if admin["tenant"]:
+        if _tenant_restricted(admin):
             raise HTTPException(403, tr("اتصال مستقیم به پنل یا نود SSH فقط برای بات اصلی مجاز است."))
         ssh_node = next((n for n in db.list_ssh_nodes(active_only=True) if int(n["id"]) == int(node_id)), None)
         if not ssh_node or ssh_node.get("node_type") != "linux":
