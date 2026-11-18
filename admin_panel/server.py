@@ -5122,7 +5122,7 @@ def _payg_ssh_rows(payg) -> list:
 
 
 @app.get("/api/payg/overview")
-def api_payg_overview(admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+def api_payg_overview(admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     payg = _payg_prepare()
     import dedicated_sub
     from ssh_service import SUPPORTED_PROTOCOLS
@@ -5168,7 +5168,7 @@ def api_payg_overview(admin=Depends(require_permission("catalog")), _mt=Depends(
 
 
 @app.post("/api/payg/settings")
-def api_payg_settings(body: PaygSettingsBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+def api_payg_settings(body: PaygSettingsBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     payg = _payg_prepare()
     changes = []
     if body.rate is not None:
@@ -5207,7 +5207,7 @@ def api_payg_settings(body: PaygSettingsBody, admin=Depends(require_permission("
 
 
 @app.post("/api/payg/delivery-photo")
-async def api_payg_delivery_photo_set(photo: UploadFile = File(...), admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+async def api_payg_delivery_photo_set(photo: UploadFile = File(...), admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     payg = _payg_prepare()
     ctype = (photo.content_type or "").lower()
     if ctype not in ("image/jpeg", "image/png", "image/webp"):
@@ -5227,7 +5227,7 @@ async def api_payg_delivery_photo_set(photo: UploadFile = File(...), admin=Depen
 
 
 @app.delete("/api/payg/delivery-photo")
-async def api_payg_delivery_photo_delete(admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+async def api_payg_delivery_photo_delete(admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     payg = _payg_prepare()
     await asyncio.to_thread(db.set_setting, payg.PAYG_DELIVERY_PHOTO_KEY, "")
     await asyncio.to_thread(db.log_admin_action, admin["id"], "payg_delivery_photo_delete", f"(پنل وب - {admin['username']})", "setting", "payg")
@@ -5235,7 +5235,7 @@ async def api_payg_delivery_photo_delete(admin=Depends(require_permission("catal
 
 
 @app.get("/api/payg/delivery-photo")
-async def api_payg_delivery_photo_get(admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+async def api_payg_delivery_photo_get(admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     payg = _payg_prepare()
     file_id = await asyncio.to_thread(db.get_setting, payg.PAYG_DELIVERY_PHOTO_KEY, "")
     if not file_id:
@@ -5255,7 +5255,7 @@ def _payg_save_panels(payg, ids: set, targets: dict):
 
 
 @app.put("/api/payg/targets/{server_id}")
-async def api_payg_set_target(server_id: int, body: PaygTargetBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+async def api_payg_set_target(server_id: int, body: PaygTargetBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     payg = _payg_prepare()
     server = db.get_panel_server(server_id)
     if not server or not server["is_active"]:
@@ -5289,7 +5289,7 @@ async def api_payg_set_target(server_id: int, body: PaygTargetBody, admin=Depend
 
 
 @app.delete("/api/payg/targets/{server_id}")
-def api_payg_remove_target(server_id: int, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+def api_payg_remove_target(server_id: int, admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     payg = _payg_prepare()
     ids = set(payg.get_payg_panel_ids(db))
     ids.discard(server_id)
@@ -5301,7 +5301,7 @@ def api_payg_remove_target(server_id: int, admin=Depends(require_permission("cat
 
 
 @app.get("/api/payg/targets/{server_id}")
-async def api_payg_get_target(server_id: int, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+async def api_payg_get_target(server_id: int, admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     payg = _payg_prepare()
     server = db.get_panel_server(server_id)
     if not server or not server["is_active"]:
@@ -5370,20 +5370,20 @@ async def _panel_cost_payload(configured: dict) -> dict:
 
 
 @app.get("/api/payg/costs")
-async def api_payg_costs(admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+async def api_payg_costs(admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     """Read live group/inbound choices and their independent sales tariffs."""
     payg = _payg_prepare()
     return await _panel_cost_payload(payg.get_panel_costs(db))
 
 
 @app.get("/api/accounting/panel-costs")
-async def api_accounting_panel_costs(admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+async def api_accounting_panel_costs(admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     import accounting
     return await _panel_cost_payload(accounting.panel_costs(db))
 
 
 @app.put("/api/accounting/panel-costs/{server_id}")
-async def api_accounting_save_panel_costs(server_id: int, body: PaygPanelCostsBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+async def api_accounting_save_panel_costs(server_id: int, body: PaygPanelCostsBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     import accounting
     server = db.get_panel_server(server_id)
     if not server:
@@ -5402,13 +5402,13 @@ async def api_accounting_save_panel_costs(server_id: int, body: PaygPanelCostsBo
 
 
 @app.get("/api/accounting/suggest-tariff/{server_id}")
-def api_accounting_suggest_tariff(server_id: int, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+def api_accounting_suggest_tariff(server_id: int, admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     import accounting
     return {"rates": accounting.suggest_tariff(db, server_id)}
 
 
 @app.put("/api/payg/costs/{server_id}")
-async def api_payg_save_costs(server_id: int, body: PaygPanelCostsBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+async def api_payg_save_costs(server_id: int, body: PaygPanelCostsBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     payg = _payg_prepare()
     server = db.get_panel_server(server_id)
     if not server:
@@ -5429,13 +5429,13 @@ async def api_payg_save_costs(server_id: int, body: PaygPanelCostsBody, admin=De
 
 
 @app.get("/api/accounting/config")
-def api_accounting_config(admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+def api_accounting_config(admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     import accounting
     return accounting.get_config(db)
 
 
 @app.put("/api/accounting/config")
-def api_accounting_save_config(body: AccountingConfigBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+def api_accounting_save_config(body: AccountingConfigBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     import accounting
     try:
         cfg = accounting.save_config(db, body.dict())
@@ -5446,7 +5446,7 @@ def api_accounting_save_config(body: AccountingConfigBody, admin=Depends(require
 
 
 @app.get("/api/accounting/node-costs")
-def api_accounting_node_costs(admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+def api_accounting_node_costs(admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     import accounting
     costs = accounting.get_node_costs(db)
     nodes = []
@@ -5460,7 +5460,7 @@ def api_accounting_node_costs(admin=Depends(require_permission("catalog")), _mt=
 
 
 @app.put("/api/accounting/node-costs")
-def api_accounting_save_node_costs(body: AccountingNodeCostsBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+def api_accounting_save_node_costs(body: AccountingNodeCostsBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     import accounting
     try:
         saved = accounting.save_node_costs(db, body.entries)
@@ -5471,7 +5471,7 @@ def api_accounting_save_node_costs(body: AccountingNodeCostsBody, admin=Depends(
 
 
 @app.post("/api/accounting/suggest")
-def api_accounting_suggest(body: AccountingSuggestBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+def api_accounting_suggest(body: AccountingSuggestBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     import accounting
     try:
         return accounting.suggest(db, body.kind, body.panels, body.node_ids, body.gb, body.days, body.users)
@@ -5480,7 +5480,7 @@ def api_accounting_suggest(body: AccountingSuggestBody, admin=Depends(require_pe
 
 
 @app.get("/api/accounting/suggest-payg")
-def api_accounting_suggest_payg(admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+def api_accounting_suggest_payg(admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     import accounting
     try:
         return accounting.suggest_payg_rate(db)
@@ -5489,7 +5489,7 @@ def api_accounting_suggest_payg(admin=Depends(require_permission("catalog")), _m
 
 
 @app.post("/api/payg/mode")
-def api_payg_mode(body: PaygModeBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+def api_payg_mode(body: PaygModeBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     _payg_prepare()
     if body.mode not in ("balance", "all"):
         raise HTTPException(400, tr("حالت نامعتبر است."))
@@ -5503,7 +5503,7 @@ def api_payg_mode(body: PaygModeBody, admin=Depends(require_permission("catalog"
 
 
 @app.put("/api/payg/ssh")
-def api_payg_ssh(body: PaygSshBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+def api_payg_ssh(body: PaygSshBody, admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     _payg_prepare()
     from ssh_service import SUPPORTED_PROTOCOLS
     valid_nodes = {int(n["id"]) for n in db.list_ssh_nodes(True) if n.get("node_type") == "linux"}
@@ -5518,7 +5518,7 @@ def api_payg_ssh(body: PaygSshBody, admin=Depends(require_permission("catalog"))
 
 
 @app.post("/api/payg/clear")
-def api_payg_clear(admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+def api_payg_clear(admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     payg = _payg_prepare()
     _payg_save_panels(payg, set(), {})
     db.set_setting("payg_ssh_node_ids", "[]")
@@ -5527,7 +5527,7 @@ def api_payg_clear(admin=Depends(require_permission("catalog")), _mt=Depends(req
 
 
 @app.get("/api/payg/accounts")
-def api_payg_accounts(offset: int = 0, limit: int = 25, q: str = "", admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+def api_payg_accounts(offset: int = 0, limit: int = 25, q: str = "", admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     _payg_prepare()
     limit = max(1, min(int(limit), 100))
     offset = max(0, int(offset))
@@ -5557,7 +5557,7 @@ def api_payg_accounts(offset: int = 0, limit: int = 25, q: str = "", admin=Depen
 
 
 @app.get("/api/payg/accounts/{user_id}")
-def api_payg_account_detail(user_id: int, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+def api_payg_account_detail(user_id: int, admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     _payg_prepare()
     with db._get_conn() as conn:
         row = conn.execute("SELECT * FROM payg_accounts WHERE user_id=?", (user_id,)).fetchone()
@@ -5598,7 +5598,7 @@ def api_payg_account_detail(user_id: int, admin=Depends(require_permission("cata
 
 
 @app.post("/api/payg/accounts/{user_id}/suspend")
-def api_payg_account_suspend(user_id: int, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+def api_payg_account_suspend(user_id: int, admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     payg = _payg_prepare()
     with db._get_conn() as conn:
         row = conn.execute("SELECT quota_pool_id FROM payg_accounts WHERE user_id=?", (user_id,)).fetchone()
@@ -5614,7 +5614,7 @@ def api_payg_account_suspend(user_id: int, admin=Depends(require_permission("cat
 
 
 @app.post("/api/payg/accounts/{user_id}/resume")
-def api_payg_account_resume(user_id: int, admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+def api_payg_account_resume(user_id: int, admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     payg = _payg_prepare()
     with db._get_conn() as conn:
         row = conn.execute("SELECT * FROM payg_accounts WHERE user_id=?", (user_id,)).fetchone()
@@ -5634,7 +5634,7 @@ def api_payg_account_resume(user_id: int, admin=Depends(require_permission("cata
 
 
 @app.get("/api/payg/report")
-def api_payg_report(admin=Depends(require_permission("catalog")), _mt=Depends(require_main_tenant)):
+def api_payg_report(admin=Depends(require_permission("catalog")), _mt=Depends(require_full_access_tenant)):
     _payg_prepare()
     month = _payg_month_key()
     with db._get_conn() as conn:
@@ -9233,7 +9233,7 @@ def _pmig_plan_public(plan: dict) -> dict:
 
 
 @app.get("/api/panel-servers/{server_id}/migration")
-async def api_panel_migration_info(server_id: int, admin=Depends(require_owner), _t=Depends(require_main_tenant)):
+async def api_panel_migration_info(server_id: int, admin=Depends(require_owner), _t=Depends(require_full_access_tenant)):
     import panel_migration as pm
     src = await asyncio.to_thread(_panel_server_or_404, server_id)
     primaries = await asyncio.to_thread(db.pm_list_primary, server_id)
@@ -9251,14 +9251,14 @@ async def api_panel_migration_info(server_id: int, admin=Depends(require_owner),
 
 
 @app.post("/api/panel-servers/{server_id}/migration/plan")
-async def api_panel_migration_plan(server_id: int, body: PanelMigrationBody, admin=Depends(require_owner), _t=Depends(require_main_tenant)):
+async def api_panel_migration_plan(server_id: int, body: PanelMigrationBody, admin=Depends(require_owner), _t=Depends(require_full_access_tenant)):
     import panel_migration as pm
     plan = await pm.build_plan(db, server_id, body.dest_id)
     return _pmig_plan_public(plan)
 
 
 @app.post("/api/panel-servers/{server_id}/migration/run")
-async def api_panel_migration_run(server_id: int, body: PanelMigrationBody, admin=Depends(require_owner), _t=Depends(require_main_tenant)):
+async def api_panel_migration_run(server_id: int, body: PanelMigrationBody, admin=Depends(require_owner), _t=Depends(require_full_access_tenant)):
     import panel_migration as pm
     if pm.is_running(server_id):
         raise HTTPException(409, tr("مهاجرت این پنل همین الان در حال اجراست."))
@@ -9308,7 +9308,7 @@ _PMIG_TASKS: set = set()
 
 
 @app.get("/api/panel-servers/{server_id}/migration/status")
-async def api_panel_migration_status(server_id: int, admin=Depends(require_owner), _t=Depends(require_main_tenant)):
+async def api_panel_migration_status(server_id: int, admin=Depends(require_owner), _t=Depends(require_full_access_tenant)):
     import panel_migration as pm
     return {"running": pm.is_running(server_id), "job": _PMIG_JOBS.get(server_id)}
 
@@ -11104,7 +11104,7 @@ def _cm_log(admin: dict, action: str, detail: str) -> None:
 
 
 @app.get("/api/custom-menu")
-def api_cm_list(admin=Depends(require_permission("settings")), _mt=Depends(require_main_tenant)):
+def api_cm_list(admin=Depends(require_permission("settings")), _mt=Depends(require_full_access_tenant)):
     by_key = {f"custom_menu:{b['id']}": b for b in db.cm_list()}
     return {
         "items": [_cm_public(by_key[k]) for k in db.get_menu_order() if k in by_key],
@@ -11115,7 +11115,7 @@ def api_cm_list(admin=Depends(require_permission("settings")), _mt=Depends(requi
 
 
 @app.get("/api/custom-menu/{button_id}")
-def api_cm_get(button_id: int, admin=Depends(require_permission("settings")), _mt=Depends(require_main_tenant)):
+def api_cm_get(button_id: int, admin=Depends(require_permission("settings")), _mt=Depends(require_full_access_tenant)):
     return _cm_public(_cm_get_or_404(button_id), detail=True)
 
 
@@ -11128,7 +11128,7 @@ class CmCreateBody(BaseModel):
 
 
 @app.post("/api/custom-menu")
-def api_cm_create(body: CmCreateBody, admin=Depends(require_permission("settings")), _mt=Depends(require_main_tenant)):
+def api_cm_create(body: CmCreateBody, admin=Depends(require_permission("settings")), _mt=Depends(require_full_access_tenant)):
     title = (body.title or "").strip()
     if not title or len(title) > CM_MAX_TITLE:
         raise HTTPException(400, tr(f"متن دکمه باید بین ۱ تا {CM_MAX_TITLE} نویسه باشد."))
@@ -11164,7 +11164,7 @@ class CmUpdateBody(BaseModel):
 
 @app.put("/api/custom-menu/{button_id}")
 def api_cm_update(button_id: int, body: CmUpdateBody, admin=Depends(require_permission("settings")),
-                  _mt=Depends(require_main_tenant)):
+                  _mt=Depends(require_full_access_tenant)):
     btn = _cm_get_or_404(button_id)
     fields: dict = {}
     if body.title is not None:
@@ -11200,7 +11200,7 @@ def api_cm_update(button_id: int, body: CmUpdateBody, admin=Depends(require_perm
 
 
 @app.delete("/api/custom-menu/{button_id}")
-def api_cm_delete(button_id: int, admin=Depends(require_permission("settings")), _mt=Depends(require_main_tenant)):
+def api_cm_delete(button_id: int, admin=Depends(require_permission("settings")), _mt=Depends(require_full_access_tenant)):
     return api_custom_menu_button_delete(button_id, admin)
 
 
@@ -11210,7 +11210,7 @@ class CmMoveBody(BaseModel):
 
 @app.post("/api/custom-menu/{button_id}/move")
 def api_cm_move(button_id: int, body: CmMoveBody, admin=Depends(require_permission("settings")),
-                _mt=Depends(require_main_tenant)):
+                _mt=Depends(require_full_access_tenant)):
     if body.direction not in ("up", "down"):
         raise HTTPException(400, tr("جهت نامعتبر است."))
     _cm_get_or_404(button_id)
@@ -11247,7 +11247,7 @@ def _cm_check_text(text: str, kind: str) -> str:
 
 @app.post("/api/custom-menu/{button_id}/parts/text")
 def api_cm_part_add_text(button_id: int, body: CmTextBody, admin=Depends(require_permission("settings")),
-                         _mt=Depends(require_main_tenant)):
+                         _mt=Depends(require_full_access_tenant)):
     btn = _cm_content_or_400(button_id)
     parts = list(btn["parts"])
     if len(parts) >= CM_MAX_PARTS:
@@ -11273,7 +11273,7 @@ def _cm_check_media(kind: str, content_type: str, filename: str) -> None:
 @app.post("/api/custom-menu/{button_id}/parts/media")
 async def api_cm_part_add_media(
     button_id: int, file: UploadFile = File(...), kind: str = Form(...), caption: str = Form(""),
-    admin=Depends(require_permission("settings")), _mt=Depends(require_main_tenant),
+    admin=Depends(require_permission("settings")), _mt=Depends(require_full_access_tenant),
 ):
     btn = await asyncio.to_thread(_cm_content_or_400, button_id)
     if len(btn["parts"]) >= CM_MAX_PARTS:
@@ -11306,7 +11306,7 @@ async def api_cm_part_add_media(
 
 @app.put("/api/custom-menu/{button_id}/parts/{index}")
 def api_cm_part_edit(button_id: int, index: int, body: CmTextBody, admin=Depends(require_permission("settings")),
-                     _mt=Depends(require_main_tenant)):
+                     _mt=Depends(require_full_access_tenant)):
     parts = list(_cm_content_or_400(button_id)["parts"])
     part = _cm_part_or_404(parts, index)
     text = _cm_check_text(body.text, part.get("type"))
@@ -11319,7 +11319,7 @@ def api_cm_part_edit(button_id: int, index: int, body: CmTextBody, admin=Depends
 
 @app.delete("/api/custom-menu/{button_id}/parts/{index}")
 def api_cm_part_delete(button_id: int, index: int, admin=Depends(require_permission("settings")),
-                       _mt=Depends(require_main_tenant)):
+                       _mt=Depends(require_full_access_tenant)):
     btn = _cm_content_or_400(button_id)
     parts = list(btn["parts"])
     _cm_part_or_404(parts, index)
@@ -11334,7 +11334,7 @@ def api_cm_part_delete(button_id: int, index: int, admin=Depends(require_permiss
 
 @app.post("/api/custom-menu/{button_id}/parts/{index}/move")
 def api_cm_part_move(button_id: int, index: int, body: CmMoveBody, admin=Depends(require_permission("settings")),
-                     _mt=Depends(require_main_tenant)):
+                     _mt=Depends(require_full_access_tenant)):
     if body.direction not in ("up", "down"):
         raise HTTPException(400, tr("جهت نامعتبر است."))
     parts = list(_cm_content_or_400(button_id)["parts"])
@@ -11349,7 +11349,7 @@ def api_cm_part_move(button_id: int, index: int, body: CmMoveBody, admin=Depends
 
 @app.get("/api/custom-menu/{button_id}/parts/{index}/file")
 async def api_cm_part_file(button_id: int, index: int, admin=Depends(require_permission("settings")),
-                           _mt=Depends(require_main_tenant)):
+                           _mt=Depends(require_full_access_tenant)):
     btn = await asyncio.to_thread(_cm_get_or_404, button_id)
     part = _cm_part_or_404(btn["parts"], index)
     if not part.get("file_id"):
@@ -11363,7 +11363,7 @@ async def api_cm_part_file(button_id: int, index: int, admin=Depends(require_per
 
 
 @app.post("/api/custom-menu/{button_id}/preview")
-async def api_cm_preview(button_id: int, admin=Depends(require_owner), _mt=Depends(require_main_tenant)):
+async def api_cm_preview(button_id: int, admin=Depends(require_owner), _mt=Depends(require_full_access_tenant)):
     btn = await asyncio.to_thread(_cm_content_or_400, button_id)
     parts = btn["parts"]
     if not parts:
@@ -12851,7 +12851,7 @@ async def db_admin_import_api(table_name: str, request: Request,
 @app.get("/api/accounting/ledger/summary")
 def api_accounting_ledger_summary(from_date: str = None, to_date: str = None,
                                   admin=Depends(require_permission("catalog")),
-                                  _mt=Depends(require_main_tenant)):
+                                  _mt=Depends(require_full_access_tenant)):
     import accounting
     try:
         return accounting.ledger_summary(db, from_date, to_date)
@@ -12864,7 +12864,7 @@ def api_accounting_ledger_entries(from_date: str = None, to_date: str = None,
                                   entry_type: str = None, category: str = None,
                                   q: str = None, offset: int = 0, limit: int = 50,
                                   admin=Depends(require_permission("catalog")),
-                                  _mt=Depends(require_main_tenant)):
+                                  _mt=Depends(require_full_access_tenant)):
     import accounting
     try:
         return accounting.list_ledger_entries(db, from_date, to_date, entry_type,
@@ -12876,7 +12876,7 @@ def api_accounting_ledger_entries(from_date: str = None, to_date: str = None,
 @app.post("/api/accounting/ledger/entries")
 async def api_accounting_ledger_create(request: Request,
                                        admin=Depends(require_permission("catalog")),
-                                       _mt=Depends(require_main_tenant)):
+                                       _mt=Depends(require_full_access_tenant)):
     import accounting
     try:
         body = await request.json()
@@ -12892,7 +12892,7 @@ async def api_accounting_ledger_create(request: Request,
 @app.put("/api/accounting/ledger/entries/{entry_id}")
 async def api_accounting_ledger_update(entry_id: int, request: Request,
                                        admin=Depends(require_permission("catalog")),
-                                       _mt=Depends(require_main_tenant)):
+                                       _mt=Depends(require_full_access_tenant)):
     import accounting
     try:
         body = await request.json()
@@ -12910,7 +12910,7 @@ async def api_accounting_ledger_update(entry_id: int, request: Request,
 @app.delete("/api/accounting/ledger/entries/{entry_id}")
 def api_accounting_ledger_delete(entry_id: int,
                                  admin=Depends(require_permission("catalog")),
-                                 _mt=Depends(require_main_tenant)):
+                                 _mt=Depends(require_full_access_tenant)):
     import accounting
     if not accounting.delete_ledger_entry(db, entry_id):
         raise HTTPException(404, tr("سند مالی موردنظر پیدا نشد."))
@@ -12924,7 +12924,7 @@ def api_accounting_ledger_delete(entry_id: int,
 def api_accounting_ledger_export(from_date: str = None, to_date: str = None,
                                  entry_type: str = None,
                                  admin=Depends(require_permission("catalog")),
-                                 _mt=Depends(require_main_tenant)):
+                                 _mt=Depends(require_full_access_tenant)):
     import accounting
     try:
         content = accounting.export_ledger_csv(db, from_date, to_date, entry_type)
