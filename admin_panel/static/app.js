@@ -428,6 +428,7 @@ const NAV_GROUPS = [
     { key: 'catalog', label: 'محصولات و بانک کانفیگ', icon: 'catalog', role: 'catalog',
       subs: [['products', 'محصولات'], ['categories', 'دسته‌بندی‌ها']] },
     { key: 'payg', label: 'ساخت محصول به‌ازای مصرف', icon: 'revenue', role: 'payg' },
+    { key: 'bulk', label: 'عملیات گروهی', icon: 'layers', role: 'bulkops' },
     { key: 'banners', label: 'بنرها', icon: 'banners', role: 'settings' },
   ] },
   { id: 'partners', label: 'نمایندگی‌ها', items: [
@@ -515,6 +516,7 @@ function hasPerm(perm) {
 function canSee(navRole) {
   if (navRole === 'database') return ME?.role === 'owner' && !ME?.tenant;
   if (navRole === 'payg') return hasPerm('catalog');
+  if (navRole === 'bulkops') return hasPerm('catalog');
   const rp = ME?.reseller_profile;
   if (navRole === 'reseller-self') return !!(ME?.tenant && rp);
   if (ME?.tenant && rp) {
@@ -1248,6 +1250,7 @@ async function renderPage(tab) {
       case 'user-groups': return await renderUserGroups();
       case 'catalog': return await renderCatalog();
       case 'payg': return await renderPayg();
+      case 'bulk': return await renderBulkOps();
       case 'accounting': return await renderAccounting();
       case 'discounts': return await renderDiscounts();
       case 'tickets': return await renderTickets();
@@ -1276,6 +1279,147 @@ async function renderPage(tab) {
 }
 
 
+
+
+/* ====================================================== bulk operations === */
+// عملیات گروهی: انتخاب محصول + تعداد ← ساخت دسته‌ای سرویس‌ها روی پنل/نود ← کپی همه‌ی لینک‌های ساب.
+let BULK_POLL = null;
+function bulkCopy(text, okMsg) {
+  const done = () => toast(okMsg || 'کپی شد.');
+  const fallback = () => {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    ta.remove();
+    ok ? done() : toast('کپی ناموفق بود؛ متن را دستی انتخاب و کپی کن.', true);
+  };
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(done, fallback);
+  else fallback();
+}
+function bulkDownload(name, text, mime) {
+  const blob = new Blob(['﻿' + text], { type: (mime || 'text/plain') + ';charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+const BULK_STATUS = { queued: 'در صف', running: 'در حال ساخت...', done: 'کامل شد', partial: 'ناقص تمام شد', failed: 'ناموفق' };
+
+async function renderBulkOps() {
+  if (BULK_POLL) { clearInterval(BULK_POLL); BULK_POLL = null; }
+  const info = await apiGet('/bulk/products');
+  const products = info.products || [];
+  const opts = products.map(p => {
+    const vol = Number(p.volume_gb) ? `${p.volume_gb} گیگ` : 'نامحدود';
+    const days = Number(p.duration_days) ? `${p.duration_days} روز` : 'نامحدود';
+    return `<option value="${p.id}">${esc(p.name)} — ${vol} / ${days}${p.panel_name ? ' — ' + esc(p.panel_name) : (p.is_ssh ? ' — SSH' : '')}${p.is_active ? '' : ' (غیرفعال)'}</option>`;
+  }).join('');
+  setContent(`
+    <section class="hero"><div><h2>⚡ عملیات گروهی</h2>
+      <p>یک محصول و تعداد را انتخاب کن؛ همان تعداد سرویس واقعی روی پنل ساخته می‌شود و می‌توانی همه‌ی لینک‌های ساب را یکجا کپی کنی.</p></div></section>
+    <div class="card" style="max-width:760px">
+      <h3>ساخت گروهی سرویس</h3>
+      ${products.length ? '' : '<p class="card-sub">هیچ محصولی با «اتصال مستقیم به پنل/نود» وجود ندارد. محصول بانک کانفیگ به‌صورت گروهی ساخته نمی‌شود.</p>'}
+      <div class="form-grid">
+        <label class="field"><span>محصول</span><select class="input" id="bk-product">${opts}</select></label>
+        <label class="field"><span>تعداد (حداکثر ${info.max_quantity})</span>
+          <input class="input" id="bk-qty" type="number" min="1" max="${info.max_quantity}" value="100" dir="ltr"></label>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 10px">
+        ${[10, 50, 100, 200, 500].map(n => `<button class="btn btn-sm" type="button" data-bk-qty="${n}">${n}</button>`).join('')}
+      </div>
+      <details style="margin-bottom:10px"><summary class="card-sub" style="cursor:pointer">تنظیمات پیشرفته</summary>
+        <label class="field" style="margin-top:8px"><span>سرویس‌ها به نام کدام کاربر (آیدی تلگرام) ثبت شوند؟</span>
+          <input class="input" id="bk-user" type="number" dir="ltr" value="${info.default_user_id}"></label>
+        <p class="card-sub">پیش‌فرض: مالک ربات. بعداً از «کاربران» همین آیدی می‌توانی سرویس‌ها را ببینی و مدیریت کنی.</p>
+      </details>
+      ${info.dsub_enabled ? '<p class="card-sub">✅ ساب اختصاصی روشن است؛ لینک‌های خروجی همان لینک‌های اختصاصی هستند.</p>'
+                          : '<p class="card-sub">ℹ️ ساب اختصاصی خاموش است؛ لینک‌های خروجی همان لینک ساب خود پنل هستند.</p>'}
+      <button class="btn btn-primary" id="bk-start" ${products.length ? '' : 'disabled'}>🚀 شروع ساخت</button>
+    </div>
+    <div id="bk-job"></div>
+    <div class="card" style="max-width:760px"><h3>عملیات‌های اخیر</h3><div id="bk-history" class="card-sub">در حال بارگذاری...</div></div>`);
+
+  $$('[data-bk-qty]', content()).forEach(b => b.onclick = () => { $('#bk-qty').value = b.dataset.bkQty; });
+
+  const showJob = (job) => {
+    const pct = job.total ? Math.round(job.done * 100 / job.total) : 0;
+    const finished = !['queued', 'running'].includes(job.status);
+    const links = job.links || [];
+    $('#bk-job').innerHTML = `
+      <div class="card" style="max-width:760px">
+        <h3>${esc(job.product_name)} — ${BULK_STATUS[job.status] || esc(job.status)}</h3>
+        <div style="height:10px;border-radius:99px;background:var(--panel-2);overflow:hidden;margin:8px 0">
+          <div style="height:100%;width:${pct}%;background:var(--accent, #4f8cff);transition:width .3s"></div></div>
+        <p class="card-sub">${job.done} از ${job.total} ساخته شد (${pct}٪)</p>
+        ${job.error ? `<p style="color:var(--danger, #ff6b52);font-size:13px;line-height:1.9">⛔️ ${esc(job.error)}<br>سرویس‌های ساخته‌شده تا اینجا حفظ شده‌اند.</p>` : ''}
+        ${links.length ? `
+          <textarea class="input" id="bk-links" rows="8" readonly dir="ltr" style="font-family:monospace;font-size:12px;white-space:pre">${esc(links.join('\n'))}</textarea>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+            <button class="btn btn-primary" id="bk-copy">📋 کپی همه لینک‌های ساب (${links.length})</button>
+            <button class="btn" id="bk-txt">⬇️ دانلود TXT</button>
+            <button class="btn" id="bk-csv">⬇️ دانلود CSV (نام + لینک)</button>
+          </div>` : ''}
+        ${finished ? '' : '<p class="card-sub">صفحه را نبند؛ ساخت در پس‌زمینه ادامه دارد و می‌توانی بعداً از «عملیات‌های اخیر» برگردی.</p>'}
+      </div>`;
+    if (links.length) {
+      $('#bk-copy').onclick = () => bulkCopy(links.join('\n'), `${links.length} لینک کپی شد.`);
+      $('#bk-txt').onclick = () => bulkDownload(`subs-${job.id}.txt`, links.join('\n'));
+      $('#bk-csv').onclick = () => bulkDownload(`subs-${job.id}.csv`,
+        'username,link\n' + links.map((l, i) => `${(job.usernames || [])[i] || ''},${l}`).join('\n'), 'text/csv');
+    }
+  };
+  const loadHistory = async () => {
+    const el = $('#bk-history'); if (!el) return;
+    const jobs = await apiGet('/bulk/jobs').catch(() => []);
+    el.innerHTML = jobs.length ? jobs.map(j => `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border, #2a2f3a)">
+        <span>${esc(j.product_name)} · ${j.done}/${j.total} · ${BULK_STATUS[j.status] || esc(j.status)} · ${new Date(j.created_at * 1000).toLocaleString('fa-IR')}</span>
+        <button class="btn btn-sm" data-bk-open="${j.id}">نمایش</button></div>`).join('')
+      : 'هنوز عملیاتی انجام نشده (تاریخچه با ری‌استارت سرور پاک می‌شود).';
+    $$('[data-bk-open]', el).forEach(b => b.onclick = async () => {
+      try { const j = await apiGet('/bulk/jobs/' + b.dataset.bkOpen); showJob(j); if (['queued', 'running'].includes(j.status)) poll(j.id); } catch (e) { handleErr(e); }
+    });
+  };
+  const poll = (id) => {
+    if (BULK_POLL) clearInterval(BULK_POLL);
+    BULK_POLL = setInterval(async () => {
+      if (CURRENT_TAB !== 'bulk' || !$('#bk-job')) { clearInterval(BULK_POLL); BULK_POLL = null; return; }
+      try {
+        const j = await apiGet('/bulk/jobs/' + id);
+        showJob(j);
+        if (!['queued', 'running'].includes(j.status)) {
+          clearInterval(BULK_POLL); BULK_POLL = null; loadHistory();
+          toast(j.status === 'done' ? `${j.done} سرویس ساخته شد.` : 'عملیات با خطا متوقف شد.', j.status !== 'done');
+        }
+      } catch (e) { clearInterval(BULK_POLL); BULK_POLL = null; handleErr(e); }
+    }, 1500);
+  };
+  loadHistory();
+
+  $('#bk-start').onclick = () => {
+    const sel = $('#bk-product');
+    const pid = parseInt(sel.value, 10);
+    const qty = parseInt($('#bk-qty').value, 10);
+    const uid = parseInt($('#bk-user').value, 10);
+    if (!pid) return toast('محصول را انتخاب کن.', true);
+    if (!qty || qty < 1 || qty > info.max_quantity) return toast(`تعداد باید بین ۱ تا ${info.max_quantity} باشد.`, true);
+    openModal('تایید ساخت گروهی', `
+      <p style="font-size:13px;line-height:2">تعداد <strong>${qty}</strong> سرویس از محصول «<strong>${esc(sel.selectedOptions[0].text)}</strong>» روی پنل ساخته می‌شود. مطمئنی؟</p>
+      <div class="modal-actions"><button class="btn btn-primary" id="bk-confirm">بله، بساز</button></div>`,
+    (body, close) => {
+      $('#bk-confirm', body).onclick = async () => {
+        const btn = $('#bk-confirm', body); btn.disabled = true; btn.textContent = 'در حال شروع...';
+        try {
+          const job = await apiPost('/bulk/provision', { product_id: pid, quantity: qty, user_id: uid || null });
+          close(); showJob(job); poll(job.id); loadHistory();
+        } catch (e) { close(); handleErr(e); }
+      };
+    });
+  };
+}
 
 /* ============================================ links & SSL manager === */
 async function renderLinksSSL() {
