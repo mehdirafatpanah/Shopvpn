@@ -396,6 +396,16 @@ class UsersMixin:
             return False
 
 
+    def is_unrestricted_full(self) -> bool:
+        """نماینده‌ی «کامل» واقعی: دقیقاً مثل بات اصلی (اتصال پنل VPN، نصب نود، محصول مستقیم،
+        فروش پنل و ...). فقط با «⬆️ تبدیل به نماینده کامل» روشن می‌شود؛ تنها استثنا مدیریت
+        نماینده‌های دیگر و آپدیت پروژه است که همیشه فقط برای بات اصلی می‌ماند."""
+        try:
+            return self.get_setting("full_reseller_unrestricted", "0") == "1"
+        except Exception:
+            return False
+
+
     def update_user_profile(self, user_tg_id: int, first_name: str = None, username: str = None):
         fields=[]; values=[]
         if first_name is not None:
