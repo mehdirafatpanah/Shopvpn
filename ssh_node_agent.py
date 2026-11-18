@@ -289,29 +289,69 @@ class Agent:
         spec = f"{low}/tcp" if low == high else f"{low}:{high}/tcp"
         self._run("ufw", "allow", spec, check=False)
 
+    SSHD_CONF_MARK = "# shopvpn-sshd-conf v2"
+
     def _write_account_sshd_config(self, account_id: str, username: str, port: int) -> str:
         root = Path("/etc/shopvpn/sshd")
         root.mkdir(parents=True, exist_ok=True)
         config_path = root / f"{account_id}.conf"
         Path(f"/run/sshd-shopvpn-{account_id}").mkdir(parents=True, exist_ok=True)
         Path("/run/sshd").mkdir(parents=True, exist_ok=True)
-        host_keys = [p for p in ("/etc/ssh/ssh_host_ed25519_key", "/etc/ssh/ssh_host_rsa_key") if os.path.isfile(p)]
+        host_keys = [p for p in ("/etc/ssh/ssh_host_ed25519_key", "/etc/ssh/ssh_host_rsa_key", "/etc/ssh/ssh_host_ecdsa_key") if os.path.isfile(p)]
         if not host_keys:
             raise RuntimeError("OpenSSH host keys are missing; run ssh-keygen -A")
-        lines = [
+        base = [
+            self.SSHD_CONF_MARK,
             f"Port {int(port)}", "AddressFamily any", "ListenAddress 0.0.0.0", "ListenAddress ::",
             *[f"HostKey {key}" for key in host_keys],
             f"PidFile /run/sshd-shopvpn-{account_id}/sshd.pid", "UsePAM yes",
             "PasswordAuthentication yes", "KbdInteractiveAuthentication no", "PubkeyAuthentication no",
-            "PermitRootLogin no", f"AllowUsers {username}", "AllowTcpForwarding yes",
+            "PermitRootLogin no", f"AllowUsers {username}",
+            # Tunnel-only account: forwarding allowed, no shell (ForceCommand exits at once).
+            "AllowTcpForwarding yes", "GatewayPorts no", "PermitOpen any",
             "AllowStreamLocalForwarding no", "AllowAgentForwarding no", "X11Forwarding no",
-            "PermitTTY no", "PermitTunnel no", "MaxSessions 0", "ForceCommand /usr/sbin/nologin",
+            "PermitTunnel no", "ForceCommand /usr/sbin/nologin",
+            # Many tunnel apps open a session channel (pty/shell/exec) after login; MaxSessions 0
+            # or PermitTTY no made them fail or drop. nologin makes these harmless.
+            "PermitTTY yes", "MaxSessions 64",
+            # Stability and speed for long-lived tunnels.
+            "TCPKeepAlive yes", "ClientAliveInterval 30", "ClientAliveCountMax 6",
+            "UseDNS no", "Compression no", "LoginGraceTime 30", "MaxAuthTries 6",
+            "MaxStartups 100:30:200", "PrintMotd no", "PrintLastLog no", "Banner none",
         ]
-        config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        os.chmod(config_path, 0o600)
-        self._run("sshd", "-t", "-f", str(config_path))
+        compat = [
+            # Old JSch/Dropbear-style Android clients only speak ssh-rsa and SHA-1 DH groups.
+            "HostKeyAlgorithms +ssh-rsa",
+            "KexAlgorithms +diffie-hellman-group14-sha1",
+        ]
+        for lines in (base + compat, base):
+            config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            os.chmod(config_path, 0o600)
+            try:
+                self._run("sshd", "-t", "-f", str(config_path))
+                return str(config_path)
+            except subprocess.CalledProcessError:
+                if lines is base:
+                    raise
         return str(config_path)
 
+    def _migrate_account_sshd_configs(self):
+        """Rewrite per-account sshd configs created by older agent versions and restart their units once."""
+        with self._conn() as db:
+            rows = db.execute("SELECT account_id,username,ssh_port,status FROM accounts WHERE ssh_port IS NOT NULL").fetchall()
+        for row in rows:
+            account_id = row["account_id"]
+            path = Path("/etc/shopvpn/sshd") / f"{account_id}.conf"
+            try:
+                if path.exists() and self.SSHD_CONF_MARK in path.read_text(encoding="utf-8"):
+                    continue
+                if not path.exists() and row["status"] != "active":
+                    continue
+                self._write_account_sshd_config(account_id, row["username"], int(row["ssh_port"]))
+                if row["status"] == "active":
+                    self._run("systemctl", "restart", self._unit_name(account_id), check=False)
+            except Exception:
+                logger.exception("sshd config migration failed for account %s", account_id)
 
     def _easyrsa(self, *args: str):
         binary = next((p for p in EASYRSA_CANDIDATES if os.path.isfile(p)), None) or shutil.which("easyrsa")
@@ -1000,6 +1040,11 @@ class Agent:
             await asyncio.sleep(30)
 
     async def _start_enforcement(self, app):
+        if "ssh" in self.protocols:
+            try:
+                await asyncio.to_thread(self._migrate_account_sshd_configs)
+            except Exception:
+                logger.exception("sshd config migration crashed")
         if self.nft_accounting:
             try:
                 self._ensure_nft_table()
