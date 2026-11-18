@@ -703,7 +703,7 @@ def api_me(auth=Depends(get_verified_user)):
     orders = db.get_user_orders(tg_id)
     reseller_owner = False
     reseller = None
-    if tenant.tenant_id:
+    if tenant.tenant_id and not db.is_unrestricted_full():
         try:
             rb = main_db.get_reseller_bot_by_slug(tenant.tenant_id)
             if not rb and str(tenant.tenant_id).isdigit():
@@ -6030,7 +6030,7 @@ async def api_admin_create_product(body: ProductCreate, auth=Depends(require_sen
     is_auto_provision = bool(body.is_auto_provision or provision_server_id)
     is_panel_kind = body.product_kind == "panel_account"
     if is_panel_kind:
-        if not is_full_access or tenant.tenant_id or is_volume_credit_bot(db, True) or is_auto_provision:
+        if not is_full_access or (tenant.tenant_id and not db.is_unrestricted_full()) or is_volume_credit_bot(db, True) or is_auto_provision:
             raise HTTPException(status_code=403, detail=tr("فروش پنل فقط برای بات اصلی و به‌صورت بانک موجودی مجاز است."))
         body.duration_days = 0
     if not is_auto_provision and not is_panel_kind and is_volume_credit_bot(db, not bool(tenant.tenant_id)):
