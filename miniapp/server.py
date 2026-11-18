@@ -5426,14 +5426,16 @@ class ProductUpdate(BaseModel):
 _ONHOLD_PANEL_TYPES = {"marzban", "pasarguard", "rebecca", "marzneshin", "3xui", "threexui"}
 
 
-def _checked_product_first_use(db, value, server_id, multi=False):
-    """None برای محصول بدون پنل مستقیم یا چندپنلی (اثری ندارد)؛ وگرنه bool معتبر."""
-    if value is None or not server_id or multi:
+def _checked_product_first_use(db, value, server_id, multi=False, extra_panel_ids=None, ssh_node_id=None):
+    """None برای محصول بدون مقصد مستقیم (اثری ندارد)؛ وگرنه bool معتبر.
+    برای محصول چندپنلی/نودی همه‌ی پنل‌های VPN باید On-hold را پشتیبانی کنند (نودها محدودیتی ندارند)."""
+    if value is None or (not server_id and not ssh_node_id):
         return None
     if value:
-        server = db.get_panel_server(int(server_id))
-        if server and server["panel_type"] not in _ONHOLD_PANEL_TYPES:
-            raise HTTPException(status_code=400, detail=tr("این نوع پنل شروع زمان از اولین اتصال را پشتیبانی نمی‌کند."))
+        for sid in ([server_id] if server_id else []) + [int(x) for x in (extra_panel_ids or [])]:
+            server = db.get_panel_server(int(sid))
+            if server and server["panel_type"] not in _ONHOLD_PANEL_TYPES:
+                raise HTTPException(status_code=400, detail=tr("این نوع پنل شروع زمان از اولین اتصال را پشتیبانی نمی‌کند."))
     return bool(value)
 
 
@@ -6130,7 +6132,8 @@ async def api_admin_create_product(body: ProductCreate, auth=Depends(require_sen
         renew_rules=body.renew_rules, ai_description=body.ai_description,
         product_kind="panel_account" if is_panel_kind else "config",
         start_on_first_use=_checked_product_first_use(
-            db, body.start_on_first_use, provision_server_id, multi=bool(extra_panel_ids)),
+            db, body.start_on_first_use, provision_server_id, multi=bool(extra_panel_ids),
+            extra_panel_ids=extra_panel_ids, ssh_node_id=getattr(body, "provision_ssh_node_id", None)),
     )
     if int(body.compare_price or 0) > 0 and (body.discount_days is not None or body.discount_max_uses is not None):
         db.edit_product(product_id, compare_price=int(body.compare_price),
@@ -6277,7 +6280,9 @@ async def api_admin_edit_product(product_id: int, body: ProductUpdate, auth=Depe
         old_extra = db.get_product_extra_targets(product_id)
         edit_kwargs["start_on_first_use"] = _checked_product_first_use(
             db, body.start_on_first_use, effective_server_id,
-            multi=bool(old_extra.get("panels") or old_extra.get("ssh")))
+            multi=bool(old_extra.get("panels") or old_extra.get("ssh")),
+            extra_panel_ids=old_extra.get("panels"),
+            ssh_node_id=getattr(body, "provision_ssh_node_id", None) or old_product["provision_ssh_node_id"])
     effective_product_server = provision_server_id if provision_server_id is not None else old_product["provision_server_id"]
     desired_base = body.base_users if body.base_users is not None else old_product["base_users"]
     desired_extra = body.extra_user_price if body.extra_user_price is not None else old_product["extra_user_price"]
