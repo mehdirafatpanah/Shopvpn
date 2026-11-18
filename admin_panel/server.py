@@ -4480,6 +4480,147 @@ async def api_admin_custom_config_dsub_regen(custom_config_id: int, admin=Depend
     return {"ok": True, "dsub_link": dedicated_sub.link_for_token(db, token)}
 
 
+# ------------------------------------------------------------- bulk operations --
+# عملیات گروهی: مدیر یک محصول «اتصال مستقیم» و تعداد را انتخاب می‌کند؛ همان تعداد
+# سرویس واقعی روی پنل/نود ساخته می‌شود و لینک‌های ساب برای کپی یکجا برمی‌گردد.
+# ساخت در پس‌زمینه و دسته‌ای (هر دسته همه‌یا‌هیچ) انجام می‌شود تا درخواست HTTP
+# تایم‌اوت نشود و پیشرفت زنده قابل نمایش باشد.
+BULK_MAX_QUANTITY = 500
+BULK_BATCH_SIZE = 10
+BULK_JOBS_KEEP = 30
+_bulk_jobs: dict = {}
+
+
+class BulkProvisionBody(BaseModel):
+    product_id: int
+    quantity: int
+    user_id: Optional[int] = None
+
+
+def _bulk_direct_product_or_400(tdb, product_id: int):
+    product = tdb.get_product(product_id)
+    if not product:
+        raise HTTPException(404, tr("محصول یافت نشد."))
+    if not product["is_auto_provision"] or not (product["provision_server_id"] or product["provision_ssh_node_id"]):
+        raise HTTPException(400, tr("فقط محصولات «اتصال مستقیم به پنل/نود» قابل ساخت گروهی هستند (محصول بانک کانفیگ ساخته نمی‌شود)."))
+    return product
+
+
+def _bulk_public_job(job: dict, with_links: bool = True) -> dict:
+    out = {k: v for k, v in job.items() if k not in ("links", "items")}
+    out["links"] = list(job["links"]) if with_links else None
+    out["link_count"] = len(job["links"])
+    return out
+
+
+async def _bulk_run_job(tdb, job: dict, product, owner_id: int, admin: dict):
+    import dedicated_sub
+    from direct_panel_provision import provision_direct, ProvisionError as _ProvErr
+    job["status"] = "running"
+    remaining = job["total"]
+    try:
+        while remaining > 0:
+            batch = min(BULK_BATCH_SIZE, remaining)
+            try:
+                items = await provision_direct(tdb, product, batch, user_id=owner_id, order_id=None)
+            except (_ProvErr, DirectProvisionError) as e:
+                job["error"] = str(e)
+                break
+            except Exception as e:  # هرگز اجازه نده job برای همیشه در حالت running بماند
+                logger.exception("bulk provision batch failed (product=%s)", product["id"])
+                job["error"] = f"خطای غیرمنتظره: {e}"
+                break
+            for item in items:
+                link = None
+                cc_id = item.get("custom_config_id")
+                try:
+                    if cc_id:
+                        link = dedicated_sub.display_link(tdb, cc_id, item["subscription_url"])
+                    else:
+                        link = dedicated_sub.dedicated_link_for_upstream(tdb, item["subscription_url"])
+                except Exception:
+                    link = item.get("subscription_url")
+                job["links"].append(link or item.get("subscription_url") or "")
+                job["usernames"].append(item.get("username") or "")
+            job["done"] += len(items)
+            remaining -= batch
+    finally:
+        job["status"] = "done" if job["done"] >= job["total"] and not job.get("error") else (
+            "partial" if job["done"] else "failed")
+        job["finished_at"] = int(time.time())
+        try:
+            await asyncio.to_thread(
+                tdb.log_admin_action, admin["id"], "bulk_provision",
+                f"ساخت گروهی «{product['name']}»: {job['done']}/{job['total']} سرویس برای کاربر {owner_id} "
+                f"(پنل وب - {admin['username']})", "product", product["id"])
+        except Exception:
+            logger.exception("bulk provision: log_admin_action failed")
+
+
+@app.get("/api/bulk/products")
+async def api_bulk_products(admin=Depends(require_permission("catalog"))):
+    """محصولات قابل ساخت گروهی (فقط اتصال مستقیم به پنل/نود)."""
+    import dedicated_sub
+    out = []
+    for p in await asyncio.to_thread(db.get_all_products):
+        if not p["is_auto_provision"] or not (p["provision_server_id"] or p["provision_ssh_node_id"]):
+            continue
+        panel_name = None
+        if p["provision_server_id"]:
+            srv = db.get_panel_server(p["provision_server_id"])
+            panel_name = srv["name"] if srv else None
+        out.append({
+            "id": p["id"], "name": p["name"], "category_name": p["category_name"],
+            "volume_gb": p["auto_provision_volume_gb"], "duration_days": p["duration_days"],
+            "is_active": bool(p["is_active"]), "panel_name": panel_name,
+            "is_ssh": bool(p["provision_ssh_node_id"] and not p["provision_server_id"]),
+        })
+    return {
+        "products": out, "max_quantity": BULK_MAX_QUANTITY,
+        "default_user_id": _tenant_owner_chat_id(),
+        "dsub_enabled": bool(dedicated_sub.is_enabled(db)),
+    }
+
+
+@app.post("/api/bulk/provision")
+async def api_bulk_provision(body: BulkProvisionBody, admin=Depends(require_permission("catalog"))):
+    tenant = _current_tenant.get()
+    tdb = tenant.db
+    if not 1 <= body.quantity <= BULK_MAX_QUANTITY:
+        raise HTTPException(400, tr(f"تعداد باید بین ۱ تا {BULK_MAX_QUANTITY} باشد."))
+    product = await asyncio.to_thread(_bulk_direct_product_or_400, tdb, body.product_id)
+    if any(j["status"] in ("queued", "running") and j["tenant"] == tenant.slug for j in _bulk_jobs.values()):
+        raise HTTPException(409, tr("یک عملیات گروهی هنوز در حال اجراست؛ تا پایانش صبر کن."))
+    owner_id = int(body.user_id) if body.user_id else _tenant_owner_chat_id()
+    job = {
+        "id": secrets.token_hex(8), "tenant": tenant.slug, "product_id": product["id"],
+        "product_name": product["name"], "owner_id": owner_id, "total": body.quantity, "done": 0,
+        "status": "queued", "error": None, "links": [], "usernames": [],
+        "created_at": int(time.time()), "finished_at": None, "admin": admin["username"],
+    }
+    _bulk_jobs[job["id"]] = job
+    for old in sorted(_bulk_jobs.values(), key=lambda j: j["created_at"])[:-BULK_JOBS_KEEP]:
+        if old["status"] not in ("queued", "running"):
+            _bulk_jobs.pop(old["id"], None)
+    asyncio.create_task(_bulk_run_job(tdb, job, product, owner_id, admin))
+    return _bulk_public_job(job)
+
+
+@app.get("/api/bulk/jobs")
+async def api_bulk_jobs(admin=Depends(require_permission("catalog"))):
+    slug = _current_tenant.get().slug
+    jobs = sorted((j for j in _bulk_jobs.values() if j["tenant"] == slug), key=lambda j: -j["created_at"])
+    return [_bulk_public_job(j, with_links=False) for j in jobs]
+
+
+@app.get("/api/bulk/jobs/{job_id}")
+async def api_bulk_job(job_id: str, admin=Depends(require_permission("catalog"))):
+    job = _bulk_jobs.get(job_id)
+    if not job or job["tenant"] != _current_tenant.get().slug:
+        raise HTTPException(404, tr("عملیات یافت نشد (بعد از ری‌استارت سرور پاک می‌شود)."))
+    return _bulk_public_job(job)
+
+
 # ------------------------------------------------------- reseller self-service --
 # پنل وب نماینده «مدیریت کاتالوگ» نیست؛ یک فضای عملیاتی شخصی است.
 # نماینده فقط موجودی‌ای را که مدیر به او داده مصرف می‌کند و هرگز به محصولات/پنل‌های
