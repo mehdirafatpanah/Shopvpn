@@ -5104,16 +5104,18 @@ class ProductBody(BaseModel):
     start_on_first_use: Optional[bool] = None  # True=زمان از اولین اتصال، False=از لحظه خرید، None=طبق تنظیم پنل
 
 
-def _checked_product_first_use(value, server_id, ssh_node_id=None, multi=False):
-    """None برای محصول بدون پنل VPN مستقیم یا چندمقصدی (اثری ندارد)؛ وگرنه bool معتبر."""
+def _checked_product_first_use(value, server_id, ssh_node_id=None, multi=False, extra_panel_ids=None):
+    """None برای محصول بدون مقصد مستقیم (اثری ندارد)؛ وگرنه bool معتبر.
+    برای محصول چندپنلی/نودی همه‌ی پنل‌های VPN باید On-hold را پشتیبانی کنند (نودها محدودیتی ندارند)."""
     if value is None:
         return None
-    if not server_id or ssh_node_id or multi:
+    if not server_id and not ssh_node_id:
         return None
     if value:
-        server = db.get_panel_server(int(server_id))
-        if server and server["panel_type"] not in PANEL_ONHOLD_TYPES:
-            raise HTTPException(400, tr("این نوع پنل شروع زمان از اولین اتصال را پشتیبانی نمی‌کند."))
+        for sid in ([server_id] if server_id else []) + [int(x) for x in (extra_panel_ids or [])]:
+            server = db.get_panel_server(int(sid))
+            if server and server["panel_type"] not in PANEL_ONHOLD_TYPES:
+                raise HTTPException(400, tr("این نوع پنل شروع زمان از اولین اتصال را پشتیبانی نمی‌کند."))
     return bool(value)
 
 
@@ -5964,7 +5966,7 @@ async def api_add_product(body: ProductBody, admin=Depends(require_permission("c
         product_kind="panel_account" if is_panel_kind else "config",
         start_on_first_use=_checked_product_first_use(
             body.start_on_first_use, body.provision_server_id, body.provision_ssh_node_id,
-            multi=bool(extra_panels or extra_nodes)),
+            multi=bool(extra_panels or extra_nodes), extra_panel_ids=extra_panels),
     )
     if int(body.compare_price or 0) > 0 and (body.discount_days is not None or body.discount_max_uses is not None):
         db.edit_product(pid, compare_price=int(body.compare_price),
@@ -6333,7 +6335,7 @@ async def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends
         start_on_first_use=(
             _checked_product_first_use(
                 body.start_on_first_use, effective_server_id, effective_ssh_node_id,
-                multi=bool(final_extra_panels or final_extra_nodes))
+                multi=bool(final_extra_panels or final_extra_nodes), extra_panel_ids=final_extra_panels)
             if body.start_on_first_use is not None else ...),
     )
     if extras_changed or body.extra_panel_target_values is not None or body.source is not None or provision_server_id is not ... or provision_ssh_node_id is not ...:
