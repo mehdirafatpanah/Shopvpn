@@ -107,17 +107,43 @@ if [[ "${WANT_SSH}" -eq 1 ]]; then
   install -o root -g root -m 0644 "${SSHD_TEMPLATE_SOURCE}" /etc/systemd/system/shopvpn-sshd@.service
   groupadd --system shopvpnssh 2>/dev/null || true
 
-  # UDP gateway for SSH clients (V2Box, NetMod, ...): without it UDP/DNS cannot pass the tunnel.
-  # Listens on 127.0.0.1:7300 only; clients reach it through their own SSH connection.
-  apt-get install -y badvpn >/dev/null 2>&1 || true
-  UDPGW_BIN="$(command -v badvpn-udpgw || true)"
-  if [[ -n "${UDPGW_BIN}" ]]; then
-    cat > /etc/systemd/system/shopvpn-udpgw.service <<EOF
+  # UDP gateway for SSH clients (V2Box, NetMod, ...). A missing gateway can
+  # make a client appear connected while DNS/UDP traffic does not pass.
+  # It must listen on loopback only; clients configure UDPGW port 7300.
+  echo "[ShopVPN] Installing badvpn-udpgw..."
+  UDPGW_BIN="$(command -v badvpn-udpgw 2>/dev/null || true)"
+  if [[ -z "${UDPGW_BIN}" ]]; then
+    if apt-get install -y badvpn; then
+      UDPGW_BIN="$(command -v badvpn-udpgw 2>/dev/null || true)"
+    else
+      echo "[ShopVPN] badvpn package unavailable; building badvpn-udpgw from source." >&2
+    fi
+  fi
+  if [[ -z "${UDPGW_BIN}" ]]; then
+    apt-get install -y cmake build-essential git
+    rm -rf /tmp/shopvpn-badvpn-build
+    git clone --depth 1 https://github.com/ambrop72/badvpn /tmp/shopvpn-badvpn-build
+    cmake -S /tmp/shopvpn-badvpn-build -B /tmp/shopvpn-badvpn-build/build \
+      -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1
+    cmake --build /tmp/shopvpn-badvpn-build/build --parallel "$(nproc)"
+    cmake --install /tmp/shopvpn-badvpn-build/build
+    UDPGW_BIN="$(command -v badvpn-udpgw 2>/dev/null || true)"
+    if [[ -z "${UDPGW_BIN}" && -x /usr/local/bin/badvpn-udpgw ]]; then
+      UDPGW_BIN=/usr/local/bin/badvpn-udpgw
+    fi
+  fi
+  if [[ -z "${UDPGW_BIN}" || ! -x "${UDPGW_BIN}" ]]; then
+    echo "[ShopVPN] ERROR: badvpn-udpgw installation failed; executable not found." >&2
+    exit 1
+  fi
+  echo "[ShopVPN] UDPGW executable: ${UDPGW_BIN}"
+  cat > /etc/systemd/system/shopvpn-udpgw.service <<EOF
 [Unit]
 Description=ShopVPN UDP gateway for SSH accounts (127.0.0.1:7300)
 After=network.target
 
 [Service]
+Type=simple
 ExecStart=${UDPGW_BIN} --listen-addr 127.0.0.1:7300 --max-clients 1000 --max-connections-for-client 64
 Restart=always
 RestartSec=2
@@ -127,11 +153,23 @@ NoNewPrivileges=true
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload
-    systemctl enable --now shopvpn-udpgw.service || echo "udpgw failed to start (non-fatal)" >&2
-  else
-    echo "badvpn-udpgw not available; SSH works for TCP only (install badvpn manually for UDP)." >&2
+  systemctl daemon-reload
+  systemctl enable --now shopvpn-udpgw.service
+  UDPGW_READY=0
+  for attempt in $(seq 1 5); do
+    if systemctl is-active --quiet shopvpn-udpgw.service && ss -ltn 2>/dev/null | grep -Eq '127\.0\.0\.1:7300([[:space:]]|$)'; then
+      UDPGW_READY=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "${UDPGW_READY}" -ne 1 ]]; then
+    echo "[ShopVPN] ERROR: shopvpn-udpgw did not become active/listen on 127.0.0.1:7300." >&2
+    systemctl --no-pager --full status shopvpn-udpgw.service >&2 || true
+    journalctl -u shopvpn-udpgw.service -n 20 --no-pager >&2 || true
+    exit 1
   fi
+  echo "[ShopVPN] UDPGW is active and listening on 127.0.0.1:7300."
 
   SSHD_CONFIG=/etc/ssh/sshd_config
   SSHD_BACKUP="${SSHD_CONFIG}.shopvpn-backup.$(date +%Y%m%d%H%M%S)"
