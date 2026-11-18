@@ -276,7 +276,7 @@ def main_menu_inline_kb(db, is_admin: bool, is_reseller: bool = False, is_main_b
     روی کلیک هر دکمه، callback_data به‌صورت 'mm:<key>' ارسال می‌شود که در
     handlers_user.py / handlers_admin.py به همان هندلر متنی متناظرش وصل شده."""
     customs = {}
-    if is_main_bot:
+    if db.is_full_access_bot(is_main_bot):
         try:
             customs = {f"custom_menu:{b['id']}": b for b in db.cm_list(only_active=True)}
         except Exception:
@@ -315,7 +315,7 @@ def custom_menu_button(btn: dict):
 
 def _show_commission_reseller_request(db, user_tg_id: int, is_main_bot: bool) -> bool:
     return (
-        is_main_bot
+        db.is_full_access_bot(is_main_bot)
         and not db.is_inline_reseller(user_tg_id)
         and not db.get_pending_commission_reseller_request_for_user(user_tg_id)
     )
@@ -328,7 +328,7 @@ def menu_for_user(db, user_tg_id: int, is_main_bot: bool = True):
     except Exception:
         db._current_menu_language = ""
     show_reseller_request = (
-        is_main_bot
+        db.is_full_access_bot(is_main_bot)
         and not db.is_reseller(user_tg_id)
         and not db.get_open_reseller_request(user_tg_id)
     )
@@ -343,7 +343,7 @@ def inline_menu_for_user(db, user_tg_id: int, is_main_bot: bool = True) -> Inlin
     if db.get_setting("main_menu_inline_enabled", "0") != "1":
         return None
     show_reseller_request = (
-        is_main_bot
+        db.is_full_access_bot(is_main_bot)
         and not db.is_reseller(user_tg_id)
         and not db.get_open_reseller_request(user_tg_id)
     )
@@ -2106,25 +2106,27 @@ def _unmapped_xs_groups() -> list:
 
 
 def _is_item_visible(db, key: str, is_main_bot: bool) -> bool:
+    # is_main_bot = بات اصلی واقعی؛ full = بات اصلی یا نمایندگی کامل (کپی ۹۹٪ بات اصلی)
+    full = bool(db.is_full_access_bot(is_main_bot))
     if key == "adm_extra_settings":
         return bool(_unmapped_xs_groups())
     if key == "adm_my_volume":
         # فقط داخل بات اختصاصی نمایندگی VIP (اعتبار حجمی)؛ نه بات اصلی، نه طلایی
         return (not is_main_bot) and _is_volume_credit_owner(db)
-    if key.startswith(("adm_set_xgw_", "adm_xgw_pay_")) and not is_main_bot:
+    if key.startswith(("adm_set_xgw_", "adm_xgw_pay_")) and not full:
         return False
     if key == "adm_cfg_search":
-        # جستجوی کانفیگ فعلاً فقط روی بات اصلی
-        return is_main_bot
+        return full
     if key == "adm_update":
         # آپدیت پروژه فقط از بات اصلی (یک نصب = یک پروژه)، نه بات‌های نمایندگی
         return is_main_bot and db.is_full_access_bot(is_main_bot)
-    if key in ("adm_userbot", "adm_leak") and not is_main_bot:
+    if key in ("adm_userbot", "adm_leak") and not full:
         # یوزربات و اکانت تشخیص نشت فقط به اکانت تلگرام مالک بات اصلی وصل می‌شوند
         return False
-    if key in ("adm_resellers_menu", "adm_credit_resellers_menu", "adm_reseller_requests_menu", "adm_commission_resellers_menu") and not is_main_bot:
-        # بات‌های نمایندگی خودشان اجازه‌ی ساخت زیرنماینده، فروش اعتبار یا مدیریت
-        # درخواست‌های نمایندگی سطح ۲ (که فقط از بات اصلی قابل درخواست است) را ندارند
+    if key in ("adm_resellers_menu", "adm_credit_resellers_menu") and not is_main_bot:
+        # نماینده‌ی کامل اجازه‌ی ساخت/مدیریت نماینده‌ی کامل (بات اختصاصی) یا فروش اعتبار حجمی ندارد
+        return False
+    if key in ("adm_reseller_requests_menu", "adm_commission_resellers_menu", "adm_reseller_membership") and not full:
         return False
     if key in ("adm_custom_config_settings", "adm_panel_servers", "adm_ssh_menu") and not db.is_full_access_bot(is_main_bot):
         # ساخت کانفیگ شخصی به اتصال مستقیم پنل VPN نیاز دارد که فقط از بات اصلی یا نمایندگی کامل قابل مدیریت است

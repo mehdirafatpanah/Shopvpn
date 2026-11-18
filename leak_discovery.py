@@ -98,13 +98,15 @@ RELEVANT_WORDS = (
 )
 
 # ---------------------------------------------------------------- settings helpers
-DSTATE = {
+import tenant_ctx
+
+DSTATE = tenant_ctx.PerTenant(lambda: {
     "last_cycle": 0.0,
     "summary": "",
     "join_paused_until": 0.0,
     "wake": None,
     "flood_warned_at": 0.0,
-}
+})
 
 
 def setting(db, key: str) -> str:

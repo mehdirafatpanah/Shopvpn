@@ -3890,7 +3890,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
 
     @router.callback_query(F.data == "adm_terms_menu")
     async def cb_admin_terms_menu(call: CallbackQuery):
-        if not is_main_bot or not full_admin_only(call.from_user.id):
+        if not full_access_bot or not full_admin_only(call.from_user.id):
             return await deny_support(call)
         settings = await asyncio.to_thread(db.get_terms_settings)
         preview = settings["text"][:3000]
@@ -3906,7 +3906,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
 
     @router.callback_query(F.data == "adm_terms_toggle")
     async def cb_admin_terms_toggle(call: CallbackQuery):
-        if not is_main_bot or not full_admin_only(call.from_user.id):
+        if not full_access_bot or not full_admin_only(call.from_user.id):
             return await deny_support(call)
         current = await asyncio.to_thread(db.get_setting, "terms_enabled", "0")
         if current != "1" and not (await asyncio.to_thread(db.get_setting, "terms_text", "")).strip():
@@ -3918,7 +3918,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
 
     @router.callback_query(F.data == "adm_terms_set_text")
     async def cb_admin_terms_set_text(call: CallbackQuery, state: FSMContext):
-        if not is_main_bot or not full_admin_only(call.from_user.id):
+        if not full_access_bot or not full_admin_only(call.from_user.id):
             return await deny_support(call)
         await state.set_state(AdminTerms.waiting_text)
         await safe_edit(
@@ -3931,7 +3931,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
 
     @router.message(AdminTerms.waiting_text)
     async def process_terms_text(message: Message, state: FSMContext):
-        if not is_main_bot or not full_admin_only(message.from_user.id):
+        if not full_access_bot or not full_admin_only(message.from_user.id):
             await state.clear()
             return
         text = (message.text or "").strip()
@@ -9786,7 +9786,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     # -------------------------------------------------------------------
     # هزینه و انقضای عضویت نمایندگی (F13)
     # -------------------------------------------------------------------
-    if is_main_bot:
+    if full_access_bot:
 
         @router.callback_query(F.data == "adm_reseller_membership")
         async def cb_admin_reseller_membership(call: CallbackQuery):
@@ -9865,11 +9865,12 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     # برایش راه‌اندازی می‌کند.
     # -------------------------------------------------------------------
 
-    if is_main_bot:
+    if full_access_bot:
 
         @router.callback_query(F.data == "adm_resellers_menu")
         async def cb_admin_resellers_menu(call: CallbackQuery):
-            if not senior_admin_only(call.from_user.id):
+            # مدیریت نماینده‌های کامل فقط در بات اصلی (نماینده‌ی کامل نمی‌تواند نماینده‌ی کامل بدهد)
+            if not is_main_bot or not senior_admin_only(call.from_user.id):
                 return await deny_mid(call)
             bots = (await asyncio.to_thread(db.list_reseller_bots))
             await replace_admin_view(call, tr("🏪 مدیریت بات‌های نمایندگی:"), reply_markup=kb.resellers_kb(bots))
@@ -10908,7 +10909,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
 
         @router.callback_query(F.data == "adm_credit_resellers_menu")
         async def cb_admin_credit_resellers_menu(call: CallbackQuery):
-            if not senior_admin_only(call.from_user.id):
+            if not is_main_bot or not senior_admin_only(call.from_user.id):
                 return await deny_mid(call)
             resellers = (await asyncio.to_thread(db.get_resellers))
             await replace_admin_view(
@@ -15892,7 +15893,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             f"انقضا: {to_jalali_str(cc['expires_at']) if cc['expires_at'] else '—'}",
         ]
         has_dsub = False
-        if is_main_bot:
+        if full_access_bot:
             owner = await asyncio.to_thread(db.get_user, tg_id)
             owner_txt = str(tg_id)
             if owner:
@@ -15923,7 +15924,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await message.answer(
             text, reply_markup=kb.admin_config_detail_kb(
                 tg_id, cc_id, enabled, auto_renew, can_auto_renew,
-                extended=is_main_bot, is_test=is_test, has_dsub=has_dsub,
+                extended=full_access_bot, is_test=is_test, has_dsub=has_dsub,
             ),
         )
 
@@ -16171,7 +16172,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     # -------------------------------------------------------------------
 
     async def _cfg_ext_guard(call: CallbackQuery) -> bool:
-        if not is_main_bot:
+        if not full_access_bot:
             await call.answer(tr("این قابلیت فعلاً فقط روی بات اصلی فعال است."), show_alert=True)
             return False
         if not senior_admin_only(call.from_user.id):
@@ -16218,7 +16219,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
 
     @router.message(AdminConfigSearch.waiting_query)
     async def process_admin_cfg_search(message: Message, state: FSMContext):
-        if not is_main_bot or not senior_admin_only(message.from_user.id):
+        if not full_access_bot or not senior_admin_only(message.from_user.id):
             await state.clear()
             return
         query = (message.text or "").strip()
@@ -16445,7 +16446,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await _cfg_add_ask(call, state, "day")
 
     async def _cfg_add_apply(message: Message, state: FSMContext, kind: str):
-        if not is_main_bot or not senior_admin_only(message.from_user.id):
+        if not full_access_bot or not senior_admin_only(message.from_user.id):
             await state.clear()
             return
         raw = (message.text or "").strip().replace(",", ".")
@@ -16530,7 +16531,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         await _cfg_sub_ask(call, state, "day")
 
     async def _cfg_sub_apply(message: Message, state: FSMContext, kind: str):
-        if not is_main_bot or not senior_admin_only(message.from_user.id):
+        if not full_access_bot or not senior_admin_only(message.from_user.id):
             await state.clear()
             return
         raw = (message.text or "").strip().replace(",", ".")
@@ -17967,7 +17968,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not admin_only(message.from_user.id):
             return
         await state.clear()
-        text = bot_commands.build_commands_text(is_main_bot, senior_admin_only(message.from_user.id))
+        text = bot_commands.build_commands_text(full_access_bot, senior_admin_only(message.from_user.id), is_main_bot)
         await message.answer(text, parse_mode=ParseMode.HTML)
         _cmd_menu_synced.discard(message.from_user.id)
         await _ensure_admin_command_menu(bot, message.from_user.id)
@@ -18101,12 +18102,12 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
     admin_channel_plan.register(router, db, senior_admin_only, deny_mid)
 
     extra_gateway_admin.register(
-        router, db, is_main_bot, admin_only, full_admin_only, deny_support, replace_admin_view,
+        router, db, full_access_bot, admin_only, full_admin_only, deny_support, replace_admin_view,
         safe_edit, callback_id,
     )
 
     custom_menu_buttons.register(
-        router, db, is_main_bot, full_admin_only, deny_support, replace_admin_view, safe_edit,
+        router, db, full_access_bot, full_admin_only, deny_support, replace_admin_view, safe_edit,
     )
 
     import ssh_admin_bot

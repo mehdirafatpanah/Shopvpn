@@ -22,6 +22,8 @@ import time
 from collections import OrderedDict, defaultdict, deque
 from datetime import datetime, timedelta, timezone
 
+import tenant_ctx
+
 logger = logging.getLogger(__name__)
 
 SESSION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "userbot_session.json")
@@ -93,16 +95,29 @@ AUTH_LOST_ERRORS = {
     "SessionExpiredError", "UserDeactivatedError", "UserDeactivatedBanError",
 }
 
-STATE = {
-    "last_activity": None,      # last time the owner was active anywhere (monotonic)
-    "chat_active": {},          # chat_id -> last time the owner was active in that chat (monotonic)
-    "connected": False,
-    "waiting_login": False,
-    "db_path": None,
-    "me": None,                 # {"id", "first_name", "username"}
-    "connected_at": None,       # wall-clock (time.time())
-    "last_error": "",
-}
+def _new_state() -> dict:
+    return {
+        "last_activity": None,      # last time the owner was active anywhere (monotonic)
+        "chat_active": {},          # chat_id -> last time the owner was active in that chat (monotonic)
+        "connected": False,
+        "waiting_login": False,
+        "db_path": None,
+        "me": None,                 # {"id", "first_name", "username"}
+        "connected_at": None,       # wall-clock (time.time())
+        "last_error": "",
+    }
+
+
+# هر بات (اصلی یا نمایندگی کامل) STATE مستقل خودش را دارد؛ انتخاب با tenant_ctx.CURRENT.
+STATE = tenant_ctx.PerTenant(_new_state)
+
+
+def session_path() -> str:
+    return tenant_ctx.session_file("userbot", SESSION_PATH)
+
+
+def scanner_session_path() -> str:
+    return tenant_ctx.session_file("leak", SCANNER_SESSION_PATH)
 
 
 # ---- settings helpers ----------------------------------------------------------------------------
@@ -193,7 +208,7 @@ def paused_by_admin(db, chat_id) -> bool:
 # ---- session storage ------------------------------------------------------------------------------------
 def load_session(path: str = None):
     try:
-        with open(path or SESSION_PATH, "r", encoding="utf-8") as fh:
+        with open(path or session_path(), "r", encoding="utf-8") as fh:
             data = json.load(fh)
         return {
             "api_id": int(data["api_id"]),
@@ -206,7 +221,7 @@ def load_session(path: str = None):
 
 
 def save_session(api_id: int, api_hash: str, session: str, user: dict, path: str = None):
-    path = path or SESSION_PATH
+    path = path or session_path()
     tmp = path + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -217,7 +232,7 @@ def save_session(api_id: int, api_hash: str, session: str, user: dict, path: str
 
 def remove_session(path: str = None) -> bool:
     try:
-        os.remove(path or SESSION_PATH)
+        os.remove(path or session_path())
         return True
     except FileNotFoundError:
         return False
@@ -333,7 +348,7 @@ def fetch_api_credentials(phone: str):
 
 def _known_api():
     """api_id/api_hash ذخیره‌شده در هر یک از دو نشست (یوزربات یا اسکنر) تا دوباره پرسیده نشود."""
-    for path in (SESSION_PATH, SCANNER_SESSION_PATH):
+    for path in (session_path(), scanner_session_path()):
         creds = load_session(path)
         if creds:
             return creds["api_id"], creds["api_hash"]
@@ -559,6 +574,7 @@ def _extra_system(db, sender, history=None, registered=None) -> str:
 
 async def run(db, bot_token: str):
     """Run the userbot until cancelled. Waits (no restart needed) until a session is stored by the server login."""
+    tenant_ctx.use(db)  # نمایندگی کامل: سشن و STATE مستقل (داخل همین تسک)
     STATE["db_path"] = db.db_path
     await asyncio.to_thread(_migrate_once, db)
 
@@ -1158,7 +1174,7 @@ async def run(db, bot_token: str):
                     raise RuntimeError("AuthKeyUnregisteredError")
                 me = await client.get_me()
                 ctx["me_id"] = me.id
-                if not leak_started and not os.path.exists(SCANNER_SESSION_PATH):
+                if not leak_started and not os.path.exists(scanner_session_path()):
                     # اسکنر تشخیص نشت روی همین کلاینت و همین سشن یوزربات کار می‌کند
                     leak_started = True
                     _spawn(leak_scanner.run(client, db, bot))
@@ -1200,6 +1216,20 @@ async def run(db, bot_token: str):
 
 
 def _cli(argv) -> int:
+    argv = list(argv)
+    if "--db" in argv:
+        # سشن مخصوص یک نمایندگی کامل: python userbot.py login --db <مسیر دیتابیس نماینده>
+        idx = argv.index("--db")
+        try:
+            db_arg = argv[idx + 1]
+        except IndexError:
+            print("usage: --db <path to the reseller database file>")
+            return 2
+        del argv[idx:idx + 2]
+
+        class _P:
+            db_path = db_arg
+        tenant_ctx.use(_P())
     cmd = argv[0] if argv else ""
     if cmd == "login":
         return 0 if asyncio.run(interactive_login()) else 1
@@ -1216,13 +1246,13 @@ def _cli(argv) -> int:
         print(f"logged in: {user.get('first_name', '')} (@{user.get('username') or '-'}) id={user.get('id')}")
         return 0
     if cmd == "login-scanner":
-        return 0 if asyncio.run(interactive_login(SCANNER_SESSION_PATH)) else 1
+        return 0 if asyncio.run(interactive_login(scanner_session_path())) else 1
     if cmd == "logout-scanner":
-        asyncio.run(logout(SCANNER_SESSION_PATH))
+        asyncio.run(logout(scanner_session_path()))
         print("Scanner session removed (the scanner falls back to the userbot account).")
         return 0
     if cmd == "status-scanner":
-        creds = load_session(SCANNER_SESSION_PATH)
+        creds = load_session(scanner_session_path())
         if creds is None:
             print("no dedicated scanner account (the scanner uses the userbot account)")
             return 1

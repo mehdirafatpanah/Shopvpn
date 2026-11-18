@@ -20,8 +20,10 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import leak_discovery as ld
+import tenant_ctx
 import leak_index
 import leak_scanner as ls
+from userbot_login import login_buttons
 import userbot
 from i18n import tr
 
@@ -68,6 +70,9 @@ def _cycle(choices, current):
 
 def create_leak_router(db) -> Router:
     router = Router()
+    # نمایندگی کامل: سشن/STATE اسکنر مخصوص همین بات
+    router.message.outer_middleware(tenant_ctx.middleware(db))
+    router.callback_query.outer_middleware(tenant_ctx.middleware(db))
 
     async def _deny(call: CallbackQuery):
         await call.answer(tr("⛔️ این بخش فقط برای مدیران کامل در دسترس است."), show_alert=True)
@@ -108,8 +113,8 @@ def create_leak_router(db) -> Router:
         channels = await asyncio.to_thread(db.list_leak_channels)
         active_channels = sum(1 for c in channels if c["active"])
         if ls.get_client():
-            if os.path.exists(userbot.SCANNER_SESSION_PATH):
-                creds = userbot.load_session(userbot.SCANNER_SESSION_PATH) or {}
+            if os.path.exists(userbot.scanner_session_path()):
+                creds = userbot.load_session(userbot.scanner_session_path()) or {}
                 me = creds.get("user") or {}
                 client_state = tr("🟢 متصل (اکانت اختصاصی اسکنر)")
             else:
@@ -146,6 +151,7 @@ def create_leak_router(db) -> Router:
             [InlineKeyboardButton(text=tr("📢 کانال‌های زیر نظر"), callback_data="adm_leak_ch")],
             [InlineKeyboardButton(text=tr("🧾 آخرین رویدادها"), callback_data="adm_leak_ev")],
             [InlineKeyboardButton(text=tr("🔄 به‌روزرسانی فوری ایندکس"), callback_data="adm_leak_idx")],
+            *login_buttons("leak", os.path.exists(userbot.scanner_session_path())),
             [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:access")],
         ]
         await _show(call, text, _kb(rows))

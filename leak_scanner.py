@@ -32,6 +32,7 @@ from collections import deque
 from urllib.parse import unquote
 
 import leak_discovery as ld
+import tenant_ctx
 import leak_index
 from panel_providers import get_provider
 from panel_providers.base import PanelError, subscription_token
@@ -60,12 +61,17 @@ MAX_FLOOD_PAUSE_SECONDS = 1800
 MIN_SECRET_LEN = leak_index.MIN_SECRET_LEN
 
 # وضعیت مشترک بین حلقه‌ی اسکن و منوی ادمین
-STATE = {
-    "client": None, "paused_until": 0.0, "stamps": deque(), "last_flood": 0,
-    "discovery": None, "realtime_handlers": [],
-    # کش فهرست کانال‌های زیر نظر برای هندلر لحظه‌ای (بدون خواندن دیتابیس در هر پیام)
-    "watched": {}, "watched_at": 0.0, "scanner_on": False,
-}
+def _new_state() -> dict:
+    return {
+        "client": None, "paused_until": 0.0, "stamps": deque(), "last_flood": 0,
+        "discovery": None, "realtime_handlers": [],
+        # کش فهرست کانال‌های زیر نظر برای هندلر لحظه‌ای (بدون خواندن دیتابیس در هر پیام)
+        "watched": {}, "watched_at": 0.0, "scanner_on": False,
+    }
+
+
+# هر بات (اصلی یا نمایندگی کامل) STATE مستقل خودش را دارد (انتخاب با tenant_ctx.CURRENT).
+STATE = tenant_ctx.PerTenant(_new_state)
 WATCH_CACHE_SECONDS = 60
 MAX_CHANNELS_PER_CYCLE = 40
 JOINED_CATCHUP_FACTOR = 4
@@ -91,13 +97,12 @@ def keywords(db) -> list:
     return [k.strip() for k in setting(db, KEY_KEYWORDS).split(",") if k.strip()]
 
 
-_last_customer_activity = 0.0
+_CUSTOMER_ACTIVITY = tenant_ctx.PerTenant(lambda: {"t": 0.0})
 
 
 def note_customer_activity() -> None:
     """userbot وقتی پیام مشتری می‌رسد صدا می‌زند تا اسکنر کمی عقب بکشد."""
-    global _last_customer_activity
-    _last_customer_activity = time.monotonic()
+    _CUSTOMER_ACTIVITY["t"] = time.monotonic()
 
 
 def get_client():
@@ -400,7 +405,7 @@ class LeakScanner:
             if now < STATE["paused_until"]:
                 await asyncio.sleep(min(STATE["paused_until"] - now, 60))
                 continue
-            quiet_for = now - _last_customer_activity
+            quiet_for = now - _CUSTOMER_ACTIVITY["t"]
             if quiet_for < CUSTOMER_QUIET_SECONDS:
                 await asyncio.sleep(CUSTOMER_QUIET_SECONDS - quiet_for)
                 continue
@@ -613,9 +618,10 @@ async def run_dedicated(db, bot_token: str) -> None:
     """
     import userbot
 
-    while userbot.load_session(userbot.SCANNER_SESSION_PATH) is None:
+    tenant_ctx.use(db)  # نمایندگی کامل: سشن و STATE مستقل (داخل همین تسک)
+    while userbot.load_session(userbot.scanner_session_path()) is None:
         await asyncio.sleep(30)
-    creds = userbot.load_session(userbot.SCANNER_SESSION_PATH)
+    creds = userbot.load_session(userbot.scanner_session_path())
     try:
         from telethon import TelegramClient
         from telethon.sessions import StringSession

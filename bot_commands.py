@@ -61,17 +61,32 @@ ADMIN_COMMANDS = (
 _MENU_MAX = 100
 
 
-def _user_menu(is_main_bot: bool, lang: str):
+# دستورهایی که به زیرساخت سراسری پلتفرم وصلند و حتی در نمایندگی کامل هم غیرفعال می‌مانند
+# (سایت فروش وب / آپدیت پروژه).
+_PLATFORM_ONLY = {"merge", "update"}
+
+
+def _hidden_platform(cmd: str, real_main) -> bool:
+    return cmd in _PLATFORM_ONLY and real_main is False
+
+
+def _user_menu(is_main_bot: bool, lang: str, real_main=None):
     out = []
+    real_main = is_main_bot if real_main is None else real_main
     for cmd, fa, en, main_only, in_menu, _hint in USER_COMMANDS:
+        if _hidden_platform(cmd, real_main):
+            continue
         if in_menu and (is_main_bot or not main_only):
             out.append(BotCommand(command=cmd, description=(en if lang == "en" else fa)[:256]))
     return out
 
 
-def _admin_menu(is_main_bot: bool, is_senior: bool, lang: str):
+def _admin_menu(is_main_bot: bool, is_senior: bool, lang: str, real_main=None):
     out = []
+    real_main = is_main_bot if real_main is None else real_main
     for cmd, fa, en, level, main_only, in_menu, _hint in ADMIN_COMMANDS:
+        if _hidden_platform(cmd, real_main):
+            continue
         if not in_menu or (main_only and not is_main_bot):
             continue
         if level == LEVEL_SENIOR and not is_senior:
@@ -85,8 +100,9 @@ async def sync_admin_commands(bot, db, admin_id: int, is_main_bot: bool = True) 
     try:
         senior = bool(await asyncio.to_thread(db.is_senior_admin, admin_id))
         scope = BotCommandScopeChat(chat_id=int(admin_id))
+        full = bool(db.is_full_access_bot(is_main_bot))
         for lang in ("fa", "en"):
-            cmds = (_user_menu(is_main_bot, lang) + _admin_menu(is_main_bot, senior, lang))[:_MENU_MAX]
+            cmds = (_user_menu(full, lang, is_main_bot) + _admin_menu(full, senior, lang, is_main_bot))[:_MENU_MAX]
             await bot.set_my_commands(cmds, scope=scope, language_code=("en" if lang == "en" else None))
         return True
     except Exception:
@@ -97,9 +113,10 @@ async def sync_admin_commands(bot, db, admin_id: int, is_main_bot: bool = True) 
 async def sync_commands(bot, db, is_main_bot: bool = True) -> None:
     """منوی «/» پیش‌فرض (کاربران) + منوی اختصاصی هر مدیر. هیچ‌وقت exception نمی‌دهد."""
     try:
+        full = bool(db.is_full_access_bot(is_main_bot))
         for lang in ("fa", "en"):
             await bot.set_my_commands(
-                _user_menu(is_main_bot, lang), scope=BotCommandScopeDefault(),
+                _user_menu(full, lang, is_main_bot), scope=BotCommandScopeDefault(),
                 language_code=("en" if lang == "en" else None),
             )
     except Exception:
@@ -125,18 +142,19 @@ def schedule_sync(bot, db, is_main_bot: bool = True) -> None:
     task.add_done_callback(_bg_tasks.discard)
 
 
-def build_commands_text(is_main_bot: bool, is_senior: bool) -> str:
+def build_commands_text(is_main_bot: bool, is_senior: bool, real_main=None) -> str:
     """متن HTML لیست کامل دستورها برای مدیر (/commands)."""
     lines = ["📋 <b>لیست همه‌ی دستورهای ربات</b>", "", "👤 <b>دستورهای کاربران</b>"]
+    real_main = is_main_bot if real_main is None else real_main
     for cmd, fa, _en, main_only, in_menu, hint in USER_COMMANDS:
-        if main_only and not is_main_bot:
+        if (main_only and not is_main_bot) or _hidden_platform(cmd, real_main):
             continue
         extra = f" — <i>{html.escape(hint)}</i>" if hint else ""
         lines.append(f"/{cmd} — {html.escape(fa)}{extra}")
     lines += ["", "🛠 <b>دستورهای مدیران</b>"]
     hidden_senior = 0
     for cmd, fa, _en, level, main_only, in_menu, hint in ADMIN_COMMANDS:
-        if main_only and not is_main_bot:
+        if (main_only and not is_main_bot) or _hidden_platform(cmd, real_main):
             continue
         if level == LEVEL_SENIOR and not is_senior:
             hidden_senior += 1

@@ -14,8 +14,10 @@ from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+import tenant_ctx
 import userbot
 from i18n import tr
+from userbot_login import login_buttons
 from states import AdminUserbot
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,9 @@ def _cycle(choices, current):
 
 def create_userbot_router(db) -> Router:
     router = Router()
+    # نمایندگی کامل: سشن/STATE یوزربات مخصوص همین بات
+    router.message.outer_middleware(tenant_ctx.middleware(db))
+    router.callback_query.outer_middleware(tenant_ctx.middleware(db))
 
     async def _deny(call: CallbackQuery):
         await call.answer(tr("⛔️ این بخش فقط برای مدیران کامل در دسترس است."), show_alert=True)
@@ -101,7 +106,9 @@ def create_userbot_router(db) -> Router:
             f"{tr('پاسخ‌ها')} {stats.get('replies', 0)} | {tr('تحویل به انسان')} {stats.get('handoffs', 0)} | "
             f"{tr('خطا')} {stats.get('errors', 0)}"
         )
-        if creds is None:
+        if creds is None and tenant_ctx.current_key() is not None:
+            text += "\n\n" + tr("برای فعال‌سازی، از دکمه‌ی «ورود به اکانت تلگرام» پایین وارد شوید؛ نیازی به ریستارت نیست.")
+        elif creds is None:
             text += "\n\n" + tr("ورود به اکانت از منوی سرور (گزینه «ورود به اکانت تلگرام») انجام می‌شود؛ بعد از ورود نیازی به ریستارت نیست.")
         else:
             text += "\n\n" + tr(
@@ -140,6 +147,7 @@ def create_userbot_router(db) -> Router:
             [InlineKeyboardButton(text=tr("🎭 لحن و دستورالعمل پاسخ‌ها"), callback_data="adm_ub_persona")],
             [InlineKeyboardButton(text=f"{tr('🚫 لیست استثناها')} ({len(await asyncio.to_thread(db.list_userbot_exceptions))})", callback_data="adm_ub_ex")],
             [InlineKeyboardButton(text=f"{tr('🤝 چت‌های تحویل‌شده به انسان')} ({humans})", callback_data="adm_ub_humans")],
+            *login_buttons("ub", creds is not None),
             [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:access")],
         ]
         await _show(call, text, _kb(rows))

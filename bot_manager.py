@@ -34,6 +34,7 @@ from handlers_user import create_user_router
 from business_chat import create_business_router
 from userbot_admin import create_userbot_router
 from leak_admin import create_leak_router
+from userbot_login import create_login_router
 from handlers_admin import create_admin_router
 from payg import create_payg_router, PaygEngine
 from renewal_reminders import renewal_reminder_loop
@@ -530,17 +531,22 @@ class BotManager:
 
         tutorial_hub.install(bot, dp, db)
 
-        if is_main_bot:
-            dp.include_router(create_business_router(db, language_mw))
-            dp.include_router(create_userbot_router(db))
-            dp.include_router(create_leak_router(db))
-        dp.include_router(create_gift_router(db, is_main_bot=is_main_bot))
-        dp.include_router(create_season_quiz_router(db, is_main_bot=is_main_bot))
-        dp.include_router(create_engagement_router(db, is_main_bot=is_main_bot))
-        if is_main_bot:
+        # نمایندگی کامل ≈ کپی بات اصلی است؛ فقط مدیریت نماینده‌ی کامل، آپدیت پروژه،
+        # یوزربات/نشت (اکانت تلگرام سراسری) و چک سلامت دیتابیس اصلی مخصوص بات اصلی می‌مانند.
+        full_access = bool(db.is_full_access_bot(is_main_bot))
+        dp.include_router(create_business_router(db, language_mw))
+        # یوزربات و اسکنر نشت: بات اصلی و هر نمایندگی کامل نسخه‌ی مستقل (سشن/STATE/دیتابیس جدا) دارند
+        dp.include_router(create_userbot_router(db))
+        dp.include_router(create_leak_router(db))
+        if not is_main_bot:
+            dp.include_router(create_login_router(db))  # ورود اکانت تلگرام از داخل بات (نماینده به سرور دسترسی ندارد)
+        dp.include_router(create_gift_router(db, is_main_bot=full_access))
+        dp.include_router(create_season_quiz_router(db, is_main_bot=full_access))
+        dp.include_router(create_engagement_router(db, is_main_bot=full_access))
+        if full_access:
             dp.include_router(create_payg_router(db, is_main_bot=True))
-        dp.include_router(create_admin_router(db, is_main_bot=is_main_bot, bot_manager=self))
-        dp.include_router(create_user_router(db, is_main_bot=is_main_bot, bot_manager=self))
+        dp.include_router(create_admin_router(db, is_main_bot=is_main_bot, bot_manager=self if is_main_bot else None))
+        dp.include_router(create_user_router(db, is_main_bot=is_main_bot, bot_manager=self if is_main_bot else None))
 
         # قبلاً بدون try/except بود: اگر همین یک تماس (مثلاً به‌خاطر FloodWait یا
         # قطعی موقت شبکه‌ی تلگرام) خطا می‌داد، کل main() با exception می‌ترکید و‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
@@ -596,10 +602,10 @@ class BotManager:
         cache_refresh_task = asyncio.create_task(db.cache_autorefresh_loop())
         temp_msg_task = asyncio.create_task(temp_message_cleanup_loop(bot, db))
         extra_gateway_task = (
-            asyncio.create_task(extra_gateway_payment.poll_loop(bot, db)) if is_main_bot else None
+            asyncio.create_task(extra_gateway_payment.poll_loop(bot, db)) if full_access else None
         )
-        panel_health_task = asyncio.create_task(panel_health_loop(bot, db)) if is_main_bot else None
-        payg_task = asyncio.create_task(PaygEngine(db, bot=bot, interval_seconds=600).run_forever()) if is_main_bot else None
+        panel_health_task = asyncio.create_task(panel_health_loop(bot, db)) if full_access else None
+        payg_task = asyncio.create_task(PaygEngine(db, bot=bot, interval_seconds=600).run_forever()) if full_access else None
         cron_task = asyncio.create_task(cron_loop(bot, db)) if is_main_bot else None
         daily_report_task = asyncio.create_task(daily_report_loop(bot, db))
         scheduled_broadcast_task = asyncio.create_task(scheduled_broadcast_loop(bot, db))
@@ -608,10 +614,17 @@ class BotManager:
         lottery_task = asyncio.create_task(lottery_loop(bot, db))
         reseller_expiry_task = asyncio.create_task(db.reseller_expiry_loop(bot))
         signup_gift_task = asyncio.create_task(signup_gift_loop(bot, db))
-        welcome_gift_task = asyncio.create_task(welcome_gift_loop(bot, db)) if is_main_bot else None
+        welcome_gift_task = asyncio.create_task(welcome_gift_loop(bot, db)) if full_access else None
+        if full_access and not is_main_bot:
+            import userbot as _userbot
+            import leak_scanner as _leak_scanner
+            userbot_task = asyncio.create_task(_userbot.run(db, token))
+            leak_dedicated_task = asyncio.create_task(_leak_scanner.run_dedicated(db, token))
+        else:
+            userbot_task = leak_dedicated_task = None
         gift_expiry_task = asyncio.create_task(gift_cards.expiry_loop(db, bot))
-        season_task = asyncio.create_task(seasons.season_loop(db, bot)) if is_main_bot else None
-        quiz_task = asyncio.create_task(daily_quiz.quiz_loop(db, bot)) if is_main_bot else None
+        season_task = asyncio.create_task(seasons.season_loop(db, bot)) if full_access else None
+        quiz_task = asyncio.create_task(daily_quiz.quiz_loop(db, bot)) if full_access else None
         audit_task = asyncio.create_task(audit_forward_loop(bot, db))
         if is_main_bot:
             asyncio.create_task(_announce_startup(bot, db))
@@ -631,6 +644,7 @@ class BotManager:
             "reseller_expiry_task": reseller_expiry_task, "signup_gift_task": signup_gift_task, "welcome_gift_task": welcome_gift_task,
             "gift_expiry_task": gift_expiry_task, "audit_task": audit_task,
             "season_task": season_task, "quiz_task": quiz_task, "update_check_task": update_check_task,
+            "userbot_task": userbot_task, "leak_dedicated_task": leak_dedicated_task,
             "db_path": db_path,
         }
         logger.info("بات با db_path=%s راه‌اندازی شد.", db_path)
@@ -642,6 +656,7 @@ class BotManager:
         "extra_gateway_task", "panel_health_task", "payg_task", "cron_task", "daily_report_task",
         "cleanup_task", "lottery_task", "reseller_expiry_task", "signup_gift_task", "welcome_gift_task",
         "gift_expiry_task", "audit_task", "season_task", "quiz_task", "update_check_task",
+        "userbot_task", "leak_dedicated_task",
     )
 
     async def stop_bot(self, token: str) -> bool:
