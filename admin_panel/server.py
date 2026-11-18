@@ -8587,14 +8587,14 @@ def api_ssh_install_job(job_id: str, admin=Depends(require_permission("panels"))
 
 
 @app.delete("/api/ssh/nodes/{node_id}")
-def api_ssh_delete_node(node_id: int, force: bool = False, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+async def api_ssh_delete_node(node_id: int, force: bool = False, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
     import ssh_service
     try:
-        ssh_service.delete_node(db, node_id, force=force)
+        result = await ssh_service.delete_node(db, node_id, force=force)
     except ssh_service.SSHServiceError as exc:
         raise HTTPException(exc.status, str(exc))
-    db.log_admin_action(admin["id"], "ssh_node_delete", f"SSH node #{node_id}" + (" (force)" if force else ""), "ssh")
-    return {"ok": True}
+    db.log_admin_action(admin["id"], "ssh_node_delete", f"SSH node #{node_id}" + (" (force/local-only)" if force else " (remote cleanup)"), "ssh")
+    return {"ok": True, "cleanup": result}
 
 
 @app.post("/api/ssh/nodes/{node_id}/rename")
