@@ -1677,7 +1677,11 @@ class CatalogMixin:
                 "SELECT id as config_id, username, panel_server_id "
                 "FROM custom_configs WHERE status='active' AND start_on_first_use=1 "
                 "AND expires_at IS NULL AND subscription_url IS NOT NULL "
-                "AND TRIM(subscription_url) != ''"
+                "AND TRIM(subscription_url) != '' "
+                # سرویس‌های عضو استخرِ «از اولین اتصال» انقضا را از خود استخر می‌گیرند (quota_reconciler)
+                "AND NOT EXISTS (SELECT 1 FROM quota_pool_members m JOIN quota_pools qp ON qp.id=m.pool_id "
+                "WHERE m.service_kind='vpn' AND m.service_id=('custom_config:' || custom_configs.id) "
+                "AND qp.metadata_json LIKE '%\"first_use_pending\": true%')"
             ).fetchall()
 
 

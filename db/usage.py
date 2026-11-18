@@ -5,7 +5,7 @@
 بنابراین اجرای مجدد poll یک پنل باعث دوباره‌شماری نمی‌شود. این لایه فقط آمار را
 تجمیع می‌کند و عمداً بدون آداپتور معتبر، مصرف SSH را به API پنل VPN تزریق نمی‌کند.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 
 
@@ -39,6 +39,61 @@ class UsageMixin:
                  json.dumps(metadata or {}, ensure_ascii=False), now, now),
             )
             return int(cur.lastrowid)
+
+    # ------------------------------------------------------------------
+    # شروع زمان از اولین اتصال برای استخرهای چندپنلی/نودی (VPN + SSH/OpenVPN/WireGuard)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _pool_meta(raw) -> dict:
+        try:
+            meta = json.loads(raw or "{}")
+            return meta if isinstance(meta, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+
+    def quota_pool_first_use_pending(self, pool) -> bool:
+        """True اگر استخر «از اولین اتصال» است و هنوز هیچ اتصالی ثبت نشده (انقضا خالی)."""
+        if not pool or pool.get("expires_at"):
+            return False
+        meta = self._pool_meta(pool.get("metadata_json"))
+        return bool(meta.get("first_use_pending")) and float(meta.get("first_use_days") or 0) > 0
+
+    def activate_quota_pool_first_use(self, pool_id: int, now: datetime = None):
+        """با اولین مصرف، انقضای استخر را now+مدت می‌گذارد و همان را روی سرویس اصلی و
+        حساب‌های SSH محلی هم ثبت می‌کند. اگر استخر در انتظار نباشد None برمی‌گرداند."""
+        now = now or datetime.now(timezone.utc)
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT * FROM quota_pools WHERE id=?", (int(pool_id),)).fetchone()
+            if not row:
+                return None
+            pool = dict(row)
+            if not self.quota_pool_first_use_pending(pool):
+                return None
+            meta = self._pool_meta(pool.get("metadata_json"))
+            expires_at = (now + timedelta(days=float(meta["first_use_days"]))).isoformat()
+            meta["first_use_pending"] = False
+            meta["activated_at"] = now.isoformat()
+            conn.execute("UPDATE quota_pools SET expires_at=?, metadata_json=?, updated_at=? WHERE id=? AND expires_at IS NULL",
+                         (expires_at, json.dumps(meta, ensure_ascii=False), now.isoformat(), int(pool_id)))
+            conn.execute(
+                "UPDATE custom_configs SET expires_at=? WHERE status='active' AND start_on_first_use=1 AND expires_at IS NULL "
+                "AND ('custom_config:' || id) IN (SELECT service_id FROM quota_pool_members WHERE pool_id=? AND service_kind='vpn')",
+                (expires_at, int(pool_id)))
+            conn.execute("UPDATE ssh_accounts SET expires_at=?, updated_at=? WHERE quota_pool_id=? AND expires_at IS NULL",
+                         (expires_at, now.isoformat(), int(pool_id)))
+            return expires_at
+
+    def add_quota_pool_first_use_days(self, pool_id: int, add_days: float) -> bool:
+        """تمدید زمانیِ استخری که هنوز شروع نشده: روز جدید به مدت ذخیره‌شده اضافه می‌شود."""
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT * FROM quota_pools WHERE id=?", (int(pool_id),)).fetchone()
+            if not row or not self.quota_pool_first_use_pending(dict(row)):
+                return False
+            meta = self._pool_meta(row["metadata_json"])
+            meta["first_use_days"] = float(meta.get("first_use_days") or 0) + float(add_days)
+            conn.execute("UPDATE quota_pools SET metadata_json=?, updated_at=? WHERE id=?",
+                         (json.dumps(meta, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), int(pool_id)))
+            return True
 
     def delete_quota_pool(self, pool_id: int) -> bool:
         """Delete a pool and its SSH records/snapshots; intended for provisioning rollback."""
