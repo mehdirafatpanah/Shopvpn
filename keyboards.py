@@ -2086,7 +2086,7 @@ def _is_volume_credit_owner(db) -> bool:
     result = False
     try:
         from config import DB_PATH as _MAIN_DB_PATH
-        if key != _MAIN_DB_PATH:
+        if key != _MAIN_DB_PATH and not db.is_unrestricted_full():
             from database import Database as _Database
             owner_id = db.get_owner_telegram_id()
             if owner_id:

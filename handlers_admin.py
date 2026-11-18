@@ -9995,7 +9995,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 call,
                 tr("⬆️ تبدیل به نماینده کامل") + f"\n\n@{reseller_bot['bot_username'] or '-'}\n"
                 + tr("سطح فعلی") + f": {current}\n\n"
-                + tr("با تبدیل، سطح و انقضای عضویت پاک می‌شود (دیگر منقضی یا تنزل نمی‌شود) و تنظیمات بات مثل نماینده‌ی کامل می‌شود. اعتبار حجمی، پنل اختصاصی، کاربران و دیتابیس بات دست‌نخورده می‌مانند."),
+                + tr("با تبدیل، سطح و انقضای عضویت پاک می‌شود (دیگر منقضی یا تنزل نمی‌شود) و بات و پنل وبش دقیقاً مثل بات اصلی می‌شود: اتصال پنل VPN، نصب نود، محصول مستقیم و فروش پنل. فقط مدیریت نماینده‌ها و آپدیت پروژه فقط برای بات اصلی می‌ماند. کاربران و دیتابیس بات دست‌نخورده می‌مانند و دیگر از اعتبار حجمی مصرف نمی‌شود."),
                 reply_markup=kb.resbot_makefull_confirm_kb(bot_id),
             )
             await call.answer()
@@ -10015,7 +10015,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             await asyncio.to_thread(db.convert_reseller_to_full, owner_id)
             tenant_db = Database(resolve_db_path(reseller_bot["db_path"]))
             await asyncio.to_thread(tenant_db.set_setting, "bot_role", "full_reseller")
-            await asyncio.to_thread(tenant_db.set_setting, "custom_config_enabled", "0")
+            # نماینده‌ی کامل = دقیقاً مثل بات اصلی (پنل VPN، نود، محصول مستقیم، فروش پنل، پنل وب کامل)
+            await asyncio.to_thread(tenant_db.set_setting, "full_reseller_unrestricted", "1")
             if not await asyncio.to_thread(tenant_db.get_setting, "miniapp_tenant_id", ""):
                 await asyncio.to_thread(tenant_db.set_setting, "miniapp_tenant_id", str(bot_id))
             await asyncio.to_thread(

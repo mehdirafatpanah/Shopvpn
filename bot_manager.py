@@ -606,7 +606,7 @@ class BotManager:
         )
         panel_health_task = asyncio.create_task(panel_health_loop(bot, db)) if full_access else None
         payg_task = asyncio.create_task(PaygEngine(db, bot=bot, interval_seconds=600).run_forever()) if full_access else None
-        cron_task = asyncio.create_task(cron_loop(bot, db)) if is_main_bot else None
+        cron_task = asyncio.create_task(cron_loop(bot, db)) if (is_main_bot or db.is_unrestricted_full()) else None
         daily_report_task = asyncio.create_task(daily_report_loop(bot, db))
         scheduled_broadcast_task = asyncio.create_task(scheduled_broadcast_loop(bot, db))
         channel_post_task = asyncio.create_task(channel_post_loop(bot, db))

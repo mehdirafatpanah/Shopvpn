@@ -233,6 +233,8 @@ def is_volume_credit_bot(local_db: Database, is_main_bot: bool) -> bool:
     """بات اختصاصی نمایندگی VIP (اعتبار حجمی) است؟"""
     if is_main_bot:
         return False
+    if local_db.is_unrestricted_full():
+        return False
     owner_id = local_db.get_owner_telegram_id()
     if not owner_id:
         return False
