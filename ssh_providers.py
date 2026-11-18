@@ -142,6 +142,17 @@ class LinuxAgentSSHProvider(BaseSSHProvider):
         data = await self._request("GET", "/v1/info")
         return data if isinstance(data, dict) else {}
 
+    async def uninstall_node(self) -> dict:
+        """Ask the authenticated ShopVPN agent to remove its managed node installation."""
+        info = await self.get_info()
+        if "remote_uninstall" not in (info.get("features") or []):
+            raise SSHProviderError("نسخه Agent قدیمی است؛ ابتدا فایل ssh_node_agent.py و سرویس shopvpn-ssh-agent را به‌روز کنید، سپس حذف کامل را اجرا کنید.")
+        data = await self._request("POST", "/v1/uninstall", {"confirm": "UNINSTALL_SHOPVPN_NODE"})
+        if not isinstance(data, dict) or not data.get("ok"):
+            details = ", ".join(str(x) for x in (data.get("errors") or [])) if isinstance(data, dict) else ""
+            raise SSHProviderError("پاک‌سازی نود کامل نشد" + (f": {details}" if details else ""))
+        return data
+
     async def create_account(self, username: str, limit_bytes: int, expires_at: str = None,
                              protocol: str = "ssh") -> SSHAccountResult:
         protocol = str(protocol or "ssh").strip().lower()

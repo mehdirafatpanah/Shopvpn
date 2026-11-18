@@ -238,9 +238,23 @@ def get_install_job(job_id: str) -> Optional[dict]:
     return ssh_auto_install.get_job(job_id)
 
 
-def delete_node(db, node_id: int, force: bool = False) -> None:
-    """حذف نود. با force=True (سرور نود از بین رفته) حساب‌های باقی‌مانده فقط از دیتابیس پنل حذف می‌شوند."""
-    if force:
+async def delete_node(db, node_id: int, force: bool = False) -> dict:
+    """حذف کامل از راه دور؛ force فقط برای سرور از دسترس خارج‌شده و حذف محلی است."""
+    node = db.get_ssh_node(int(node_id))
+    if not node:
+        raise SSHServiceError("نود پیدا نشد.", 404)
+    cleanup = None
+    if not force:
+        if node.get("node_type") != "linux":
+            raise SSHServiceError("پاک‌سازی خودکار فقط برای نودهای Linux Agent پشتیبانی می‌شود؛ برای این نوع نود از حذف محلی استفاده کنید.", 409)
+        from ssh_providers import get_ssh_provider
+        from quota_reconciler import _env_secret_resolver
+        try:
+            provider = get_ssh_provider(node, secret_resolver=_env_secret_resolver)
+            cleanup = await provider.uninstall_node()
+        except Exception as exc:
+            raise SSHServiceError("پاک‌سازی روی سرور انجام نشد؛ رکورد نود برای جلوگیری از حذف ناقص در پنل باقی ماند. " + str(exc)[:260], 502)
+    else:
         for acc in db.list_ssh_accounts(node_id=int(node_id)):
             if acc.get("status") != "deleted":
                 _force_delete_local(db, acc)
@@ -250,6 +264,7 @@ def delete_node(db, node_id: int, force: bool = False) -> None:
         raise SSHServiceError(str(exc))
     if not removed:
         raise SSHServiceError("نود پیدا نشد.", 404)
+    return cleanup or {"ok": True, "local_only": True}
 
 
 def rename_node(db, node_id: int, name: str) -> None:

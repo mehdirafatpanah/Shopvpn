@@ -38,6 +38,9 @@ class FakeDB:
     def list_ssh_nodes(self, active_only=False):
         return [dict(self.node)] if self.node else []
 
+    def get_ssh_node(self, node_id):
+        return dict(self.node) if self.node and int(node_id) == 1 else None
+
     def set_ssh_account_status(self, row_id, status):
         self.acc["status"] = status
 
@@ -103,8 +106,8 @@ class UnreachableNodeTests(unittest.TestCase):
     def test_force_delete_node_cleans_accounts(self):
         db = FakeDB()
         with self.assertRaises(ssh_service.SSHServiceError):
-            ssh_service.delete_node(db, 1)
-        ssh_service.delete_node(db, 1, force=True)
+            asyncio.run(ssh_service.delete_node(db, 1))
+        asyncio.run(ssh_service.delete_node(db, 1, force=True))
         self.assertEqual(db.deleted_nodes, [1])
         self.assertEqual(db.acc["status"], "deleted")
 
