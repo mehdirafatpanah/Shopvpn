@@ -5000,6 +5000,7 @@ async function renderAdminSshSection() {
         <div class="eyebrow" style="margin-top:0">✅ حساب SSH ساخته شد</div>
         <p>نام کاربری: <b>${escHtml(r.username)}</b></p>
         <p>سرور: <code>${escHtml(r.host)}:${Number(r.port)}</code></p>
+        <p class="hint-text">در اپ کلاینت، مقدار <b>UDPGW port = 7300</b> را تنظیم کنید.</p>
         <p>رمز (فقط همین بار نمایش داده می‌شود):</p>
         <input class="input" id="sc-pass" readonly value="${escHtml(r.password || "")}" style="${SSH_LTR}" />
         ${r.ssh_uri ? `<p>لینک اتصال:</p><input class="input" id="sc-uri" readonly value="${escHtml(r.ssh_uri)}" style="${SSH_LTR}" />` : ""}
