@@ -5665,6 +5665,7 @@ def resbot_webpanel_kb(bot_id) -> InlineKeyboardMarkup:
     """منوی مدیریت پنل وب یک نماینده‌ی کامل: بعد از فعال‌سازی نشان داده می‌شود."""
     rows = [
         [InlineKeyboardButton(text=tr("🔗 لینک ورود پنل وب"), callback_data=f"adm_resbot_webpanel_loginlink:{bot_id}")],
+        [InlineKeyboardButton(text=tr("👤 تعیین یوزرنیم و رمز (توسط من)"), callback_data=f"adm_resbot_webpanel_creds:{bot_id}")],
         [InlineKeyboardButton(text=tr("🔁 ساخت لینک راه‌اندازی جدید"), callback_data=f"adm_resbot_webpanel_regen:{bot_id}")],
         [InlineKeyboardButton(text=tr("⛔️ غیرفعال‌سازی پنل وب"), callback_data=f"adm_resbot_webpanel_off:{bot_id}")],
         [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_resellers_menu")],

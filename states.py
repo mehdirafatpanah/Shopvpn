@@ -480,6 +480,11 @@ class AdminWelcomeGift(StatesGroup):
     waiting_delay = State()
 
 
+class AdminResbotWebCreds(StatesGroup):
+    waiting_username = State()
+    waiting_password = State()
+
+
 class AdminResellerCredit(StatesGroup):
     waiting_user_id = State()
     waiting_delta = State()

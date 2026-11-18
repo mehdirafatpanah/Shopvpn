@@ -106,6 +106,7 @@ from states import (
     AdminConfigSearch,
     AdminPanelSearch,
     AdminCreateWalletGift,
+    AdminResbotWebCreds,
     AdminAddCategory,
     AdminCategoryDescription,
     AdminEmojiEdit,
@@ -9969,6 +9970,97 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 reply_markup=kb.resbot_webpanel_kb(bot_id),
             )
             await call.answer()
+
+        @router.callback_query(F.data.startswith("adm_resbot_webpanel_creds:"))
+        async def cb_admin_resbot_webpanel_creds(call: CallbackQuery, state: FSMContext):
+            """مدیر اصلی خودش یوزرنیم/رمز پنل وب نماینده را تعیین می‌کند (بدون لینک یک‌بارمصرف)."""
+            if not is_main_bot or not senior_admin_only(call.from_user.id):
+                return await deny_mid(call)
+            bot_id = callback_id(call.data, "adm_resbot_webpanel_creds")
+            reseller_bot = (await asyncio.to_thread(db.get_reseller_bot, bot_id)) if bot_id is not None else None
+            if not reseller_bot:
+                return await call.answer(db.get_text('handlers_admin.auto_edca6d43', 'یافت نشد.'), show_alert=True)
+            if not _get_admin_panel_url(db):
+                return await call.answer(db.get_text('handlers_admin.auto_0137f0c0', 'هنوز آدرس پنل مدیریت وب تنظیم نشده.'), show_alert=True)
+            if not ("web_panel_enabled" in reseller_bot.keys() and reseller_bot["web_panel_enabled"]):
+                await asyncio.to_thread(db.enable_reseller_web_panel, bot_id)
+            await state.clear()
+            await state.set_state(AdminResbotWebCreds.waiting_username)
+            await state.update_data(webcreds_bot_id=bot_id)
+            await call.answer()
+            await call.message.answer(
+                tr("👤 یوزرنیم پنل وب این نماینده را بفرستید (حداقل ۳ کاراکتر؛ حروف انگلیسی، عدد، نقطه، خط‌تیره و زیرخط):")
+            )
+
+        @router.message(AdminResbotWebCreds.waiting_username)
+        async def process_resbot_webcreds_username(message: Message, state: FSMContext):
+            if not is_main_bot or not senior_admin_only(message.from_user.id):
+                return
+            username = (message.text or "").strip().lower()
+            if not re.fullmatch(r"[a-z0-9_.\-]{3,40}", username):
+                return await message.answer(tr("یوزرنیم معتبر نیست (۳ تا ۴۰ کاراکتر؛ فقط حروف انگلیسی، عدد، . - _). دوباره بفرستید:"))
+            data = await state.get_data()
+            reseller_bot = await asyncio.to_thread(db.get_reseller_bot, data.get("webcreds_bot_id"))
+            if not reseller_bot:
+                await state.clear()
+                return await message.answer(db.get_text('handlers_admin.auto_edca6d43', 'یافت نشد.'))
+            tenant_db = Database(resolve_db_path(reseller_bot["db_path"]))
+            existing = await asyncio.to_thread(tenant_db.get_web_admin_by_username, username)
+            owners = [a for a in await asyncio.to_thread(tenant_db.list_web_admins) if a["role"] == "owner"]
+            if existing and (not owners or existing["id"] != owners[0]["id"]):
+                return await message.answer(tr("این یوزرنیم قبلاً در پنل این نماینده استفاده شده. یوزرنیم دیگری بفرستید:"))
+            await state.update_data(webcreds_username=username)
+            await state.set_state(AdminResbotWebCreds.waiting_password)
+            await message.answer(tr("🔑 رمز عبور را بفرستید (حداقل ۸ کاراکتر). پیام شما بعد از خواندن پاک می‌شود:"))
+
+        @router.message(AdminResbotWebCreds.waiting_password)
+        async def process_resbot_webcreds_password(message: Message, state: FSMContext):
+            if not is_main_bot or not senior_admin_only(message.from_user.id):
+                return
+            password = message.text or ""
+            try:
+                await message.delete()
+            except Exception:
+                pass
+            if len(password) < 8:
+                return await message.answer(tr("رمز باید حداقل ۸ کاراکتر باشد. دوباره بفرستید:"))
+            data = await state.get_data()
+            bot_id = data.get("webcreds_bot_id")
+            username = data.get("webcreds_username")
+            reseller_bot = await asyncio.to_thread(db.get_reseller_bot, bot_id)
+            if not reseller_bot or not username:
+                await state.clear()
+                return await message.answer(db.get_text('handlers_admin.auto_edca6d43', 'یافت نشد.'))
+            from admin_panel.security import hash_password
+            tenant_db = Database(resolve_db_path(reseller_bot["db_path"]))
+            owners = [a for a in await asyncio.to_thread(tenant_db.list_web_admins) if a["role"] == "owner"]
+            pw_hash = hash_password(password)
+            if owners:
+                owner = owners[0]
+                if owner["username"] != username:
+                    await asyncio.to_thread(tenant_db.set_web_admin_username, owner["id"], username)
+                await asyncio.to_thread(tenant_db.set_web_admin_password, owner["id"], pw_hash)
+                action_text = tr("به‌روزرسانی شد")
+            else:
+                await asyncio.to_thread(tenant_db.create_web_admin, username, pw_hash, "owner")
+                action_text = tr("ساخته شد")
+            # لینک راه‌اندازی یک‌بارمصرف دیگر لازم نیست
+            await asyncio.to_thread(db.consume_reseller_web_panel_setup_token, bot_id)
+            await asyncio.to_thread(
+                db.log_admin_action, message.from_user.id, "reseller_webpanel_creds_set",
+                f"نماینده #{bot_id} (@{reseller_bot['bot_username'] or ''}) یوزرنیم={username}",
+            )
+            await state.clear()
+            b_value = reseller_bot["link_slug"] or str(bot_id)
+            login_link = f"{_get_admin_panel_url(db)}/?b={b_value}"
+            await message.answer(
+                tr("✅ دسترسی پنل وب این نماینده") + f" {action_text}:\n\n"
+                f"🔗 {login_link}\n"
+                f"👤 {tr('یوزرنیم')}: <code>{html.escape(username)}</code>\n"
+                f"🔑 {tr('رمز')}: <code>{html.escape(password)}</code>\n\n"
+                + tr("این اطلاعات را برای نماینده بفرستید. بهتر است نماینده بعد از اولین ورود رمز را عوض کند."),
+                reply_markup=kb.resbot_webpanel_kb(bot_id),
+            )
 
         @router.callback_query(F.data.startswith("adm_resbot_webpanel_regen:"))
         async def cb_admin_resbot_webpanel_regen(call: CallbackQuery, state: FSMContext):
