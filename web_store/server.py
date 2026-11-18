@@ -3829,6 +3829,8 @@ async def api_admin_ssh_create_account(body: SshAccountIn, auth=Depends(require_
                                      f"{r.get('node_name') or 'SSH'} {r['username']}")
     except ValueError:
         r["ssh_uri"] = ""
+    r["udpgw_port"] = 7300
+    r["client_setup_note"] = "در اپ، UDPGW port را روی 7300 تنظیم کنید."
     return r
 
 
