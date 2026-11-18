@@ -5289,7 +5289,7 @@ function productProvisionFieldsHtml(panelServers, sshNodes = [], prefill = null)
       </div>
       <label class="field" id="prod-ssh-proto-field" style="display:none"><span>پروتکل حساب</span><select class="input" id="prod-ssh-protocol" data-prefill="${esc((prefill && prefill.provision_ssh_protocol) || 'ssh')}"><option value="ssh">SSH</option></select><span class="card-sub">OpenVPN و WireGuard فقط در محصول «ترکیبی» ممکن‌اند و فایل آن‌ها داخل لینک ساب اختصاصی تحویل می‌شود (ساب اختصاصی باید فعال باشد).</span></label></div>
       <label class="field field-row"><span>♾ مدت اعتبار نامحدود</span><input type="checkbox" id="prod-duration-unlimited" ${durUnlimited ? 'checked' : ''}></label>
-      <div class="field" id="prod-start-mode-box" style="grid-column:1/-1;display:${target === 'vpn' ? '' : 'none'}">
+      <div class="field" id="prod-start-mode-box" style="grid-column:1/-1;display:${target === 'vless' ? 'none' : ''}">
         <span>⏱ شروع زمان سرویس</span>
         <div class="form-row" style="gap:8px;margin-top:6px">
           <button type="button" class="btn ${startFirstUse ? '' : 'primary'}" id="prod-start-purchase" data-start-mode="purchase">🛒 از لحظه خرید</button>
@@ -5472,24 +5472,35 @@ function wireProductProvisionToggle(b) {
     const box = $('#prod-start-mode-box', b), hid = $('#prod-start-mode', b);
     if (!box || !hid) return;
     const tt = targetType ? targetType.value : 'vpn';
-    box.style.display = tt === 'vpn' ? '' : 'none';
-    const srv = (window.__productPanelServers || []).find(x => Number(x.id) === Number($('#prod-server', b)?.value || 0));
-    const supported = !srv || srv.onhold_supported !== false;
-    if (fromPanel && !hid.dataset.touched && srv) hid.value = srv.start_on_first_use && supported ? 'first_use' : 'purchase';
+    box.style.display = tt === 'vless' ? 'none' : '';
+    const allSrv = window.__productPanelServers || [];
+    const srv = allSrv.find(x => Number(x.id) === Number($('#prod-server', b)?.value || 0));
+    // پنل‌های VPN انتخاب‌شده: نود SSH تنها پنل ندارد؛ چندپنلی همه‌ی تیک‌خورده‌ها باید On-hold را پشتیبانی کنند.
+    const chosen = tt === 'ssh' ? [] : (tt === 'multi'
+      ? $$('.prod-multi-panel:checked', b).map(c => allSrv.find(x => Number(x.id) === Number(c.value))).filter(Boolean)
+      : (srv ? [srv] : []));
+    const supported = chosen.every(x => x.onhold_supported !== false);
+    if (fromPanel && !hid.dataset.touched) {
+      hid.value = (tt === 'vpn' && srv && srv.start_on_first_use && supported) ? 'first_use' : (tt === 'vpn' ? 'purchase' : hid.value);
+    }
     if (!supported) hid.value = 'purchase';
     const fb = $('#prod-start-first', b), pb = $('#prod-start-purchase', b);
     fb.disabled = !supported;
     fb.classList.toggle('primary', hid.value === 'first_use');
     pb.classList.toggle('primary', hid.value !== 'first_use');
     const hint = $('#prod-start-mode-hint', b);
-    if (hint) hint.textContent = !supported ? 'این نوع پنل از شروع زمان با اولین اتصال پشتیبانی نمی‌کند.'
-      : (hid.value === 'first_use' ? 'زمان سرویس بعد از اولین اتصال کاربر شروع می‌شود.' : 'زمان سرویس از لحظه خرید شروع می‌شود.');
+    const pooled = tt === 'ssh' || tt === 'both' || tt === 'multi';
+    if (hint) hint.textContent = !supported ? 'یکی از پنل‌های انتخاب‌شده از شروع زمان با اولین اتصال پشتیبانی نمی‌کند.'
+      : (hid.value === 'first_use'
+        ? (pooled ? 'زمان مشترک همه‌ی پنل‌ها و نودها با اولین اتصال کاربر (روی هرکدام) شروع می‌شود.' : 'زمان سرویس بعد از اولین اتصال کاربر شروع می‌شود.')
+        : 'زمان سرویس از لحظه خرید شروع می‌شود.');
   };
   $$('[data-start-mode]', b).forEach(btn => btn.addEventListener('click', () => {
     const hid = $('#prod-start-mode', b);
     hid.value = btn.dataset.startMode; hid.dataset.touched = '1'; syncStartMode(false);
   }));
   if (targetType) targetType.addEventListener('change', () => syncStartMode(true));
+  $$('.prod-multi-panel', b).forEach(cb => cb.addEventListener('change', () => syncStartMode(false)));
   if (prodServer) prodServer.addEventListener('change', () => syncStartMode(true));
   syncStartMode(false);
   syncPanelOptions();
@@ -5540,7 +5551,7 @@ function readProductProvisionFields(b) {
       extra_panel_target_values: extraTargetValues, provision_ssh_node_id: nodes[0] || null,
       extra_panel_ids: panels.slice(1), extra_ssh_node_ids: nodes.slice(1),
       provision_ssh_protocol: nodes.length ? ($$('#prod-multi-protocols input[data-multi-proto]:checked', b).map(c => c.dataset.multiProto).join(',') || 'ssh') : 'ssh',
-      auto_provision_volume_gb, duration_days, ...userLimit() };
+      auto_provision_volume_gb, duration_days, start_on_first_use: ($('#prod-start-mode', b)?.value === 'first_use'), ...userLimit() };
   }
   if (target === 'both') {
     const provision_server_id = Number($('#prod-server', b)?.value || 0);
@@ -5550,12 +5561,12 @@ function readProductProvisionFields(b) {
     const provision_target_values = readProductTargetValues(b);
     if (provision_target_values !== null && !provision_target_values.length) { toast('حداقل یک گروه یا Inbound انتخاب کنید.', true); return { ok: false }; }
     return { ok: true, source: 'direct', provision_server_id, provision_target_values, provision_ssh_node_id, extra_panel_ids: [], extra_ssh_node_ids: [],
-      provision_ssh_protocol: $$('#prod-multi-protocols input[data-multi-proto]:checked', b).map(c => c.dataset.multiProto).join(',') || 'ssh', auto_provision_volume_gb, duration_days, ...userLimit() };
+      provision_ssh_protocol: $$('#prod-multi-protocols input[data-multi-proto]:checked', b).map(c => c.dataset.multiProto).join(',') || 'ssh', auto_provision_volume_gb, duration_days, start_on_first_use: ($('#prod-start-mode', b)?.value === 'first_use'), ...userLimit() };
   }
   if (target === 'ssh') {
     const provision_ssh_node_id = Number($('#prod-ssh-node', b)?.value || 0);
     if (!provision_ssh_node_id) { toast('یک نود SSH فعال انتخاب کنید.', true); return { ok: false }; }
-    return { ok: true, source: 'direct', provision_server_id: null, provision_ssh_node_id, extra_panel_ids: [], extra_ssh_node_ids: [], provision_ssh_protocol: 'ssh', auto_provision_volume_gb, duration_days, ...userLimit() };
+    return { ok: true, source: 'direct', provision_server_id: null, provision_ssh_node_id, extra_panel_ids: [], extra_ssh_node_ids: [], provision_ssh_protocol: 'ssh', auto_provision_volume_gb, duration_days, start_on_first_use: ($('#prod-start-mode', b)?.value === 'first_use'), ...userLimit() };
   }
   const provision_server_id = Number($('#prod-server', b)?.value || 0);
   if (!provision_server_id) { toast('یک پنل VPN فعال انتخاب کنید.', true); return { ok: false }; }
