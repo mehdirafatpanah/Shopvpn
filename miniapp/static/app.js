@@ -4924,7 +4924,7 @@ async function renderAdminSshSection() {
         <input class="input" id="sn-port" type="number" value="22" style="${SSH_LTR}" />
         <label class="field-label">رمز root</label>
         <input class="input" id="sn-pass" type="password" autocomplete="off" style="${SSH_LTR}" />
-        <p class="hint-text" style="margin-top:0">سرور باید Ubuntu/Debian تازه باشد. نصب Agent، گواهی TLS، توکن و فایروال خودکار انجام می‌شود. رمز root ذخیره نمی‌شود.</p>
+        <p class="hint-text" style="margin-top:0">سرور باید Ubuntu/Debian تازه باشد. نصب Agent، گواهی TLS، توکن و فایروال خودکار انجام می‌شود. کاربر غیر Root باید sudo داشته باشد؛ رمز SSH ذخیره نمی‌شود.</p>
         <pre id="sn-log" class="hint-text" style="display:none;white-space:pre-wrap;direction:ltr;text-align:left"></pre>
         <div class="field-error" id="sn-error"></div>
         <div style="display:flex;gap:8px;margin-top:8px">
@@ -4937,10 +4937,11 @@ async function renderAdminSshSection() {
         err.textContent = "";
         const name = document.getElementById("sn-name").value.trim(), host = document.getElementById("sn-host").value.trim();
         const password = document.getElementById("sn-pass").value;
-        if (!name || !host || !password) { err.textContent = "نام، آی‌پی و رمز root را وارد کن."; return; }
+        const username = document.getElementById("sn-user").value.trim();
+        if (!name || !host || !username || !password) { err.textContent = "نام، آی‌پی، نام کاربری و رمز SSH را وارد کن."; return; }
         btn.disabled = true; logEl.style.display = ""; logEl.textContent = "شروع نصب...";
         try {
-          const r = await api("/api/admin/ssh/nodes/auto-install", { method: "POST", body: JSON.stringify({ name, host, ssh_port: Number(document.getElementById("sn-port").value) || 22, password }) });
+          const r = await api("/api/admin/ssh/nodes/auto-install", { method: "POST", body: JSON.stringify({ name, host, ssh_port: Number(document.getElementById("sn-port").value) || 22, username, password }) });
           document.getElementById("sn-pass").value = "";
           for (let i = 0; i < 400; i++) {
             await new Promise((res) => setTimeout(res, 3000));
