@@ -781,6 +781,7 @@ class StealthNodeAutoInstallBody(BaseModel):
     name: str
     host: str
     ssh_port: int = 22
+    username: str = "root"
     password: Optional[str] = None
     private_key: Optional[str] = None
     domain: str
@@ -802,6 +803,7 @@ class StealthNodeSettingsBody(BaseModel):
 
 
 class SSHNodeAddProtocolsBody(BaseModel):
+    username: str = "root"
     password: str
     protocols: List[str]
     ovpn_port: int = 1194
@@ -8712,7 +8714,7 @@ async def api_ssh_node_add_protocols(node_id: int, body: SSHNodeAddProtocolsBody
     """نصب پروتکل‌های جدید (مثلاً OpenVPN یا WireGuard) روی نود موجود؛ رمز root فقط برای همین نصب استفاده می‌شود."""
     import ssh_service
     try:
-        job_id = ssh_service.start_node_upgrade(db, node_id=node_id, password=body.password, protocols=body.protocols,
+        job_id = ssh_service.start_node_upgrade(db, node_id=node_id, username=body.username, password=body.password, protocols=body.protocols,
                                                 ovpn_port=body.ovpn_port, ovpn_proto=body.ovpn_proto, wg_port=body.wg_port)
     except ssh_service.SSHServiceError as exc:
         raise HTTPException(exc.status, str(exc))
