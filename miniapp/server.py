@@ -3651,6 +3651,7 @@ class SshNodeInstallIn(BaseModel):
     name: str
     host: str
     ssh_port: int = 22
+    username: str = "root"
     password: str
 
 
@@ -3730,7 +3731,7 @@ def api_admin_ssh_auto_install(body: SshNodeInstallIn, auth=Depends(require_full
     import ssh_service
     admin_id, db, _ = auth
     job_id = _ssh_call(ssh_service.start_auto_install, db, name=body.name, host=body.host,
-                       ssh_port=body.ssh_port, password=body.password)
+                       ssh_port=body.ssh_port, username=(body.username or "root").strip(), password=body.password)
     db.log_admin_action(admin_id, "ssh_node_auto_install", f"SSH node auto-install started: {body.name.strip()} ({body.host.strip()})", "ssh")
     return {"ok": True, "job_id": job_id}
 
