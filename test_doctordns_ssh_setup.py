@@ -48,6 +48,26 @@ class DoctorDNSSSHSetupTests(unittest.TestCase):
             self.assertEqual(rows[1], ("Other-Key", "other", None))
             self.assertEqual(rows[2][0:2], ("ShopVPN-Test", "new"))
 
+    def test_panel_patch_adds_devices_route_idempotently(self):
+        src = (
+            "def set_devices(db, uid, total, extra=None):\n    pass\n"
+            "def admin_target(self, uid):\n    pass\n"
+            "def admin_user_view(store, user, relays):\n    pass\n"
+            + setup._PANEL_HANDLER_ANCHOR + "        pass\n"
+            + "ROUTES = [\n" + setup._PANEL_ROUTE_ANCHOR + "]\n"
+        )
+        patched = setup._patch_panel_source(src)
+        self.assertIn("api_admin_devices", patched)
+        self.assertIn('"admin_devices"', patched)
+        self.assertEqual(setup._patch_panel_source(patched), patched)
+        with self.assertRaises(ValueError):
+            setup._patch_panel_source("def nothing():\n    pass\n")
+
+    def test_remote_script_compiles_and_embeds_patch(self):
+        script = setup._remote_script("t", "h", "203.0.113.9", "X")
+        compile(script, "remote.py", "exec")
+        self.assertIn("api_admin_devices", script)
+
 
 if __name__ == "__main__":
     unittest.main()
