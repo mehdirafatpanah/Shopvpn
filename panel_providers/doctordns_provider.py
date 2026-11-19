@@ -52,7 +52,7 @@ class DoctorDNSProvider(BasePanelProvider):
         if status == 403 and payload.get("error") == "ip_not_allowed":
             raise PanelPermissionError("آی‌پی سرور بات برای این کلید مجاز نشده است.")
         if status == 404 and payload.get("error") == "not_found" and path.endswith("/devices"):
-            raise PanelError("پنل Doctor DNS برای تنظیم تعداد کاربر باید آپدیت شود (دستور /admin/users/{id}/devices را ندارد).")
+            raise PanelError("مسیر /admin/users/{id}/devices روی پنل Doctor DNS نیست (احتمالاً Doctor DNS دوباره نصب/آپدیت شده و پچ پاک شده)؛ در پنل ادمین اتصال خودکار Doctor DNS را دوباره اجرا کنید.")
         if status >= 400 or not payload or payload.get("ok") is False:
             if payload.get("message"):
                 raise PanelError(f"{action}: {payload['message']}")
