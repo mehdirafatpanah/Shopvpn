@@ -9132,7 +9132,7 @@ function stealthAutoBoxHtml(withName) {
       <button class="btn btn-primary" id="sa-install" type="button">نصب و راه‌اندازی خودکار</button>
     </div>
     <pre id="sa-log" class="mono" style="display:none;white-space:pre-wrap;margin-top:8px"></pre>
-    <p class="card-sub">سرور باید Ubuntu/Debian تازه باشد. xray (فقط VLESS)، nginx، سایت جعلی، گواهی TLS و ثبت در پنل خودکار انجام می‌شود. رمز root فقط برای همین نصب استفاده می‌شود و ذخیره نمی‌شود. بعد از نصب، نود در همین بخش «نودها و سهمیه SSH» و همچنین «پنل‌های VPN» با نوع Stealth VLESS قابل مدیریت و انتخاب برای ساخت محصول است.</p>`;
+    <p class="card-sub">سرور باید Ubuntu/Debian تازه باشد. xray (فقط VLESS)، nginx، سایت جعلی، گواهی TLS و ثبت در پنل خودکار انجام می‌شود. رمز SSH فقط برای همین نصب استفاده می‌شود و ذخیره نمی‌شود. برای کاربر غیر Root، sudo لازم است. بعد از نصب، نود در همین بخش «نودها و سهمیه SSH» و همچنین «پنل‌های VPN» با نوع Stealth VLESS قابل مدیریت و انتخاب برای ساخت محصول است.</p>`;
 }
 
 function wireStealthAutoBox(root, getName, onDone) {
@@ -9143,10 +9143,10 @@ function wireStealthAutoBox(root, getName, onDone) {
     const v = id => $(id, root).value.trim();
     const name = getName();
     const transports = [...root.querySelectorAll('.sa-tr:checked')].map(i => i.value);
-    if (!name || !v('#sa-host') || !$('#sa-pass', root).value || !v('#sa-domain')) return toast('نام، آی‌پی، رمز root و دامنه را وارد کنید.', true);
+    if (!name || !v('#sa-host') || !v('#sa-user') || !$('#sa-pass', root).value || !v('#sa-domain')) return toast('نام، آی‌پی، نام کاربری SSH، رمز و دامنه را وارد کنید.', true);
     if (!transports.length) return toast('حداقل یک ترنسپورت را تیک بزنید.', true);
     sshRunInstallJob(root, btn, logEl, () => apiPost('/stealth/nodes/auto-install', {
-      name, host: v('#sa-host'), ssh_port: Number(v('#sa-port')) || 22, password: $('#sa-pass', root).value,
+      name, host: v('#sa-host'), ssh_port: Number(v('#sa-port')) || 22, username: v('#sa-user') || 'root', password: $('#sa-pass', root).value,
       domain: v('#sa-domain'), decoy: saDecoy.value, proxy_url: v('#sa-proxy') || null, cert: v('#sa-cert'),
       email: v('#sa-email'), transports, port: Number(v('#sa-pubport')) || 443,
     }), onDone, '/stealth/nodes/install-jobs');
@@ -9179,7 +9179,7 @@ function wireDoctorDNSAutoBox(root, close) {
     const password = $('#p-dd-pass', root).value;
     const private_key = $('#p-dd-key', root).value.trim();
     if (!name || !host || (!password && !private_key)) return toast('نام، IP سرور و رمز SSH یا کلید خصوصی را وارد کنید.', true);
-    if (v('#p-dd-user') !== 'root') return toast('برای راه‌اندازی خودکار، نام کاربری SSH باید root باشد.', true);
+    if (!v('#p-dd-user')) return toast('نام کاربری SSH را وارد کنید.', true);
     btn.disabled = true; btn.textContent = 'در حال بررسی و اتصال...';
     logEl.style.display = 'block'; logEl.textContent = '۱. اتصال SSH\n۲. بررسی نصب و نسخه Doctor DNS\n۳. ساخت کلید API ادمین محدودشده\n۴. تست API و قابلیت تنظیم دستگاه‌ها\n۵. ثبت پنل در ShopVPN';
     try {
@@ -10232,20 +10232,20 @@ async function renderSSHManagement() {
       <label class="field"><span>نام نود</span><input class="input" id="ssh-auto-name" placeholder="Germany-1" maxlength="80"></label>
       <label class="field"><span>آی‌پی سرور</span><input class="input" id="ssh-auto-host" placeholder="203.0.113.10" dir="ltr"></label>
       <label class="field"><span>پورت SSH</span><input class="input" id="ssh-auto-port" type="number" min="1" max="65535" value="22"></label>
-      <label class="field"><span>رمز root</span><input class="input" id="ssh-auto-pass" type="password" autocomplete="off" dir="ltr"></label>
+      <label class="field"><span>نام کاربری SSH</span><input class="input" id="ssh-auto-user" value="root" dir="ltr"></label>\n      <label class="field"><span>رمز SSH / sudo</span><input class="input" id="ssh-auto-pass" type="password" autocomplete="off" dir="ltr"></label>
       ${sshProtoFieldsHtml([])}
       <button class="btn btn-primary" id="ssh-auto-install">نصب و راه‌اندازی خودکار</button>
     </div>
     <pre id="ssh-auto-log" class="mono" style="display:none;white-space:pre-wrap;margin-top:8px"></pre>
-    <p class="card-sub">سرور باید Ubuntu/Debian تازه باشد. می‌توانید هر ترکیبی از SSH، OpenVPN و WireGuard را نصب کنید. نصب Agent، گواهی TLS، توکن، فایروال و تست حسابداری حجم خودکار انجام می‌شود. رمز root فقط برای همین نصب استفاده می‌شود و ذخیره نمی‌شود.</p>`,(el,close)=>{
+    <p class="card-sub">سرور باید Ubuntu/Debian تازه باشد. می‌توانید هر ترکیبی از SSH، OpenVPN و WireGuard را نصب کنید. نصب Agent، گواهی TLS، توکن، فایروال و تست حسابداری حجم خودکار انجام می‌شود. رمز SSH فقط برای همین نصب استفاده می‌شود و ذخیره نمی‌شود. برای کاربر غیر Root، sudo لازم است.</p>`,(el,close)=>{
     sshBindProtoFields(el);
     el.querySelector('#ssh-auto-install').addEventListener('click', e => {
       const btn=e.currentTarget, logEl=el.querySelector('#ssh-auto-log');
-      const name=el.querySelector('#ssh-auto-name').value.trim(), host=el.querySelector('#ssh-auto-host').value.trim(), password=el.querySelector('#ssh-auto-pass').value;
+      const name=el.querySelector('#ssh-auto-name').value.trim(), host=el.querySelector('#ssh-auto-host').value.trim(), username=el.querySelector('#ssh-auto-user').value.trim(), password=el.querySelector('#ssh-auto-pass').value;
       const pf=sshReadProtoFields(el);
-      if(!name||!host||!password){toast('نام، آی‌پی و رمز root را وارد کنید.',true);return;}
+      if(!name||!host||!username||!password){toast('نام، آی‌پی، نام کاربری و رمز SSH را وارد کنید.',true);return;}
       if(!pf.protocols.length){toast('حداقل یک پروتکل را تیک بزنید.',true);return;}
-      sshRunInstallJob(el,btn,logEl,()=>apiPost('/ssh/nodes/auto-install',{name,host,ssh_port:Number(el.querySelector('#ssh-auto-port').value)||22,username:'root',password,...pf}),async()=>{close();await renderSSHManagement();});
+      sshRunInstallJob(el,btn,logEl,()=>apiPost('/ssh/nodes/auto-install',{name,host,ssh_port:Number(el.querySelector('#ssh-auto-port').value)||22,username,password,...pf}),async()=>{close();await renderSSHManagement();});
     });
   }));
 
@@ -10254,7 +10254,7 @@ async function renderSSHManagement() {
     const node=nodes.find(n=>Number(n.id)===Number(btn.dataset.sshAddProto)); if(!node) return;
     openModal(`افزودن پروتکل به «${esc(node.name)}»`,`
       <div class="form-grid">
-        <label class="field"><span>رمز root سرور ${esc(node.host)}</span><input class="input" id="ssh-up-pass" type="password" autocomplete="off" dir="ltr"></label>
+        <label class="field"><span>نام کاربری SSH</span><input class="input" id="ssh-up-user" value="root" dir="ltr"></label>\n        <label class="field"><span>رمز SSH / sudo</span><input class="input" id="ssh-up-pass" type="password" autocomplete="off" dir="ltr"></label>
         ${sshProtoFieldsHtml(node.protocols||['ssh'])}
         <button class="btn btn-primary" id="ssh-up-install">نصب روی این نود</button>
       </div>
@@ -10264,9 +10264,9 @@ async function renderSSHManagement() {
       el.querySelector('#ssh-up-install').addEventListener('click', e => {
         const b=e.currentTarget, logEl=el.querySelector('#ssh-up-log'), password=el.querySelector('#ssh-up-pass').value;
         const pf=sshReadProtoFields(el);
-        if(!password){toast('رمز root را وارد کنید.',true);return;}
+        if(!password){toast('رمز SSH را وارد کنید.',true);return;}
         if(!pf.protocols.length){toast('پروتکلی برای نصب تیک نخورده است.',true);return;}
-        sshRunInstallJob(el,b,logEl,()=>apiPost(`/ssh/nodes/${Number(node.id)}/add-protocols`,{password,...pf}),async()=>{close();await renderSSHManagement();});
+        sshRunInstallJob(el,b,logEl,()=>apiPost(`/ssh/nodes/${Number(node.id)}/add-protocols`,{username:el.querySelector('#ssh-up-user').value.trim()||'root',password,...pf}),async()=>{close();await renderSSHManagement();});
       });
     });
   }));
