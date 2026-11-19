@@ -127,8 +127,17 @@ class ResellersMixin:
             if not 1 <= discount_percent <= 100:
                 raise ValueError("درصد تخفیف باید بین ۱ تا ۱۰۰ باشد.")
         with self._get_conn() as conn:
+            if code == "silver" and discount_percent is None:
+                # تمدید/فعال‌سازی مجدد بدون درصد جدید: درصدی که ادمین قبلاً برای
+                # این نماینده تعیین کرده نباید پاک شود (فعلی، یا آخرین درصد قبل از انقضا).
+                cur_row = conn.execute(
+                    "SELECT reseller_discount_percent, reseller_discount_percent_prev FROM users WHERE telegram_id=?",
+                    (user_tg_id,),
+                ).fetchone()
+                if cur_row:
+                    discount_percent = cur_row["reseller_discount_percent"] or cur_row["reseller_discount_percent_prev"] or None
             cur = conn.execute(
-                "UPDATE users SET reseller_tier=?, reseller_discount_percent=?, reseller_expires_at=? WHERE telegram_id=?",
+                "UPDATE users SET reseller_tier=?, reseller_discount_percent=?, reseller_discount_percent_prev=NULL, reseller_expires_at=? WHERE telegram_id=?",
                 (code or None, discount_percent if code == "silver" else None, expires_at, user_tg_id),
             )
             return cur.rowcount > 0
@@ -148,7 +157,7 @@ class ResellersMixin:
     def activate_reseller_membership(self, user_tg_id: int, tier_code: str, admin_id: int = None, charge_fee: bool = True) -> dict:
         with self._get_conn() as conn:
             tier = conn.execute("SELECT * FROM reseller_tiers WHERE code=?", (tier_code,)).fetchone()
-            user = conn.execute("SELECT reseller_expires_at, referral_credit FROM users WHERE telegram_id=?", (user_tg_id,)).fetchone()
+            user = conn.execute("SELECT reseller_expires_at, referral_credit, reseller_discount_percent, reseller_discount_percent_prev FROM users WHERE telegram_id=?", (user_tg_id,)).fetchone()
             if not tier or not user:
                 return {"ok": False, "reason": "not_found"}
             fee = int(tier["membership_fee_toman"] or 0)
@@ -172,6 +181,14 @@ class ResellersMixin:
                 "UPDATE users SET reseller_tier=?, reseller_expires_at=?, reseller_reminder_sent='', is_reseller=? WHERE telegram_id=?",
                 (tier_code, new_expiry, 1 if is_full else 0, user_tg_id),
             )
+            if tier_code == "silver":
+                # درصد تخفیف اختصاصی نقره‌ای با تمدید حفظ شود (اگر هنگام انقضا پاک شده بود، برگردد)
+                keep = user["reseller_discount_percent"] or user["reseller_discount_percent_prev"]
+                if keep:
+                    conn.execute(
+                        "UPDATE users SET reseller_discount_percent=?, reseller_discount_percent_prev=NULL WHERE telegram_id=?",
+                        (int(keep), user_tg_id),
+                    )
             return {"ok": True, "expires_at": new_expiry, "fee": fee, "duration_days": duration_days, "tier_code": tier_code}
 
 
@@ -231,12 +248,20 @@ class ResellersMixin:
         expired = []
         for row in rows:
             try:
+                prev_percent = None
+                if row["reseller_tier"] == "silver":
+                    with self._get_conn() as conn:
+                        pr = conn.execute(
+                            "SELECT reseller_discount_percent FROM users WHERE telegram_id=?", (row["telegram_id"],)
+                        ).fetchone()
+                    prev_percent = (pr["reseller_discount_percent"] if pr else None) or None
                 self.wipe_agent_state(row["telegram_id"])
                 with self._get_conn() as conn:
                     conn.execute(
                         "UPDATE users SET is_reseller=0, reseller_expires_at=NULL, reseller_tier=NULL, reseller_discount_percent=NULL, "
+                        "reseller_discount_percent_prev=?, "
                         "inline_reseller_enabled=0, reseller_credit_gb=0, reseller_supply_model='volume_credit', fixed_product_main_id=NULL, reseller_panel_id=NULL WHERE telegram_id=?",
-                        (row["telegram_id"],),
+                        (prev_percent, row["telegram_id"]),
                     )
                 expired.append({"user_id": row["telegram_id"], "tier_code": row["reseller_tier"]})
             except Exception:

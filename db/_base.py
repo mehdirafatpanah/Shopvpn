@@ -2015,6 +2015,7 @@ class DatabaseBase:
             ("users", "inline_reseller_enabled", "INTEGER DEFAULT 0"),
             ("users", "inline_reseller_commission_percent", "INTEGER"),
             ("users", "reseller_discount_percent", "INTEGER"),
+            ("users", "reseller_discount_percent_prev", "INTEGER"),
             ("users", "reseller_supply_model", "TEXT DEFAULT 'volume_credit'"),
             ("users", "fixed_product_main_id", "INTEGER"),
             ("users", "referral_credit", "INTEGER DEFAULT 0"),
