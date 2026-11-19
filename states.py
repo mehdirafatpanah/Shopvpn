@@ -896,6 +896,7 @@ class AdminSSH(StatesGroup):
     node_name = State()
     node_host = State()
     node_port = State()
+    node_user = State()
     node_pass = State()
     node_rename = State()
     acc_user = State()

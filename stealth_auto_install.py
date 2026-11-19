@@ -58,12 +58,12 @@ def _log(job, text: str):
     job["log"].append(str(text)[:400])
 
 
-def start_install(db, *, name, host, ssh_port, password=None, private_key=None, domain, decoy="movie",
+def start_install(db, *, name, host, ssh_port, username="root", password=None, private_key=None, domain, decoy="movie",
                   proxy_url=None, cert="letsencrypt", email="", transports=None, port=443,
                   title="Stealth", site_name="CineVault") -> str:
     """Create a background job and return its id. Secrets live only inside the task closure."""
     if not (password or private_key):
-        raise InstallError("رمز root یا کلید خصوصی لازم است.")
+        raise InstallError("رمز SSH یا کلید خصوصی لازم است.")
     if not _HOST_RE.match(host or ""):
         raise InstallError("آی‌پی یا آدرس سرور نامعتبر است.")
     if not 1 <= int(ssh_port) <= 65535:
@@ -91,7 +91,7 @@ def start_install(db, *, name, host, ssh_port, password=None, private_key=None, 
 
     async def _runner():
         try:
-            await _install(db, job, name, host, int(ssh_port), password, private_key, domain, decoy,
+            await _install(db, job, name, host, int(ssh_port), username, password, private_key, domain, decoy,
                            proxy_url, cert, email, wanted, int(port), title, site_name)
             job["status"] = "done"
         except InstallError as exc:
@@ -107,7 +107,7 @@ def start_install(db, *, name, host, ssh_port, password=None, private_key=None, 
     return job["id"]
 
 
-async def _install(db, job, name, host, ssh_port, password, private_key, domain, decoy,
+async def _install(db, job, name, host, ssh_port, username, password, private_key, domain, decoy,
                    proxy_url, cert, email, transports, port, title, site_name):
     try:
         import asyncssh
@@ -115,7 +115,7 @@ async def _install(db, job, name, host, ssh_port, password, private_key, domain,
         raise InstallError("کتابخانه asyncssh نصب نیست (pip install asyncssh).") from exc
     from panel_providers import get_provider
 
-    kwargs = dict(host=host, port=ssh_port, username="root", known_hosts=None, connect_timeout=20)
+    kwargs = dict(host=host, port=ssh_port, username=(username or "root").strip(), known_hosts=None, connect_timeout=20)
     if private_key:
         try:
             kwargs["client_keys"] = [asyncssh.import_private_key(private_key)]
@@ -134,9 +134,25 @@ async def _install(db, job, name, host, ssh_port, password, private_key, domain,
         raise InstallError(f"اتصال SSH برقرار نشد: {type(exc).__name__}") from exc
 
     async with conn:
+        is_root = (await conn.run("id -u", check=False)).stdout.strip() == "0"
+        sudo_ok = False
+        if not is_root:
+            probe = await conn.run("sudo -n true", check=False)
+            if probe.exit_status == 0:
+                sudo_ok = True
+            elif password:
+                probe = await conn.run("sudo -S -p '' -v", input=password + "\n", check=False)
+                if probe.exit_status != 0:
+                    raise InstallError("کاربر SSH روت نیست و رمز sudo معتبر نیست.")
+                sudo_ok = True
+            else:
+                raise InstallError("کاربر SSH روت نیست؛ sudo بدون رمز لازم است یا رمز sudo ارائه شود.")
+
         async def run(cmd, timeout=600, check=True):
+            wrapped = cmd if is_root else ("sudo -n bash -c " + shlex.quote(cmd) if not password else "sudo -S -p \"\" bash -c " + shlex.quote(cmd))
             try:
-                res = await asyncio.wait_for(conn.run(cmd, check=False), timeout)
+                res = await asyncio.wait_for(conn.run(wrapped, check=False,
+                    input=(password + "\n") if (not is_root and sudo_ok and password) else None), timeout)
             except asyncio.TimeoutError as exc:
                 raise InstallError("زمان اجرای دستور روی سرور تمام شد.") from exc
             if check and res.exit_status != 0:
@@ -149,7 +165,9 @@ async def _install(db, job, name, host, ssh_port, password, private_key, domain,
             raise InstallError("فقط Debian/Ubuntu پشتیبانی می‌شود.")
 
         _log(job, "آپلود فایل‌های نصاب...")
-        await run("rm -rf /tmp/shopvpn-install && mkdir -p /tmp/shopvpn-install/deploy")
+        stage = await conn.run("rm -rf /tmp/shopvpn-install && mkdir -p /tmp/shopvpn-install/deploy", check=False)
+        if stage.exit_status != 0:
+            raise InstallError("ساخت مسیر موقت نصب ناموفق بود.")
         async with conn.start_sftp_client() as sftp:
             for rel in _FILES:
                 local = os.path.join(_PROJECT_ROOT, rel)

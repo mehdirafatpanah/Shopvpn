@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shlex
 import re
 import secrets
 import time
@@ -120,10 +121,10 @@ async def _install(db, job, name, host, ssh_port, username, password, private_ke
     from ssh_providers import get_ssh_provider
     from quota_reconciler import _env_secret_resolver
 
-    if username != "root":
-        raise InstallError("نصب خودکار فقط با کاربر root ممکن است.")
+    if not username or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]{0,31}", str(username)):
+        raise InstallError("نام کاربری SSH نامعتبر است.")
     if not (password or private_key):
-        raise InstallError("رمز root یا کلید خصوصی لازم است.")
+        raise InstallError("رمز SSH یا کلید خصوصی لازم است.")
     encrypt_credential("preflight")  # fail early if the encryption key cannot be created
 
     existing_node = None
@@ -159,13 +160,31 @@ async def _install(db, job, name, host, ssh_port, username, password, private_ke
     token = ""
     client_ip = ""
     async with conn:
+        is_root = (await conn.run("id -u", check=False)).stdout.strip() == "0"
+        sudo_mode = False
+        if not is_root:
+            sudo_probe = await conn.run("sudo -n true", check=False)
+            if sudo_probe.exit_status == 0:
+                sudo_mode = True
+            elif password:
+                sudo_mode = True
+                test = await conn.run("sudo -S -p '' -v", input=password + "\n", check=False)
+                if test.exit_status != 0:
+                    raise InstallError("کاربر SSH روت نیست و رمز SSH برای sudo معتبر نیست. دسترسی sudo را بررسی کنید.")
+            else:
+                raise InstallError("کاربر SSH روت نیست؛ برای نصب باید sudo بدون رمز فعال باشد یا رمز sudo ارائه شود.")
+
         async def run(cmd, timeout=600, check=True):
+            wrapped = cmd if is_root else ("sudo -n bash -c " + shlex.quote(cmd) if not password else "sudo -S -p \"\" bash -c " + shlex.quote(cmd))
             try:
-                res = await asyncio.wait_for(conn.run(cmd, check=False), timeout)
+                res = await asyncio.wait_for(conn.run(wrapped, check=False,
+                    input=(password + "\n") if (not is_root and sudo_mode and password) else None), timeout)
             except asyncio.TimeoutError as exc:
                 raise InstallError("زمان اجرای دستور روی سرور تمام شد.") from exc
             if check and res.exit_status != 0:
                 tail = ((res.stderr or "") + (res.stdout or "")).strip()[-300:]
+                if not is_root and sudo_mode and not password and "sudo" in tail.lower():
+                    raise InstallError("sudo دسترسی لازم را نداد؛ sudo بدون رمز را برای کاربر SSH فعال کنید.")
                 raise InstallError(f"دستور روی سرور شکست خورد: {tail}")
             return (res.stdout or "").strip()
 
@@ -178,7 +197,9 @@ async def _install(db, job, name, host, ssh_port, username, password, private_ke
         _log(job, f"IP این پنل از دید نود: {client_ip or 'نامشخص'}")
 
         _log(job, "آپلود فایل‌های Agent...")
-        await run("rm -rf /tmp/shopvpn-install && mkdir -p /tmp/shopvpn-install/deploy")
+        stage = await conn.run("rm -rf /tmp/shopvpn-install && mkdir -p /tmp/shopvpn-install/deploy", check=False)
+        if stage.exit_status != 0:
+            raise InstallError("ساخت پوشه موقت نصب ناموفق بود؛ دسترسی /tmp را بررسی کنید.")
         async with conn.start_sftp_client() as sftp:
             for rel in _FILES:
                 local = os.path.join(_PROJECT_ROOT, rel)

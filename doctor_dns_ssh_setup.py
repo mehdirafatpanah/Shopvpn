@@ -11,6 +11,7 @@ import hashlib
 import ipaddress
 import json
 import re
+import shlex
 import secrets
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
@@ -101,8 +102,8 @@ async def setup_existing_panel(*, host: str, ssh_port: int = 22, username: str =
     host = _validate_host(host)
     if not 1 <= int(ssh_port) <= 65535:
         raise DoctorDNSSetupError("پورت SSH نامعتبر است.")
-    if username != "root":
-        raise DoctorDNSSetupError("برای راه‌اندازی خودکار، نام کاربری SSH باید root باشد.")
+    if not username or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]{0,31}", str(username)):
+        raise DoctorDNSSetupError("نام کاربری SSH نامعتبر است.")
     if not (password or private_key):
         raise DoctorDNSSetupError("رمز عبور یا کلید خصوصی SSH الزامی است.")
 
@@ -129,9 +130,25 @@ async def setup_existing_panel(*, host: str, ssh_port: int = 22, username: str =
     api_key_name = ("ShopVPN-" + re.sub(r"[^A-Za-z0-9_.-]", "", panel_name)[:40])[:60]
     key_created = False
     async with conn:
-        async def run(cmd: str, timeout=25, check=True):
+        is_root = (await conn.run("id -u", check=False)).stdout.strip() == "0"
+        sudo_ok = False
+        if not is_root:
+            probe = await conn.run("sudo -n true", check=False)
+            if probe.exit_status == 0:
+                sudo_ok = True
+            elif password:
+                probe = await conn.run("sudo -S -p '' -v", input=password + "\n", check=False)
+                if probe.exit_status != 0:
+                    raise DoctorDNSSetupError("ورود موفق بود اما sudo در دسترس نیست یا رمز sudo اشتباه است.")
+                sudo_ok = True
+            else:
+                raise DoctorDNSSetupError("کاربر SSH روت نیست؛ sudo بدون رمز لازم است یا رمز sudo را وارد کنید.")
+
+        async def run(cmd: str, timeout=25, check=True, privileged=True):
+            wrapped = cmd if is_root or not privileged else ("sudo -n bash -c " + shlex.quote(cmd) if not password else "sudo -S -p \"\" bash -c " + shlex.quote(cmd))
             try:
-                result = await asyncio.wait_for(conn.run(cmd, check=False), timeout=timeout)
+                result = await asyncio.wait_for(conn.run(wrapped, check=False,
+                    input=(password + "\n") if (privileged and not is_root and sudo_ok and password) else None), timeout=timeout)
             except asyncio.TimeoutError as exc:
                 raise DoctorDNSSetupError("زمان اجرای دستور روی سرور تمام شد.") from exc
             if check and result.exit_status != 0:
@@ -151,7 +168,7 @@ async def setup_existing_panel(*, host: str, ssh_port: int = 22, username: str =
 
         # SSH_CLIENT's first field is the source address seen by the Doctor DNS host;
         # restricting the key to it avoids leaving a globally usable admin credential.
-        source = await run("printf '%s' \"${SSH_CLIENT%% *}\"", check=False)
+        source = await run("printf '%s' \"${SSH_CLIENT%% *}\"", check=False, privileged=False)
         try:
             source_ip = str(ipaddress.ip_address(source.strip()))
         except ValueError:
@@ -176,7 +193,10 @@ async def setup_existing_panel(*, host: str, ssh_port: int = 22, username: str =
                     "c.execute(\"UPDATE api_tokens SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL\", "
                     "(datetime.datetime.now(datetime.timezone.utc).isoformat(), \"" + token_hash + "\")); c.commit()'"
                 )
-                await asyncio.wait_for(cleanup_conn.run(cleanup, check=False), timeout=15)
+                cleanup_cmd = ("sudo -n bash -c " + shlex.quote(cleanup) if not password
+                               else "sudo -S -p '' bash -c " + shlex.quote(cleanup))
+                await asyncio.wait_for(cleanup_conn.run(cleanup_cmd, check=False,
+                    input=(password + "\n") if password else None), timeout=15)
         except Exception:
             pass
 

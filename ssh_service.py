@@ -178,7 +178,7 @@ def _validate_wg(wg_port) -> int:
     return port
 
 
-def start_auto_install(db, *, name: str, host: str, ssh_port: int = 22, password: str = "",
+def start_auto_install(db, *, name: str, host: str, ssh_port: int = 22, username: str = "root", password: str = "",
                        protocols=None, ovpn_port: int = 1194, ovpn_proto: str = "udp",
                        wg_port: int = 51820) -> str:
     name, host = (name or "").strip(), (host or "").strip()
@@ -187,26 +187,26 @@ def start_auto_install(db, *, name: str, host: str, ssh_port: int = 22, password
     if not 1 <= int(ssh_port) <= 65535:
         raise SSHServiceError("پورت SSH نامعتبر است.")
     if not password:
-        raise SSHServiceError("رمز root لازم است.")
+        raise SSHServiceError("رمز SSH لازم است.")
     chosen = normalize_protocols(protocols if protocols is not None else ["ssh"])
     port, proto = _validate_ovpn(ovpn_port, ovpn_proto)
     wport = _validate_wg(wg_port)
     import ssh_auto_install
     try:
         return ssh_auto_install.start_install(db, name=name, host=host, ssh_port=int(ssh_port),
-                                              username="root", password=password, private_key=None,
+                                              username=(username or "root").strip(), password=password, private_key=None,
                                               protocols=chosen, ovpn_port=port, ovpn_proto=proto, wg_port=wport)
     except ssh_auto_install.InstallError as exc:
         raise SSHServiceError(str(exc))
 
 
-def start_node_upgrade(db, *, node_id: int, password: str, protocols, ovpn_port: int = 1194,
+def start_node_upgrade(db, *, node_id: int, username: str = "root", password: str, protocols, ovpn_port: int = 1194,
                        ovpn_proto: str = "udp", wg_port: int = 51820) -> str:
     node = next((n for n in db.list_ssh_nodes() if int(n["id"]) == int(node_id)), None)
     if not node or node.get("node_type") != "linux":
         raise SSHServiceError("نود Linux Agent پیدا نشد.", 404)
     if not password:
-        raise SSHServiceError("رمز root لازم است.")
+        raise SSHServiceError("رمز SSH لازم است.")
     chosen = normalize_protocols(protocols)
     to_add = [p for p in chosen if p not in node_protocols(node)]
     if not to_add:
@@ -216,7 +216,7 @@ def start_node_upgrade(db, *, node_id: int, password: str, protocols, ovpn_port:
     import ssh_auto_install
     try:
         return ssh_auto_install.start_install(db, name=node["name"], host=node["host"], ssh_port=int(node["port"]),
-                                              username="root", password=password, private_key=None,
+                                              username=(username or "root").strip(), password=password, private_key=None,
                                               protocols=to_add, node_id=int(node_id), ovpn_port=port, ovpn_proto=proto,
                                               wg_port=wport)
     except ssh_auto_install.InstallError as exc:
