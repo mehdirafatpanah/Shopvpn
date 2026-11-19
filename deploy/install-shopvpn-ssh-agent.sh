@@ -6,7 +6,10 @@ set -Eeuo pipefail
 # Optional environment: OVPN_PORT (default 1194), OVPN_PROTO (udp|tcp, default udp), WG_PORT (default 51820), SHOPVPN_ENABLE_NFT=1
 
 if [[ "${EUID}" -ne 0 ]]; then
-  echo "Run as root: sudo bash deploy/install-shopvpn-ssh-agent.sh" >&2
+  if command -v sudo >/dev/null 2>&1; then
+    exec sudo -E bash "$0" "$@"
+  fi
+  echo "Root privileges are required. Use sudo to run this installer." >&2
   exit 1
 fi
 
