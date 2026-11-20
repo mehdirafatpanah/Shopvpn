@@ -1380,10 +1380,13 @@ function openServiceDetail(key) {
 }
 
 function serviceStatusKey(o) {
-  if (o.status !== "approved") return "inactive";
-  if (o.expires_at) {
-    if (new Date(o.expires_at) < new Date()) return "expired";
+  if (o.is_ssh_account) {
+    const status = String(o.ssh_account?.status || "unknown").toLowerCase();
+    if (status === "expired" || (o.expires_at && new Date(o.expires_at) < new Date())) return "expired";
+    return status === "active" ? "active" : "inactive";
   }
+  if (o.status !== "approved") return "inactive";
+  if (o.expires_at && new Date(o.expires_at) < new Date()) return "expired";
   return "active";
 }
 
@@ -1395,13 +1398,14 @@ function serviceCompactRow(o) {
   const badgeClass = key === "active" ? "approved" : key === "expired" ? "pending" : "rejected";
   const badgeLabel = key === "active" ? `فعال تا ${exp}`
     : key === "expired" ? "منقضی‌شده"
+    : o.is_ssh_account ? (o.ssh_account.status === "disabled" ? "غیرفعال" : (o.ssh_account.status || "نامشخص"))
     : (o.status === "pending" ? "در انتظار تایید" : "رد‌شده");
   return `
     <div class="list-row" data-svc-row="${o.id}">
       <div class="list-row-main">
         <div class="list-row-ic line">${ICON_SHIELD}</div>
         <div class="list-row-text">
-          <div class="list-row-title">${o.product_name}${o.quantity > 1 ? ` × ${o.quantity}` : ""}</div>
+          <div class="list-row-title">${o.is_ssh_account ? escHtml(o.product_name) : o.product_name}${o.quantity > 1 ? ` × ${o.quantity}` : ""}</div>
           <div class="list-row-sub"><span class="badge ${badgeClass}">${badgeLabel}</span></div>
         </div>
       </div>
@@ -1410,12 +1414,65 @@ function serviceCompactRow(o) {
   `;
 }
 
+function renderNodeAccountDetail(a) {
+  const protocol = String(a.protocol || "ssh").toLowerCase();
+  const status = String(a.status || "unknown").toLowerCase();
+  const expired = status === "expired" || !!(a.expires_at && new Date(a.expires_at) < new Date());
+  const statusActive = status === "active" && !expired;
+  const credentialLabel = protocol === "ssh" ? "رمز عبور" : "پروفایل / کلید";
+  const credential = a.credential || "";
+  const used = (Number(a.used_bytes || 0) / (1024 ** 3)).toFixed(2);
+  const limit = Number(a.quota_limit_bytes || 0) > 0 ? `${(Number(a.quota_limit_bytes) / (1024 ** 3)).toFixed(2)} GB` : "بدون سقف ثابت";
+  const sshCommand = `ssh -p ${Number(a.port || 22)} ${a.username}@${a.host}`;
+  return `<div class="card">
+    <div class="stat-row"><span><b>${escHtml(a.node_name || "نود")}</b></span><span class="badge ${statusActive ? "approved" : "rejected"}">${statusActive ? "فعال" : escHtml(expired ? "منقضی" : status)}</span></div>
+    <div class="stat-row"><span>پروتکل</span><b>${escHtml(protocol.toUpperCase())}</b></div>
+    <div class="stat-row"><span>نام کاربری</span><b>${escHtml(a.username || "—")}</b></div>
+    <div class="stat-row"><span>سرور</span><b>${escHtml(`${a.host || "—"}:${a.port || (protocol === "ssh" ? 22 : "—")}`)}</b></div>
+    ${a.expires_at ? `<div class="stat-row"><span>انقضا</span><b>${escHtml(toJalaliStr(a.expires_at))}</b></div>` : ""}
+    <div class="stat-row"><span>مصرف</span><b>${used} GB / ${escHtml(limit)}</b></div>
+    ${a.usage_stale ? `<div class="hint-text">⚠️ گزارش مصرف به‌روز نیست.</div>` : ""}
+    ${credential ? `<div style="margin-top:10px"><div class="hint-text">${credentialLabel}</div><textarea class="input" id="node-credential" readonly rows="${protocol === "ssh" ? 1 : 5}" style="direction:ltr;text-align:left;white-space:pre-wrap">${escHtml(credential)}</textarea><button class="btn small outline" id="copy-node-credential" style="width:100%;margin-top:6px">📋 کپی ${credentialLabel}</button></div>` : `<div class="hint-text">اطلاعات محرمانه در دسترس نیست.</div>`}
+    ${protocol === "ssh" ? `<div class="link-box" style="direction:ltr;text-align:left;margin-top:8px">${escHtml(sshCommand)}</div><button class="btn small outline" id="copy-node-command" style="width:100%;margin-top:6px">📋 کپی دستور SSH</button>` : ""}
+    <div class="qr-row" style="margin-top:10px;flex-wrap:wrap"><button class="btn small outline" data-node-action="${statusActive ? "disable" : "enable"}" data-node-id="${a.id}" ${expired ? "disabled" : ""}>${expired ? "⛔ منقضی" : (statusActive ? "🔴 غیرفعال کردن" : "🟢 فعال کردن")}</button><button class="btn small outline danger" data-node-action="delete" data-node-id="${a.id}">🗑 حذف حساب</button></div>
+  </div>`;
+}
+
+async function copyNodeText(text) {
+  try { await navigator.clipboard.writeText(text); }
+  catch (_) {
+    const area = document.createElement("textarea"); area.value = text; area.style.position = "fixed"; area.style.opacity = "0";
+    document.body.appendChild(area); area.select();
+    try { document.execCommand("copy"); } finally { area.remove(); }
+  }
+}
+
+async function wireNodeAccountActions(root, onChanged) {
+  root.querySelectorAll("[data-node-action]").forEach((el) => {
+    el.onclick = async () => {
+      const action = el.dataset.nodeAction;
+      if (action === "delete" && !confirm("حذف حساب نود برگشت‌ناپذیر است. ادامه می‌دهید؟")) return;
+      el.disabled = true;
+      try {
+        await api(`/api/ssh-accounts/${el.dataset.nodeId}/action`, { method: "POST", body: JSON.stringify({ action }) });
+        notify("عملیات انجام شد.");
+        if (onChanged) onChanged();
+      } catch (e) { notify(e.message); el.disabled = false; }
+    };
+  });
+  const credentialCopy = root.querySelector("#copy-node-credential");
+  if (credentialCopy) credentialCopy.onclick = async () => { await copyNodeText(root.querySelector("#node-credential")?.value || ""); notify("کپی شد."); };
+  const commandCopy = root.querySelector("#copy-node-command");
+  if (commandCopy) commandCopy.onclick = async () => { await copyNodeText(commandCopy.previousElementSibling?.textContent || ""); notify("کپی شد."); };
+}
+
 async function renderServices() {
   content.innerHTML = skeleton(3);
   try {
-    const [orders, customConfigs] = await Promise.all([
+    const [orders, customConfigs, sshAccounts] = await Promise.all([
       api("/api/orders"),
       api("/api/custom-configs").catch(() => []),
+      api("/api/ssh-accounts").catch(() => []),
     ]);
     const customCards = customConfigs.map((c) => ({
       id: `cc-${c.id}`,
@@ -1433,12 +1490,23 @@ async function renderServices() {
       expires_at: c.expires_at || null,
       start_on_first_use: !!c.start_on_first_use,
     }));
-    const all = [...orders, ...customCards];
+    const sshCards = sshAccounts.map((a) => ({
+      id: `ssh-${a.id}`, ssh_account: a, is_ssh_account: true,
+      product_name: `🖥️ ${a.node_name || "نود"} · ${(a.protocol || "SSH").toUpperCase()} · ${a.username || ""}`,
+      quantity: 1, status: a.status === "active" ? "approved" : "inactive", expires_at: a.expires_at,
+    }));
+    const all = [...orders, ...customCards, ...sshCards];
 
     // --- سطح جزئیات: فقط همان یک سرویس با لینک/QR/دکمه‌های مدیریت ---‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
     if (servicesView.level === "detail") {
       const item = all.find((o) => String(o.id) === String(servicesView.key));
       if (item) {
+        if (item.is_ssh_account) {
+          content.innerHTML = `<button class="btn outline small" id="back-to-services-list" style="width:auto;margin-bottom:12px">→ بازگشت به سرویس‌ها</button>${renderNodeAccountDetail(item.ssh_account)}`;
+          document.getElementById("back-to-services-list").onclick = () => { servicesView = { level: "list", key: null }; renderServices(); };
+          await wireNodeAccountActions(content, renderServices);
+          return;
+        }
         const body = serviceStatusKey(item) === "active" ? orderCard(item, { deletable: true }) : serviceInactiveRow(item);
         content.innerHTML = `
           <button class="btn outline small" id="back-to-services-list" style="width:auto;margin-bottom:12px">→ بازگشت به سرویس‌ها</button>
