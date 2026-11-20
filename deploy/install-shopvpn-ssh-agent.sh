@@ -110,6 +110,12 @@ if [[ "${WANT_SSH}" -eq 1 ]]; then
   install -o root -g root -m 0644 "${SSHD_TEMPLATE_SOURCE}" /etc/systemd/system/shopvpn-sshd@.service
   groupadd --system shopvpnssh 2>/dev/null || true
 
+  # Clients (V2Box, ...) ping SSH configs with ICMP; make sure the node answers echo requests.
+  echo "net.ipv4.icmp_echo_ignore_all=0" > /etc/sysctl.d/99-shopvpn-icmp.conf
+  sysctl -q -p /etc/sysctl.d/99-shopvpn-icmp.conf || true
+  iptables -C INPUT -p icmp --icmp-type echo-request -m comment --comment shopvpn-icmp -j ACCEPT 2>/dev/null \
+    || iptables -I INPUT 1 -p icmp --icmp-type echo-request -m comment --comment shopvpn-icmp -j ACCEPT 2>/dev/null || true
+
   # UDP gateway for SSH clients (V2Box, NetMod, ...). A missing gateway can
   # make a client appear connected while DNS/UDP traffic does not pass.
   # It must listen on loopback only; clients configure UDPGW port 7300.
