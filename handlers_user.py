@@ -4732,6 +4732,25 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             items.append({"cb_id": f"x{cc['id']}", "kind": "custom", "label": label, "custom": cc,
                           "payg": is_payg, "_ts": cc["created_at"] or ""})
 
+        # حساب‌های مستقیم نود (SSH/OpenVPN/WireGuard) در «سرویس‌های من»
+        # نمایش داده شوند؛ این حساب‌ها ممکن است هیچ order/config نداشته باشند.
+        try:
+            for account in db.list_ssh_accounts(user_tg_id):
+                if str(account.get("status") or "").lower() == "deleted":
+                    continue
+                protocol = str(account.get("protocol") or "ssh").lower()
+                protocol_label = {"ssh": "SSH", "openvpn": "OpenVPN", "wireguard": "WireGuard"}.get(protocol, protocol.upper())
+                status = str(account.get("status") or "unknown").lower()
+                icon = "🟢" if status == "active" else "🔴"
+                items.append({
+                    "cb_id": f"s{account['id']}", "kind": "ssh",
+                    "label": f"{icon} {account.get('node_name') or 'نود'} · {protocol_label} · {account.get('username') or ''}",
+                    "ssh_account": account, "status": status,
+                    "_ts": account.get("created_at") or "",
+                })
+        except Exception:
+            logging.getLogger("handlers_user").exception("افزودن حساب‌های نود به فهرست سرویس کاربر ناموفق بود")
+
         items.sort(key=lambda it: it["_ts"], reverse=True)
         return items
 
@@ -4786,6 +4805,72 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             if str(cfg["link"]).startswith(("http://", "https://")):
                 text += "\n\n📋 برای دیدن کانفیگ‌های تکی این لینک، دکمه‌ی «کانفیگ‌های تکی» پایین را بزنید."
             return text
+        if kind == "ssh":
+            account = item["ssh_account"]
+            status = str(account.get("status") or "unknown").lower()
+            status_label = {"active": "فعال", "disabled": "غیرفعال", "expired": "منقضی", "error": "خطا", "pending": "در انتظار"}.get(status, status)
+            if account.get("expires_at"):
+                try:
+                    exp_dt = datetime.fromisoformat(str(account["expires_at"]).replace("Z", "+00:00"))
+                    now_dt = datetime.now(exp_dt.tzinfo) if exp_dt.tzinfo else datetime.utcnow()
+                    if exp_dt <= now_dt:
+                        status_label = "منقضی"
+                except (TypeError, ValueError):
+                    pass
+            protocol = str(account.get("protocol") or "ssh").lower()
+            protocol_label = {"ssh": "SSH", "openvpn": "OpenVPN", "wireguard": "WireGuard"}.get(protocol, protocol.upper())
+            host = str(account.get("host") or "")
+            port = int(account.get("port") or (22 if protocol == "ssh" else 0))
+            secret = ""
+            try:
+                from ssh_credentials import decrypt_credential
+                encrypted = await asyncio.to_thread(db.get_ssh_account_credential, account["account_id"], user_tg_id)
+                secret = decrypt_credential(encrypted) if encrypted else ""
+                node = await asyncio.to_thread(db.get_ssh_node, int(account.get("node_id") or 0))
+                if node:
+                    import ssh_service
+                    endpoints = ssh_service.user_endpoints(node, account, secret if protocol in {"openvpn", "wireguard"} else None)
+                    if endpoints:
+                        host = str(endpoints[0].get("address") or host)
+                        port = int(endpoints[0].get("port") or port)
+                        if protocol in {"openvpn", "wireguard"} and endpoints[0].get("profile"):
+                            secret = endpoints[0]["profile"]
+            except Exception:
+                logging.getLogger("handlers_user").exception("دریافت اطلاعات حساب نود برای کاربر %s ناموفق بود", user_tg_id)
+
+            # HTML مستقل، تا کاراکترهای رمز/پروفایل موجب خراب‌شدن پیام نشوند.
+            lines = [
+                f"🖥️ <b>حساب نود: {escape_html(account.get('node_name') or 'نود')}</b>",
+                f"🔌 پروتکل: {escape_html(protocol_label)}",
+                f"👤 نام کاربری: <code>{escape_html(account.get('username') or '')}</code>",
+                f"📍 سرور: <code>{escape_html(host)}:{port}</code>",
+                f"📌 وضعیت: {'🟢' if status == 'active' else '🔴'} {escape_html(status_label)}",
+            ]
+            if account.get("expires_at"):
+                lines.append(f"⏳ انقضا: {escape_html(to_jalali_str(account['expires_at'], with_time=True))}")
+            if secret:
+                if protocol in {"openvpn", "wireguard"}:
+                    lines.append(f"🔐 پروفایل اتصال:\n<pre>{escape_html(secret[:3000])}</pre>")
+                    if len(secret) > 3000:
+                        lines.append("⚠️ پروفایل طولانی است؛ نسخه کامل را از مینی‌اپ کپی کنید.")
+                else:
+                    lines.append(f"🔑 رمز عبور: <code>{escape_html(secret)}</code>")
+            else:
+                lines.append("🔐 اطلاعات محرمانه در دسترس نیست؛ با پشتیبانی تماس بگیرید.")
+            if account.get("quota_pool_id"):
+                try:
+                    pool = await asyncio.to_thread(db.get_quota_pool, int(account["quota_pool_id"]))
+                    if pool and int(pool.get("user_id") or 0) == int(user_tg_id):
+                        usage = await asyncio.to_thread(db.get_quota_usage, int(account["quota_pool_id"]))
+                        used = float(usage.get("used_bytes") or 0) / (1024 ** 3)
+                        limit = int(usage.get("limit_bytes") or 0)
+                        lines.append(f"📊 مصرف: {used:.2f} GB از {limit / (1024 ** 3):.2f} GB" if limit else f"📊 مصرف: {used:.2f} GB (بدون سقف ثابت)")
+                        if usage.get("status") == "stale":
+                            lines.append("⚠️ گزارش مصرف قدیمی است.")
+                except Exception:
+                    logging.getLogger("handlers_user").debug("نمایش مصرف حساب نود ناموفق بود", exc_info=True)
+            lines.append("\nاز دکمه‌های پایین برای مدیریت حساب استفاده کنید.")
+            return "\n".join(lines)
         if kind == "custom":
             cc = item["custom"]
             sub_url = cc["subscription_url"]
@@ -4951,12 +5036,63 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 reply_markup=kb.my_order_error_back_kb(),
             )
             return
-        deletable = item["kind"] in ("config", "custom")
-        show_links = _item_has_individual_links(item)
-        markup = kb.service_detail_kb(db, cb_id, item["kind"], deletable, show_links, **_svc_kb_kwargs(item))
-        if len(text) > 4000:
+        if item["kind"] == "ssh":
+            account = item["ssh_account"]
+            action = "enable" if account.get("status") != "active" else "disable"
+            action_label = "🟢 فعال‌سازی حساب" if action == "enable" else "🔴 غیرفعال‌سازی حساب"
+            markup = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text=action_label, callback_data=f"mo_ssh_action:{account['id']}:{action}")],
+                [InlineKeyboardButton(text="🗑 حذف حساب", callback_data=f"mo_ssh_action:{account['id']}:delete")],
+                [InlineKeyboardButton(text="⬅️ بازگشت به لیست", callback_data="mo_back")]])
+        else:
+            deletable = item["kind"] in ("config", "custom")
+            show_links = _item_has_individual_links(item)
+            markup = kb.service_detail_kb(db, cb_id, item["kind"], deletable, show_links, **_svc_kb_kwargs(item))
+        if len(text) > 4000 and item["kind"] != "ssh":
             text = text[:3950] + "\n\n… (فهرست کوتاه شد؛ تعداد کانفیگ‌ها زیاد است)"
-        await _safe_edit(call.message, text, parse_mode="Markdown", reply_markup=markup)
+        await _safe_edit(call.message, text, parse_mode=("HTML" if item["kind"] == "ssh" else "Markdown"), reply_markup=markup)
+
+    @router.callback_query(F.data.startswith("mo_ssh_action:"))
+    async def cb_my_ssh_account_action(call: CallbackQuery):
+        try:
+            _, account_row_id, action = call.data.split(":", 2)
+            account = next((a for a in await asyncio.to_thread(db.list_ssh_accounts, call.from_user.id)
+                           if str(a.get("id")) == str(account_row_id)), None)
+            if not account or account.get("status") == "deleted":
+                await call.answer("حساب پیدا نشد یا متعلق به شما نیست.", show_alert=True)
+                return
+            if action == "delete":
+                confirm_markup = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="⚠️ تایید حذف", callback_data=f"mo_ssh_action:{account_row_id}:delete_confirm"),
+                    InlineKeyboardButton(text="لغو", callback_data="mo_back")]])
+                await _safe_edit(call.message, "⚠️ حذف حساب نود برگشت‌ناپذیر است. مطمئن هستید؟", reply_markup=confirm_markup)
+                await call.answer()
+                return
+            if action == "delete_confirm":
+                action = "delete"
+            import ssh_service
+            await ssh_service.account_action(db, account["account_id"], action, force=(action == "delete"))
+            await call.answer("عملیات انجام شد.", show_alert=True)
+            if action == "delete":
+                await _show_my_orders_list(call.message, call.from_user.id, edit=True)
+                return
+            item = _find_my_orders_item(call.from_user.id, f"s{account_row_id}")
+            if item:
+                text = await _my_orders_item_text(item)
+                current = next((a for a in await asyncio.to_thread(db.list_ssh_accounts, call.from_user.id)
+                               if str(a.get("id")) == str(account_row_id)), None)
+                if not current or current.get("status") == "deleted":
+                    await _show_my_orders_list(call.message, call.from_user.id, edit=True)
+                    return
+                next_action = "enable" if current.get("status") != "active" else "disable"
+                next_label = "🟢 فعال‌سازی حساب" if next_action == "enable" else "🔴 غیرفعال‌سازی حساب"
+                markup = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text=next_label, callback_data=f"mo_ssh_action:{account_row_id}:{next_action}")],
+                    [InlineKeyboardButton(text="🗑 حذف حساب", callback_data=f"mo_ssh_action:{account_row_id}:delete")],
+                    [InlineKeyboardButton(text="⬅️ بازگشت به لیست", callback_data="mo_back")]])
+                await _safe_edit(call.message, text, parse_mode="HTML", reply_markup=markup)
+        except Exception as exc:
+            await call.answer(str(exc)[:180], show_alert=True)
 
     @router.callback_query(F.data.startswith("mo_refresh:"))
     async def cb_my_orders_refresh(call: CallbackQuery):
