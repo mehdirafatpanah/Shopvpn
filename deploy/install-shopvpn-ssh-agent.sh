@@ -396,6 +396,12 @@ fi
 systemctl enable --now shopvpn-ssh-agent
 
 systemctl --no-pager --full status shopvpn-ssh-agent || true
+if [[ "${WANT_SSH}" -eq 1 ]]; then
+  echo
+  echo "[ShopVPN] SSH node self-check (firewall ports, ICMP, UDPGW, DNS, egress):"
+  set -a; . "${ENV_FILE}"; set +a
+  python3 /opt/shopvpn/ssh_node_agent.py --diagnose --fix || echo "[ShopVPN] Some checks failed; see the hints above."
+fi
 echo
 echo "Agent installed (protocols: ${PROTOCOLS}) and bound per ${ENV_FILE}; default is 127.0.0.1:8765."
 echo "Do not expose the agent port directly to the public Internet. Use a private network or an IP-restricted TLS reverse proxy."
