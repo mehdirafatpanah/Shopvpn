@@ -5184,6 +5184,8 @@ class PaygSettingsBody(BaseModel):
     cycle_seconds: Optional[int] = None
     max_services: Optional[int] = None
     delivery_text: Optional[str] = None
+    status_text_active: Optional[str] = None
+    status_text_inactive: Optional[str] = None
     min_balance: Optional[int] = None
 
 
@@ -5309,6 +5311,9 @@ def api_payg_overview(admin=Depends(require_permission("catalog")), _mt=Depends(
         "delivery_text": db.get_setting(payg.PAYG_DELIVERY_TEXT_KEY, "") or "",
         "delivery_has_photo": bool(db.get_setting(payg.PAYG_DELIVERY_PHOTO_KEY, "")),
         "delivery_text_max": payg.PAYG_DELIVERY_TEXT_MAX,
+        "status_text_active": db.get_setting(payg.PAYG_STATUS_TEXT_ACTIVE_KEY, "") or "",
+        "status_text_inactive": db.get_setting(payg.PAYG_STATUS_TEXT_INACTIVE_KEY, "") or "",
+        "status_text_max": payg.PAYG_STATUS_TEXT_MAX,
         "mode": payg.get_payg_mode(db),
         "dsub_enabled": bool(dedicated_sub.is_enabled(db)),
         "ssh_protocols": payg.get_payg_ssh_protocols(db),
@@ -5360,6 +5365,15 @@ def api_payg_settings(body: PaygSettingsBody, admin=Depends(require_permission("
             raise HTTPException(400, tr(f"متن پیام نمی‌تواند بیشتر از {payg.PAYG_DELIVERY_TEXT_MAX} نویسه باشد."))
         db.set_setting(payg.PAYG_DELIVERY_TEXT_KEY, text)
         changes.append("delivery_text")
+    for field, key in (("status_text_active", payg.PAYG_STATUS_TEXT_ACTIVE_KEY),
+                       ("status_text_inactive", payg.PAYG_STATUS_TEXT_INACTIVE_KEY)):
+        value = getattr(body, field)
+        if value is not None:
+            value = value.strip()
+            if len(value) > payg.PAYG_STATUS_TEXT_MAX:
+                raise HTTPException(400, tr(f"متن صفحه‌ی وضعیت نمی‌تواند بیشتر از {payg.PAYG_STATUS_TEXT_MAX} نویسه باشد."))
+            db.set_setting(key, value)
+            changes.append(field)
     if changes:
         db.log_admin_action(admin["id"], "payg_settings_change", f"{', '.join(changes)} (پنل وب - {admin['username']})", "setting", "payg")
     return {"ok": True}
