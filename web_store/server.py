@@ -577,32 +577,66 @@ def app_version():
     return {"v": get_asset_version()}
 
 
-@app.get("/", response_class=HTMLResponse)
-def serve_index(tenant: Tenant = Depends(get_tenant)):
+def _render_index(tenant: Tenant, lang: str = "fa"):
+    """Render the public web-store shell for the requested language."""
     with open(os.path.join(STATIC_DIR, "index.html"), encoding="utf-8") as f:
-        html = f.read()
+        page = f.read()
+
     version = get_asset_version()
-    html = html.replace("{{VERSION}}", version)
+    base_url = os.getenv("SHOPVPN_SEO_SITE_URL", "").strip().rstrip("/")
+    if not base_url:
+        configured = (os.getenv("SHOPVPN_WEB_STORE_URL", "") or os.getenv("WEB_STORE_URL", "")).strip().rstrip("/")
+        base_url = configured
+    canonical = (base_url + ("/en/" if lang == "en" else "/")) if base_url else ("/en/" if lang == "en" else "/")
 
     store_name = render_stored_setting("store_name", tenant.db.get_setting("store_name", "⚡ SHOP VPN"))
-    banner_text = render_stored_setting("miniapp_banner_text", tenant.db.get_setting("miniapp_banner_text", "اتصال امن و پایدار برقرار است"))
-    html = html.replace("{{STORE_NAME}}", html_lib.escape(store_name))
-    html = html.replace("{{BANNER_TEXT}}", html_lib.escape(banner_text))
+    title = f"{store_name} — " + ("Online VPN Store" if lang == "en" else "فروشگاه آنلاین VPN")
+    description = ("Buy VPN services securely and receive your subscription link instantly."
+                   if lang == "en" else "خرید امن سرویس VPN و دریافت فوری لینک اشتراک.")
+    replacements = {
+        "{{LANG}}": lang,
+        "{{DIR}}": "ltr" if lang == "en" else "rtl",
+        "{{VERSION}}": version,
+        "{{ASSET_VERSION}}": version,
+        "{{TITLE}}": html_lib.escape(title, quote=True),
+        "{{DESC}}": html_lib.escape(description, quote=True),
+        "{{CANON}}": html_lib.escape(canonical, quote=True),
+        "{{ALT_FA}}": html_lib.escape((base_url + "/") if base_url else "/", quote=True),
+        "{{ALT_EN}}": html_lib.escape((base_url + "/en/") if base_url else "/en/", quote=True),
+        "{{OG_IMAGE}}": html_lib.escape((base_url + "/assets/og-image.png") if base_url else "/assets/og-image.png", quote=True),
+        "{{FAVICON}}": "/favicon.ico",
+        "{{SCENE_STYLES}}": "",
+        "{{SCENE_SCRIPTS}}": "",
+        "{{SCENE_MODE}}": "off",
+        "{{SCENE_MOBILE}}": "off",
+        "{{SCENE_LITE}}": "on",
+    }
+    for token, value in replacements.items():
+        page = page.replace(token, value)
 
+    # Keep tenant-specific mini-app branding substitutions supported by older templates.
+    page = page.replace("{{STORE_NAME}}", html_lib.escape(store_name, quote=True))
+    banner_text = render_stored_setting("miniapp_banner_text", tenant.db.get_setting("miniapp_banner_text", "اتصال امن و پایدار برقرار است"))
+    page = page.replace("{{BANNER_TEXT}}", html_lib.escape(banner_text, quote=True))
     theme = tenant.db.get_setting("miniapp_theme", "clean-light")
     if theme not in MINIAPP_THEMES:
         theme = "clean-light"
-    html = html.replace("{{THEME}}", theme)
-
+    page = page.replace("{{THEME}}", theme)
     header_image = tenant.db.get_setting("header_image_data", "")
-    if header_image:
-        html = html.replace("{{HEADER_LOGO_CLASS}}", "has-logo")
-        html = html.replace("{{HEADER_LOGO_HTML}}", f'<img class="brand-logo" src="{header_image}" alt="" />')
-    else:
-        html = html.replace("{{HEADER_LOGO_CLASS}}", "")
-        html = html.replace("{{HEADER_LOGO_HTML}}", "")
+    page = page.replace("{{HEADER_LOGO_CLASS}}", "has-logo" if header_image else "")
+    page = page.replace("{{HEADER_LOGO_HTML}}", f'<img class="brand-logo" src="{html_lib.escape(header_image, quote=True)}" alt="" />' if header_image else "")
+    return HTMLResponse(page, headers={"Cache-Control": "no-store"})
 
-    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
+@app.get("/", response_class=HTMLResponse)
+def serve_index(tenant: Tenant = Depends(get_tenant)):
+    return _render_index(tenant, "fa")
+
+
+@app.get("/en/", response_class=HTMLResponse)
+@app.get("/en/index.html", response_class=HTMLResponse)
+def serve_index_en(tenant: Tenant = Depends(get_tenant)):
+    return _render_index(tenant, "en")
 
 
 # ---------------------------------------------------------------------------
@@ -8586,6 +8620,26 @@ def _verify_web_turnstile(request: Request) -> None:
         logging.getLogger("web_auth").warning("Turnstile verification unavailable", exc_info=True)
         raise HTTPException(status_code=503, detail=tr("سرویس بررسی امنیتی موقتاً در دسترس نیست."))
 
+
+@app.on_event("startup")
+def _log_turnstile_mode():
+    log = logging.getLogger("web_store")
+    site = os.getenv("SHOPVPN_TURNSTILE_SITE_KEY", "").strip()
+    secret = os.getenv("SHOPVPN_TURNSTILE_SECRET_KEY", "").strip()
+    if site and secret:
+        log.info("Turnstile enabled")
+    elif not site and not secret:
+        if os.getenv("SHOPVPN_WEB_ALLOW_NO_TURNSTILE", "").strip() == "1":
+            log.warning("Turnstile bypass mode (ALLOW_NO_TURNSTILE=1); do not use in production")
+        else:
+            log.error("Turnstile keys missing and bypass off: web login/checkout will return 503")
+    else:
+        log.error("Turnstile config incomplete: set both SITE_KEY and SECRET_KEY")
+
+
+# Register web-store API routes before the catch-all static mount.
+from web_store.routes import router as web_router
+app.include_router(web_router)
 
 app.mount("/", NoCacheStaticFiles(directory=STATIC_DIR, html=True), name="static")
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
