@@ -809,6 +809,7 @@ class SSHNodeAddProtocolsBody(BaseModel):
     ovpn_port: int = 1194
     ovpn_proto: str = "udp"
     wg_port: int = 51820
+    refresh: bool = False  # true = همان پروتکل‌های نصب‌شده را دوباره نصب کن (به‌روزرسانی Agent/فایروال)
 
 
 class SSHNodeCreateBody(BaseModel):
@@ -8729,11 +8730,22 @@ async def api_ssh_node_add_protocols(node_id: int, body: SSHNodeAddProtocolsBody
     import ssh_service
     try:
         job_id = ssh_service.start_node_upgrade(db, node_id=node_id, username=body.username, password=body.password, protocols=body.protocols,
-                                                ovpn_port=body.ovpn_port, ovpn_proto=body.ovpn_proto, wg_port=body.wg_port)
+                                                ovpn_port=body.ovpn_port, ovpn_proto=body.ovpn_proto, wg_port=body.wg_port,
+                                                refresh=body.refresh)
     except ssh_service.SSHServiceError as exc:
         raise HTTPException(exc.status, str(exc))
     db.log_admin_action(admin["id"], "ssh_node_add_protocols", f"SSH node #{node_id}: +{','.join(body.protocols)}", "ssh")
     return {"ok": True, "job_id": job_id}
+
+
+@app.get("/api/ssh/nodes/{node_id}/diagnose")
+async def api_ssh_node_diagnose(node_id: int, admin=Depends(require_permission("panels")), _fa=Depends(require_full_access_tenant)):
+    """عیب‌یابی لایه‌به‌لایه‌ی نود SSH: sshd، UDPGW، فایروال، ICMP، DNS، خروجی اینترنت و دسترسی پورت از بیرون."""
+    import ssh_service
+    try:
+        return await ssh_service.diagnose_node(db, node_id)
+    except ssh_service.SSHServiceError as exc:
+        raise HTTPException(exc.status, str(exc))
 
 
 @app.get("/api/ssh/nodes/install-jobs/{job_id}")
