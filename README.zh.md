@@ -1176,4 +1176,4 @@ ShopVPN 现采用 **ShopVPN Source-Available Network Copyleft License 1.0**（�
 
 应用支持多语言界面，会保留用户的语言选择并自动切换 RTL/LTR 方向；管理员可在管理面板中启用更多语言。
 <!--‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍-->
-<!-- 		   		 		  	 	 		 		   		  	 	 		 			  		 				 			  	 -->
+<!-- 		   		 		  	 	 		 		   		  	 	 		 			  		 				 			  	 -->\n\n### 网店 Turnstile 环境变量\n\n网店登录和结账需要同时配置 `SHOPVPN_TURNSTILE_SITE_KEY` 与 `SHOPVPN_TURNSTILE_SECRET_KEY`。如果两项都为空，接口将返回 HTTP 503，除非在测试或仅 IP 部署时明确设置 `SHOPVPN_WEB_ALLOW_NO_TURNSTILE=1`。生产域名请配置两个 Cloudflare 密钥，并将绕过选项保持为 `0`。只配置其中一个密钥也属于配置不完整，同样会返回 HTTP 503。请参阅 `.env.example`。\n
