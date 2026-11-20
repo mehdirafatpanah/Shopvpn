@@ -847,6 +847,77 @@ def api_orders(auth=Depends(get_verified_user)):
     return result
 
 
+@app.get("/api/ssh-accounts")
+def api_user_ssh_accounts(auth=Depends(get_verified_user)):
+    """Return direct node accounts and credentials only for the authenticated owner."""
+    tg_id, db, _ = auth
+    from ssh_credentials import decrypt_credential
+    import ssh_service
+    nodes = {int(n["id"]): n for n in db.list_ssh_nodes()}
+    result = []
+    for row in db.list_ssh_accounts(tg_id):
+        if str(row.get("status") or "").lower() == "deleted":
+            continue
+        node = nodes.get(int(row.get("node_id") or 0))
+        protocol = str(row.get("protocol") or "ssh").lower()
+        host = str(row.get("host") or "")
+        port = int(row.get("port") or (22 if protocol == "ssh" else 0))
+        secret = ""
+        try:
+            encrypted = db.get_ssh_account_credential(row["account_id"], tg_id)
+            secret = decrypt_credential(encrypted) if encrypted else ""
+        except Exception:
+            logging.getLogger("miniapp").exception("Could not decrypt node-account credential for owner %s", tg_id)
+        try:
+            endpoints = ssh_service.user_endpoints(node, row, secret if protocol in {"openvpn", "wireguard"} else None)
+            if endpoints:
+                host = str(endpoints[0].get("address") or host)
+                port = int(endpoints[0].get("port") or port)
+                if protocol in {"openvpn", "wireguard"} and endpoints[0].get("profile"):
+                    secret = endpoints[0]["profile"]
+        except Exception:
+            logging.getLogger("miniapp").exception("Could not resolve node account endpoint for account %s", row.get("id"))
+        usage = {}
+        pool = None
+        if row.get("quota_pool_id"):
+            try:
+                pool = db.get_quota_pool(int(row["quota_pool_id"]))
+                if pool and int(pool.get("user_id") or 0) == int(tg_id):
+                    usage = db.get_quota_usage(int(row["quota_pool_id"])) or {}
+                else:
+                    pool = None
+            except Exception:
+                pool = None
+                usage = {}
+        result.append({
+            "id": row["id"], "account_id": row["account_id"], "node_id": row["node_id"],
+            "node_name": row.get("node_name") or "Node", "protocol": protocol,
+            "username": row.get("username") or "", "host": host,
+            "port": port, "status": row.get("status") or "unknown",
+            "expires_at": row.get("expires_at"), "created_at": row.get("created_at"),
+            "credential": secret, "quota_limit_bytes": int((pool or {}).get("limit_bytes") or 0),
+            "used_bytes": int(usage.get("used_bytes") or 0), "usage_stale": usage.get("status") == "stale",
+        })
+    return result
+
+@app.post("/api/ssh-accounts/{account_row_id}/action")
+async def api_user_ssh_account_action(account_row_id: int, body: dict, auth=Depends(get_verified_user)):
+    tg_id, db, _ = auth
+    action = str(body.get("action") or "").strip().lower()
+    account = next((a for a in db.list_ssh_accounts(tg_id) if int(a.get("id") or 0) == int(account_row_id)), None)
+    if not account or account.get("status") == "deleted":
+        raise HTTPException(404, detail=tr("حساب نود یافت نشد یا متعلق به شما نیست."))
+    if action not in {"enable", "disable", "delete"}:
+        raise HTTPException(400, detail=tr("عملیات نامعتبر است."))
+    import ssh_service
+    try:
+        # حذف با تایید UI انجام می‌شود؛ اگر نود از دسترس خارج شده باشد،
+        # force-delete همان رفتار بات را دارد و رکورد محلی را پاک/غیرفعال می‌کند.
+        result = await ssh_service.account_action(db, account["account_id"], action, force=(action == "delete"))
+    except ssh_service.SSHServiceError as exc:
+        raise HTTPException(getattr(exc, "status", 400), detail=str(exc))
+    return {"status": result}
+
 @app.delete("/api/orders/configs/{config_id}")
 def api_delete_order_config(config_id: int, auth=Depends(get_verified_user)):
     """حذف کامل و برگشت‌ناپذیر یک کانفیگ محصول متعلق به خود کاربر. اگر با این
