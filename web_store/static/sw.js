@@ -1,4 +1,4 @@
-const CACHE = "shopvpn-shell-v8";
+const CACHE = "shopvpn-shell-v9";
 const SHELL = ["/", "/assets/app.css", "/assets/app.js", "/assets/hero-scene.js", "/assets/hero-scene.css", "/assets/cinema.js", "/assets/cinema.css", "/assets/scene-extra.js", "/assets/i18n.js", "/assets/boot.js", "/assets/og-image.png"];
 
 self.addEventListener("install", event => {
