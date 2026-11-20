@@ -335,6 +335,27 @@ class Agent:
                     raise
         return str(config_path)
 
+    def _ensure_icmp_ping(self):
+        """کلاینت‌هایی مثل V2Box پینگ کانفیگ SSH را با ICMP می‌گیرند؛ اگر نود به echo-request
+        جواب ندهد، کانفیگ وصل می‌شود ولی پینگ Timeout می‌دهد. این متد (idempotent) جواب‌دادن
+        به ping را روشن می‌کند: sysctl + قانون iptables/ip6tables در صورت وجود."""
+        try:
+            Path("/etc/sysctl.d/99-shopvpn-icmp.conf").write_text(
+                "net.ipv4.icmp_echo_ignore_all=0\nnet.ipv4.icmp_echo_ignore_broadcasts=1\n", encoding="utf-8")
+            self._run("sysctl", "-q", "-w", "net.ipv4.icmp_echo_ignore_all=0", check=False)
+        except Exception:
+            logger.exception("unable to enable ICMP echo replies")
+        for binary, proto, kind in (("iptables", "icmp", "echo-request"), ("ip6tables", "icmpv6", "echo-request")):
+            if shutil.which(binary) is None:
+                continue
+            flag = "--icmp-type" if proto == "icmp" else "--icmpv6-type"
+            rule = ["-p", proto, flag, kind, "-m", "comment", "--comment", "shopvpn-icmp", "-j", "ACCEPT"]
+            try:
+                if self._run(binary, "-C", "INPUT", *rule, check=False).returncode != 0:
+                    self._run(binary, "-I", "INPUT", "1", *rule, check=False)
+            except Exception:
+                logger.exception("unable to add %s ICMP rule", binary)
+
     def _migrate_account_sshd_configs(self):
         """Rewrite per-account sshd configs created by older agent versions and restart their units once."""
         with self._conn() as db:
@@ -1066,6 +1087,10 @@ class Agent:
 
     async def _start_enforcement(self, app):
         if "ssh" in self.protocols:
+            try:
+                await asyncio.to_thread(self._ensure_icmp_ping)
+            except Exception:
+                logger.exception("ICMP ping setup crashed")
             try:
                 await asyncio.to_thread(self._migrate_account_sshd_configs)
             except Exception:
