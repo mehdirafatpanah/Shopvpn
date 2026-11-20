@@ -9594,6 +9594,12 @@ async function paygSettingsHtml() {
           <input class="input" id="payg-delivery-photo" type="file" accept="image/jpeg,image/png,image/webp" style="margin-top:8px">
           <span class="hint-text">انتخاب فایل جدید هنگام «ذخیره تنظیمات» جایگزین عکس فعلی می‌شود.</span>
         </div>
+        <b>متن صفحه‌ی «Pay As You Go» (وضعیت و جزئیات مصرف)</b><div class="card-sub">پیامی که کاربر با زدن دکمه‌ی پرداخت به‌ازای مصرف یا «وضعیت و جزئیات مصرف» می‌بیند. خالی = متن پیش‌فرض. می‌توانید از تگ‌های HTML تلگرام مثل &lt;b&gt; استفاده کنید.</div>
+        <div class="card-sub">متغیرها: {balance} موجودی کیف پول، {spent} هزینه این ماه، {used_gb} مصرف ثبت‌شده (GB)، {services} تعداد سرویس‌های متصل، {cycle} چرخه تسویه، {min_balance} حداقل موجودی ساخت سرویس، {panels} پنل‌های فعال، {free_note} پیام حالت رایگان مدیریت، {links} لینک‌های اشتراک فعال کاربر (اگر ننویسید، انتهای متن اضافه می‌شود).</div>
+        <label class="field"><span>متن وقتی حساب کاربر فعال است</span>
+          <textarea class="input" id="payg-status-active" rows="8" maxlength="${Number(d.status_text_max)}" placeholder="متن پیش‌فرض">${esc(d.status_text_active || '')}</textarea></label>
+        <label class="field"><span>متن وقتی حساب کاربر هنوز فعال نشده است</span>
+          <textarea class="input" id="payg-status-inactive" rows="6" maxlength="${Number(d.status_text_max)}" placeholder="متن پیش‌فرض">${esc(d.status_text_inactive || '')}</textarea></label>
         <button class="btn btn-primary" id="payg-save-settings">ذخیره تنظیمات</button>
       </div>
     </div>`;
@@ -9625,6 +9631,8 @@ function paygBindSettings() {
         max_services: parseInt($('#payg-max', root).value, 10),
         min_balance: parseInt($('#payg-min-balance', root).value, 10) || 0,
         delivery_text: $('#payg-delivery-text', root).value,
+        status_text_active: $('#payg-status-active', root).value,
+        status_text_inactive: $('#payg-status-inactive', root).value,
       });
       if (photo) {
         const fd = new FormData();
