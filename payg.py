@@ -20,6 +20,7 @@ from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 from db.constants import _wallet_tag
+from i18n import tr
 
 logger = logging.getLogger("payg")
 GIB = 1024 ** 3
@@ -28,6 +29,11 @@ DEFAULT_RATES = [5000, 4500, 4000, 3500]
 
 def _now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def _tformat(template: str, **values) -> str:
+    """Translate a Persian template before inserting dynamic values."""
+    return tr(template).format(**values)
 
 
 def is_free_payg_user(db, user_id) -> bool:
@@ -1363,31 +1369,26 @@ def create_payg_router(db, is_main_bot=True):
     ensure_schema(db)
 
     def menu(active=False, configured=False):
-        rows = [[InlineKeyboardButton(text="🚀 ساخت سرویس مصرفی جدید", callback_data="payg:provision")]]
+        rows = [[InlineKeyboardButton(text=tr("🚀 ساخت سرویس مصرفی جدید"), callback_data="payg:provision")]]
         rows.extend([
-            [InlineKeyboardButton(text="💰 شارژ کیف پول", callback_data="acct:wallet")],
-            [InlineKeyboardButton(text="🧾 تاریخچه برداشت‌ها", callback_data="payg:history")],
-            [InlineKeyboardButton(text="📊 وضعیت و جزئیات مصرف", callback_data="payg:status")],
-            [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="back_categories")],
+            [InlineKeyboardButton(text=tr("💰 شارژ کیف پول"), callback_data="acct:wallet")],
+            [InlineKeyboardButton(text=tr("🧾 تاریخچه برداشت‌ها"), callback_data="payg:history")],
+            [InlineKeyboardButton(text=tr("📊 وضعیت و جزئیات مصرف"), callback_data="payg:status")],
+            [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="back_categories")],
         ])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     async def show(message, user_id):
         status = payg_status(db, user_id)
         balance = int(db.get_wallet_credit(user_id) or 0)
-        rates = status.get('rates') or get_rates(db)
-        rate_text = ("تعرفه هر سرویس بر اساس پنل و گروه/اینباند محل ساخت محاسبه می‌شود؛ "
-                     "هزینه ترافیک مصرفی، روزهای فعال و ظرفیت کاربران از کیف پول مشترک کسر خواهد شد.\n")
-        supported_text = "سرویس‌های قابل صورتحساب فعلی: VPN و SSH با شمارنده مصرف معتبر.\n"
         min_balance = get_min_balance(db)
-        if min_balance:
-            supported_text += f"حداقل موجودی کیف پول برای ساخت سرویس جدید: {min_balance:,} تومان\n"
         panel_ids = get_usable_payg_panel_ids(db)
         panel_names = []
         for pid in panel_ids:
             panel = await asyncio.to_thread(db.get_panel_server, int(pid))
             if panel and panel["is_active"]:
-                panel_names.append(str(panel["name"] or f"پنل {pid}"))
+                panel_names.append(str(panel["name"] or f"{tr('پنل')} {pid}"))
+
         with db._get_conn() as conn:
             service_rows = conn.execute(
                 "SELECT cc.id,cc.username,cc.subscription_url,cc.panel_server_id,ps.name AS panel_name "
@@ -1397,30 +1398,53 @@ def create_payg_router(db, is_main_bot=True):
                 "WHERE p.user_id=? AND cc.status='active' ORDER BY cc.id DESC",
                 (int(user_id),),
             ).fetchall()
+
         free = is_free_payg_user(db, user_id)
-        if status['active']:
-            text = ("💳 <b>Pay As You Go</b>\n\n"
-                    + ("🎁 حالت رایگان مدیریت: بدون کسر از کیف پول و بدون سقف حجم\n" if free else "")
-                    + f"وضعیت: فعال\nموجودی کیف پول: {balance:,} تومان\n"
-                    f"هزینه این ماه: {status['spent']:,} تومان\n"
-                    f"مصرف ثبت‌شده: {status['month_used_bytes']/GIB:.3f} GB\n"
-                    f"سرویس‌های متصل: {status['services']}\n"
-                    + rate_text + supported_text + f"تسویه مصرف هر {cycle_text(db)} انجام می‌شود.\n"
-                    + (f"پنل‌های فعال ساخت سرویس: {', '.join(panel_names)}\n" if panel_names else "⚠️ پنل فعالی برای ساخت سرویس انتخاب نشده است.\n")
-                    + "برای ساخت سرویس مصرفی جدید از دکمه زیر استفاده کنید.")
+        rate_text = tr(
+            "تعرفه هر سرویس بر اساس پنل و گروه/اینباند محل ساخت محاسبه می‌شود؛ "
+            "هزینه ترافیک مصرفی، روزهای فعال و ظرفیت کاربران از کیف پول مشترک کسر خواهد شد."
+        ) + "\n"
+        supported_text = tr("سرویس‌های قابل صورتحساب فعلی: VPN و SSH با شمارنده مصرف معتبر.") + "\n"
+        if min_balance:
+            supported_text += _tformat(
+                "حداقل موجودی کیف پول برای ساخت سرویس جدید: {amount} تومان",
+                amount=f"{min_balance:,}",
+            ) + "\n"
+
+        if status["active"]:
+            text = "💳 <b>Pay As You Go</b>\n\n"
+            if free:
+                text += tr("🎁 حالت رایگان مدیریت: بدون کسر از کیف پول و بدون سقف حجم") + "\n"
+            text += _tformat(
+                "وضعیت: فعال\nموجودی کیف پول: {balance} تومان\n",
+                balance=f"{balance:,}",
+            )
+            text += _tformat("هزینه این ماه: {spent} تومان\n", spent=f"{status['spent']:,}")
+            text += _tformat("مصرف ثبت‌شده: {used} GB\n", used=f"{status['month_used_bytes']/GIB:.3f}")
+            text += _tformat("سرویس‌های متصل: {services}\n", services=status["services"])
+            text += rate_text + supported_text
+            text += _tformat("تسویه مصرف هر {cycle} انجام می‌شود.\n", cycle=cycle_text(db))
+            if panel_names:
+                text += _tformat("پنل‌های فعال ساخت سرویس: {panels}\n", panels=", ".join(panel_names))
+            else:
+                text += tr("⚠️ پنل فعالی برای ساخت سرویس انتخاب نشده است.") + "\n"
+            text += tr("برای ساخت سرویس مصرفی جدید از دکمه زیر استفاده کنید.")
         else:
-            text = ("💳 <b>Pay As You Go</b>\n\n"
-                    f"موجودی کیف پول: {balance:,} تومان\n"
-                    + rate_text + supported_text
-                    + "با ساخت سرویس مصرفی، حجم و زمان ثابت نخواهید داشت و هزینه از کیف پول کسر می‌شود.\n"
-                    + ("🎁 حساب شما مدیریتی است؛ بدون شارژ کیف پول و بدون هزینه می‌توانید سرویس بسازید."
-                       if free else "برای شروع، کیف پول باید موجودی مثبت داشته باشد."))
+            text = "💳 <b>Pay As You Go</b>\n\n"
+            text += _tformat("موجودی کیف پول: {balance} تومان\n", balance=f"{balance:,}")
+            text += rate_text + supported_text
+            text += tr("با ساخت سرویس مصرفی، حجم و زمان ثابت نخواهید داشت و هزینه از کیف پول کسر می‌شود.") + "\n"
+            text += (
+                tr("🎁 حساب شما مدیریتی است؛ بدون شارژ کیف پول و بدون هزینه می‌توانید سرویس بسازید.")
+                if free else tr("برای شروع، کیف پول باید موجودی مثبت داشته باشد.")
+            )
+
         if not panel_names:
-            text += "\n\n⚠️ هنوز پنل فعال ساخت سرویس توسط مدیریت انتخاب نشده است."
+            text += "\n\n" + tr("⚠️ هنوز پنل فعال ساخت سرویس توسط مدیریت انتخاب نشده است.")
 
         links_text = ""
         if service_rows:
-            links_text += "\n\n🔗 <b>لینک‌های اشتراک اختصاصی فعال:</b>"
+            links_text += "\n\n" + tr("🔗 <b>لینک‌های اشتراک اختصاصی فعال:</b>")
             for item in service_rows:
                 url = str(item["subscription_url"] or "").strip()
                 multi = await asyncio.to_thread(_is_multi_service, db, int(item["id"]))
@@ -1430,28 +1454,36 @@ def create_payg_router(db, is_main_bot=True):
                 if not url:
                     continue
                 safe_url = url.replace("&", "&amp;").replace('"', "&quot;")
-                label = str(item["username"] or f"سرویس {item['id']}")
-                panel_label = ("چندمقصدی" if multi else str(item["panel_name"] or f"پنل {item['panel_server_id']}"))
-                links_text += f"\n• {label} · {panel_label}: <a href=\"{safe_url}\">باز کردن لینک</a>"
-        custom_text = render_status_text(db, bool(status['active']), {
-            "balance": f"{balance:,}", "spent": f"{int(status.get('spent') or 0):,}",
-            "used_gb": f"{status['month_used_bytes']/GIB:.3f}", "services": status['services'],
-            "cycle": cycle_text(db), "min_balance": f"{min_balance:,}" if min_balance else "0",
-            "panels": (html.escape(", ".join(panel_names)) if panel_names else "پنل فعالی انتخاب نشده است"),
-            "free_note": ("🎁 حالت رایگان مدیریت: بدون کسر از کیف پول و بدون سقف حجم" if free else ""),
+                label = str(item["username"] or f"{tr('سرویس')} {item['id']}")
+                panel_label = (
+                    tr("چندمقصدی") if multi
+                    else str(item["panel_name"] or f"{tr('پنل')} {item['panel_server_id']}")
+                )
+                links_text += f"\n• {label} · {panel_label}: <a href=\"{safe_url}\">{tr('باز کردن لینک')}</a>"
+
+        custom_text = render_status_text(db, bool(status["active"]), {
+            "balance": f"{balance:,}",
+            "spent": f"{int(status.get('spent') or 0):,}",
+            "used_gb": f"{status['month_used_bytes']/GIB:.3f}",
+            "services": status["services"],
+            "cycle": cycle_text(db),
+            "min_balance": f"{min_balance:,}" if min_balance else "0",
+            "panels": html.escape(", ".join(panel_names)) if panel_names else tr("پنل فعالی انتخاب نشده است"),
+            "free_note": tr("🎁 حالت رایگان مدیریت: بدون کسر از کیف پول و بدون سقف حجم") if free else "",
             "links": links_text,
         })
-        default_text = text + links_text
         with db._get_conn() as conn:
-            configured = conn.execute("SELECT 1 FROM payg_accounts WHERE user_id=?", (int(user_id),)).fetchone() is not None
-        markup = menu(status['active'], configured)
+            configured = conn.execute(
+                "SELECT 1 FROM payg_accounts WHERE user_id=?", (int(user_id),)
+            ).fetchone() is not None
+        markup = menu(status["active"], configured)
         if custom_text:
             try:
                 await message.answer(custom_text, reply_markup=markup, parse_mode="HTML")
                 return
             except Exception:
                 logger.exception("PAYG custom status text failed; falling back to default")
-        await message.answer(default_text, reply_markup=markup, parse_mode="HTML")
+        await message.answer(text + links_text, reply_markup=markup, parse_mode="HTML")
 
     @router.message(Command("payg"))
     async def payg_command(message: Message):
@@ -1488,48 +1520,46 @@ def create_payg_router(db, is_main_bot=True):
         with db._get_conn() as conn:
             rows = conn.execute("SELECT service_kind,used_bytes,amount,rate_snapshot,created_at FROM payg_transactions WHERE user_id=? ORDER BY id DESC LIMIT 10", (call.from_user.id,)).fetchall()
         if not rows:
-            await call.message.answer("هنوز تراکنشی برای Pay As You Go ثبت نشده است.")
+            await call.message.answer(tr("هنوز تراکنشی برای Pay As You Go ثبت نشده است."))
             return
-        lines = ["🧾 <b>آخرین برداشت‌های Pay As You Go</b>"]
+        lines = [tr("🧾 <b>آخرین برداشت‌های Pay As You Go</b>")]
         for row in rows:
             try: snap = json.loads(row["rate_snapshot"] or "{}")
             except Exception: snap = {}
-            if snap.get("type") == "users": detail = f"ظرفیت {int(snap.get('capacity') or 0)} کاربر"
-            elif snap.get("type") == "days": detail = f"{int(snap.get('days') or 0)} روز فعال"
-            elif snap.get("type") == "traffic": detail = f"ترافیک {int(row['used_bytes'])/GIB:.3f} GB"
-            else: detail = f"ترافیک {int(row['used_bytes'])/GIB:.3f} GB"
-            lines.append(f"• {row['service_kind'].upper()} | {detail} | {int(row['amount']):,} تومان | {str(row['created_at'])[:16]}")
+            if snap.get("type") == "users": detail = _tformat("ظرفیت {amount} کاربر", amount=int(snap.get('capacity') or 0))
+            elif snap.get("type") == "days": detail = _tformat("{amount} روز فعال", amount=int(snap.get('days') or 0))
+            else: detail = _tformat("ترافیک {amount} GB", amount=f"{int(row['used_bytes'])/GIB:.3f}")
+            lines.append(f"• {row['service_kind'].upper()} | {detail} | {int(row['amount']):,} {tr('تومان')} | {str(row['created_at'])[:16]}")
         await call.message.answer("\n".join(lines), parse_mode="HTML")
 
     async def _multi_provision_flow(call: CallbackQuery, uid: int, plan):
         panel_ids, node_ids, protocols = plan
         if not await asyncio.to_thread(_acquire_provision_lock, db, uid):
-            await call.message.answer("⏳ درخواست ساخت سرویس شما در حال پردازش است؛ لطفاً چند لحظه صبر کنید.")
+            await call.message.answer(tr("⏳ درخواست ساخت سرویس شما در حال پردازش است؛ لطفاً چند لحظه صبر کنید."))
             return
         try:
             try:
                 result = await _provision_payg_multi(db, uid, panel_ids, node_ids, protocols)
             except Exception as exc:
                 logger.exception("PAYG multi-target provisioning failed for user=%s", uid)
-                await call.message.answer(f"⛔️ ساخت سرویس Pay As You Go ناموفق بود: {str(exc)[:250]}\n"
-                                          "هیچ هزینه مصرفی برای این سرویس ثبت نشده است.")
+                await call.message.answer(_tformat("⛔️ ساخت سرویس Pay As You Go ناموفق بود: {error}\nهیچ هزینه مصرفی برای این سرویس ثبت نشده است.", error=str(exc)[:250]))
                 return
             try:
                 safe_url = str(result["subscription_url"]).replace("&", "&amp;").replace('"', "&quot;")
                 default_text = (
-                    "✅ <b>سرویس Pay As You Go ساخته شد.</b>\n\n"
-                    f"👤 نام کاربری: <code>{result['username']}</code>\n"
-                    f"🧩 مقصدها: {result['panels']} پنل + {result['nodes']} نود\n"
-                    "📦 حجم: پرداخت به‌ازای مصرف\n⏳ مدت: بدون انقضای ثابت\n"
-                    + ("🎁 رایگان برای مدیریت؛ هزینه‌ای کسر نمی‌شود.\n\n" if is_free_payg_user(db, uid) else "💳 هزینه از کیف پول تومانی شما کسر می‌شود.\n\n") +
-                    f"🔗 <a href=\"{safe_url}\">دریافت لینک اشتراک</a>\n\n"
-                    f"مصرف همه مقصدها با هم جمع و هر {cycle_text(db)} تسویه می‌شود.")
+                    tr("✅ <b>سرویس Pay As You Go ساخته شد.</b>") + "\n\n"
+                    + _tformat("👤 نام کاربری: <code>{username}</code>\n", username=result["username"])
+                    + _tformat("🧩 مقصدها: {panels} پنل + {nodes} نود\n", panels=result["panels"], nodes=result["nodes"])
+                    + tr("📦 حجم: پرداخت به‌ازای مصرف\n⏳ مدت: بدون انقضای ثابت\n")
+                    + (tr("🎁 رایگان برای مدیریت؛ هزینه‌ای کسر نمی‌شود.\n\n") if is_free_payg_user(db, uid) else tr("💳 هزینه از کیف پول تومانی شما کسر می‌شود.\n\n"))
+                    + _tformat("🔗 <a href=\"{url}\">دریافت لینک اشتراک</a>\n\n", url=safe_url)
+                    + _tformat("مصرف همه مقصدها با هم جمع و هر {cycle} تسویه می‌شود.", cycle=cycle_text(db)))
                 await send_delivery_message(call.message, db, default_text, result["username"], safe_url)
                 await show(call.message, uid)
             except Exception:
                 logger.exception("PAYG multi-target delivery message failed for user=%s", uid)
                 try:
-                    await call.message.answer("✅ سرویس Pay As You Go ساخته و فعال شده است. برای مشاهده لینک و وضعیت، دستور /payg را ارسال کنید.")
+                    await call.message.answer(tr("✅ سرویس Pay As You Go ساخته و فعال شده است. برای مشاهده لینک و وضعیت، دستور /payg را ارسال کنید."))
                 except Exception:
                     pass
         finally:
@@ -1538,23 +1568,22 @@ def create_payg_router(db, is_main_bot=True):
     @router.callback_query(F.data == "payg:provision")
     async def payg_provision_callback(call: CallbackQuery):
         uid = int(call.from_user.id)
-        await call.answer("در حال آماده‌سازی سرویس مصرفی...")
+        await call.answer(tr("در حال آماده‌سازی سرویس مصرفی..."))
         if db.get_setting("payg_enabled", "1") != "1":
-            await call.message.answer("⛔️ فروش Pay As You Go در حال حاضر غیرفعال است.")
+            await call.message.answer(tr("⛔️ فروش Pay As You Go در حال حاضر غیرفعال است."))
             return
         with db._get_conn() as conn:
             existing_account = conn.execute("SELECT status FROM payg_accounts WHERE user_id=?", (uid,)).fetchone()
         if existing_account and existing_account["status"] == "suspended_admin":
-            await call.message.answer("⛔️ حساب Pay As You Go شما توسط مدیریت تعلیق شده است. برای پیگیری با پشتیبانی تماس بگیرید.")
+            await call.message.answer(tr("⛔️ حساب Pay As You Go شما توسط مدیریت تعلیق شده است. برای پیگیری با پشتیبانی تماس بگیرید."))
             return
         balance_now = int(db.get_wallet_credit(uid) or 0)
         if balance_now <= 0 and not is_free_payg_user(db, uid):
-            await call.message.answer("برای ساخت سرویس مصرفی، ابتدا کیف پول تومانی خود را شارژ کنید.")
+            await call.message.answer(tr("برای ساخت سرویس مصرفی، ابتدا کیف پول تومانی خود را شارژ کنید."))
             return
         min_balance = get_min_balance(db)
         if min_balance and balance_now < min_balance and not is_free_payg_user(db, uid):
-            await call.message.answer(f"⛔️ برای ساخت سرویس مصرفی، موجودی کیف پول باید حداقل {min_balance:,} تومان باشد.\n"
-                                      f"موجودی فعلی شما: {balance_now:,} تومان")
+            await call.message.answer(_tformat("⛔️ برای ساخت سرویس مصرفی، موجودی کیف پول باید حداقل {minimum} تومان باشد.\nموجودی فعلی شما: {current} تومان", minimum=f"{min_balance:,}", current=f"{balance_now:,}"))
             return
         try:
             max_services = max(1, min(100, int(db.get_setting("payg_max_services_per_user", "5") or 5)))
@@ -1568,15 +1597,15 @@ def create_payg_router(db, is_main_bot=True):
                 (uid,),
             ).fetchone()["n"]
         if int(service_count or 0) >= max_services:
-            await call.message.answer(f"⛔️ حداکثر {max_services} سرویس Pay As You Go برای هر کاربر مجاز است.")
+            await call.message.answer(_tformat("⛔️ حداکثر {count} سرویس Pay As You Go برای هر کاربر مجاز است.", count=max_services))
             return
         selected_ids = get_payg_panel_ids(db)
         if not selected_ids:
-            await call.message.answer("⛔️ هیچ پنل فعالی برای ساخت سرویس Pay As You Go توسط مدیریت انتخاب نشده است.")
+            await call.message.answer(tr("⛔️ هیچ پنل فعالی برای ساخت سرویس Pay As You Go توسط مدیریت انتخاب نشده است."))
             return
         panel_ids = get_usable_payg_panel_ids(db)
         if not panel_ids:
-            await call.message.answer("⛔️ ساب اختصاصی همه پنل‌های انتخاب‌شده برای Pay As You Go غیرفعال است؛ مدیریت باید آن را روشن کند.")
+            await call.message.answer(tr("⛔️ ساب اختصاصی همه پنل‌های انتخاب‌شده برای Pay As You Go غیرفعال است؛ مدیریت باید آن را روشن کند."))
             return
         plan = payg_multi_plan(db)
         if plan:
@@ -1584,11 +1613,11 @@ def create_payg_router(db, is_main_bot=True):
             return
         server = await asyncio.to_thread(_choose_payg_panel, db, panel_ids)
         if not server:
-            await call.message.answer("⛔️ هیچ‌یک از پنل‌های انتخاب‌شده فعال یا دارای ظرفیت کافی نیستند.")
+            await call.message.answer(tr("⛔️ هیچ‌یک از پنل‌های انتخاب‌شده فعال یا دارای ظرفیت کافی نیستند."))
             return
         server_id = int(server["id"])
         if not await asyncio.to_thread(_acquire_provision_lock, db, uid):
-            await call.message.answer("⏳ درخواست ساخت سرویس شما در حال پردازش است؛ لطفاً چند لحظه صبر کنید.")
+            await call.message.answer(tr("⏳ درخواست ساخت سرویس شما در حال پردازش است؛ لطفاً چند لحظه صبر کنید."))
             return
         provisioned = None
         enrolled_ok = False
@@ -1637,12 +1666,12 @@ def create_payg_router(db, is_main_bot=True):
             enrolled_ok = True
             safe_url = str(provisioned["subscription_url"]).replace("&", "&amp;").replace('"', "&quot;")
             default_text = (
-                "✅ <b>سرویس Pay As You Go ساخته شد.</b>\n\n"
-                f"👤 نام کاربری: <code>{provisioned['username']}</code>\n"
-                "📦 حجم: پرداخت به‌ازای مصرف\n⏳ مدت: بدون انقضای ثابت\n"
-                + ("🎁 رایگان برای مدیریت؛ هزینه‌ای کسر نمی‌شود.\n\n" if is_free_payg_user(db, uid) else "💳 هزینه از کیف پول تومانی شما کسر می‌شود.\n\n") +
-                f"🔗 <a href=\"{safe_url}\">دریافت لینک اشتراک</a>\n\n"
-                f"مصرف هر {cycle_text(db)} محاسبه و تسویه می‌شود.")
+                tr("✅ <b>سرویس Pay As You Go ساخته شد.</b>") + "\n\n"
+                + _tformat("👤 نام کاربری: <code>{username}</code>\n", username=provisioned["username"])
+                + tr("📦 حجم: پرداخت به‌ازای مصرف\n⏳ مدت: بدون انقضای ثابت\n")
+                + (tr("🎁 رایگان برای مدیریت؛ هزینه‌ای کسر نمی‌شود.\n\n") if is_free_payg_user(db, uid) else tr("💳 هزینه از کیف پول تومانی شما کسر می‌شود.\n\n"))
+                + _tformat("🔗 <a href=\"{url}\">دریافت لینک اشتراک</a>\n\n", url=safe_url)
+                + _tformat("مصرف هر {cycle} محاسبه و تسویه می‌شود.", cycle=cycle_text(db)))
             await send_delivery_message(call.message, db, default_text, provisioned["username"], safe_url)
             await show(call.message, uid)
         except Exception as exc:
@@ -1651,7 +1680,7 @@ def create_payg_router(db, is_main_bot=True):
                 # Delivery/UI failure must never revoke a service that has already
                 # been provisioned and enrolled successfully.
                 try:
-                    await call.message.answer("✅ سرویس Pay As You Go ساخته و فعال شده است. برای مشاهده لینک و وضعیت، دستور /payg را ارسال کنید.")
+                    await call.message.answer(tr("✅ سرویس Pay As You Go ساخته و فعال شده است. برای مشاهده لینک و وضعیت، دستور /payg را ارسال کنید."))
                 except Exception:
                     pass
             else:
@@ -1664,7 +1693,7 @@ def create_payg_router(db, is_main_bot=True):
                         await _rollback_payg_vpn(db, server, provisioned)
                     except Exception:
                         logger.exception("PAYG provisioning rollback/marker cleanup failed for user=%s", uid)
-                await call.message.answer(f"⛔️ ساخت سرویس Pay As You Go ناموفق بود: {str(exc)[:250]}\nهیچ هزینه مصرفی برای این سرویس ثبت نشده است.")
+                await call.message.answer(_tformat("⛔️ ساخت سرویس Pay As You Go ناموفق بود: {error}\nهیچ هزینه مصرفی برای این سرویس ثبت نشده است.", error=str(exc)[:250]))
         finally:
             await asyncio.to_thread(_release_provision_lock, db, uid)
 
@@ -1674,22 +1703,21 @@ def create_payg_router(db, is_main_bot=True):
         with db._get_conn() as conn:
             acc = conn.execute("SELECT status FROM payg_accounts WHERE user_id=?", (int(call.from_user.id),)).fetchone()
         if acc and acc["status"] == "suspended_admin":
-            await call.message.answer("⛔️ حساب Pay As You Go شما توسط مدیریت تعلیق شده است. برای پیگیری با پشتیبانی تماس بگیرید.")
+            await call.message.answer(tr("⛔️ حساب Pay As You Go شما توسط مدیریت تعلیق شده است. برای پیگیری با پشتیبانی تماس بگیرید."))
             return
         result = await asyncio.to_thread(activate_payg, db, call.from_user.id)
         if not result['ok']:
             if result['reason'] == 'disabled':
-                reason = "این قابلیت در حال حاضر غیرفعال است."
+                reason = tr("این قابلیت در حال حاضر غیرفعال است.")
             elif result['reason'] == 'suspended_admin':
-                reason = "حساب Pay As You Go شما توسط مدیریت تعلیق شده است."
+                reason = tr("حساب Pay As You Go شما توسط مدیریت تعلیق شده است.")
             elif result['reason'] == 'no_services':
-                reason = ("⛔️ سرویس فعالی با آمار مصرف معتبر برای این حساب پیدا نشد.\n\n"
-                          "ابتدا یک سرویس VPN یا SSH قابل‌اندازه‌گیری تهیه کنید. سرویس‌هایی که از قبل به استخر حجم دیگری متصل‌اند، بدون انتقال امن به این حساب اضافه نمی‌شوند.")
+                reason = tr("⛔️ سرویس فعالی با آمار مصرف معتبر برای این حساب پیدا نشد.") + "\n\n" + tr("ابتدا یک سرویس VPN یا SSH قابل‌اندازه‌گیری تهیه کنید. سرویس‌هایی که از قبل به استخر حجم دیگری متصل‌اند، بدون انتقال امن به این حساب اضافه نمی‌شوند.")
             else:
-                reason = "برای فعال‌سازی ابتدا کیف پول را شارژ کنید."
+                reason = tr("برای فعال‌سازی ابتدا کیف پول را شارژ کنید.")
             await call.message.answer(reason)
             return
-        confirmation = f"✅ Pay As You Go فعال شد. سرویس‌های دارای اندازه‌گیری مصرف معتبر متصل شدند.\nتسویه هر {cycle_text(db)} انجام می‌شود."
+        confirmation = tr("✅ Pay As You Go فعال شد. سرویس‌های دارای اندازه‌گیری مصرف معتبر متصل شدند.") + "\n" + _tformat("تسویه مصرف هر {cycle} انجام می‌شود.\n", cycle=cycle_text(db))
         if result.get('conflicts'):
             confirmation += (f"\n\n⚠️ تعداد {result['conflicts']} سرویس به دلیل اتصال به استخر سهمیه‌ی دیگری وارد Pay As You Go نشد؛ "
                              "برای جلوگیری از تداخل سهمیه‌ها، انتقال آن‌ها خودکار انجام نشد.")
@@ -1701,17 +1729,16 @@ def create_payg_router(db, is_main_bot=True):
         with db._get_conn() as conn:
             rows = conn.execute("SELECT service_kind,used_bytes,amount,rate_snapshot,created_at FROM payg_transactions WHERE user_id=? ORDER BY id DESC LIMIT 10", (message.from_user.id,)).fetchall()
         if not rows:
-            await message.answer("هنوز تراکنشی برای Pay As You Go ثبت نشده است.")
+            await message.answer(tr("هنوز تراکنشی برای Pay As You Go ثبت نشده است."))
             return
-        lines = ["🧾 <b>آخرین برداشت‌های Pay As You Go</b>"]
+        lines = [tr("🧾 <b>آخرین برداشت‌های Pay As You Go</b>")]
         for row in rows:
             try: snap = json.loads(row["rate_snapshot"] or "{}")
             except Exception: snap = {}
-            if snap.get("type") == "users": detail = f"ظرفیت {int(snap.get('capacity') or 0)} کاربر"
-            elif snap.get("type") == "days": detail = f"{int(snap.get('days') or 0)} روز فعال"
-            elif snap.get("type") == "traffic": detail = f"ترافیک {int(row['used_bytes'])/GIB:.3f} GB"
-            else: detail = f"ترافیک {int(row['used_bytes'])/GIB:.3f} GB"
-            lines.append(f"• {row['service_kind'].upper()} | {detail} | {int(row['amount']):,} تومان | {str(row['created_at'])[:16]}")
+            if snap.get("type") == "users": detail = _tformat("ظرفیت {amount} کاربر", amount=int(snap.get('capacity') or 0))
+            elif snap.get("type") == "days": detail = _tformat("{amount} روز فعال", amount=int(snap.get('days') or 0))
+            else: detail = _tformat("ترافیک {amount} GB", amount=f"{int(row['used_bytes'])/GIB:.3f}")
+            lines.append(f"• {row['service_kind'].upper()} | {detail} | {int(row['amount']):,} {tr('تومان')} | {str(row['created_at'])[:16]}")
         await message.answer("\n".join(lines), parse_mode="HTML")
 
     return router
