@@ -1314,6 +1314,30 @@ def render_delivery_text(db, default_text: str, username: str, safe_url: str) ->
     return text
 
 
+PAYG_STATUS_TEXT_ACTIVE_KEY = "payg_status_text_active"
+PAYG_STATUS_TEXT_INACTIVE_KEY = "payg_status_text_inactive"
+PAYG_STATUS_TEXT_MAX = 3000
+# متغیرهای قابل استفاده در متن صفحه‌ی «Pay As You Go» (پیام وضعیت و جزئیات مصرف)
+PAYG_STATUS_PLACEHOLDERS = ("balance", "spent", "used_gb", "services", "cycle",
+                            "min_balance", "panels", "free_note", "links")
+
+
+def render_status_text(db, active: bool, values: dict):
+    """Admin-defined PayG status text with placeholders filled; None means use the default text."""
+    key = PAYG_STATUS_TEXT_ACTIVE_KEY if active else PAYG_STATUS_TEXT_INACTIVE_KEY
+    custom = str(db.get_setting(key, "") or "").strip()
+    if not custom:
+        return None
+    links = str(values.get("links", "") or "")
+    for name in PAYG_STATUS_PLACEHOLDERS:
+        if name == "links":
+            continue
+        custom = custom.replace("{" + name + "}", str(values.get(name, "")))
+    if "{links}" in custom:
+        return custom.replace("{links}", links)
+    return custom + links
+
+
 async def send_delivery_message(message, db, default_text: str, username: str, safe_url: str) -> None:
     """Send the PayG config message with the admin-defined text and photo, falling back to the default."""
     text = render_delivery_text(db, default_text, username, safe_url)
@@ -1393,8 +1417,10 @@ def create_payg_router(db, is_main_bot=True):
                        if free else "برای شروع، کیف پول باید موجودی مثبت داشته باشد."))
         if not panel_names:
             text += "\n\n⚠️ هنوز پنل فعال ساخت سرویس توسط مدیریت انتخاب نشده است."
+
+        links_text = ""
         if service_rows:
-            text += "\n\n🔗 <b>لینک‌های اشتراک اختصاصی فعال:</b>"
+            links_text += "\n\n🔗 <b>لینک‌های اشتراک اختصاصی فعال:</b>"
             for item in service_rows:
                 url = str(item["subscription_url"] or "").strip()
                 multi = await asyncio.to_thread(_is_multi_service, db, int(item["id"]))
@@ -1406,10 +1432,26 @@ def create_payg_router(db, is_main_bot=True):
                 safe_url = url.replace("&", "&amp;").replace('"', "&quot;")
                 label = str(item["username"] or f"سرویس {item['id']}")
                 panel_label = ("چندمقصدی" if multi else str(item["panel_name"] or f"پنل {item['panel_server_id']}"))
-                text += f"\n• {label} · {panel_label}: <a href=\"{safe_url}\">باز کردن لینک</a>"
+                links_text += f"\n• {label} · {panel_label}: <a href=\"{safe_url}\">باز کردن لینک</a>"
+        custom_text = render_status_text(db, bool(status['active']), {
+            "balance": f"{balance:,}", "spent": f"{int(status.get('spent') or 0):,}",
+            "used_gb": f"{status['month_used_bytes']/GIB:.3f}", "services": status['services'],
+            "cycle": cycle_text(db), "min_balance": f"{min_balance:,}" if min_balance else "0",
+            "panels": (html.escape(", ".join(panel_names)) if panel_names else "پنل فعالی انتخاب نشده است"),
+            "free_note": ("🎁 حالت رایگان مدیریت: بدون کسر از کیف پول و بدون سقف حجم" if free else ""),
+            "links": links_text,
+        })
+        default_text = text + links_text
         with db._get_conn() as conn:
             configured = conn.execute("SELECT 1 FROM payg_accounts WHERE user_id=?", (int(user_id),)).fetchone() is not None
-        await message.answer(text, reply_markup=menu(status['active'], configured), parse_mode="HTML")
+        markup = menu(status['active'], configured)
+        if custom_text:
+            try:
+                await message.answer(custom_text, reply_markup=markup, parse_mode="HTML")
+                return
+            except Exception:
+                logger.exception("PAYG custom status text failed; falling back to default")
+        await message.answer(default_text, reply_markup=markup, parse_mode="HTML")
 
     @router.message(Command("payg"))
     async def payg_command(message: Message):
