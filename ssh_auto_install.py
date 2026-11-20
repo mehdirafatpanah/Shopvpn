@@ -28,6 +28,7 @@ _FILES = (
     "deploy/shopvpn-ssh-agent.service",
     "deploy/shopvpn-sshd@.service",
     "deploy/shopvpn-ovpn-disconnect.sh",
+    "deploy/shopvpn-ovpn-auth.py",
     "deploy/shopvpn-ovpn-nat.service",
     "deploy/shopvpn-wg-nat.service",
 )

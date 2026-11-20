@@ -25,6 +25,7 @@ import socket
 import sqlite3
 import subprocess
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 import pwd
@@ -48,6 +49,7 @@ WG_DNS = os.getenv("SHOPVPN_WG_DNS", "1.1.1.1, 8.8.8.8")
 WG_KEY_RE = re.compile(r"^[A-Za-z0-9+/]{43}=$")
 TRUSTED_SOURCES = {"nftables_port_counters", "external-counter", "ssh-traffic-accountant", "openvpn_accounting",
                    "wireguard_accounting"}
+GAI_CONF = Path("/etc/gai.conf")
 logger = logging.getLogger(__name__)
 # web.AppKey فقط از aiohttp 3.9 به بعد وجود دارد؛ Ubuntu 22.04 نسخه 3.8 دارد.
 ENFORCEMENT_TASK_KEY = web.AppKey("enforcement_task", asyncio.Task) if hasattr(web, "AppKey") else "enforcement_task"
@@ -277,17 +279,105 @@ class Agent:
             return port
         raise RuntimeError(f"no free dedicated SSH port available in range {low}-{high}")
 
+    FW_COMMENT = "shopvpn-ssh-ports"
+
+    def _firewall_ranges(self) -> list:
+        """بازه‌ی پورت‌هایی که باید از بیرون باز باشند: بازه‌ی پیش‌فرض + پورت‌های تکی حساب‌های خارج از آن.
+        پورت‌های رزرو (22، Agent، OpenVPN، WireGuard) هرگز باز نمی‌شوند."""
+        low, high = self._default_ssh_port_range()
+        ranges = [(low, high)]
+        try:
+            with self._conn() as db:
+                ports = [int(r[0]) for r in db.execute(
+                    "SELECT ssh_port FROM accounts WHERE ssh_port IS NOT NULL AND protocol='ssh'").fetchall()]
+        except Exception:
+            ports = []
+        reserved = self._reserved_ports()
+        for port in sorted(set(ports)):
+            if low <= port <= high or port in reserved:
+                continue
+            ranges.append((port, port))
+        return [r for r in ranges if not any(r[0] <= x <= r[1] for x in reserved)]
+
     def _open_firewall_range(self, low: int, high: int):
-        """بازه‌ی پورت‌های SSH خارج از 20000-39999 در ufw (فقط اگر ufw فعال باشد) باز می‌شود."""
-        if low >= 20000 and high <= 39999:
+        """پورت‌های SSH حساب‌ها را در فایروال محلی (iptables/ip6tables، ufw، firewalld، nftables) باز می‌کند.
+
+        قبلاً بازه‌ی پیش‌فرض 20000-39999 عمداً رد می‌شد و فرض می‌شد قبلاً باز شده؛ روی نودهایی که
+        با اسکریپت دستی/ iptables-REJECT (مثل Oracle) یا فایروال دیگری نصب شده بودند پورت بسته می‌ماند:
+        اپ «متصل» نشان می‌داد ولی هیچ پینگ/ترافیکی رد نمی‌شد. این متد idempotent است."""
+        ranges = [(int(low), int(high))]
+        reserved = self._reserved_ports()
+        ranges = [r for r in ranges if not any(r[0] <= x <= r[1] for x in reserved)]
+        self._firewall_open_ranges(ranges)
+
+    def _firewall_open_ranges(self, ranges):
+        for low, high in ranges:
+            tag = f"{self.FW_COMMENT}-{low}-{high}"
+            for binary in ("iptables", "ip6tables"):
+                if shutil.which(binary) is None:
+                    continue
+                spec = f"{low}:{high}" if low != high else str(low)
+                rule = ["-p", "tcp", "--dport", spec, "-m", "comment", "--comment", self.FW_COMMENT, "-j", "ACCEPT"]
+                try:
+                    if self._run(binary, "-C", "INPUT", *rule, check=False).returncode != 0:
+                        self._run(binary, "-I", "INPUT", "1", *rule, check=False)
+                except Exception:
+                    logger.exception("unable to open ports %s with %s", spec, binary)
+            try:
+                if shutil.which("ufw") is not None:
+                    status = self._run("ufw", "status", check=False)
+                    if "Status: active" in str(getattr(status, "stdout", "") or ""):
+                        self._run("ufw", "allow", f"{low}/tcp" if low == high else f"{low}:{high}/tcp", check=False)
+            except Exception:
+                logger.exception("unable to open ports in ufw")
+            try:
+                if shutil.which("firewall-cmd") is not None and self._run("firewall-cmd", "--state", check=False).returncode == 0:
+                    port = f"{low}/tcp" if low == high else f"{low}-{high}/tcp"
+                    self._run("firewall-cmd", f"--add-port={port}", check=False)
+                    self._run("firewall-cmd", "--permanent", f"--add-port={port}", check=False)
+            except Exception:
+                logger.exception("unable to open ports in firewalld")
+            self._nft_input_accept(tag, ["tcp", "dport", f"{low}-{high}" if low != high else str(low), "accept"])
+
+    def _nft_input_accept(self, tag: str, rule: list):
+        """اگر فایروال خالص nftables (جدول inet filter) باشد، iptables به‌تنهایی کافی نیست."""
+        if shutil.which("nft") is None:
             return
-        if shutil.which("ufw") is None:
+        try:
+            listing = self._run("nft", "list", "chain", "inet", "filter", "input", check=False)
+            if listing.returncode != 0 or tag in str(listing.stdout or ""):
+                return
+            self._run("nft", "insert", "rule", "inet", "filter", "input", *rule, "comment", json.dumps(tag), check=False)
+        except Exception:
+            logger.exception("unable to add nftables accept rule %s", tag)
+
+    def _ensure_network_access(self):
+        """هر چیزی که باید روی نود باز بماند: ICMP، پورت‌های SSH، ترجیح IPv4. idempotent و دوره‌ای."""
+        self._ensure_icmp_ping()
+        try:
+            self._firewall_open_ranges(self._firewall_ranges())
+        except Exception:
+            logger.exception("SSH port firewall setup failed")
+        self._prefer_ipv4_resolution()
+
+    @staticmethod
+    def _prefer_ipv4_resolution():
+        """sshd مقصد تونل را با getaddrinfo حل می‌کند. روی سرورهایی که IPv6 دارند ولی مسیر IPv6 خراب است،
+        اتصال به مقصد (مثلاً generate_204 کلاینت) تا timeout می‌ماند و اپ «بدون پینگ» نشان می‌دهد.
+        ترجیح IPv4 در gai.conf (IPv6 همچنان fallback است). با SHOPVPN_PREFER_IPV4=0 خاموش می‌شود."""
+        if os.getenv("SHOPVPN_PREFER_IPV4", "1").strip().lower() in {"0", "false", "no", "off"}:
             return
-        status = self._run("ufw", "status", check=False)
-        if "Status: active" not in str(getattr(status, "stdout", "") or ""):
-            return
-        spec = f"{low}/tcp" if low == high else f"{low}:{high}/tcp"
-        self._run("ufw", "allow", spec, check=False)
+        path = GAI_CONF
+        try:
+            text = path.read_text(encoding="utf-8") if path.exists() else ""
+            if re.search(r"(?m)^\s*precedence\s+::ffff:0:0/96\s+100\b", text):
+                return
+            new = re.sub(r"(?m)^\s*#\s*(precedence\s+::ffff:0:0/96\s+100.*)$", r"\1", text, count=1)
+            if new == text:
+                new = text.rstrip("\n") + "\n# shopvpn: prefer IPv4 for tunnel egress\nprecedence ::ffff:0:0/96  100\n"
+            path.write_text(new, encoding="utf-8")
+        except OSError:
+            logger.exception("unable to update /etc/gai.conf")
 
     SSHD_CONF_MARK = "# shopvpn-sshd-conf v2"
 
@@ -355,6 +445,8 @@ class Agent:
                     self._run(binary, "-I", "INPUT", "1", *rule, check=False)
             except Exception:
                 logger.exception("unable to add %s ICMP rule", binary)
+        self._nft_input_accept("shopvpn-icmp4", ["icmp", "type", "echo-request", "accept"])
+        self._nft_input_accept("shopvpn-icmp6", ["icmpv6", "type", "echo-request", "accept"])
 
     def _migrate_account_sshd_configs(self):
         """Rewrite per-account sshd configs created by older agent versions and restart their units once."""
@@ -777,8 +869,7 @@ class Agent:
         if not supplied.startswith(prefix) or not hmac.compare_digest(supplied[len(prefix):].encode(), self.token):
             raise web.HTTPUnauthorized(text="unauthorized")
 
-    @staticmethod
-    def _udpgw_status() -> dict:
+    def _udpgw_status(self) -> dict:
         """Return local UDPGW service/socket status without making health depend on it."""
         import shutil
         import subprocess
@@ -796,6 +887,93 @@ class Agent:
                 "service": service or "unknown", "listening": listening,
                 "host": "127.0.0.1", "port": 7300,
                 "ok": service == "active" and listening}
+
+    @staticmethod
+    def _tcp_probe(host: str, port: int, family, timeout: float = 4.0):
+        started = time.monotonic()
+        sock = None
+        try:
+            sock = socket.socket(family, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            sock.connect((host, port))
+            return True, f"{int((time.monotonic() - started) * 1000)}ms"
+        except OSError as exc:
+            return False, str(exc)[:80]
+        finally:
+            if sock is not None:
+                sock.close()
+
+    def diagnose(self) -> list:
+        """بررسی لایه‌به‌لایه‌ی نود برای وقتی که کلاینت «متصل» است ولی پینگ/اینترنت ندارد."""
+        checks = []
+
+        def add(name, ok, detail="", hint=""):
+            checks.append({"name": name, "ok": ok, "detail": str(detail)[:300], "hint": hint})
+
+        with self._conn() as db:
+            rows = db.execute("SELECT account_id,username,ssh_port,status FROM accounts "
+                              "WHERE protocol='ssh' AND ssh_port IS NOT NULL").fetchall()
+        active = [r for r in rows if r["status"] == "active"]
+        try:
+            ss_out = subprocess.run(["ss", "-ltnH"], capture_output=True, text=True, timeout=5).stdout
+        except Exception:
+            ss_out = ""
+        listening = {int(m) for m in re.findall(r":(\d+)\s", ss_out)}
+        down = [f"{r['username']}:{r['ssh_port']}" for r in active if int(r["ssh_port"]) not in listening]
+        add("sshd_listeners", not down, f"{len(active) - len(down)}/{len(active)} حساب فعال گوش می‌دهند" + (f"؛ بسته: {', '.join(down[:5])}" if down else ""),
+            "systemctl status shopvpn-sshd@<account_id> را ببینید." if down else "")
+        udp = self._udpgw_status()
+        add("udpgw_7300", bool(udp.get("ok")), f"service={udp.get('service')} listening={udp.get('listening')}",
+            "systemctl restart shopvpn-udpgw" if not udp.get("ok") else "")
+        if active:
+            conf = Path("/etc/shopvpn/sshd") / f"{active[0]['account_id']}.conf"
+            try:
+                eff = subprocess.run(["sshd", "-T", "-f", str(conf)], capture_output=True, text=True, timeout=8).stdout.lower()
+                ok = "allowtcpforwarding yes" in eff and "permitopen any" in eff
+                add("sshd_forwarding", ok, "allowtcpforwarding/permitopen " + ("OK" if ok else "غیرفعال"),
+                    "کانفیگ sshd حساب باید AllowTcpForwarding yes و PermitOpen any داشته باشد." if not ok else "")
+            except Exception as exc:
+                add("sshd_forwarding", False, f"sshd -T اجرا نشد: {type(exc).__name__}")
+        try:
+            icmp_ok = Path("/proc/sys/net/ipv4/icmp_echo_ignore_all").read_text().strip() == "0"
+        except OSError:
+            icmp_ok = True
+        add("icmp_sysctl", icmp_ok, "icmp_echo_ignore_all=" + ("0" if icmp_ok else "1"),
+            "sysctl -w net.ipv4.icmp_echo_ignore_all=0" if not icmp_ok else "")
+        fw = []
+        for binary in ("iptables", "ip6tables"):
+            if shutil.which(binary):
+                res = self._run(binary, "-S", "INPUT", check=False)
+                text = str(res.stdout or "")
+                fw.append(f"{binary}: " + ("policy DROP" if "-P INPUT DROP" in text else "policy ACCEPT")
+                          + (", REJECT rule" if "REJECT" in text else "")
+                          + (", ports rule OK" if self.FW_COMMENT in text else ", NO ports rule"))
+        add("firewall_ports", all("NO ports rule" not in x for x in fw), " | ".join(fw) or "iptables پیدا نشد",
+            "با --diagnose --fix دوباره اعمال کنید؛ فایروال ارائه‌دهنده (Security Group) را هم برای tcp 20000-39999 باز کنید.")
+        started = time.monotonic()
+        try:
+            socket.getaddrinfo("www.gstatic.com", 80)
+            add("dns_resolve", True, f"{int((time.monotonic() - started) * 1000)}ms")
+        except OSError as exc:
+            add("dns_resolve", False, str(exc)[:80], "DNS خود نود کار نمی‌کند (resolv.conf)؛ تونل هم از همین DNS استفاده می‌کند.")
+        ok4, d4 = self._tcp_probe("1.1.1.1", 443, socket.AF_INET)
+        add("egress_ipv4", ok4, d4, "خروجی IPv4 نود مسدود است." if not ok4 else "")
+        ok6, d6 = self._tcp_probe("2606:4700:4700::1111", 443, socket.AF_INET6)
+        add("egress_ipv6", True, ("OK " if ok6 else "ندارد/خراب ") + d6)
+        try:
+            import http.client
+            conn = http.client.HTTPConnection("www.gstatic.com", 80, timeout=6)
+            conn.request("GET", "/generate_204")
+            status = conn.getresponse().status
+            conn.close()
+            add("http_generate_204", status == 204, f"HTTP {status}", "خروجی وب نود مشکل دارد." if status != 204 else "")
+        except Exception as exc:
+            add("http_generate_204", False, f"{type(exc).__name__}: {str(exc)[:80]}",
+                "نود به اینترنت وصل نیست یا DNS/خروجی HTTP بسته است.")
+        return checks
+
+    async def diagnose_http(self, request):
+        return web.json_response({"ok": True, "checks": await asyncio.to_thread(self.diagnose)})
 
     async def health(self, request):
         result = {"ok": True, "agent": "shopvpn-ssh", "version": 2, "protocols": sorted(self.protocols)}
@@ -1051,7 +1229,15 @@ class Agent:
         return True
 
     async def enforcement_loop(self, app):
+        tick = 0
         while True:
+            tick += 1
+            if "ssh" in self.protocols and tick % 10 == 0:
+                # هر ~۵ دقیقه: reload شدن ufw/iptables/firewalld قانون‌ها را پاک می‌کند.
+                try:
+                    await asyncio.to_thread(self._ensure_network_access)
+                except Exception:
+                    logger.exception("periodic network access check failed")
             try:
                 if self.nft_accounting:
                     try:
@@ -1088,9 +1274,9 @@ class Agent:
     async def _start_enforcement(self, app):
         if "ssh" in self.protocols:
             try:
-                await asyncio.to_thread(self._ensure_icmp_ping)
+                await asyncio.to_thread(self._ensure_network_access)
             except Exception:
-                logger.exception("ICMP ping setup crashed")
+                logger.exception("network access setup crashed")
             try:
                 await asyncio.to_thread(self._migrate_account_sshd_configs)
             except Exception:
@@ -1392,6 +1578,7 @@ class Agent:
         app.on_cleanup.append(self._stop_enforcement)
         app.router.add_get("/health", self.health)
         app.router.add_get("/v1/info", self.info)
+        app.router.add_get("/v1/diagnose", self.diagnose_http)
         app.router.add_post("/v1/uninstall", self.uninstall_node)
         app.router.add_post("/v1/accounts", self.create_account)
         app.router.add_get("/v1/accounts", self.list_accounts)
@@ -1407,8 +1594,20 @@ def main():
     parser.add_argument("--host", default=os.getenv("SHOPVPN_AGENT_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("SHOPVPN_AGENT_PORT", "8765")))
     parser.add_argument("--db", default=os.getenv("SHOPVPN_AGENT_DB", "/var/lib/shopvpn-ssh-agent/agent.db"))
+    parser.add_argument("--diagnose", action="store_true", help="print a layer-by-layer health report and exit")
+    parser.add_argument("--fix", action="store_true", help="with --diagnose: first re-apply ICMP/firewall/IPv4 settings")
     args = parser.parse_args()
     token = os.getenv("SHOPVPN_AGENT_TOKEN", "")
+    if args.diagnose:
+        tool = Agent(token or "x" * 32, args.db)
+        if args.fix:
+            tool._ensure_network_access()
+        failed = 0
+        for item in tool.diagnose():
+            print(("[ OK ] " if item["ok"] else "[FAIL] ") + f"{item['name']}: {item['detail']}"
+                  + (f"\n        -> {item['hint']}" if item["hint"] and not item["ok"] else ""))
+            failed += 0 if item["ok"] else 1
+        raise SystemExit(1 if failed else 0)
     agent = Agent(token, args.db)
     ssl_ctx = None
     cert, key = os.getenv("SHOPVPN_AGENT_TLS_CERT", ""), os.getenv("SHOPVPN_AGENT_TLS_KEY", "")

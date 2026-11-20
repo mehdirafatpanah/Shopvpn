@@ -6,8 +6,10 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -201,7 +203,7 @@ def start_auto_install(db, *, name: str, host: str, ssh_port: int = 22, username
 
 
 def start_node_upgrade(db, *, node_id: int, username: str = "root", password: str, protocols, ovpn_port: int = 1194,
-                       ovpn_proto: str = "udp", wg_port: int = 51820) -> str:
+                       ovpn_proto: str = "udp", wg_port: int = 51820, refresh: bool = False) -> str:
     node = next((n for n in db.list_ssh_nodes() if int(n["id"]) == int(node_id)), None)
     if not node or node.get("node_type") != "linux":
         raise SSHServiceError("نود Linux Agent پیدا نشد.", 404)
@@ -209,6 +211,9 @@ def start_node_upgrade(db, *, node_id: int, username: str = "root", password: st
         raise SSHServiceError("رمز SSH لازم است.")
     chosen = normalize_protocols(protocols)
     to_add = [p for p in chosen if p not in node_protocols(node)]
+    if not to_add and refresh:
+        # به‌روزرسانی Agent/فایروال روی نود موجود: همان پروتکل‌های فعلی دوباره نصب (idempotent) می‌شوند.
+        to_add = [p for p in chosen if p in node_protocols(node)]
     if not to_add:
         raise SSHServiceError("پروتکل‌های انتخاب‌شده از قبل روی این نود نصب هستند.")
     port, proto = _validate_ovpn(ovpn_port, ovpn_proto)
@@ -312,6 +317,55 @@ def attach_vpn(db, pool_id: int, custom_config_id: int) -> None:
         raise SSHServiceError(str(exc))
 
 
+async def probe_ssh_endpoint(host: str, port: int, timeout: float = 5.0) -> dict:
+    """از سمت سرور پنل بررسی می‌کند پورت SSH حساب از بیرون باز است و بنر SSH می‌دهد.
+
+    پورت بسته در فایروال نود/ارائه‌دهنده همان حالتی است که کلاینت «متصل» نشان می‌دهد ولی پینگ ندارد."""
+    host = str(host or "").strip()
+    if not host or not port:
+        return {"ok": False, "reason": "آدرس یا پورت نامعتبر"}
+    writer = None
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, int(port)), timeout)
+        banner = await asyncio.wait_for(reader.read(64), timeout)
+        if banner.startswith(b"SSH-"):
+            return {"ok": True, "reason": ""}
+        return {"ok": False, "reason": "پورت باز است ولی پاسخ SSH نمی‌دهد"}
+    except asyncio.TimeoutError:
+        return {"ok": False, "reason": "timeout؛ پورت در فایروال نود/ارائه‌دهنده بسته است"}
+    except OSError as exc:
+        return {"ok": False, "reason": f"{type(exc).__name__}: {str(exc)[:80]}"}
+    finally:
+        if writer is not None:
+            writer.close()
+
+
+async def diagnose_node(db, node_id: int) -> dict:
+    """گزارش لایه‌به‌لایه‌ی نود SSH (Agent) + تست دسترسی پورت از بیرون (از سمت پنل)."""
+    node = next((n for n in db.list_ssh_nodes() if int(n["id"]) == int(node_id)), None)
+    if not node or node.get("node_type") != "linux":
+        raise SSHServiceError("نود Linux Agent پیدا نشد.", 404)
+    from ssh_providers import get_ssh_provider
+    from quota_reconciler import _env_secret_resolver
+    provider = get_ssh_provider(node, secret_resolver=_env_secret_resolver)
+    try:
+        data = await provider._request("GET", "/v1/diagnose")
+    except Exception as exc:
+        raise SSHServiceError("Agent این نود قدیمی است یا در دسترس نیست؛ فایل ssh_node_agent.py را به‌روز کنید. "
+                              f"({str(exc)[:160]})", 502)
+    checks = list(data.get("checks") or [])
+    accounts = [a for a in db.list_ssh_accounts(node_id=int(node_id))
+                if (a.get("protocol") or "ssh") == "ssh" and a.get("status") == "active"]
+    if accounts:
+        sample = accounts[0]
+        eps = ssh_hosts.endpoints(node, "ssh", sample.get("host") or node.get("host"), sample.get("port") or 0)
+        result = await probe_ssh_endpoint(eps[0]["address"], eps[0]["port"])
+        checks.append({"name": "external_port_reachable", "ok": result["ok"],
+                       "detail": f"{eps[0]['address']}:{eps[0]['port']} {result['reason']}".strip(),
+                       "hint": "" if result["ok"] else "پورت‌های tcp 20000-39999 را در فایروال/Security Group ارائه‌دهنده سرور باز کنید."})
+    return {"ok": all(c.get("ok") for c in checks), "checks": checks}
+
+
 async def create_account(db, *, node_id: int, user_id: int, username: str, limit_gb: float = 0,
                          days: int = 0, expires_at: Optional[str] = None,
                          quota_pool_id: Optional[int] = None, protocol: str = "ssh") -> dict:
@@ -394,14 +448,25 @@ async def create_account(db, *, node_id: int, user_id: int, username: str, limit
     shown = user_endpoints(node, {"protocol": protocol, "host": result.host, "port": result.port},
                            result.metadata.get("profile") if protocol in ssh_hosts.FILE_PROTOCOLS else None)
     primary = shown[0]
+    warning = (None if usage.get("source") in RELIABLE_SOURCES
+               else "حسابداری حجم دقیق نیست؛ قبل از فروش حجمی وضعیت نود را بررسی کنید.")
+    reachable = None
+    if protocol == "ssh" and os.getenv("SHOPVPN_SSH_PROBE", "1").strip().lower() not in {"0", "false", "no", "off"}:
+        probe_result = await probe_ssh_endpoint(primary["address"], primary["port"])
+        reachable = probe_result["ok"]
+        if not reachable:
+            note = (f"پورت SSH ({primary['address']}:{primary['port']}) از بیرون در دسترس نیست ({probe_result['reason']}). "
+                    "کلاینت متصل نشان می‌دهد ولی پینگ نخواهد داشت؛ فایروال نود/ارائه‌دهنده (tcp 20000-39999) را باز کنید "
+                    "و Agent نود را به‌روز کنید.")
+            warning = f"{warning} | {note}" if warning else note
+            logger.warning("SSH account %s on node %s not reachable: %s", result.username, node_id, probe_result["reason"])
     return {"ok": True, "id": row_id, "account_id": result.account_id, "username": result.username,
             "host": primary["address"], "port": primary["port"], "protocol": protocol, "endpoints": shown,
             "password": result.metadata.get("password"),
             "profile": primary.get("profile") or result.metadata.get("profile"),
             "expires_at": expires_at, "quota_pool_id": quota_pool_id, "node_name": node.get("name"),
             "accounting_ready": bool(usage.get("accounting_ready")),
-            "warning": (None if usage.get("source") in RELIABLE_SOURCES
-                        else "حسابداری حجم دقیق نیست؛ قبل از فروش حجمی وضعیت نود را بررسی کنید.")}
+            "reachable": reachable, "warning": warning}
 
 
 def _force_delete_local(db, account: dict) -> None:
