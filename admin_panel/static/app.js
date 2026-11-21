@@ -1432,7 +1432,7 @@ async function renderLinksSSL() {
       <h3>آدرس‌های سرویس‌ها</h3>
       <p class="card-sub">آدرس‌ها باید به دامنه‌ای اشاره کنند که DNS و Reverse Proxy آن از قبل به سرور ShopVPN هدایت شده باشد.</p>
       <div class="form-grid">
-        <label class="field"><span>لینک ساب اختصاصی</span><input class="input" id="lm-dsub" dir="ltr" value="${esc(u.dedicated_sub_url || '')}" placeholder="https://sub.example.com"></label>
+        <label class="field"><span>لینک ساب مرکزی</span><input class="input" id="lm-dsub" dir="ltr" value="${esc(u.dedicated_sub_url || '')}" placeholder="https://sub.example.com"></label>
         <label class="field"><span>آدرس وب‌شاپ</span><input class="input" id="lm-shop" dir="ltr" value="${esc(u.web_shop_url || '')}" placeholder="https://shop.example.com"></label>
         <label class="field"><span>آدرس مینی‌اپ</span><input class="input" id="lm-miniapp" dir="ltr" value="${esc(u.miniapp_url || '')}" placeholder="https://app.example.com"></label>
         <label class="field"><span>آدرس پنل وب ادمین</span><input class="input" id="lm-admin" dir="ltr" value="${esc(u.admin_panel_url || '')}" placeholder="https://admin.example.com"></label>
@@ -9673,7 +9673,7 @@ async function paygTargetsHtml() {
       ${!d.dsub_enabled ? '<p class="card-sub" style="color:#FB7185">ساب اختصاصی خاموش است؛ حالت «همه مقصدها» بدون آن فعال نمی‌شود.</p>' : ''}
       <button class="btn btn-sm" id="payg-toggle-mode">${modeAll ? 'تغییر به توزیع بار (یک پنل)' : 'تغییر به همه مقصدها + ساب اختصاصی'}</button>
     </div>
-    <div class="card" style="margin-top:12px"><div style="padding:12px 14px 0"><b>پنل‌های VPN</b><p class="card-sub">برای هر پنل، اینباند یا گروه مخصوص PayG را جدا از محصولات عادی انتخاب کنید. پنل بدون اینباند انتخاب‌شده به PayG اضافه نمی‌شود (مگر پنلی که انتخاب مستقل ندارد).</p></div>
+    <div class="card" style="margin-top:12px"><div style="padding:12px 14px 0"><b>پنل‌های VPN</b><p class="card-sub">برای هر پنل، اینباند یا گروه مخصوص PayG را جدا از محصولات عادی انتخاب کنید. پنل بدون اینباند انتخاب‌شده به PayG اضافه نمی‌شود (مگر پنلی که انتخاب مستقل ندارد). پنل‌های W-UI و Doctor DNS هم قابل افزودن‌اند؛ حجم همه‌ی پنل‌ها از یک استخر مشترک حساب می‌شود و کاربر در صفحه‌ی ساب مرکزی لینک جدای هر پنل را می‌بیند. ترتیب نمایش پنل‌ها همان ترتیب «مدیریت پنل‌ها» است. برای Doctor DNS پلنی انتخاب کنید که حجمش نامحدود (یا بسیار زیاد) باشد، چون خود پنل سقف پلن را جداگانه اعمال می‌کند.</p></div>
       <div class="table-wrap"><table><thead><tr><th>پنل</th><th>بار</th><th>وضعیت در PayG</th><th>عملیات</th></tr></thead><tbody>${panelRows}</tbody></table></div></div>
     <div class="card" style="padding:14px;margin-top:12px">
       <b>نودهای SSH و پروتکل‌ها</b>
@@ -14402,7 +14402,141 @@ document.addEventListener('click', async e => {
 // تنظیمات کامل صفحه لینک ساب اختصاصی؛ تنها مرجع این تنظیمات (تب «شخصی‌سازی وب»).
 // فقط یک iframe پیش‌نمایش (#sub-page-preview-frame) در کل پنل وجود دارد.
 const SUB_PAGE_KEYS = ['dsub_accent_color', 'dsub_apps_hidden', 'dsub_apps_rec', 'dsub_base_url', 'dsub_brand', 'dsub_cache_ttl', 'dsub_card_style', 'dsub_custom_apps', 'dsub_custom_template', 'dsub_custom_template_enabled', 'dsub_density', 'dsub_enabled', 'dsub_expired_placeholder', 'dsub_expired_text', 'dsub_faq', 'dsub_footer_text', 'dsub_info_line', 'dsub_info_line_text', 'dsub_limited_text', 'dsub_log_enabled', 'dsub_logo_url', 'dsub_notice', 'dsub_profile_title', 'dsub_secondary_color', 'dsub_show_apps', 'dsub_show_chart', 'dsub_show_configs', 'dsub_show_faq', 'dsub_show_qr', 'dsub_style', 'dsub_support_url', 'dsub_theme', 'dsub_update_interval', 'dsub_usage_sampling', 'dsub_web_page'];
-function subPageSettingsHtml(s) {
+// ---------------------------------------------------------------------------
+// مدیریت ساب مرکزی و ساب‌های اختصاصی (هر ساب: دامنه + SSL + پنل‌ها + شخصی‌سازی مستقل)
+// ---------------------------------------------------------------------------
+function dsubProfilesCardHtml() {
+  return `<div class="card" style="margin-bottom:16px" id="dsp-card"><div class="card-head"><h3>🌐 ساب مرکزی و ساب‌های اختصاصی</h3></div>
+    <p class="card-sub">ساب مرکزی برای سرویس‌های چندپنلی/نودی و پرداخت به‌ازای مصرف است. برای هر پنل می‌توانی یک ساب اختصاصی با دامنه‌ی جدا و ظاهر مستقل بسازی؛ سرویس‌های تک‌پنلی آن پنل لینک همان ساب را می‌گیرند. پنل بدون ساب اختصاصی از ساب مرکزی استفاده می‌کند.</p>
+    <div id="dsp-root"><div class="card-sub">در حال بارگذاری...</div></div></div>`;
+}
+
+async function bindDsubProfiles(root) {
+  const box = $('#dsp-root', root);
+  if (!box) return;
+  const profName = (d, id) => { const p = d.profiles.find(x => x.id === id); return p ? p.name : ''; };
+  const render = d => {
+    const central = d.central;
+    const rows = d.profiles.map(p => {
+      const panels = d.panels.filter(x => x.profile_id === p.id).map(x => esc(x.name));
+      const state = !p.base_url ? '<span class="chip" style="color:#FB7185">بدون دامنه</span>'
+        : (p.enabled ? '<span class="chip" style="color:#34D399">فعال</span>' : '<span class="chip" style="color:#FBBF24">غیرفعال</span>');
+      const ssl = p.ssl_status ? `<span class="chip">🔒 ${esc(p.ssl_status)}</span>` : '<span class="chip">SSL ندارد</span>';
+      return `<div class="card" style="margin:8px 0;padding:12px" data-dsp="${p.id}">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b>${esc(p.name)}</b> ${state} ${ssl}</div>
+        <div class="card-sub" dir="ltr" style="text-align:left">${esc(p.base_url || '—')}</div>
+        <div class="card-sub">پنل‌ها: ${panels.length ? panels.join('، ') : 'هیچ‌کدام'}</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+          <button class="btn btn-sm" data-act="edit">✏️ دامنه و وضعیت</button>
+          <button class="btn btn-sm" data-act="ssl">🔒 دریافت SSL و فعال‌سازی</button>
+          <button class="btn btn-sm" data-act="panels">🔌 پنل‌ها</button>
+          <button class="btn btn-sm" data-act="custom">🎨 شخصی‌سازی</button>
+          <button class="btn btn-ghost btn-sm" data-act="del">🗑 حذف</button>
+        </div></div>`;
+    }).join('');
+    box.innerHTML = `
+      <div class="card" style="margin:8px 0;padding:12px"><b>ساب مرکزی</b>
+        ${central.enabled ? '<span class="chip" style="color:#34D399">فعال</span>' : '<span class="chip" style="color:#FBBF24">غیرفعال</span>'}
+        <div class="card-sub" dir="ltr" style="text-align:left">${esc(central.base_url || '—')}</div>
+        <div class="card-sub">تنظیمات ساب مرکزی همین‌جا در فرم پایین صفحه است. خاموش‌بودن ساب مرکزی کل قابلیت (و همه‌ی ساب‌های اختصاصی) را خاموش می‌کند.</div></div>
+      ${rows || '<div class="card-sub">هنوز ساب اختصاصی نساخته‌ای.</div>'}
+      <button class="btn" id="dsp-add">➕ ساب اختصاصی جدید</button>`;
+    $('#dsp-add', box).onclick = () => editModal(null, d);
+    $$('[data-dsp]', box).forEach(card => {
+      const id = Number(card.dataset.dsp);
+      $$('[data-act]', card).forEach(b => b.onclick = () => {
+        const act = b.dataset.act;
+        if (act === 'edit') editModal(d.profiles.find(x => x.id === id), d);
+        else if (act === 'ssl') sslModal(d.profiles.find(x => x.id === id));
+        else if (act === 'panels') panelsModal(d.profiles.find(x => x.id === id), d);
+        else if (act === 'custom') customModal(d.profiles.find(x => x.id === id));
+        else if (act === 'del') delProfile(d.profiles.find(x => x.id === id));
+      });
+    });
+  };
+  const load = async () => {
+    try { render(await apiGet('/dsub-profiles')); }
+    catch (e) { box.innerHTML = `<div class="card-sub" style="color:#FB7185">${esc(e.message)}</div>`; }
+  };
+  const editModal = (p, d) => {
+    openModal(p ? '✏️ ویرایش ساب اختصاصی' : '➕ ساب اختصاصی جدید', `
+      <label class="field"><span>نام ساب</span><input class="input" id="dsp-name" value="${esc(p ? p.name : '')}" placeholder="مثلاً ساب ایران"></label>
+      <label class="field"><span>دامنه</span><input class="input" id="dsp-url" dir="ltr" value="${esc(p ? p.base_url : '')}" placeholder="sub2.example.com"><small class="card-sub">دامنه باید با رکورد A به IP همین سرور اشاره کند. بعد از ذخیره، «دریافت SSL» را بزن.</small></label>
+      ${p ? `<label class="field field-row"><span>فعال</span><button type="button" class="switch" id="dsp-en" data-on="${p.enabled ? '1' : '0'}"><i></i></button></label>` : ''}
+      <button class="btn" id="dsp-save">ذخیره</button>`, (body, close) => {
+      const sw = $('#dsp-en', body);
+      if (sw) sw.onclick = () => { sw.dataset.on = sw.dataset.on === '1' ? '0' : '1'; };
+      $('#dsp-save', body).onclick = async () => {
+        const payload = { name: $('#dsp-name', body).value, base_url: $('#dsp-url', body).value };
+        try {
+          if (p) { if (sw) payload.enabled = sw.dataset.on === '1'; await apiPut(`/dsub-profiles/${p.id}`, payload); }
+          else await apiPost('/dsub-profiles', payload);
+          toast('ذخیره شد.'); close(); load();
+        } catch (e) { handleErr(e); }
+      };
+    });
+  };
+  const sslModal = p => {
+    if (!p.base_url) { toast('اول دامنه‌ی این ساب را ذخیره کن.', true); return; }
+    openModal('🔒 دریافت SSL برای ' + esc(p.base_url), `
+      <p class="card-sub">قبل از شروع: ۱) رکورد A دامنه روی IP این سرور باشد ۲) سرور ساب با manage.sh نصب شده باشد ۳) پورت ۸۰ باز باشد. کار تا چند دقیقه طول می‌کشد.</p>
+      <label class="field"><span>ایمیل (برای Let's Encrypt)</span><input class="input" id="dsp-mail" dir="ltr" placeholder="you@example.com"></label>
+      <label class="field field-row"><span>بعد از موفقیت این ساب فعال شود</span><button type="button" class="switch" id="dsp-ssl-en" data-on="1"><i></i></button></label>
+      <button class="btn" id="dsp-ssl-go">صدور گواهی و فعال‌سازی</button><pre id="dsp-ssl-out" dir="ltr" style="white-space:pre-wrap;max-height:240px;overflow:auto;font-size:11px;margin-top:8px"></pre>`, (body, close) => {
+      const sw = $('#dsp-ssl-en', body); sw.onclick = () => { sw.dataset.on = sw.dataset.on === '1' ? '0' : '1'; };
+      const go = $('#dsp-ssl-go', body);
+      go.onclick = async () => {
+        go.disabled = true; const prev = go.textContent; go.textContent = 'در حال انجام...';
+        try {
+          const r = await apiPost(`/dsub-profiles/${p.id}/ssl`, { email: $('#dsp-mail', body).value.trim(), enable: sw.dataset.on === '1' });
+          $('#dsp-ssl-out', body).textContent = r.output || '';
+          toast('گواهی صادر شد' + (r.enabled ? ' و ساب فعال شد.' : '.')); load();
+        } catch (e) { $('#dsp-ssl-out', body).textContent = e.message; handleErr(e); }
+        finally { go.disabled = false; go.textContent = prev; }
+      };
+    });
+  };
+  const panelsModal = (p, d) => {
+    openModal('🔌 پنل‌های ساب «' + esc(p.name) + '»', `
+      <p class="card-sub">سرویس‌های تک‌پنلیِ پنل‌های انتخاب‌شده لینک این ساب را می‌گیرند. هر پنل فقط یک ساب دارد؛ انتخاب پنلِ یک ساب دیگر آن را به اینجا منتقل می‌کند.</p>
+      ${d.panels.map(x => `<label class="field field-row"><span>${esc(x.name)}${x.profile_id && x.profile_id !== p.id ? ` — الان: ${esc(profName(d, x.profile_id))}` : ''}</span><input type="checkbox" class="dsp-panel" value="${x.id}" ${x.profile_id === p.id ? 'checked' : ''}></label>`).join('') || '<div class="card-sub">پنلی نیست</div>'}
+      <button class="btn" id="dsp-panels-save">ذخیره</button>`, (body, close) => {
+      $('#dsp-panels-save', body).onclick = async () => {
+        const ids = $$('.dsp-panel', body).filter(c => c.checked).map(c => Number(c.value));
+        try { await apiPut(`/dsub-profiles/${p.id}/panels`, { panel_ids: ids }); toast('ذخیره شد.'); close(); load(); }
+        catch (e) { handleErr(e); }
+      };
+    });
+  };
+  const customModal = async p => {
+    let r;
+    try { r = await apiGet(`/dsub-profiles/${p.id}/settings`); } catch (e) { handleErr(e); return; }
+    openModal('🎨 شخصی‌سازی ساب «' + esc(p.name) + '»', `
+      <p class="card-sub">این تنظیمات فقط برای همین ساب ذخیره می‌شود. مقادیری که هنوز ذخیره نکرده‌ای از ساب مرکزی گرفته می‌شود؛ بعد از «ذخیره» همه‌ی مقادیر این فرم مستقل می‌شوند.</p>
+      ${subPageSettingsHtml(r.settings, { profileId: p.id })}
+      <button class="btn" id="dsp-set-save" style="margin-top:10px">ذخیره‌ی تنظیمات این ساب</button>`, (body, close) => {
+      bindSettingsGroupEvents(body); bindSubPageColorPickers(body); bindSubscriptionLivePreview(body);
+      $('#dsp-set-save', body).onclick = async () => {
+        const values = {};
+        $$('[data-key][data-type]:not(.switch)', body).forEach(el => { if (el.dataset.key.startsWith('dsub_')) values[el.dataset.key] = el.value; });
+        $$('.switch[data-key]', body).forEach(sw => { if (sw.dataset.key.startsWith('dsub_')) values[sw.dataset.key] = sw.dataset.on === '1' ? '1' : '0'; });
+        for (const k of ['dsub_accent_color', 'dsub_secondary_color']) { if (k in values) { const h = normalizeHex(values[k]); if (!h) { toast('رنگ نامعتبر است؛ مثل #6366F1 بنویس.', true); return; } values[k] = h; } }
+        try {
+          await apiPut(`/dsub-profiles/${p.id}/settings`, { values });
+          toast('تنظیمات ساب ذخیره شد.');
+          const fr = $('#sub-page-preview-frame', body); if (fr) { try { fr.contentWindow.location.reload(); } catch (e) {} }
+        } catch (e) { handleErr(e); }
+      };
+    }, { wide: true });
+  };
+  const delProfile = async p => {
+    if (!confirm(`ساب «${p.name}» حذف شود؟ پنل‌های آن به ساب مرکزی برمی‌گردند و لینک‌هایی که با دامنه‌ی این ساب داده شده بود دیگر کار نمی‌کند، مگر دامنه را همچنان به سرور ساب برسانی.`)) return;
+    try { await apiDelete(`/dsub-profiles/${p.id}`); toast('حذف شد.'); load(); } catch (e) { handleErr(e); }
+  };
+  await load();
+}
+
+function subPageSettingsHtml(s, opts = {}) {
   const val = k => s[k] ?? '';
   const field = (key, label, type='text', hint='') => `
     <label class="field"><span>${label}</span>
@@ -14423,11 +14557,11 @@ function subPageSettingsHtml(s) {
   const paletteHtml = `<div class="palette-wrap"><span class="card-sub">پالت‌های آماده (با یک کلیک رنگ اصلی و مکمل ست می‌شوند)</span>
     <div class="palette-grid">${SUB_PAGE_PALETTES.map(([n,a,b]) => `<button type="button" class="palette-chip" data-a="${a}" data-b="${b}" title="${esc(n)}"><i style="background:linear-gradient(135deg,${a},${b})"></i><span>${esc(n)}</span></button>`).join('')}</div></div>`;
   return `
-    <div class="hero" style="margin-bottom:12px"><div><h3 style="margin:0">🔗 صفحه لینک ساب اختصاصی</h3><p class="card-sub">مدیریت کامل ظاهر، محتوا و رفتار لینک ساب اختصاصی</p></div></div>
+    ${opts.profileId ? '' : `<div class="hero" style="margin-bottom:12px"><div><h3 style="margin:0">🔗 صفحه لینک ساب مرکزی</h3><p class="card-sub">مدیریت کامل ظاهر، محتوا و رفتار لینک ساب مرکزی</p></div></div>${dsubProfilesCardHtml()}`}
     <div class="card" style="margin-bottom:16px"><div class="card-head"><h3>🔌 وضعیت و آدرس سرویس</h3></div><div class="form-grid">
-      ${select('dsub_enabled','فعال بودن لینک ساب اختصاصی',[['0','غیرفعال'],['1','فعال']])}
+      ${opts.profileId ? '' : select('dsub_enabled','فعال بودن لینک ساب مرکزی',[['0','غیرفعال'],['1','فعال']])}
       ${select('dsub_web_page','نمایش صفحه وب در مرورگر',[['0','غیرفعال'],['1','فعال']])}
-      ${field('dsub_base_url','آدرس پایه سرور ساب','text','خالی = استفاده از مقدار تنظیم‌شده در فایل .env')}
+      ${opts.profileId ? '' : field('dsub_base_url','آدرس پایه سرور ساب مرکزی','text','خالی = استفاده از مقدار تنظیم‌شده در فایل .env')}
     </div></div>
     <div class="card" style="margin-bottom:16px"><div class="card-head"><h3>🎨 ظاهر و قالب صفحه</h3></div>
       <div class="form-grid">
@@ -14440,7 +14574,7 @@ function subPageSettingsHtml(s) {
       </div>
       ${paletteHtml}
       <div class="card-sub">🔗 پیش‌نمایش زنده صفحه لینک ساب (با هر تغییر، بدون ذخیره به‌روز می‌شود؛ تنها پیش‌نمایش این صفحه همین‌جاست)</div>
-      <iframe id="sub-page-preview-frame" src="/api/settings/sub-page-preview?preview=1" title="پیش‌نمایش صفحه اشتراک" style="width:100%;height:560px;border:1px solid var(--border);border-radius:14px;background:#fff"></iframe>
+      <iframe id="sub-page-preview-frame" data-profile="${opts.profileId || ''}" src="/api/settings/sub-page-preview?preview=1${opts.profileId ? '&profile=' + opts.profileId : ''}" title="پیش‌نمایش صفحه اشتراک" style="width:100%;height:560px;border:1px solid var(--border);border-radius:14px;background:#fff"></iframe>
       <button class="btn btn-ghost btn-sm" id="sub-page-preview-open" type="button">باز کردن پیش‌نمایش در تب جدید</button>
     </div>
     <div class="card" style="margin-bottom:16px"><div class="card-head"><h3>🏷️ برندینگ و اطلاعات</h3></div><div class="form-grid">
@@ -14597,6 +14731,7 @@ function bindSubPageColorPickers(root) {
 }
 
 function bindSubscriptionLivePreview(root) {
+  bindDsubProfiles(root);
   const frame = $('#sub-page-preview-frame', root);
   if (!frame) return;
   const get = key => {
@@ -14624,7 +14759,7 @@ function bindSubscriptionLivePreview(root) {
   const send = () => { clearTimeout(timer); timer = setTimeout(sendNow, 40); };
   frame.addEventListener('load', sendNow);
   const openBtn = $('#sub-page-preview-open', root);
-  if (openBtn) openBtn.onclick = () => window.open('/api/settings/sub-page-preview?preview=1', '_blank', 'noopener');
+  if (openBtn) openBtn.onclick = () => window.open('/api/settings/sub-page-preview?preview=1' + (frame.dataset.profile ? '&profile=' + frame.dataset.profile : ''), '_blank', 'noopener');
   $$('[data-key]', root).forEach(el => {
     const key = el.dataset.key || '';
     if (key.startsWith('dsub_') || key === 'store_name') {
