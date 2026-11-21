@@ -71,7 +71,7 @@ def collect_links(db) -> list:
         {"key": "panel", "title": "🖥 پنل مدیریت وب", "url": web_entry_gate.with_entry_path(panel_db or panel_env),
          "source": "تنظیم داخل بات" if panel_db else ".env (ADMIN_PANEL_URL)",
          "editable": "admin_panel_url", "probe": ""},
-        {"key": "dsub", "title": "🔗 سرور ساب اختصاصی" + ("" if dsub_on else " (خاموش)"), "url": dsub_url,
+        {"key": "dsub", "title": "🔗 سرور ساب مرکزی" + ("" if dsub_on else " (خاموش)"), "url": dsub_url,
          "source": "تنظیم داخل بات" if (dsub_db.startswith(("http://", "https://"))) else ".env / manage.sh",
          "editable": "dsub_base_url", "probe": "/healthz"},
         {"key": "support", "title": "🆘 لینک پشتیبانی صفحه‌ی ساب", "url": support, "source": "تنظیم داخل بات",

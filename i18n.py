@@ -1304,7 +1304,7 @@ _PHRASE_TRANSLATIONS.update({
     "🎁 هدیه‌ی گروهی": "🎁 Bulk gift",
     "🛡 ضداسپم کاربران": "🛡 Anti-spam for users",
     "🔌 سوئیچ سراسری ربات (خاموش/روشن)": "🔌 Bot global switch (on/off)",
-    "🔗 ساب اختصاصی (دامنه، صفحه‌ی وب، اپ‌ها)": "🔗 Dedicated sub (domain, web page, apps)",
+    "🔗 ساب مرکزی (دامنه، صفحه‌ی وب، اپ‌ها)": "🔗 Central sub (domain, web page, apps)",
     "⏳ پیام موقت (خودحذف‌شونده)": "⏳ Temporary (self-deleting) message",
     "📞 روش‌های ارتباط با پشتیبانی": "📞 Support contact methods",
     "🤖 دستیار هوشمند (سوالات متداول)": "🤖 AI assistant (FAQ)",

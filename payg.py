@@ -189,7 +189,12 @@ def get_payg_panel_ids(db):
         legacy = str(db.get_setting("payg_panel_server_id", "") or "").strip()
         if legacy.isdigit() and int(legacy) > 0:
             ids = [int(legacy)]
-    return list(dict.fromkeys(x for x in ids if x > 0))
+    ids = list(dict.fromkeys(x for x in ids if x > 0))
+    try:
+        import dedicated_sub
+        return dedicated_sub.sort_panel_ids(db, ids)
+    except Exception:
+        return ids
 
 
 def get_payg_targets(db):
@@ -689,7 +694,9 @@ def payg_status(db, user_id: int):
         tx = conn.execute("SELECT COALESCE(SUM(amount),0) total FROM payg_transactions WHERE user_id=? AND strftime('%Y-%m',created_at,'+3 hours','+30 minutes')=?",
                           (int(user_id), _month_key())).fetchone()
     if not row:
-        return {"active": False, "services": 0, "spent": 0}
+        return {"active": False, "services": 0, "spent": 0,
+                "balance": int(db.get_wallet_credit(user_id) or 0),
+                "month_used_bytes": 0, "rates": get_rates(db), "quota_pool_id": 0}
     try:
         account_rates = [int(x) for x in json.loads(row['month_rates'] or '')]
         if len(account_rates) != 4:
@@ -1420,7 +1427,7 @@ def create_payg_router(db, is_main_bot=True):
                 balance=f"{balance:,}",
             )
             text += _tformat("هزینه این ماه: {spent} تومان\n", spent=f"{status['spent']:,}")
-            text += _tformat("مصرف ثبت‌شده: {used} GB\n", used=f"{status['month_used_bytes']/GIB:.3f}")
+            text += _tformat("مصرف ثبت‌شده: {used} GB\n", used=f"{int(status.get('month_used_bytes') or 0)/GIB:.3f}")
             text += _tformat("سرویس‌های متصل: {services}\n", services=status["services"])
             text += rate_text + supported_text
             text += _tformat("تسویه مصرف هر {cycle} انجام می‌شود.\n", cycle=cycle_text(db))
@@ -1464,7 +1471,7 @@ def create_payg_router(db, is_main_bot=True):
         custom_text = render_status_text(db, bool(status["active"]), {
             "balance": f"{balance:,}",
             "spent": f"{int(status.get('spent') or 0):,}",
-            "used_gb": f"{status['month_used_bytes']/GIB:.3f}",
+            "used_gb": f"{int(status.get('month_used_bytes') or 0)/GIB:.3f}",
             "services": status["services"],
             "cycle": cycle_text(db),
             "min_balance": f"{min_balance:,}" if min_balance else "0",

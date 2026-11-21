@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""منوی «ساب اختصاصی» داخل پنل مدیریت بات (فقط مالک و مدیر کامل).
+"""منوی «ساب مرکزی» داخل پنل مدیریت بات (فقط مالک و مدیر کامل).
 
 راه‌اندازی اولیه (دامنه، SSL، سرویس) از منوی manage.sh انجام می‌شود؛ همه‌ی بقیه‌ی تنظیمات از اینجا:
 روشن/خاموش، ظاهر صفحه‌ی وب، خروجی ساب (هدرها/خط اول/کانفیگ نمایشی)، برنامه‌ها، سوالات متداول و آمار.
@@ -103,7 +103,7 @@ def register(router: Router, db, senior_admin_only, deny_mid, replace_admin_view
         s = await asyncio.to_thread(ds.all_settings, db)
         lines = [note, ""] if note else []
         lines += [
-            "🔗 ساب اختصاصی",
+            "🔗 ساب مرکزی",
             "",
             "لینک اشتراک سرویس‌ها از دامنه‌ی خودت صادر می‌شود (آدرس پنل دیده نمی‌شود) و کاربر با باز کردن لینک "
             "در مرورگر یک صفحه‌ی وب زیبا با مصرف، کانفیگ‌ها و دکمه‌ی «افزودن به برنامه» می‌بیند. "
@@ -113,7 +113,7 @@ def register(router: Router, db, senior_admin_only, deny_mid, replace_admin_view
             f"سرور: {_e(base) if base else '⚠️ هنوز راه‌اندازی نشده'}",
         ]
         if not base:
-            lines += ["", "راه‌اندازی اولیه (فقط یک بار) روی سرور: «bash manage.sh» ← گزینه‌ی ۲۷ (نصب/تنظیم سرور ساب اختصاصی). "
+            lines += ["", "راه‌اندازی اولیه (فقط یک بار) روی سرور: «bash manage.sh» ← گزینه‌ی ۲۷ (نصب/تنظیم سرور ساب مرکزی). "
                           "بعد از آن همین‌جا روشنش کن."]
         else:
             lines += [
@@ -149,7 +149,7 @@ def register(router: Router, db, senior_admin_only, deny_mid, replace_admin_view
         if not enabled and not await asyncio.to_thread(ds.base_url, db):
             return await call.answer("اول باید سرور ساب را از manage.sh (گزینه‌ی ۲۹) راه‌اندازی کنی.", show_alert=True)
         await asyncio.to_thread(db.set_setting, "dsub_enabled", "0" if enabled else "1")
-        text, markup = await _main_view("🟢 ساب اختصاصی روشن شد." if not enabled else "🔴 ساب اختصاصی خاموش شد.")
+        text, markup = await _main_view("🟢 ساب مرکزی روشن شد." if not enabled else "🔴 ساب مرکزی خاموش شد.")
         await replace_admin_view(call, text, reply_markup=markup)
         await call.answer("ذخیره شد.")
 
@@ -297,7 +297,7 @@ def register(router: Router, db, senior_admin_only, deny_mid, replace_admin_view
         top = "، ".join(f"{k} ({v})" for k, v in sorted(fam.items(), key=lambda x: -x[1])[:5]) or "—"
         lines = [note, ""] if note else []
         lines += [
-            "📊 آمار و لاگ ساب اختصاصی", "",
+            "📊 آمار و لاگ ساب مرکزی", "",
             f"۲۴ ساعت اخیر: {day['total']:,} درخواست | {day['services']:,} سرویس | {day['ips']:,} IP | {day['errors']:,} خطا | {day['pages']:,} بازدید صفحه",
             f"۷ روز اخیر: {week['total']:,} درخواست | {week['services']:,} سرویس | {week['ips']:,} IP",
             f"برنامه‌های پرکاربرد (۲۴ ساعت): {_e(top)}", "",
@@ -312,9 +312,9 @@ def register(router: Router, db, senior_admin_only, deny_mid, replace_admin_view
         return "\n".join(lines), _kb([[_btn("🔄 بروزرسانی", "adm_dsub_pg:stats")], [_btn("⬅️ بازگشت", "adm_dsub")]])
 
     GUIDE = (
-        "📘 راهنمای راه‌اندازی ساب اختصاصی\n\n"
+        "📘 راهنمای راه‌اندازی ساب مرکزی\n\n"
         "۱) یک دامنه یا ساب‌دامنه بگیر (مثلاً sub.example.com) و رکورد A آن را به IP همین سرور بزن.\n"
-        "۲) روی سرور اجرا کن: bash manage.sh ← گزینه‌ی ۲۹ «نصب/تنظیم سرور ساب اختصاصی». دامنه را وارد کن؛ "
+        "۲) روی سرور اجرا کن: bash manage.sh ← گزینه‌ی ۲۹ «نصب/تنظیم سرور ساب مرکزی». دامنه را وارد کن؛ "
         "nginx، SSL و سرویس خودکار ساخته می‌شود و آخرش می‌پرسد همان لحظه روشن شود یا نه.\n"
         "۳) همین‌جا (ادمین بات) روشن/خاموش و همه‌ی شخصی‌سازی‌ها را انجام بده.\n\n"
         "از آن لحظه، سرویس‌های جدیدی که تحویل داده می‌شوند لینک sub.example.com/s/… می‌گیرند؛ سرویس‌های قبلی هم در «سرویس‌های من» "

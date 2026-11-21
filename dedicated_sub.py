@@ -169,8 +169,52 @@ def flag(db, key: str) -> bool:
     return get(db, key).strip() == "1"
 
 
-def all_settings(db) -> Dict[str, str]:
-    return {k: get(db, k) for k in DSUB_DEFAULTS}
+# کلیدهایی که فقط مال خود ساب مرکزی/پروفایل‌اند و از مرکزی به پروفایل ارث نمی‌رسند
+PROFILE_OWN_KEYS = ("dsub_enabled", "dsub_base_url")
+# تنظیمات قابل شخصی‌سازی هر پروفایل = همه‌ی کلیدهای dsub_ به جز دو کلید بالا
+PROFILE_SETTING_KEYS = tuple(k for k in DSUB_DEFAULTS if k not in PROFILE_OWN_KEYS)
+
+
+def all_settings(db, profile: Optional[dict] = None) -> Dict[str, str]:
+    """تنظیمات مؤثر. بدون پروفایل = ساب مرکزی؛ با پروفایل = مرکزی + مقادیری که پروفایل جدا ذخیره کرده."""
+    out = {k: get(db, k) for k in DSUB_DEFAULTS}
+    if profile:
+        own = profile.get("settings") or {}
+        for k in PROFILE_SETTING_KEYS:
+            if k in own and own[k] is not None:
+                out[k] = str(own[k])
+        out["dsub_base_url"] = profile.get("base_url") or ""
+        out["dsub_enabled"] = "1" if profile.get("enabled") else "0"
+    return out
+
+
+def get_profile(db, profile_id) -> Optional[dict]:
+    try:
+        return db.dsp_get(profile_id) if profile_id else None
+    except Exception:
+        return None
+
+
+def list_profiles(db) -> List[dict]:
+    try:
+        return db.dsp_list()
+    except Exception:
+        return []
+
+
+def profile_for_host(db, host: str) -> Optional[dict]:
+    """پروفایل مربوط به دامنه‌ای که درخواست روی آن آمده؛ None = ساب مرکزی."""
+    try:
+        return db.dsp_get_by_host(host)
+    except Exception:
+        return None
+
+
+def profile_for_panel(db, server_id) -> Optional[dict]:
+    try:
+        return db.dsp_for_panel(server_id) if server_id else None
+    except Exception:
+        return None
 
 
 def env_base_url() -> str:
@@ -181,15 +225,22 @@ def env_base_url() -> str:
         return (os.getenv("DEDICATED_SUB_URL", "") or "").rstrip("/")
 
 
-def base_url(db) -> str:
-    """آدرس پایه‌ی سرور ساب (بدون اسلش پایانی)؛ اول تنظیم داخل بات، بعد .env."""
+def base_url(db, profile: Optional[dict] = None) -> str:
+    """آدرس پایه‌ی سرور ساب (بدون اسلش پایانی)؛ اول تنظیم داخل بات، بعد .env.
+    برای پروفایل فقط دامنه‌ی خودش (بدون fallback به مرکزی؛ بدون دامنه = بدون لینک)."""
+    if profile:
+        pb = (profile.get("base_url") or "").strip().rstrip("/")
+        return pb if pb.startswith(("http://", "https://")) else ""
     custom = get(db, "dsub_base_url").strip().rstrip("/")
     if custom.startswith(("http://", "https://")):
         return custom
     return env_base_url()
 
 
-def is_enabled(db) -> bool:
+def is_enabled(db, profile: Optional[dict] = None) -> bool:
+    """ساب مرکزی: کلید روشن + آدرس. پروفایل: کلید اصلی (مرکزی) روشن + خودش روشن + دامنه."""
+    if profile:
+        return flag(db, "dsub_enabled") and bool(profile.get("enabled")) and bool(base_url(db, profile))
     return flag(db, "dsub_enabled") and bool(base_url(db))
 
 
@@ -214,8 +265,8 @@ def wui_dsub_warning(db, panel_type: str) -> str:
     return ""
 
 
-def link_for_token(db, token: str) -> str:
-    return f"{base_url(db)}/s/{token}"
+def link_for_token(db, token: str, profile: Optional[dict] = None) -> str:
+    return f"{base_url(db, profile)}/s/{token}"
 
 
 PANEL_DSUB_REQUIRED_TYPES = ("wui", "doctordns")
@@ -263,6 +314,37 @@ def _is_multi_target_config(db, config_id: int) -> bool:
     return bool(linked or ssh)
 
 
+def _is_payg_config(db, config_id: int) -> bool:
+    try:
+        with db._get_conn() as conn:
+            row = conn.execute("SELECT 1 FROM payg_provisioned_services WHERE service_id=? LIMIT 1",
+                               (f"custom_config:{int(config_id)}",)).fetchone()
+        return bool(row)
+    except Exception:
+        return False
+
+
+def profile_for_config(db, config_id: int, cc=None) -> Optional[dict]:
+    """ساب اختصاصیِ مناسب این سرویس. None = ساب مرکزی.
+
+    قاعده: سرویس چندپنلی/نودی/ترکیبی و پرداخت به‌ازای مصرف همیشه مرکزی؛
+    سرویس تک‌پنلی ← پروفایلِ تخصیص‌یافته به همان پنل (اگر روشن و دارای دامنه باشد)؛ وگرنه مرکزی."""
+    try:
+        if cc is None:
+            cc = db.ds_get_config(config_id)
+        if cc is None:
+            return None
+        panel_id = _row(cc, "panel_server_id")
+        if not panel_id:
+            return None
+        if _is_multi_target_config(db, config_id) or _is_payg_config(db, config_id):
+            return None
+        prof = profile_for_panel(db, panel_id)
+        return prof if prof and is_enabled(db, prof) else None
+    except Exception:
+        return None
+
+
 def link_for_config(db, config_id: int) -> Optional[str]:
     if not is_enabled(db):
         return None
@@ -273,7 +355,9 @@ def link_for_config(db, config_id: int) -> Optional[str]:
     if panel_id and not panel_enabled(db, panel_id) and not _is_multi_target_config(db, config_id):
         return None
     token = db.ds_get_or_create_token(config_id)
-    return link_for_token(db, token) if token else None
+    if not token:
+        return None
+    return link_for_token(db, token, profile_for_config(db, config_id, cc))
 
 
 def dedicated_link_for_upstream(db, upstream_url: str) -> str:
@@ -305,9 +389,9 @@ def display_link(db, config_id, upstream_url: str) -> str:
 def upstream_for_link(db, link: str) -> str:
     """اگر لینک ورودی اختصاصی باشد معادل لینک پنل را برمی‌گرداند، وگرنه خود لینک."""
     try:
-        base = base_url(db)
-        prefix = f"{base}/s/" if base else ""
-        if not prefix or not str(link).startswith(prefix):
+        prefixes = [f"{b}/s/" for b in [base_url(db)] + [base_url(db, p) for p in list_profiles(db)] if b]
+        prefix = next((x for x in prefixes if str(link).startswith(x)), "")
+        if not prefix:
             return link
         token = str(link)[len(prefix):].split("?", 1)[0].split("#", 1)[0].strip("/")
         row = db.ds_get_config_by_token(token)
@@ -316,6 +400,92 @@ def upstream_for_link(db, link: str) -> str:
     except Exception:
         pass
     return link
+
+
+SCOPE_KEY = "_scope_panel"
+PANEL_TYPE_LABELS = {"wui": "W-UI", "doctordns": "Doctor DNS"}
+
+
+def sort_panel_ids(db, ids) -> List[int]:
+    """شناسه‌ی پنل‌ها را به ترتیبی که مدیر در «مدیریت پنل‌ها» تعیین کرده مرتب می‌کند."""
+    uniq = list(dict.fromkeys(int(x) for x in ids))
+    try:
+        order = {int(r["id"]): pos for pos, r in enumerate(db.get_panel_servers(False))}
+    except Exception:
+        return uniq
+    return sorted(uniq, key=lambda pid: (order.get(pid, len(order)), pid))
+
+
+def is_scoped(cc) -> bool:
+    """True یعنی این سرویس فقط یک پنل از سرویس چندپنلی است (مسیر /p/{panel_id})."""
+    return isinstance(cc, dict) and bool(cc.get(SCOPE_KEY))
+
+
+def panel_entries(db, cc) -> List[dict]:
+    """پنل‌های یک سرویس (پنل اصلی + پنل‌های اضافه) به ترتیب مدیر؛ از هر پنل فقط اولین مورد."""
+    if isinstance(cc, dict) and cc.get("_entries") is not None:
+        return list(cc["_entries"])
+    raw = []
+    primary = _row(cc, "panel_server_id")
+    if primary:
+        raw.append({"panel_id": int(primary), "link_id": None, "username": _row(cc, "username"),
+                    "subscription_url": _row(cc, "subscription_url")})
+    try:
+        links = db.panel_links_for_config(int(_row(cc, "id")))
+    except Exception:
+        links = []
+    for link in links:
+        raw.append({"panel_id": int(link["panel_server_id"]), "link_id": int(link["id"]),
+                    "username": link["username"], "subscription_url": link["subscription_url"]})
+    seen, entries = set(), []
+    for item in raw:
+        if item["panel_id"] in seen:
+            continue
+        seen.add(item["panel_id"])
+        try:
+            server = db.get_panel_server(item["panel_id"])
+        except Exception:
+            server = None
+        item["name"] = str(server["name"]) if server else f"#{item['panel_id']}"
+        item["panel_type"] = str(server["panel_type"] or "").lower() if server else ""
+        entries.append(item)
+    position = {pid: pos for pos, pid in enumerate(sort_panel_ids(db, [e["panel_id"] for e in entries]))}
+    entries.sort(key=lambda e: position[e["panel_id"]])
+    return entries
+
+
+def scoped_config(db, cc, panel_id) -> Optional[dict]:
+    """نسخه‌ی سرویس که فقط به یک پنل محدود است؛ None اگر آن پنل جزو سرویس نیست."""
+    entries = panel_entries(db, cc)
+    for entry in entries:
+        if entry["panel_id"] == int(panel_id):
+            out = dict(cc)
+            out.update(panel_server_id=entry["panel_id"], username=entry["username"],
+                       subscription_url=entry["subscription_url"], _entries=entries)
+            out[SCOPE_KEY] = entry["panel_id"]
+            return out
+    return None
+
+
+def panel_page_links(db, cc, token: str) -> List[dict]:
+    """لینک ساب اختصاصیِ هر پنل برای صفحه‌ی ساب مرکزی؛ خالی اگر سرویس چندپنلی نیست."""
+    entries = panel_entries(db, cc)
+    if len(entries) < 2:
+        return []
+    current = cc.get(SCOPE_KEY) if isinstance(cc, dict) else None
+    out = []
+    for entry in entries:
+        pid = entry["panel_id"]
+        if not panel_enabled(db, pid):
+            continue
+        prof = profile_for_panel(db, pid)
+        if prof and not is_enabled(db, prof):
+            prof = None
+        if not base_url(db, prof):
+            continue
+        out.append({"id": pid, "name": entry["name"], "type": PANEL_TYPE_LABELS.get(entry["panel_type"], ""),
+                    "url": f"{link_for_token(db, token, prof)}/p/{pid}", "cur": pid == current})
+    return out if len(out) > 1 else []
 
 
 # ---------------------------------------------------------------------------
@@ -530,6 +700,8 @@ def quota_info_for_config(db, config_id: int, any_status: bool = False) -> Optio
 
 def ssh_uris_for_config(db, config_id, cc=None) -> List[str]:
     """لینک‌های ssh:// حساب‌های فعالِ متصل به این سرویس؛ برای افزودن داخل ساب اختصاصی."""
+    if is_scoped(cc):
+        return []
     try:
         rows = db.ssh_accounts_for_config(int(config_id))
     except Exception:
@@ -563,6 +735,8 @@ def ssh_uris_for_config(db, config_id, cc=None) -> List[str]:
 
 def ovpn_files_for_config(db, config_id, cc=None) -> List[dict]:
     """فایل‌های .ovpn حساب‌های فعالِ OpenVPN متصل به این سرویس؛ برای دانلود از لینک ساب اختصاصی."""
+    if is_scoped(cc):
+        return []
     try:
         rows = db.ssh_accounts_for_config(int(config_id), protocol="openvpn")
     except Exception:
@@ -595,6 +769,8 @@ def ovpn_files_for_config(db, config_id, cc=None) -> List[dict]:
 
 def wg_files_for_config(db, config_id, cc=None) -> List[dict]:
     """فایل‌های .conf حساب‌های فعالِ WireGuard متصل به این سرویس؛ برای دانلود از لینک ساب اختصاصی."""
+    if is_scoped(cc):
+        return []
     try:
         rows = db.ssh_accounts_for_config(int(config_id), protocol="wireguard")
     except Exception:
@@ -1051,7 +1227,8 @@ def vpn_ca_file(entries: Optional[List[dict]], index: int) -> Optional[dict]:
 def build_page_data(cc, info: dict, uris: List[str], settings: Dict[str, str], brand: str,
                     sub_link: str, series: Optional[dict], now: Optional[int] = None,
                     ovpn: Optional[List[dict]] = None, wg: Optional[List[dict]] = None,
-                    vpn: Optional[List[dict]] = None, dns: Optional[dict] = None) -> dict:
+                    vpn: Optional[List[dict]] = None, dns: Optional[dict] = None,
+                    panels: Optional[List[dict]] = None) -> dict:
     now = now or int(time.time())
     state = compute_state(cc, info, now)
     total = info.get("total") or 0
@@ -1075,6 +1252,8 @@ def build_page_data(cc, info: dict, uris: List[str], settings: Dict[str, str], b
     wg_items = [{"n": f["remark"], "f": f["filename"], "i": f["index"]} for f in (wg or [])[:20]]
     vpn_items = vpn_items_for_page(vpn)
     dns_item = dns_for_page(dns)
+    panel_items = [{"n": p["name"], "t": p.get("type") or "", "u": p["url"], "c": bool(p.get("cur"))}
+                   for p in (panels or [])[:20]]
     return {
         "user": service_name(cc), "brand": brand, "logo": logo,
         "state": state, "online": False,
@@ -1100,12 +1279,14 @@ def build_page_data(cc, info: dict, uris: List[str], settings: Dict[str, str], b
             "wg": bool(wg_items),
             "vpn": bool(vpn_items),
             "dns": bool(dns_item and dns_item["servers"]),
+            "panels": bool(panel_items),
         },
         "configs": configs,
         "ovpn": ovpn_items,
         "wg": wg_items,
         "vpn": vpn_items,
         "dns": dns_item,
+        "panels": panel_items,
         "apps": resolve_apps(settings),
         "faq": [list(x) for x in resolve_faq(settings)],
         "series": series,

@@ -469,66 +469,66 @@ MSG_EN[prompt_domain_used_api]="What domain did you use for the integration API?
 MSG_FA[prompt_domain_used_api]="دامنه‌ای که برای API یکپارچه‌سازی استفاده کرده بودی چه بود؟ (برای حذف کانفیگ nginx): "
 MSG_EN[api_removed]="✅ Integration API removed."
 MSG_FA[api_removed]="✅ API یکپارچه‌سازی حذف شد."
-MSG_EN[lbl_dsub]="Dedicated Sub"
-MSG_FA[lbl_dsub]="ساب اختصاصی"
-MSG_EN[sec_dsub]="DEDICATED SUBSCRIPTION SERVER"
-MSG_FA[sec_dsub]="سرور ساب اختصاصی"
-MSG_EN[menu_37]="Setup dedicated sub server (domain + SSL + service)"
-MSG_FA[menu_37]="نصب/تنظیم سرور ساب اختصاصی (دامنه + SSL + سرویس)"
-MSG_EN[menu_38]="Turn dedicated sub ON / OFF"
-MSG_FA[menu_38]="روشن/خاموش کردن ساب اختصاصی"
-MSG_EN[menu_39]="Update dedicated sub server"
-MSG_FA[menu_39]="آپدیت سرور ساب اختصاصی"
-MSG_EN[menu_40]="Remove dedicated sub server"
-MSG_FA[menu_40]="حذف سرور ساب اختصاصی"
+MSG_EN[lbl_dsub]="Central Sub"
+MSG_FA[lbl_dsub]="ساب مرکزی"
+MSG_EN[sec_dsub]="CENTRAL SUBSCRIPTION SERVER"
+MSG_FA[sec_dsub]="سرور ساب مرکزی"
+MSG_EN[menu_37]="Setup central sub server (domain + SSL + service)"
+MSG_FA[menu_37]="نصب/تنظیم سرور ساب مرکزی (دامنه + SSL + سرویس)"
+MSG_EN[menu_38]="Turn central sub ON / OFF"
+MSG_FA[menu_38]="روشن/خاموش کردن ساب مرکزی"
+MSG_EN[menu_39]="Update central sub server"
+MSG_FA[menu_39]="آپدیت سرور ساب مرکزی"
+MSG_EN[menu_40]="Remove central sub server"
+MSG_FA[menu_40]="حذف سرور ساب مرکزی"
 MSG_EN[dsub_dir_missing]="⛔️ sub_server folder not found. Update the project code first (option 2)."
 MSG_FA[dsub_dir_missing]="⛔️ پوشه sub_server پیدا نشد. اول باید کد پروژه را آپدیت کنی (گزینه ۲)."
 MSG_EN[prompt_domain_dsub]="Enter a dedicated domain pointing to this server's IP for the sub links (e.g. sub.example.com): "
 MSG_FA[prompt_domain_dsub]="یک دامنه‌ی جدا که به IP همین سرور اشاره می‌کند برای لینک‌های ساب را وارد کن (مثلاً sub.example.com): "
-MSG_EN[creating_dsub_service]="⚙️ Creating the systemd service for the dedicated sub server..."
-MSG_FA[creating_dsub_service]="⚙️ ساخت سرویس systemd برای سرور ساب اختصاصی..."
+MSG_EN[creating_dsub_service]="⚙️ Creating the systemd service for the central sub server..."
+MSG_FA[creating_dsub_service]="⚙️ ساخت سرویس systemd برای سرور ساب مرکزی..."
 MSG_EN[dsub_env_saved]="✅ Saved DEDICATED_SUB_URL in .env."
 MSG_FA[dsub_env_saved]="✅ آدرس DEDICATED_SUB_URL در .env ذخیره شد."
-MSG_EN[dsub_ready]="✅ Dedicated sub server is ready: %s"
-MSG_FA[dsub_ready]="✅ سرور ساب اختصاصی آماده است: %s"
+MSG_EN[dsub_ready]="✅ Central sub server is ready: %s"
+MSG_FA[dsub_ready]="✅ سرور ساب مرکزی آماده است: %s"
 MSG_EN[dsub_health_ok]="✅ Health check passed (the server answers over HTTPS)."
 MSG_FA[dsub_health_ok]="✅ تست سلامت موفق بود (سرور روی HTTPS پاسخ می‌دهد)."
 MSG_EN[dsub_health_fail]="⚠️ Health check failed. Look at: sudo journalctl -u %s -n 50 --no-pager"
 MSG_FA[dsub_health_fail]="⚠️ تست سلامت ناموفق بود. بررسی کن: sudo journalctl -u %s -n 50 --no-pager"
-MSG_EN[dsub_enable_ask]="Turn the dedicated sub ON now? (Y/n): "
-MSG_FA[dsub_enable_ask]="ساب اختصاصی همین الان روشن شود؟ (Y/n): "
-MSG_EN[dsub_hint]="All other settings (page design, texts, apps, headers) are in the Telegram bot: Admin panel → Dedicated Sub."
-MSG_FA[dsub_hint]="بقیه‌ی تنظیمات (طراحی صفحه، متن‌ها، برنامه‌ها، هدرها) داخل بات تلگرام است: پنل مدیریت ← ساب اختصاصی."
-MSG_EN[dsub_not_installed]="⛔️ Dedicated sub server not installed yet. Run option 29 first."
-MSG_FA[dsub_not_installed]="⛔️ سرور ساب اختصاصی هنوز نصب نشده. اول گزینه ۲۹ را بزن."
-MSG_EN[dsub_state]="Dedicated sub is currently: %s"
-MSG_FA[dsub_state]="وضعیت فعلی ساب اختصاصی: %s"
+MSG_EN[dsub_enable_ask]="Turn the central sub ON now? (Y/n): "
+MSG_FA[dsub_enable_ask]="ساب مرکزی همین الان روشن شود؟ (Y/n): "
+MSG_EN[dsub_hint]="All other settings (page design, texts, apps, headers) are in the Telegram bot: Admin panel → Central Sub."
+MSG_FA[dsub_hint]="بقیه‌ی تنظیمات (طراحی صفحه، متن‌ها، برنامه‌ها، هدرها) داخل بات تلگرام است: پنل مدیریت ← ساب مرکزی."
+MSG_EN[dsub_not_installed]="⛔️ Central sub server not installed yet. Run option 29 first."
+MSG_FA[dsub_not_installed]="⛔️ سرور ساب مرکزی هنوز نصب نشده. اول گزینه ۲۹ را بزن."
+MSG_EN[dsub_state]="Central sub is currently: %s"
+MSG_FA[dsub_state]="وضعیت فعلی ساب مرکزی: %s"
 MSG_EN[dsub_toggle_prompt]="1) Turn ON   2) Turn OFF   (Enter = cancel): "
 MSG_FA[dsub_toggle_prompt]="۱) روشن   ۲) خاموش   (Enter = انصراف): "
 MSG_EN[dsub_toggle_off_note]="OFF keeps links that were already sent to users working (plain pass-through); new links use the panel address again."
 MSG_FA[dsub_toggle_off_note]="حالت خاموش لینک‌هایی که قبلاً به کاربران داده شده را سالم نگه می‌دارد (عبور ساده)؛ لینک‌های جدید دوباره آدرس خود پنل می‌شوند."
-MSG_EN[restarting_dsub_service]="♻️ Restarting dedicated sub server"
-MSG_FA[restarting_dsub_service]="♻️ ری‌استارت سرور ساب اختصاصی"
-MSG_EN[update_dsub_header]="Updating Dedicated Sub Server"
-MSG_FA[update_dsub_header]="آپدیت سرور ساب اختصاصی"
-MSG_EN[dsub_update_done]="✅ Dedicated sub server updated."
-MSG_FA[dsub_update_done]="✅ آپدیت سرور ساب اختصاصی انجام شد."
+MSG_EN[restarting_dsub_service]="♻️ Restarting central sub server"
+MSG_FA[restarting_dsub_service]="♻️ ری‌استارت سرور ساب مرکزی"
+MSG_EN[update_dsub_header]="Updating Central Sub Server"
+MSG_FA[update_dsub_header]="آپدیت سرور ساب مرکزی"
+MSG_EN[dsub_update_done]="✅ Central sub server updated."
+MSG_FA[dsub_update_done]="✅ آپدیت سرور ساب مرکزی انجام شد."
 MSG_EN[remove_dsub_warn]="⚠️ This removes the sub server and its nginx config. Sub links already given to users will STOP working (turn it OFF instead if you only want to disable the feature). The SSL certificate is kept."
 MSG_FA[remove_dsub_warn]="⚠️ این کار سرور ساب و کانفیگ nginx آن را حذف می‌کند. لینک‌های ساب که قبلاً به کاربران داده شده از کار می‌افتند (اگر فقط می‌خواهی قابلیت را غیرفعال کنی «خاموش کردن» را بزن). گواهی SSL نگه داشته می‌شود."
-MSG_EN[prompt_domain_used_dsub]="What domain did you use for the dedicated sub server? (to remove its nginx config): "
-MSG_FA[prompt_domain_used_dsub]="دامنه‌ای که برای سرور ساب اختصاصی استفاده کرده بودی چه بود؟ (برای حذف کانفیگ nginx): "
-MSG_EN[menu_dsub_status]="Dedicated sub status"
-MSG_FA[menu_dsub_status]="وضعیت ساب اختصاصی"
-MSG_EN[dsub_status_title]="Dedicated sub status"
-MSG_FA[dsub_status_title]="وضعیت ساب اختصاصی"
-MSG_EN[dsub_status_none]="No dedicated sub domain is configured."
-MSG_FA[dsub_status_none]="هیچ دامنه‌ی ساب اختصاصی تنظیم نشده است."
+MSG_EN[prompt_domain_used_dsub]="What domain did you use for the central sub server? (to remove its nginx config): "
+MSG_FA[prompt_domain_used_dsub]="دامنه‌ای که برای سرور ساب مرکزی استفاده کرده بودی چه بود؟ (برای حذف کانفیگ nginx): "
+MSG_EN[menu_dsub_status]="Central sub status"
+MSG_FA[menu_dsub_status]="وضعیت ساب مرکزی"
+MSG_EN[dsub_status_title]="Central sub status"
+MSG_FA[dsub_status_title]="وضعیت ساب مرکزی"
+MSG_EN[dsub_status_none]="No central sub domain is configured."
+MSG_FA[dsub_status_none]="هیچ دامنه‌ی ساب مرکزی تنظیم نشده است."
 MSG_EN[dsub_status_service]="Service active"
 MSG_FA[dsub_status_service]="سرویس فعال"
 MSG_EN[dsub_status_state]="Feature state (ON/OFF)"
 MSG_FA[dsub_status_state]="وضعیت قابلیت (روشن/خاموش)"
-MSG_EN[dsub_removed]="✅ Dedicated sub server removed."
-MSG_FA[dsub_removed]="✅ سرور ساب اختصاصی حذف شد."
+MSG_EN[dsub_removed]="✅ Central sub server removed."
+MSG_FA[dsub_removed]="✅ سرور ساب مرکزی حذف شد."
 
 # setup_panel_proxy / remove_panel_proxy
 MSG_EN[prompt_domain_panel_proxy]="Domain for the VPN panel (e.g. panel.example.com): "
@@ -683,7 +683,7 @@ MSG_FA[acc_back]="بازگشت"
 MSG_EN[acc_scanner_ok]="✅ Scanner account saved. It starts automatically (bot restarted)."
 MSG_FA[acc_scanner_ok]="✅ حساب اسکنر ذخیره شد و خودکار شروع می‌شود (بات ری‌استارت شد)."
 MSG_EN[acc_both_ok]="✅ Now the userbot and the scanner share ONE account (dedicated scanner account removed)."
-MSG_FA[acc_both_ok]="✅ حالا یوزربات و اسکنر روی یک اکانت‌اند (حساب اختصاصی اسکنر حذف شد)."
+MSG_FA[acc_both_ok]="✅ حالا یوزربات و اسکنر روی یک اکانت‌اند (حساب مرکزی اسکنر حذف شد)."
 MSG_EN[acc_both_warn]="⚠️ Heavy scanning/joining on the customer-facing account can get it limited by Telegram. Keep the join caps low."
 MSG_FA[acc_both_warn]="⚠️ اسکن و عضویت زیاد روی اکانت پاسخ‌گوی مشتری ممکن است باعث محدودیت تلگرام شود؛ سقف عضویت را کم نگه دارید."
 MSG_EN[acc_scanner_removed]="✅ Scanner account removed and bot restarted."
@@ -2695,8 +2695,8 @@ remove_api() {
 }
 
 # ---------------------------------------------------------------------------
-# Dedicated sub server (own domain for subscription links + web page)
-# سرور ساب اختصاصی (دامنه‌ی جدا برای لینک ساب + صفحه‌ی وب)
+# Central sub server (own domain for subscription links + web page)
+# سرور ساب مرکزی (دامنه‌ی جدا برای لینک ساب + صفحه‌ی وب)
 # Everything else is configured from the Telegram bot admin panel.
 # ---------------------------------------------------------------------------
 DSUB_PORT=8004
@@ -2742,7 +2742,7 @@ setup_dedicated_sub() {
     DSUB_SERVICE="${SERVICE_NAME}-sub"
     sudo bash -c "cat > /etc/systemd/system/${DSUB_SERVICE}.service" <<EOF
 [Unit]
-Description=ShopVPN Dedicated Subscription Server
+Description=ShopVPN Central Subscription Server
 After=network.target
 
 [Service]
@@ -3171,7 +3171,7 @@ setup_scanner_account() {
 
 setup_shared_account() {
     _ub_ready || return
-    # اگر هنوز حساب یوزربات نیست، همین‌جا وارد می‌شود؛ بعد حساب اختصاصی اسکنر حذف می‌شود.
+    # اگر هنوز حساب یوزربات نیست، همین‌جا وارد می‌شود؛ بعد حساب مرکزی اسکنر حذف می‌شود.
     if ! venv/bin/python3 userbot.py status >/dev/null 2>&1; then
         if ! venv/bin/python3 userbot.py login; then
             echo -e "${RED}$(t ub_login_failed)${RESET}"; return

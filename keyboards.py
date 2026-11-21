@@ -1925,7 +1925,7 @@ ADMIN_PANEL_ITEMS = [
     ("adm_extra_settings", "🧩 تنظیمات تکمیلی (متن‌ها و گزینه‌ها)", "adm_xs"),
     ("adm_gswitch", "🔌 سوئیچ سراسری ربات (خاموش/روشن)", "adm_gswitch"),
     ("adm_update", "🔄 آپدیت پروژه", "adm_update"),
-    ("adm_dsub", "🔗 ساب اختصاصی (دامنه، صفحه‌ی وب، اپ‌ها)", "adm_dsub"),
+    ("adm_dsub", "🔗 ساب مرکزی (دامنه، صفحه‌ی وب، اپ‌ها)", "adm_dsub"),
     ("adm_links", "🧭 مدیریت لینک‌ها (فروشگاه، پنل، ساب)", "adm_links"),
     ("adm_temp_message", "⏳ پیام موقت (خودحذف‌شونده)", "adm_temp_message"),
     ("adm_set_support_contact", "📞 روش‌های ارتباط با پشتیبانی", "adm_set_support_contact"),
