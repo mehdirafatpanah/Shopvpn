@@ -12707,8 +12707,13 @@ function bsModeBarHtml(g) {
         <div class="bs-catdrop-list">${chips}</div>
       </div>`;
   }
-  if (g.note) return `<div class="bs-note card-sub">${esc(g.note)}</div>`;
-  return '';
+  const bulk = ['account_hub', 'svc_detail'].includes(g.key) ? `
+    <div class="bs-modebar">
+      <button type="button" class="btn btn-sm" data-bs-bulk="0">🔴 غیرفعال‌کردن همه</button>
+      <button type="button" class="btn btn-sm" data-bs-bulk="1">🟢 فعال‌کردن همه</button>
+    </div>` : '';
+  if (g.note) return `${bulk}<div class="bs-note card-sub">${esc(g.note)}</div>`;
+  return bulk;
 }
 
 function bsInspectorHtml(g) {
@@ -13510,6 +13515,12 @@ function bsWire() {
     if (sw && BS.sel) {
       const g = BS.groups[BS.cur]; bsItem(g, BS.sel).style = sw.dataset.bsStyle; bsMarkEdited(g, BS.sel);
       bsRenderTop(); bsRenderScreens(); bsRenderPhone(); bsRenderInspector(); return;
+    }
+    const bulk = q('[data-bs-bulk]');
+    if (bulk) {
+      const g = BS.groups[BS.cur], on = bulk.dataset.bsBulk === '1';
+      g.items.forEach(it => { if (it.togglable) { it.enabled = on; bsMarkEdited(g, it.key); } });
+      bsRefresh(); return;
     }
     if (q('[data-bs-cm-new]')) return bsCustomMenuNew();
     const cmManage = q('[data-bs-cm-manage]');

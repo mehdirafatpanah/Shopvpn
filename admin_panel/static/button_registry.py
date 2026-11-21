@@ -190,11 +190,13 @@ def build_registry(db) -> dict:
         meta = dbmod.ACCOUNT_HUB_META.get(key)
         if not meta:
             continue
+        toggle = kb._ACCOUNT_HUB_CALLBACKS[key][0]
         acct_items.append({
             "key": key, "label": meta["label"], "has_text": True, "has_style": True,
             "text": db.get_setting(f"{key}_text", meta["default_text"]),
             "style": db.get_setting(f"{key}_style", ""),
             "row_break_before": None,
+            "togglable": True, "enabled": db.get_setting(toggle, "1") == "1",
         })
     groups.append(_finish_group(db, {
         "key": "account_hub", "label": "حساب کاربری من",
@@ -305,6 +307,9 @@ def update_item(db, group: str, key: str, text: str = None, style: str = None, e
         if enabled is not None and meta[2]:
             db.set_setting(meta[2], "1" if enabled else "0")
         return
+
+    if enabled is not None and group == "account_hub":
+        db.set_setting(kb._ACCOUNT_HUB_CALLBACKS[key][0], "1" if enabled else "0")
 
     if text is not None:
         text = text.strip()
