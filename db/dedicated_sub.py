@@ -306,7 +306,7 @@ class DedicatedSubMixin:
         with self._get_conn() as conn:
             conn.execute("UPDATE panel_servers SET dsub_profile_id=NULL WHERE dsub_profile_id=?", (int(profile_id),))
             for sid in ids:
-                conn.execute("UPDATE panel_servers SET dsub_profile_id=? WHERE id=?", (int(profile_id), sid))
+                conn.execute("UPDATE panel_servers SET dsub_profile_id=?, dsub_enabled=1 WHERE id=?", (int(profile_id), sid))
 
     def dsp_for_panel(self, server_id):
         try:
