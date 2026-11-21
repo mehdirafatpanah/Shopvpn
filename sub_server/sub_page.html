@@ -270,6 +270,11 @@ html:root[data-style="cyberpunk"]{--rc:8px;--bg:#06060d;--ink:#e6fbff;--mute:#7f
   <div class="sub"><code id="sublink"></code><button class="sm k" id="copysub">کپی</button><button class="sm" id="subqr" hidden>QR</button></div>
 </section>
 
+<section class="sec" id="pnsec" hidden>
+  <h3>لینک ساب هر پنل</h3>
+  <ul class="cfg" id="pnl"></ul>
+</section>
+
 <section class="sec" id="cfgsec" hidden>
   <h3>کانفیگ‌ها <button class="sm" id="copyall">کپی همه</button></h3>
   <ul class="cfg" id="cfg"></ul>
@@ -460,6 +465,13 @@ if(D.show.configs&&D.configs.length){
     if(b.dataset.c!==undefined)copy(D.configs[b.dataset.c].u,'کپی شد',b);
     if(b.dataset.q!==undefined){const c=D.configs[b.dataset.q];showQR(D.sub+'/qr.png?i='+b.dataset.q,c.n)}
   };
+}
+
+/* لینک ساب جدای هر پنل (سرویس چندپنلی)، به ترتیبی که مدیر تعیین کرده */
+if(D.show.panels&&D.panels&&D.panels.length){
+  $('#pnsec').hidden=false;
+  $('#pnl').innerHTML=D.panels.map((p,i)=>`<li><span class="f">🌐</span><span class="n">${esc(p.n)}</span>${p.t?`<span class="tag">${esc(p.t)}</span>`:''}${p.c?'':`<a class="sm" href="${esc(p.u)}">باز کردن</a>`}<button class="sm k" data-pc="${i}">کپی لینک</button></li>`).join('');
+  $('#pnl').onclick=e=>{const b=e.target.closest('button[data-pc]');if(b)copy(D.panels[b.dataset.pc].u,'لینک پنل کپی شد',b)};
 }
 
 /* OpenVPN */

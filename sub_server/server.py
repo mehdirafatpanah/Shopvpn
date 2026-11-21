@@ -225,12 +225,41 @@ def _forward_query(url: str, query: Dict[str, str]) -> str:
     return url + ("&" if "?" in url else "?") + urlencode(extra)
 
 
+async def _cc_for(request: Request):
+    """سرویسِ این درخواست؛ روی مسیر /p/{panel_id} فقط به همان پنل محدود می‌شود (None اگر پنل جزو سرویس نیست)."""
+    cc = await asyncio.to_thread(db.ds_get_config_by_token, request.path_params["token"])
+    pid = request.path_params.get("pid")
+    if cc is None or pid is None:
+        return cc
+    return await asyncio.to_thread(ds.scoped_config, db, cc, int(pid))
+
+
+def _scope_suffix(cc) -> str:
+    return f"/p/{int(cc[ds.SCOPE_KEY])}" if ds.is_scoped(cc) else ""
+
+
+async def _page_panels(cc, request: Request) -> List[dict]:
+    """لینک‌های جدای پنل‌ها برای صفحه (فقط سرویس چندپنلی)."""
+    try:
+        return await asyncio.to_thread(ds.panel_page_links, db, cc, request.path_params["token"])
+    except Exception:
+        log.exception("panel links failed")
+        return []
+
+
 async def _linked_panel_uris(cc, query: Dict[str, str], ua: str, ttl: int) -> List[str]:
     """کانفیگ‌های پنل‌های اضافه‌ی همین سرویس (محصول چندپنلی)؛ فقط وقتی ساب اختصاصی روشن است."""
+    if ds.is_scoped(cc):
+        return []
     try:
         links = await asyncio.to_thread(db.panel_links_for_config, cc["id"])
     except Exception:
         return []
+    if not links:
+        return []
+    own_page = {e["panel_id"] for e in await asyncio.to_thread(ds.panel_entries, db, cc)
+                if e["panel_type"] in ds.PANEL_DSUB_REQUIRED_TYPES}
+    links = [l for l in links if int(l["panel_server_id"]) not in own_page]
     if not links:
         return []
 
@@ -273,7 +302,7 @@ async def _mergeable_primary(up, upstream_url: str, ttl: int, extra_uris) -> "Up
 
 _WUI_LABELS = {"wireguard": "WireGuard", "amneziawg": "AmneziaWG", "openvpn": "OpenVPN"}
 _WUI_TTL = 30
-_wui_cache: Dict[int, tuple] = {}
+_wui_cache: Dict[tuple, tuple] = {}
 
 
 async def _wui_server(cc):
@@ -298,7 +327,8 @@ async def _wui_bundle(cc, ttl: float = _WUI_TTL) -> Optional[dict]:
     if server is None:
         return None
     cid = int(cc["id"])
-    hit = _wui_cache.get(cid)
+    key = (cid, str(cc["username"]))
+    hit = _wui_cache.get(key)
     now = time.monotonic()
     if hit and now - hit[0] < ttl:
         return hit[1]
@@ -330,11 +360,11 @@ async def _wui_bundle(cc, ttl: float = _WUI_TTL) -> Optional[dict]:
     bundle = {"wg": wg, "ovpn": ovpn, "vpn": vpn, "info": info, "live": True}
     if len(_wui_cache) > 2000:
         _wui_cache.clear()
-    _wui_cache[cid] = (now, bundle)
+    _wui_cache[key] = (now, bundle)
     return bundle
 
 
-_dns_cache: Dict[int, tuple] = {}
+_dns_cache: Dict[tuple, tuple] = {}
 
 
 async def _dns_server(cc):
@@ -353,7 +383,8 @@ async def _dns_bundle(cc, ttl: float = _WUI_TTL) -> Optional[dict]:
     if server is None:
         return None
     cid = int(cc["id"])
-    hit = _dns_cache.get(cid)
+    key = (cid, str(cc["username"]))
+    hit = _dns_cache.get(key)
     now = time.monotonic()
     if hit and now - hit[0] < ttl:
         return hit[1]
@@ -368,7 +399,7 @@ async def _dns_bundle(cc, ttl: float = _WUI_TTL) -> Optional[dict]:
         item["index"] = pos
     if len(_dns_cache) > 2000:
         _dns_cache.clear()
-    _dns_cache[cid] = (now, bundle)
+    _dns_cache[key] = (now, bundle)
     return bundle
 
 
@@ -384,21 +415,21 @@ async def _wg_files(cc) -> List[dict]:
 async def _dns_page(request: Request, cc, dns: dict, settings, brand: str, page_url: str, ttl: float) -> Response:
     pool_info = await asyncio.to_thread(ds.quota_info_for_config, db, cc["id"])
     info = pool_info or dns["info"]
-    if dns.get("live") and info:
+    if dns.get("live") and info and not ds.is_scoped(cc):
         try:
             await asyncio.to_thread(db.ds_record_usage, cc["id"], (info.get("upload") or 0) + (info.get("download") or 0))
         except Exception:
             log.exception("usage snapshot failed")
     wg = _merge_files(await asyncio.to_thread(ds.wg_files_for_config, db, cc["id"], cc), dns["wg"])
     series = None
-    if settings["dsub_show_chart"] == "1":
+    if settings["dsub_show_chart"] == "1" and not ds.is_scoped(cc):
         now = int(time.time())
         points = await asyncio.to_thread(db.ds_usage_points, cc["id"], now - 31 * 86400)
         series = ds.build_series(points, now)
     uris = list(await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc))
     uris.extend(await _linked_panel_uris(cc, {}, PAGE_UA, ttl))
     data = ds.build_page_data(cc, info, uris, settings, brand, page_url or str(request.url).split("?")[0],
-                              series, wg=wg, dns=dns)
+                              series, wg=wg, dns=dns, panels=await _page_panels(cc, request))
     data["live"] = bool(dns.get("live"))
     await _log(cc["id"], request, "page", 200, settings)
     return render_page(data, f"{brand} · اشتراک {ds.service_name(cc)}".strip(" ·"), settings)
@@ -413,7 +444,7 @@ async def _ovpn_files(cc) -> List[dict]:
 async def _wui_page(request: Request, cc, wui: dict, settings, brand: str, page_url: str, ttl: float) -> Response:
     pool_info = await asyncio.to_thread(ds.quota_info_for_config, db, cc["id"])
     info = pool_info or wui["info"]
-    if wui.get("live") and info:
+    if wui.get("live") and info and not ds.is_scoped(cc):
         try:
             await asyncio.to_thread(db.ds_record_usage, cc["id"], (info.get("upload") or 0) + (info.get("download") or 0))
         except Exception:
@@ -423,12 +454,12 @@ async def _wui_page(request: Request, cc, wui: dict, settings, brand: str, page_
     uris = list(await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc))
     uris.extend(await _linked_panel_uris(cc, {}, PAGE_UA, ttl))
     series = None
-    if settings["dsub_show_chart"] == "1":
+    if settings["dsub_show_chart"] == "1" and not ds.is_scoped(cc):
         now = int(time.time())
         points = await asyncio.to_thread(db.ds_usage_points, cc["id"], now - 31 * 86400)
         series = ds.build_series(points, now)
     data = ds.build_page_data(cc, info, uris, settings, brand, page_url or str(request.url).split("?")[0],
-                              series, ovpn=ovpn, wg=wg, vpn=wui.get("vpn"))
+                              series, ovpn=ovpn, wg=wg, vpn=wui.get("vpn"), panels=await _page_panels(cc, request))
     data["live"] = bool(wui.get("live"))
     await _log(cc["id"], request, "page", 200, settings)
     return render_page(data, f"{brand} · اشتراک {ds.service_name(cc)}".strip(" ·"), settings)
@@ -445,6 +476,8 @@ async def _log(config_id, request: Request, kind: str, status: int, settings: Di
 
 
 async def _snapshot_usage(cc, headers: Dict[str, str]):
+    if ds.is_scoped(cc):
+        return
     info = ds.parse_userinfo({k.lower(): v for k, v in headers.items()}.get("subscription-userinfo"))
     if info:
         try:
@@ -457,20 +490,27 @@ async def _snapshot_usage(cc, headers: Dict[str, str]):
 # ---------------------------------------------------------------------------
 # /s/{token}
 # ---------------------------------------------------------------------------
+async def _profile(request: Request):
+    """پروفایل ساب اختصاصیِ دامنه‌ای که درخواست روی آن آمده (None = ساب مرکزی)."""
+    host = request.headers.get("host", "")
+    return await asyncio.to_thread(ds.profile_for_host, db, host)
+
+
 async def sub_endpoint(request: Request) -> Response:
+    prof = await _profile(request)
     ip = client_ip(request)
     if not limiter.allow("ok:" + ip, RATE_OK):
         return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
     token = request.path_params["token"]
-    cc = await asyncio.to_thread(db.ds_get_config_by_token, token)
+    cc = await _cc_for(request)
     if cc is None or str(cc["status"] or "").lower() == "deleted" or \
             not str(cc["subscription_url"] or "").startswith(("http://", "https://")):
         if not limiter.allow("miss:" + ip, RATE_MISS):
             return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
         return _not_found()
 
-    settings = await asyncio.to_thread(ds.all_settings, db)
-    enabled = ds.is_enabled(db)
+    settings = await asyncio.to_thread(ds.all_settings, db, prof)
+    enabled = ds.is_enabled(db, prof)
     query = _query(request)
     ua = request.headers.get("user-agent", "")
     try:
@@ -506,7 +546,7 @@ async def sub_endpoint(request: Request) -> Response:
         return _raw(up.status, headers, ctype, up.body)
 
     brand = _brand(settings)
-    page_url = ds.link_for_token(db, token) if ds.base_url(db) else ""
+    page_url = ds.link_for_token(db, token, prof) + _scope_suffix(cc) if ds.base_url(db, prof) else ""
 
     # --- صفحه‌ی وب برای مرورگر
     if settings["dsub_web_page"] == "1" and ds.wants_page(ua, request.headers.get("accept", ""), query):
@@ -555,7 +595,7 @@ async def sub_endpoint(request: Request) -> Response:
             points = await asyncio.to_thread(db.ds_usage_points, cc["id"], now - 31 * 86400)
             series = ds.build_series(points, now)
         data = ds.build_page_data(cc, info, uris, settings, brand, page_url or str(request.url).split("?")[0],
-                                  series, ovpn=ovpn_files, wg=wg_files)
+                                  series, ovpn=ovpn_files, wg=wg_files, panels=await _page_panels(cc, request))
         data["live"] = ok
         await _log(cc["id"], request, "page", 200, settings)
         return render_page(data, f"{brand} · اشتراک {ds.service_name(cc)}".strip(" ·"), settings)
@@ -620,19 +660,20 @@ def _qr_png(text: str) -> bytes:
 
 
 async def qr_endpoint(request: Request) -> Response:
+    prof = await _profile(request)
     ip = client_ip(request)
     if not limiter.allow("ok:" + ip, RATE_OK):
         return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
     token = request.path_params["token"]
-    cc = await asyncio.to_thread(db.ds_get_config_by_token, token)
-    settings = await asyncio.to_thread(ds.all_settings, db)
-    if cc is None or not ds.is_enabled(db) or settings["dsub_show_qr"] != "1":
+    cc = await _cc_for(request)
+    settings = await asyncio.to_thread(ds.all_settings, db, prof)
+    if cc is None or not ds.is_enabled(db, prof) or settings["dsub_show_qr"] != "1":
         if not limiter.allow("miss:" + ip, RATE_MISS):
             return PlainTextResponse("Too many requests", status_code=429)
         return _not_found()
     idx = request.query_params.get("i")
     if idx is None:
-        text = ds.link_for_token(db, token)
+        text = ds.link_for_token(db, token, prof) + _scope_suffix(cc)
     else:
         try:
             n = int(idx)
@@ -660,12 +701,12 @@ async def qr_endpoint(request: Request) -> Response:
 # /s/{token}/ovpn/{n}
 # ---------------------------------------------------------------------------
 async def ovpn_endpoint(request: Request) -> Response:
+    prof = await _profile(request)
     ip = client_ip(request)
     if not limiter.allow("ok:" + ip, RATE_OK):
         return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
-    token = request.path_params["token"]
-    cc = await asyncio.to_thread(db.ds_get_config_by_token, token)
-    if cc is None or str(cc["status"] or "").lower() == "deleted" or not ds.is_enabled(db):
+    cc = await _cc_for(request)
+    if cc is None or str(cc["status"] or "").lower() == "deleted" or not ds.is_enabled(db, prof):
         if not limiter.allow("miss:" + ip, RATE_MISS):
             return PlainTextResponse("Too many requests", status_code=429)
         return _not_found()
@@ -675,7 +716,7 @@ async def ovpn_endpoint(request: Request) -> Response:
         if not limiter.allow("miss:" + ip, RATE_MISS):
             return PlainTextResponse("Too many requests", status_code=429)
         return _not_found()
-    settings = await asyncio.to_thread(ds.all_settings, db)
+    settings = await asyncio.to_thread(ds.all_settings, db, prof)
     await _log(cc["id"], request, "ovpn", 200, settings)
     headers = {"cache-control": "no-store", "content-disposition": f'attachment; filename="{item["filename"]}"'}
     return _raw(200, headers, "application/x-openvpn-profile", item["profile"].encode("utf-8"))
@@ -685,12 +726,12 @@ async def ovpn_endpoint(request: Request) -> Response:
 # /s/{token}/wg/{n}
 # ---------------------------------------------------------------------------
 async def wg_endpoint(request: Request) -> Response:
+    prof = await _profile(request)
     ip = client_ip(request)
     if not limiter.allow("ok:" + ip, RATE_OK):
         return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
-    token = request.path_params["token"]
-    cc = await asyncio.to_thread(db.ds_get_config_by_token, token)
-    if cc is None or str(cc["status"] or "").lower() == "deleted" or not ds.is_enabled(db):
+    cc = await _cc_for(request)
+    if cc is None or str(cc["status"] or "").lower() == "deleted" or not ds.is_enabled(db, prof):
         if not limiter.allow("miss:" + ip, RATE_MISS):
             return PlainTextResponse("Too many requests", status_code=429)
         return _not_found()
@@ -700,20 +741,20 @@ async def wg_endpoint(request: Request) -> Response:
         if not limiter.allow("miss:" + ip, RATE_MISS):
             return PlainTextResponse("Too many requests", status_code=429)
         return _not_found()
-    settings = await asyncio.to_thread(ds.all_settings, db)
+    settings = await asyncio.to_thread(ds.all_settings, db, prof)
     await _log(cc["id"], request, "wg", 200, settings)
     headers = {"cache-control": "no-store", "content-disposition": f'attachment; filename="{item["filename"]}"'}
     return _raw(200, headers, "application/x-wireguard-profile", item["profile"].encode("utf-8"))
 
 
 async def dns_login_endpoint(request: Request) -> Response:
+    prof = await _profile(request)
     ip = client_ip(request)
     if not limiter.allow("ok:" + ip, RATE_OK):
         return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
-    token = request.path_params["token"]
-    cc = await asyncio.to_thread(db.ds_get_config_by_token, token)
+    cc = await _cc_for(request)
     server = await _dns_server(cc) if cc is not None and str(cc["status"] or "").lower() != "deleted" else None
-    if server is None or not ds.is_enabled(db):
+    if server is None or not ds.is_enabled(db, prof):
         if not limiter.allow("miss:" + ip, RATE_MISS):
             return PlainTextResponse("Too many requests", status_code=429)
         return _not_found()
@@ -724,7 +765,7 @@ async def dns_login_endpoint(request: Request) -> Response:
     except Exception as exc:
         log.warning("dns login link failed cc=%s: %s", cc["id"], type(exc).__name__)
         return PlainTextResponse("Upstream unavailable", status_code=502, headers={"cache-control": "no-store"})
-    settings = await asyncio.to_thread(ds.all_settings, db)
+    settings = await asyncio.to_thread(ds.all_settings, db, prof)
     await _log(cc["id"], request, "dns-login", 302, settings)
     return RedirectResponse(url, status_code=302, headers={"cache-control": "no-store", "referrer-policy": "no-referrer"})
 
@@ -753,6 +794,7 @@ def _same_origin(request: Request) -> bool:
 
 
 async def vpn_reveal_endpoint(request: Request) -> Response:
+    prof = await _profile(request)
     ip = client_ip(request)
     token = request.path_params["token"]
     if not limiter.allow("ok:" + ip, RATE_OK) or not limiter.allow("rv-ip:" + ip, REVEAL_PER_IP) \
@@ -760,8 +802,8 @@ async def vpn_reveal_endpoint(request: Request) -> Response:
         return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
     if not _same_origin(request):
         return PlainTextResponse("Forbidden", status_code=403, headers={"cache-control": "no-store"})
-    cc = await asyncio.to_thread(db.ds_get_config_by_token, token)
-    if cc is None or str(cc["status"] or "").lower() == "deleted" or not ds.is_enabled(db):
+    cc = await _cc_for(request)
+    if cc is None or str(cc["status"] or "").lower() == "deleted" or not ds.is_enabled(db, prof):
         if not limiter.allow("miss:" + ip, RATE_MISS):
             return PlainTextResponse("Too many requests", status_code=429)
         return _not_found()
@@ -776,7 +818,7 @@ async def vpn_reveal_endpoint(request: Request) -> Response:
         if not limiter.allow("miss:" + ip, RATE_MISS):
             return PlainTextResponse("Too many requests", status_code=429)
         return _not_found()
-    settings = await asyncio.to_thread(ds.all_settings, db)
+    settings = await asyncio.to_thread(ds.all_settings, db, prof)
     await _log(cc["id"], request, "reveal", 200, settings)
     return JSONResponse({"v": value}, headers={"cache-control": "no-store", "x-robots-tag": "noindex, nofollow"})
 
@@ -785,12 +827,12 @@ async def vpn_reveal_endpoint(request: Request) -> Response:
 # /s/{token}/vpn/{n}/ca  (گواهی CA تونل IKEv2؛ عمومی است)
 # ---------------------------------------------------------------------------
 async def vpn_ca_endpoint(request: Request) -> Response:
+    prof = await _profile(request)
     ip = client_ip(request)
     if not limiter.allow("ok:" + ip, RATE_OK):
         return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
-    token = request.path_params["token"]
-    cc = await asyncio.to_thread(db.ds_get_config_by_token, token)
-    if cc is None or str(cc["status"] or "").lower() == "deleted" or not ds.is_enabled(db):
+    cc = await _cc_for(request)
+    if cc is None or str(cc["status"] or "").lower() == "deleted" or not ds.is_enabled(db, prof):
         if not limiter.allow("miss:" + ip, RATE_MISS):
             return PlainTextResponse("Too many requests", status_code=429)
         return _not_found()
@@ -800,7 +842,7 @@ async def vpn_ca_endpoint(request: Request) -> Response:
         if not limiter.allow("miss:" + ip, RATE_MISS):
             return PlainTextResponse("Too many requests", status_code=429)
         return _not_found()
-    settings = await asyncio.to_thread(ds.all_settings, db)
+    settings = await asyncio.to_thread(ds.all_settings, db, prof)
     await _log(cc["id"], request, "vpnca", 200, settings)
     headers = {"cache-control": "no-store", "content-disposition": f'attachment; filename="{item["filename"]}"'}
     return _raw(200, headers, "application/x-x509-ca-cert", item["pem"].encode("utf-8"))
@@ -811,6 +853,7 @@ async def vpn_ca_endpoint(request: Request) -> Response:
 # /sub/smart/{token}  (ادغام چند سرویس در یک لینک)
 # ---------------------------------------------------------------------------
 async def smart_endpoint(request: Request) -> Response:
+    prof = await _profile(request)
     ip = client_ip(request)
     if not limiter.allow("ok:" + ip, RATE_OK):
         return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
@@ -823,7 +866,7 @@ async def smart_endpoint(request: Request) -> Response:
         urls = [u for u in json.loads(row["source_urls_json"]) if str(u).startswith(("http://", "https://"))]
     except ValueError:
         urls = []
-    settings = await asyncio.to_thread(ds.all_settings, db)
+    settings = await asyncio.to_thread(ds.all_settings, db, prof)
     ua = request.headers.get("user-agent", "")
     ttl = 30
 
@@ -940,6 +983,13 @@ app = Starlette(
         Route("/s/{token}/wg/{n:int}", wg_endpoint, methods=["GET"]),
         Route("/s/{token}/dns/login", dns_login_endpoint, methods=["GET"]),
         Route("/s/{token}/vpn/{n:int}/ca", vpn_ca_endpoint, methods=["GET"]),
+        Route("/s/{token}/p/{pid:int}", sub_endpoint, methods=["GET", "HEAD"]),
+        Route("/s/{token}/p/{pid:int}/qr.png", qr_endpoint, methods=["GET"]),
+        Route("/s/{token}/p/{pid:int}/ovpn/{n:int}", ovpn_endpoint, methods=["GET"]),
+        Route("/s/{token}/p/{pid:int}/wg/{n:int}", wg_endpoint, methods=["GET"]),
+        Route("/s/{token}/p/{pid:int}/dns/login", dns_login_endpoint, methods=["GET"]),
+        Route("/s/{token}/p/{pid:int}/vpn/{n:int}/ca", vpn_ca_endpoint, methods=["GET"]),
+        Route("/s/{token}/p/{pid:int}/reveal", vpn_reveal_endpoint, methods=["POST"]),
         Route("/s/{token}/reveal", vpn_reveal_endpoint, methods=["POST"]),
         Route("/sub/smart/{token}", smart_endpoint, methods=["GET", "HEAD"]),
         Route("/healthz", healthz, methods=["GET"]),
