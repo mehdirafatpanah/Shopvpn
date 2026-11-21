@@ -14490,7 +14490,16 @@ async function bindDsubProfiles(root) {
         try {
           const r = await apiPost(`/dsub-profiles/${p.id}/ssl`, { email: $('#dsp-mail', body).value.trim(), enable: sw.dataset.on === '1' });
           $('#dsp-ssl-out', body).textContent = r.output || '';
-          toast('گواهی صادر شد' + (r.enabled ? ' و ساب فعال شد.' : '.')); load();
+          const doneMsg = 'گواهی SSL با موفقیت صادر شد' + (r.enabled ? ' و ساب فعال شد.' : '.');
+          toast(doneMsg); load();
+          const done = document.createElement('div');
+          done.className = 'card';
+          done.style.cssText = 'margin-top:10px;padding:12px;border:1px solid #34D399';
+          done.innerHTML = `<b style="color:#34D399">✅ ${esc(doneMsg)}</b><div style="margin-top:10px"><button type="button" class="btn" id="dsp-ssl-close">بستن</button></div>`;
+          go.after(done);
+          go.style.display = 'none';
+          $('#dsp-ssl-close', done).onclick = () => close();
+          return;
         } catch (e) { $('#dsp-ssl-out', body).textContent = e.message; handleErr(e); }
         finally { go.disabled = false; go.textContent = prev; }
       };
