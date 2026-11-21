@@ -5422,7 +5422,8 @@ async def api_payg_delivery_photo_get(admin=Depends(require_permission("catalog"
 
 
 def _payg_save_panels(payg, ids: set, targets: dict):
-    ordered = sorted(ids)
+    import dedicated_sub
+    ordered = dedicated_sub.sort_panel_ids(db, ids)
     db.set_setting("payg_panel_server_ids", json.dumps(ordered))
     db.set_setting("payg_panel_server_id", str(ordered[0]) if ordered else "")
     payg._save_payg_targets(db, targets)
@@ -9688,6 +9689,269 @@ def api_settings(admin=Depends(require_permission("settings"))):
     return db.get_all_settings()
 
 
+# ------------------------------------------------ ساب مرکزی و ساب‌های اختصاصی --
+_DSP_DOMAIN_RE = re.compile(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}")
+_DSP_NGINX_MARK = "# managed-by-shopvpn-dsub-profile"
+
+
+def _dsp_guard(admin):
+    if admin["tenant"]:
+        raise HTTPException(403, "مدیریت ساب‌های اختصاصی فقط در پنل بات اصلی در دسترس است.")
+
+
+def _dsp_clean_url(value: str, db_exclude_id: Optional[int] = None) -> str:
+    """آدرس پروفایل: فقط https://دامنه (بدون مسیر)؛ یکتا بودن بین همه‌ی ساب‌ها چک می‌شود."""
+    value = (value or "").strip().rstrip("/")
+    if not value:
+        return ""
+    if "://" not in value:
+        value = "https://" + value
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in ("http", "https") or not _DSP_DOMAIN_RE.fullmatch(host):
+        raise HTTPException(400, "دامنه‌ی ساب معتبر نیست؛ مثلاً sub2.example.com")
+    if parsed.path not in ("", "/") or parsed.port or parsed.query:
+        raise HTTPException(400, "فقط دامنه مجاز است (بدون مسیر و پورت).")
+    import dedicated_sub as ds
+    central_host = (urlparse(ds.base_url(db)).hostname or "").lower()
+    if host == central_host:
+        raise HTTPException(400, "این دامنه همان ساب مرکزی است؛ برای ساب جدید دامنه‌ی دیگری بگذار.")
+    for other in ds.list_profiles(db):
+        if other["id"] != db_exclude_id and (urlparse(other["base_url"]).hostname or "").lower() == host:
+            raise HTTPException(400, f"این دامنه قبلاً برای ساب «{other['name']}» ثبت شده است.")
+    return f"{parsed.scheme}://{host}"
+
+
+def _dsp_public(prof: dict) -> dict:
+    return {"id": prof["id"], "name": prof["name"], "base_url": prof["base_url"], "enabled": prof["enabled"],
+            "ssl_status": prof["ssl_status"], "panel_ids": db.dsp_panel_ids(prof["id"])}
+
+
+class DspBody(BaseModel):
+    name: Optional[str] = None
+    base_url: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+class DspPanelsBody(BaseModel):
+    panel_ids: List[int] = []
+
+
+class DspSettingsBody(BaseModel):
+    values: Dict[str, Any]
+
+
+class DspSSLBody(BaseModel):
+    email: str
+    enable: bool = True
+
+
+@app.get("/api/dsub-profiles")
+def api_dsp_list(admin=Depends(require_permission("settings"))):
+    _dsp_guard(admin)
+    import dedicated_sub as ds
+    panels = [{"id": int(s["id"]), "name": s["name"], "panel_type": s["panel_type"],
+               "profile_id": int(s["dsub_profile_id"]) if _row_get(s, "dsub_profile_id", None) else None}
+              for s in db.get_panel_servers(True)]
+    return {"central": {"base_url": ds.base_url(db), "enabled": bool(ds.is_enabled(db)), "master": ds.flag(db, "dsub_enabled")},
+            "profiles": [_dsp_public(p) for p in ds.list_profiles(db)], "panels": panels}
+
+
+@app.post("/api/dsub-profiles")
+def api_dsp_create(body: DspBody, admin=Depends(require_permission("settings"))):
+    _dsp_guard(admin)
+    name = (body.name or "").strip()[:60]
+    if not name:
+        raise HTTPException(400, "نام ساب را وارد کن.")
+    url = _dsp_clean_url(body.base_url or "")
+    pid = db.dsp_create(name, url, bool(body.enabled) if body.enabled is not None else False)
+    db.log_admin_action(admin["id"], "dsub_profile_create", f"ساب اختصاصی «{name}» ساخته شد ({url or 'بدون دامنه'})", "setting", f"dsub:{pid}")
+    return {"ok": True, "id": pid}
+
+
+@app.put("/api/dsub-profiles/{profile_id}")
+def api_dsp_update(profile_id: int, body: DspBody, admin=Depends(require_permission("settings"))):
+    _dsp_guard(admin)
+    import dedicated_sub as ds
+    prof = ds.get_profile(db, profile_id)
+    if not prof:
+        raise HTTPException(404, "ساب پیدا نشد.")
+    fields: Dict[str, Any] = {}
+    if body.name is not None:
+        if not body.name.strip():
+            raise HTTPException(400, "نام ساب خالی است.")
+        fields["name"] = body.name.strip()[:60]
+    if body.base_url is not None:
+        new_url = _dsp_clean_url(body.base_url, profile_id)
+        if new_url != prof["base_url"]:
+            fields["base_url"] = new_url
+            fields["ssl_status"] = ""
+            if not new_url:
+                fields["enabled"] = False
+    if body.enabled is not None:
+        if body.enabled and not (fields.get("base_url", prof["base_url"])):
+            raise HTTPException(400, "برای روشن کردن ساب اول دامنه‌اش را تنظیم کن.")
+        fields["enabled"] = bool(body.enabled)
+    db.dsp_update(profile_id, **fields)
+    db.log_admin_action(admin["id"], "dsub_profile_update", f"ساب اختصاصی «{prof['name']}» ویرایش شد", "setting", f"dsub:{profile_id}")
+    return {"ok": True}
+
+
+@app.delete("/api/dsub-profiles/{profile_id}")
+def api_dsp_delete(profile_id: int, admin=Depends(require_permission("settings"))):
+    _dsp_guard(admin)
+    import dedicated_sub as ds
+    prof = ds.get_profile(db, profile_id)
+    if not prof:
+        raise HTTPException(404, "ساب پیدا نشد.")
+    db.dsp_delete(profile_id)
+    db.log_admin_action(admin["id"], "dsub_profile_delete", f"ساب اختصاصی «{prof['name']}» حذف شد؛ پنل‌هایش به ساب مرکزی برگشتند", "setting", f"dsub:{profile_id}")
+    return {"ok": True}
+
+
+@app.put("/api/dsub-profiles/{profile_id}/panels")
+def api_dsp_panels(profile_id: int, body: DspPanelsBody, admin=Depends(require_permission("settings"))):
+    _dsp_guard(admin)
+    import dedicated_sub as ds
+    prof = ds.get_profile(db, profile_id)
+    if not prof:
+        raise HTTPException(404, "ساب پیدا نشد.")
+    valid = {int(s["id"]) for s in db.get_panel_servers(True)}
+    ids = [int(x) for x in body.panel_ids if int(x) in valid]
+    db.dsp_set_panels(profile_id, ids)
+    db.log_admin_action(admin["id"], "dsub_profile_panels", f"پنل‌های ساب «{prof['name']}»: {ids}", "setting", f"dsub:{profile_id}")
+    return {"ok": True, "panel_ids": ids}
+
+
+@app.get("/api/dsub-profiles/{profile_id}/settings")
+def api_dsp_settings_get(profile_id: int, admin=Depends(require_permission("settings"))):
+    _dsp_guard(admin)
+    import dedicated_sub as ds
+    prof = ds.get_profile(db, profile_id)
+    if not prof:
+        raise HTTPException(404, "ساب پیدا نشد.")
+    return {"settings": ds.all_settings(db, prof), "own_keys": sorted((prof["settings"] or {}).keys())}
+
+
+@app.put("/api/dsub-profiles/{profile_id}/settings")
+def api_dsp_settings_put(profile_id: int, body: DspSettingsBody, admin=Depends(require_permission("settings"))):
+    _dsp_guard(admin)
+    import dedicated_sub as ds
+    prof = ds.get_profile(db, profile_id)
+    if not prof:
+        raise HTTPException(404, "ساب پیدا نشد.")
+    own = dict(prof["settings"] or {})
+    for key, value in body.values.items():
+        if key not in ds.PROFILE_SETTING_KEYS:
+            continue
+        value = "" if value is None else str(value)
+        if key == "dsub_custom_template":
+            err = ds.validate_custom_template(value)
+            if err:
+                raise HTTPException(400, err)
+        if key in ("dsub_accent_color", "dsub_secondary_color") and value and not re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+            raise HTTPException(400, "رنگ نامعتبر است؛ کد HEX شش‌رقمی مثل #6366F1 لازم است.")
+        if len(value) > 420000:
+            raise HTTPException(400, "مقدار بیش از حد بزرگ است.")
+        own[key] = value
+    db.dsp_set_settings(profile_id, own)
+    db.log_admin_action(admin["id"], "dsub_profile_settings", f"تنظیمات ساب «{prof['name']}» ذخیره شد", "setting", f"dsub:{profile_id}")
+    return {"ok": True}
+
+
+def _dsp_priv(cmd: List[str]) -> List[str]:
+    """روی سرور باید root باشیم؛ اگر نیستیم از sudo بدون رمز استفاده می‌کنیم."""
+    if os.geteuid() == 0:
+        return cmd
+    sudo = shutil.which("sudo")
+    if not sudo:
+        raise HTTPException(400, "پنل وب با دسترسی root اجرا نمی‌شود و sudo هم نیست؛ SSL را با manage.sh بگیر.")
+    return [sudo, "-n"] + cmd
+
+
+def _dsp_run(cmd: List[str], timeout: int = 180, input_text: Optional[str] = None):
+    return subprocess.run(_dsp_priv(cmd), capture_output=True, text=True, timeout=timeout, input=input_text)
+
+
+@app.post("/api/dsub-profiles/{profile_id}/ssl")
+async def api_dsp_ssl(profile_id: int, body: DspSSLBody, admin=Depends(require_permission("settings"))):
+    """nginx server block برای دامنه‌ی ساب + گواهی SSL (certbot) و در صورت موفقیت روشن‌کردن همان ساب."""
+    _dsp_guard(admin)
+    import dedicated_sub as ds
+    import socket
+    prof = ds.get_profile(db, profile_id)
+    if not prof:
+        raise HTTPException(404, "ساب پیدا نشد.")
+    domain = (urlparse(prof["base_url"]).hostname or "").lower()
+    if not domain:
+        raise HTTPException(400, "اول دامنه‌ی این ساب را ذخیره کن.")
+    email = (body.email or "").strip()
+    if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+        raise HTTPException(400, "ایمیل معتبر برای صدور گواهی وارد کن.")
+    if not shutil.which("certbot") or not shutil.which("nginx"):
+        raise HTTPException(400, "nginx/certbot روی سرور نصب نیست؛ اول سرور ساب اختصاصی را با manage.sh (گزینه ۳۷) نصب کن.")
+    try:
+        import config as _cfg
+        port = int(getattr(_cfg, "DEDICATED_SUB_PORT", 8004))
+    except Exception:
+        port = 8004
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=2):
+            pass
+    except OSError:
+        raise HTTPException(400, f"سرور ساب روی پورت {port} در حال اجرا نیست؛ اول آن را با manage.sh نصب/روشن کن.")
+    try:
+        await asyncio.to_thread(socket.getaddrinfo, domain, 80)
+    except OSError:
+        raise HTTPException(400, f"دامنه‌ی {domain} هنوز DNS ندارد؛ رکورد A آن را روی IP همین سرور بگذار و چند دقیقه بعد دوباره امتحان کن.")
+    conf_path = f"/etc/nginx/sites-available/{domain}.conf"
+    link_path = f"/etc/nginx/sites-enabled/{domain}.conf"
+    exists = await asyncio.to_thread(_dsp_run, ["test", "-f", conf_path])
+    if exists.returncode == 0:
+        head = await asyncio.to_thread(_dsp_run, ["cat", conf_path])
+        if _DSP_NGINX_MARK not in (head.stdout or ""):
+            raise HTTPException(400, "برای این دامنه از قبل یک کانفیگ nginx وجود دارد که با این بخش ساخته نشده (مثلاً مینی‌اپ یا پنل)؛ دامنه‌ی دیگری انتخاب کن.")
+    conf = f"""{_DSP_NGINX_MARK}
+server {{
+    listen 80;
+    server_name {domain};
+    client_max_body_size 1m;
+    proxy_read_timeout 60s;
+    proxy_send_timeout 60s;
+
+    location / {{
+        proxy_pass http://127.0.0.1:{port};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }}
+}}
+"""
+    out = ""
+    try:
+        w = await asyncio.to_thread(_dsp_run, ["tee", conf_path], 20, conf)
+        if w.returncode != 0:
+            raise HTTPException(500, "نوشتن کانفیگ nginx ناموفق بود: " + (w.stderr or "")[-500:])
+        await asyncio.to_thread(_dsp_run, ["ln", "-sf", conf_path, link_path], 20)
+        t = await asyncio.to_thread(_dsp_run, ["nginx", "-t"], 30)
+        if t.returncode != 0:
+            await asyncio.to_thread(_dsp_run, ["rm", "-f", link_path, conf_path], 20)
+            raise HTTPException(500, "کانفیگ nginx خطا دارد:\n" + (t.stderr or "")[-800:])
+        await asyncio.to_thread(_dsp_run, ["systemctl", "reload", "nginx"], 30)
+        c = await asyncio.to_thread(_dsp_run, ["certbot", "--nginx", "-d", domain, "--non-interactive", "--agree-tos",
+                                                "-m", email, "--redirect"], 180)
+        out = ((c.stdout or "") + "\n" + (c.stderr or ""))[-4000:]
+        if c.returncode != 0:
+            raise HTTPException(502, "صدور گواهی ناموفق بود (DNS و باز بودن پورت ۸۰ را چک کن):\n" + out)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(504, "مهلت صدور گواهی تمام شد؛ بعداً دوباره امتحان کن.")
+    status = "issued " + datetime.utcnow().strftime("%Y-%m-%d")
+    db.dsp_update(profile_id, ssl_status=status, enabled=True if body.enable else None)
+    db.log_admin_action(admin["id"], "dsub_profile_ssl", f"SSL ساب «{prof['name']}» ({domain}) صادر شد", "setting", f"dsub:{profile_id}")
+    return {"ok": True, "output": out, "enabled": bool(body.enable)}
+
+
 def _sub_page_default_template_path() -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "sub_server", "sub_page.html")
 
@@ -9700,10 +9964,11 @@ def api_sub_page_default_template(admin=Depends(require_permission("settings")))
 
 
 @app.get("/api/settings/sub-page-preview")
-def api_sub_page_preview(admin=Depends(require_permission("settings"))):
+def api_sub_page_preview(profile: Optional[int] = Query(None), admin=Depends(require_permission("settings"))):
     """Render a safe, data-only mock of the subscription web page for the admin live preview."""
     import dedicated_sub as ds
-    settings = ds.all_settings(db)
+    prof = ds.get_profile(db, profile) if profile and not admin["tenant"] else None
+    settings = ds.all_settings(db, prof)
     template = ds.pick_template(settings)
     if template is None:
         with open(_sub_page_default_template_path(), "r", encoding="utf-8") as fh:
