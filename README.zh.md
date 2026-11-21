@@ -60,8 +60,8 @@
 - 📢 **项目：** [@celenorbot](https://t.me/celenorbot)
 - 👤 **作者：** [@celenor](https://t.me/celenor)
 - 💎 **捐赠地址：**
-  - `USDT-BNB (BEP20):` `0x3c026D27DEbE24d659d6dDcF074b3063Fd47bc63`
-  - `USDT-TRX (TRC20):` `TBm712Gdcbfp3Tkv1CpNgfwUfKuFNn8iWE`
+  - `USDT-BNB (BEP20):` `0x2850B81d6605e3A9880F113c0250c4340e5887B0`
+  - `USDT-TRX (TRC20):` `TNEj4RYrzxteaJYxu9i2BMYm47xoB5oixM`
 
 ### ⚡ 快速概览
 
