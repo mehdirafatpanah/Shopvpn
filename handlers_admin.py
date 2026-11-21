@@ -13204,6 +13204,88 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         await call.answer(tr("ℹ️ الان ارسالی در حال انجام نیست."), show_alert=True)
 
+    @router.callback_query(F.data == "adm_bc_dl_pick")
+    async def cb_broadcast_deeplink_pick(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        data = await state.get_data()
+        if not data.get("broadcast_message_id") and not data.get("broadcast_single_message_id"):
+            await call.answer(tr("ابتدا پیام موردنظر را ارسال کنید."), show_alert=True)
+            return
+        await state.update_data(broadcast_deeplink_context="broadcast" if data.get("broadcast_message_id") else "single")
+        await safe_edit(
+            call, tr("🔗 مقصد دکمه را انتخاب کن. پس از انتخاب مقصد، عنوان دکمه را وارد می‌کنی."),
+            reply_markup=kb.deeplink_type_picker_kb("adm_bc_dl_cancel"),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data == "adm_bc_dl_cancel")
+    async def cb_broadcast_deeplink_cancel(call: CallbackQuery, state: FSMContext):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        data = await state.get_data()
+        if data.get("broadcast_single_message_id"):
+            markup = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=tr("🔗 افزودن دکمه دیپ‌لینک"), callback_data="adm_bc_dl_pick")],
+                [InlineKeyboardButton(text=tr("✅ ارسال پیام"), callback_data="adm_bc_single_send")],
+                [InlineKeyboardButton(text=tr("❌ لغو"), callback_data="adm_broadcast_cancel")],
+            ])
+        else:
+            markup = kb.admin_broadcast_duration_kb(bool(data.get("broadcast_pin")), data.get("broadcast_mode") != "forward")
+        await safe_edit(call, tr("دکمه دیپ‌لینک اضافه نشد."), reply_markup=markup)
+        await call.answer()
+
+    async def _broadcast_deeplink_token_ready(message_or_call, state: FSMContext, token: str):
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", str(token or "")):
+            error = tr("پارامتر دیپ‌لینک نامعتبر یا طولانی است. محدودیت تلگرام حداکثر ۶۴ کاراکتر از حروف انگلیسی، عدد، خط تیره و زیرخط است.")
+            if isinstance(message_or_call, CallbackQuery):
+                await message_or_call.answer(error, show_alert=True)
+            else:
+                await message_or_call.answer(error)
+            return False
+        await state.update_data(broadcast_pending_deeplink_token=token)
+        await state.set_state(AdminBroadcast.waiting_deeplink_button_text)
+        prompt = tr("✏️ عنوان دکمه را بفرست (مثلاً: 🛍 خرید همین محصول):")
+        if isinstance(message_or_call, CallbackQuery):
+            await message_or_call.message.answer(prompt, reply_markup=kb.admin_back_kb("adm_broadcast"))
+        else:
+            await message_or_call.answer(prompt, reply_markup=kb.admin_back_kb("adm_broadcast"))
+        return True
+
+    @router.message(AdminBroadcast.waiting_deeplink_button_text)
+    async def process_broadcast_deeplink_button_text(message: Message, state: FSMContext):
+        if not full_admin_only(message.from_user.id):
+            return
+        label = (message.text or "").strip()
+        if not label or len(label) > 64:
+            await message.answer(tr("عنوان دکمه باید بین ۱ تا ۶۴ کاراکتر باشد. دوباره بفرست:"))
+            return
+        data = await state.get_data()
+        token = data.get("broadcast_pending_deeplink_token")
+        if not token:
+            await state.set_state(AdminBroadcast.waiting_duration)
+            await message.answer(tr("اطلاعات دیپ‌لینک ناقص است؛ دوباره تلاش کن."))
+            return
+        buttons = list(data.get("broadcast_deeplink_buttons") or [])
+        if len(buttons) >= 8:
+            await message.answer(tr("حداکثر ۸ دکمه برای هر پیام قابل افزودن است."))
+            return
+        buttons.append({"text": label, "token": token})
+        await state.update_data(broadcast_deeplink_buttons=buttons, broadcast_pending_deeplink_token=None)
+        await state.set_state(AdminBroadcast.waiting_duration)
+        if data.get("broadcast_deeplink_context") == "single":
+            next_markup = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=tr("🔗 افزودن دکمه دیگر"), callback_data="adm_bc_dl_pick")],
+                [InlineKeyboardButton(text=tr("✅ ارسال پیام"), callback_data="adm_bc_single_send")],
+                [InlineKeyboardButton(text=tr("❌ لغو"), callback_data="adm_broadcast_cancel")],
+            ])
+        else:
+            next_markup = kb.admin_broadcast_duration_kb(bool(data.get("broadcast_pin")), data.get("broadcast_mode") != "forward")
+        await message.answer(
+            tr(f"✅ دکمه «{label}» اضافه شد. تعداد دکمه‌ها: {len(buttons)}\nمی‌توانی دکمه دیگری اضافه کنی یا ارسال را ادامه بدهی."),
+            reply_markup=next_markup,
+        )
+
     @router.callback_query(F.data == "adm_broadcast_single")
     async def cb_admin_broadcast_single(call: CallbackQuery, state: FSMContext):
         if not full_admin_only(call.from_user.id):
@@ -13244,20 +13326,63 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         media_ids = [m.message_id for m in media_messages]
         data = await state.get_data()
         uid = data.get("broadcast_single_uid")
-        await state.clear()
         if not uid:
+            await state.clear()
             await message.answer(tr("⚠️ اطلاعات ناقص بود؛ دوباره از اول شروع کن."), reply_markup=kb.admin_broadcast_target_kb())
             return
-        try:
-            await _copy_media_messages(bot, uid, message.chat.id, media_ids)
-        except Exception as exc:
-            await message.answer(
-                tr(f"❌ ارسال پیام به کاربر {uid} ناموفق بود (احتمالاً ربات را بلاک کرده یا هنوز استارت نکرده).\n{type(exc).__name__}"),
-                reply_markup=kb.admin_broadcast_target_kb(),
-            )
+        await state.update_data(
+            broadcast_single_message_id=media_ids[0], broadcast_single_message_ids=media_ids,
+            broadcast_single_chat_id=message.chat.id, broadcast_deeplink_buttons=[],
+        )
+        await message.answer(tr(f"👁 پیش‌نمایش پیام برای کاربر {uid}:"))
+        await _copy_media_messages(bot, message.chat.id, message.chat.id, media_ids)
+        await message.answer(
+            tr("در صورت نیاز دکمه دیپ‌لینک اضافه کن؛ در غیر این صورت «ارسال پیام» را بزن."),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=tr("🔗 افزودن دکمه دیپ‌لینک"), callback_data="adm_bc_dl_pick")],
+                [InlineKeyboardButton(text=tr("✅ ارسال پیام"), callback_data="adm_bc_single_send")],
+                [InlineKeyboardButton(text=tr("❌ لغو"), callback_data="adm_broadcast_cancel")],
+            ]),
+        )
+
+    @router.callback_query(F.data == "adm_bc_single_send")
+    async def cb_broadcast_single_send(call: CallbackQuery, state: FSMContext, bot: Bot):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        data = await state.get_data()
+        uid = data.get("broadcast_single_uid")
+        chat_id = data.get("broadcast_single_chat_id")
+        ids = data.get("broadcast_single_message_ids") or [data.get("broadcast_single_message_id")]
+        buttons = data.get("broadcast_deeplink_buttons") or []
+        if not uid or not chat_id or not ids or not ids[0]:
+            await call.answer(tr("اطلاعات پیام ناقص است."), show_alert=True)
             return
-        await asyncio.to_thread(db.log_admin_action, message.from_user.id, "broadcast_single", f"ارسال پیام به کاربر {uid}")
-        await message.answer(tr(f"✅ پیام برای کاربر {uid} ارسال شد."), reply_markup=kb.admin_broadcast_target_kb())
+        markup = None
+        if buttons:
+            me = await bot.get_me()
+            base = f"https://t.me/{me.username}?start="
+            markup = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=b["text"], url=base + b["token"])] for b in buttons
+            ])
+        try:
+            if len(ids) == 1:
+                await bot.copy_message(uid, from_chat_id=chat_id, message_id=ids[0], reply_markup=markup)
+            else:
+                await bot.copy_messages(uid, from_chat_id=chat_id, message_ids=ids)
+                if markup:
+                    try:
+                        await bot.send_message(uid, tr("👇 برای ادامه از دکمه زیر استفاده کن:"), reply_markup=markup)
+                    except Exception:
+                        logging.getLogger(__name__).warning("single-user deeplink CTA failed for user %s", uid)
+        except Exception as exc:
+            await call.message.answer(tr(f"❌ ارسال پیام ناموفق بود: {type(exc).__name__}"), reply_markup=kb.admin_broadcast_target_kb())
+            await state.clear()
+            await call.answer()
+            return
+        await asyncio.to_thread(db.log_admin_action, call.from_user.id, "broadcast_single", f"ارسال پیام به کاربر {uid} | deeplink_buttons={len(buttons)}")
+        await state.clear()
+        await call.message.answer(tr(f"✅ پیام برای کاربر {uid} ارسال شد."), reply_markup=kb.admin_broadcast_target_kb())
+        await call.answer()
 
     @router.callback_query(F.data == "adm_broadcast_channel")
     async def cb_admin_broadcast_channel(call: CallbackQuery, state: FSMContext):
@@ -13453,6 +13578,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             broadcast_message_ids=media_ids,
             broadcast_text=message.text,
             broadcast_caption=message.caption or first_caption,
+            broadcast_deeplink_buttons=[],
         )
         await state.set_state(AdminBroadcast.waiting_duration)
         # نمونه‌ی دقیق پیام (بند ۴۴ اسپک): برای کاهش اشتباه در ارسال به کل
@@ -13539,6 +13665,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             job["total"] = len(user_ids)
             job["status"] = "running"
             sent_targets = []
+            deeplink_buttons = data.get("broadcast_deeplink_buttons") or []
+            deeplink_markup = None
+            if deeplink_buttons:
+                me = await bot.get_me()
+                start_base = f"https://t.me/{me.username}?start="
+                deeplink_markup = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text=b["text"], url=start_base + b["token"])] for b in deeplink_buttons
+                ])
             for uid in user_ids:
                 if job["cancel"]:
                     break
@@ -13548,9 +13682,21 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                     try:
                         if forward_mode and len(message_ids) == 1:
                             sent_messages = [await bot.forward_message(uid, from_chat_id=chat_id, message_id=message_ids[0])]
+                            if deeplink_markup:
+                                try:
+                                    await bot.send_message(uid, tr("👇 برای ادامه از دکمه زیر استفاده کن:"), reply_markup=deeplink_markup)
+                                except Exception:
+                                    logging.getLogger(__name__).warning("broadcast deeplink CTA failed for user %s", uid)
+                        elif len(message_ids) == 1:
+                            sent_messages = [await bot.copy_message(uid, from_chat_id=chat_id, message_id=message_ids[0], reply_markup=deeplink_markup)]
                         else:
                             from telegram_media import copy_messages as _copy_media_messages
                             sent_messages = await _copy_media_messages(bot, uid, chat_id, message_ids)
+                            if deeplink_markup:
+                                try:
+                                    await bot.send_message(uid, tr("👇 برای ادامه از دکمه زیر استفاده کن:"), reply_markup=deeplink_markup)
+                                except Exception:
+                                    logging.getLogger(__name__).warning("broadcast deeplink CTA failed for user %s", uid)
                         job["success"] += 1
                         if seconds > 0:
                             sent_targets.extend((uid, item.message_id) for item in sent_messages)
@@ -13587,7 +13733,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         try:
             await asyncio.to_thread(
                 db.log_admin_action, admin_id, "broadcast",
-                f"{verb} به {job['label']} ({job['total']} نفر) | موفق: {job['success']} | ناموفق: {job['failed']} | حذف خودکار: {label}{pin_note}{status_note}",
+                f"{verb} به {job['label']} ({job['total']} نفر) | موفق: {job['success']} | ناموفق: {job['failed']} | دکمه دیپ‌لینک: {len(data.get('broadcast_deeplink_buttons') or [])} | حذف خودکار: {label}{pin_note}{status_note}",
             )
             head = {
                 "cancelled": f"🛑 {verb} به {job['label']} لغو شد.",
@@ -13653,6 +13799,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if not full_admin_only(call.from_user.id):
             return await deny_support(call)
         data = await state.get_data()
+        if data.get("broadcast_deeplink_buttons"):
+            await call.answer(tr("ارسال زمان‌بندی‌شده هنوز دکمه‌های دیپ‌لینک را پشتیبانی نمی‌کند؛ ارسال فوری را انتخاب کن."), show_alert=True)
+            return
         if data.get("broadcast_mode") == "forward":
             await call.answer(tr("زمان‌بندی برای فوروارد ممکن نیست."), show_alert=True)
             return
@@ -13922,7 +14071,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
 
     @router.callback_query(F.data.startswith("adm_dlp_type:"))
     async def cb_dlp_type(call: CallbackQuery, state: FSMContext):
-        if not senior_admin_only(call.from_user.id):
+        _dlp_state = await state.get_data()
+        if not (full_admin_only(call.from_user.id) if _dlp_state.get("broadcast_deeplink_context") else senior_admin_only(call.from_user.id)):
             return await deny_mid(call)
         dl_type = call.data.split(":", 1)[1]
 
@@ -13938,7 +14088,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 return
             await safe_edit(
                 call, db.get_text('handlers_admin.auto_704e95a1', 'کدوم کد تخفیف؟'),
-                reply_markup=kb.deeplink_discount_picker_kb(active_codes, "adm_dl_build"),
+                reply_markup=kb.deeplink_discount_picker_kb(active_codes, "adm_bc_dl_pick" if _dlp_state.get("broadcast_deeplink_context") else "adm_dl_build"),
             )
             await call.answer()
             return
@@ -13954,7 +14104,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 return
             await safe_edit(
                 call, db.get_text('handlers_admin.auto_d24ad63a', 'محصول موردنظر در کدام دسته\u200cبندی است؟'),
-                reply_markup=kb.deeplink_product_categories_kb(categories, "adm_dl_build"),
+                reply_markup=kb.deeplink_product_categories_kb(categories, "adm_bc_dl_pick" if _dlp_state.get("broadcast_deeplink_context") else "adm_dl_build"),
             )
             await call.answer()
             return
@@ -13962,8 +14112,9 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if dl_type == "custom":
             data = await state.get_data()
             in_channel_flow = bool(data.get("channel_chat_id"))
+            in_broadcast_flow = bool(data.get("broadcast_deeplink_context"))
             await state.set_state(
-                AdminChannelButton.waiting_custom_param if in_channel_flow else AdminDeepLinkTools.waiting_custom_param
+                AdminBroadcast.waiting_custom_param if in_broadcast_flow else (AdminChannelButton.waiting_custom_param if in_channel_flow else AdminDeepLinkTools.waiting_custom_param)
             )
             await safe_edit(call, db.get_text('handlers_admin.auto_6e4a5a0f', 'پارامتر دلخواه رو بفرست (فقط حروف/عدد/زیرخط، بدون فاصله):'))
             await call.answer()
@@ -13973,7 +14124,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
 
     @router.callback_query(F.data.startswith("adm_dlp_code:"))
     async def cb_dlp_code(call: CallbackQuery, state: FSMContext):
-        if not senior_admin_only(call.from_user.id):
+        _dlp_state = await state.get_data()
+        if not (full_admin_only(call.from_user.id) if _dlp_state.get("broadcast_deeplink_context") else senior_admin_only(call.from_user.id)):
             return await deny_mid(call)
         code_id = int(call.data.split(":", 1)[1])
         code_row = (await asyncio.to_thread(db.get_discount_code_by_id, code_id))
@@ -13984,22 +14136,25 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
 
     @router.callback_query(F.data.startswith("adm_dlp_prodcat:"))
     async def cb_dlp_prodcat(call: CallbackQuery, state: FSMContext):
-        if not senior_admin_only(call.from_user.id):
+        _dlp_state = await state.get_data()
+        if not (full_admin_only(call.from_user.id) if _dlp_state.get("broadcast_deeplink_context") else senior_admin_only(call.from_user.id)):
             return await deny_mid(call)
         cat_id = int(call.data.split(":", 1)[1])
         products = (await asyncio.to_thread(db.get_products, cat_id, active_only=True))
         if not products:
             await call.answer(db.get_text('handlers_admin.auto_f7277c1c', 'محصولی در این دسته\u200cبندی نیست.'), show_alert=True)
             return
+        _dlp_state = await state.get_data()
         await safe_edit(
             call, db.get_text('handlers_admin.auto_aca04f3e', 'کدام محصول؟'),
-            reply_markup=kb.deeplink_products_kb(products, "adm_dl_build"),
+            reply_markup=kb.deeplink_products_kb(products, "adm_bc_dl_pick" if _dlp_state.get("broadcast_deeplink_context") else "adm_dl_build"),
         )
         await call.answer()
 
     @router.callback_query(F.data.startswith("adm_dlp_prod:"))
     async def cb_dlp_prod(call: CallbackQuery, state: FSMContext):
-        if not senior_admin_only(call.from_user.id):
+        _dlp_state = await state.get_data()
+        if not (full_admin_only(call.from_user.id) if _dlp_state.get("broadcast_deeplink_context") else senior_admin_only(call.from_user.id)):
             return await deny_mid(call)
         product_id = int(call.data.split(":", 1)[1])
         product_token = f"prod_{product_id}"
@@ -14010,20 +14165,22 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             return
         await safe_edit(
             call, db.get_text('handlers_admin.auto_035e1988', 'می\u200cخواهید یک کد تخفیف هم به این لینک محصول اضافه شود؟'),
-            reply_markup=kb.deeplink_attach_discount_picker_kb(active_codes, product_token, "adm_dl_build"),
+            reply_markup=kb.deeplink_attach_discount_picker_kb(active_codes, product_token, "adm_bc_dl_pick" if _dlp_state.get("broadcast_deeplink_context") else "adm_dl_build"),
         )
         await call.answer()
 
     @router.callback_query(F.data.startswith("adm_dlp_prod_nodisc:"))
     async def cb_dlp_prod_nodisc(call: CallbackQuery, state: FSMContext):
-        if not senior_admin_only(call.from_user.id):
+        _dlp_state = await state.get_data()
+        if not (full_admin_only(call.from_user.id) if _dlp_state.get("broadcast_deeplink_context") else senior_admin_only(call.from_user.id)):
             return await deny_mid(call)
         product_token = call.data.split(":", 1)[1]
         await _finalize_deeplink(call, state, product_token, call.bot)
 
     @router.callback_query(F.data.startswith("adm_dlp_prod_disc:"))
     async def cb_dlp_prod_disc(call: CallbackQuery, state: FSMContext):
-        if not senior_admin_only(call.from_user.id):
+        _dlp_state = await state.get_data()
+        if not (full_admin_only(call.from_user.id) if _dlp_state.get("broadcast_deeplink_context") else senior_admin_only(call.from_user.id)):
             return await deny_mid(call)
         _, product_token, code_id = call.data.split(":")
         code_row = (await asyncio.to_thread(db.get_discount_code_by_id, int(code_id)))
@@ -14048,6 +14205,16 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             reply_markup=kb.admin_back_kb("adm_deeplink_tools"),
         )
 
+    @router.message(AdminBroadcast.waiting_custom_param)
+    async def process_broadcast_custom_param(message: Message, state: FSMContext):
+        if not full_admin_only(message.from_user.id):
+            return
+        token = re.sub(r"[^A-Za-z0-9_-]", "", (message.text or "").strip())[:48]
+        if not token:
+            await message.answer(tr("پارامتر نامعتبر بود. فقط حروف انگلیسی، عدد، خط تیره و زیرخط بفرست:"))
+            return
+        await _broadcast_deeplink_token_ready(message, state, token)
+
     @router.message(AdminChannelButton.waiting_custom_param)
     async def process_channel_custom_param(message: Message, state: FSMContext, bot: Bot):
         token = re.sub(r"[^A-Za-z0-9_]", "", (message.text or "").strip())
@@ -14061,6 +14228,10 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         me = await bot.get_me()
         link = f"https://t.me/{me.username}?start={start_param}"
 
+        if data.get("broadcast_deeplink_context"):
+            if await _broadcast_deeplink_token_ready(call, state, start_param):
+                await call.answer()
+            return
         if data.get("channel_chat_id"):
             await _finalize_channel_button(call.message, state, start_param, bot, admin_id=call.from_user.id, edit_call=call)
             return

@@ -308,6 +308,8 @@ class AdminBroadcast(StatesGroup):
     waiting_single_user = State()
     waiting_single_message = State()
     waiting_channel_message = State()
+    waiting_deeplink_button_text = State()
+    waiting_custom_param = State()
 
 
 class AdminBulkDiscount(StatesGroup):

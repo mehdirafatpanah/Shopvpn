@@ -2867,6 +2867,7 @@ def admin_broadcast_duration_kb(pin_after_send: bool = False, allow_schedule: bo
         ],
         [InlineKeyboardButton(text=tr("✏️ مدت دلخواه (دقیقه)"), callback_data="adm_broadcast_dur:custom")],
         [InlineKeyboardButton(text=pin_label, callback_data="adm_broadcast_toggle_pin")],
+        [InlineKeyboardButton(text=tr("🔗 افزودن دکمه دیپ‌لینک"), callback_data="adm_bc_dl_pick")],
         [InlineKeyboardButton(text=tr("✏️ ویرایش متن/عکس"), callback_data="adm_broadcast_edit")],
         [InlineKeyboardButton(text=tr("❌ لغو ارسال"), callback_data="adm_broadcast_cancel")],
     ]
@@ -3164,6 +3165,13 @@ def deeplink_type_picker_kb(back_callback: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=tr("🎟 کد تخفیف"), callback_data="adm_dlp_type:disc")],
         [InlineKeyboardButton(text=tr("🧪 کانفیگ تست"), callback_data="adm_dlp_type:test")],
         [InlineKeyboardButton(text=tr("🎡 گردونه شانس"), callback_data="adm_dlp_type:wheel")],
+        [InlineKeyboardButton(text=tr("👛 کیف پول"), callback_data="adm_dlp_type:wallet")],
+        [InlineKeyboardButton(text=tr("📋 سرویس‌های من"), callback_data="adm_dlp_type:svc")],
+        [InlineKeyboardButton(text=tr("🤝 دعوت دوستان"), callback_data="adm_dlp_type:invite")],
+        [InlineKeyboardButton(text=tr("📱 مینی‌اپ فروشگاه"), callback_data="adm_dlp_type:btn_miniapp")],
+        [InlineKeyboardButton(text=tr("👤 حساب کاربری"), callback_data="adm_dlp_type:btn_btn_my_orders")],
+        [InlineKeyboardButton(text=tr("📚 آموزش‌ها"), callback_data="adm_dlp_type:btn_btn_tutorial")],
+        [InlineKeyboardButton(text=tr("🆘 پشتیبانی"), callback_data="adm_dlp_type:btn_btn_contact")],
         [InlineKeyboardButton(text=tr("🏷 پارامتر دلخواه (فقط آمار منبع)"), callback_data="adm_dlp_type:custom")],
         [InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data=back_callback)],
     ])
