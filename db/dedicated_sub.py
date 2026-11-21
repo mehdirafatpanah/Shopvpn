@@ -5,8 +5,10 @@
 می‌آید؛ آدرس واقعی پنل (``subscription_url``) هرگز بیرون نمی‌رود.
 """
 
+import json
 import secrets
 import time
+from urllib.parse import urlparse
 
 
 class DedicatedSubMixin:
@@ -225,3 +227,94 @@ class DedicatedSubMixin:
                 "WHERE cf.link LIKE ? ESCAPE '\\' ORDER BY cf.id DESC LIMIT ?",
                 (like, int(limit)),
             ).fetchall()
+
+    # ----- پروفایل‌های ساب اختصاصی (چند دامنه) -------------------------------
+    @staticmethod
+    def _dsp_row(row):
+        if row is None:
+            return None
+        try:
+            settings = json.loads(row["settings"] or "{}")
+            if not isinstance(settings, dict):
+                settings = {}
+        except (ValueError, TypeError):
+            settings = {}
+        return {"id": int(row["id"]), "name": row["name"] or "", "base_url": (row["base_url"] or "").rstrip("/"),
+                "enabled": int(row["enabled"] or 0) == 1, "settings": settings,
+                "ssl_status": row["ssl_status"] or ""}
+
+    def dsp_list(self):
+        with self._get_conn() as conn:
+            rows = conn.execute("SELECT * FROM dsub_profiles ORDER BY id").fetchall()
+        return [self._dsp_row(r) for r in rows]
+
+    def dsp_get(self, profile_id):
+        try:
+            pid = int(profile_id)
+        except (TypeError, ValueError):
+            return None
+        with self._get_conn() as conn:
+            return self._dsp_row(conn.execute("SELECT * FROM dsub_profiles WHERE id=?", (pid,)).fetchone())
+
+    def dsp_get_by_host(self, host: str):
+        """پروفایلی که دامنه‌اش با هدر Host برابر است (بدون پورت و بدون حساسیت به حروف)."""
+        host = (host or "").split(":", 1)[0].strip().lower()
+        if not host:
+            return None
+        for prof in self.dsp_list():
+            if (urlparse(prof["base_url"]).hostname or "").lower() == host:
+                return prof
+        return None
+
+    def dsp_create(self, name: str, base_url: str, enabled: bool = True) -> int:
+        with self._get_conn() as conn:
+            cur = conn.execute("INSERT INTO dsub_profiles (name, base_url, enabled) VALUES (?,?,?)",
+                               (name, (base_url or "").rstrip("/"), 1 if enabled else 0))
+            return cur.lastrowid
+
+    def dsp_update(self, profile_id: int, **fields):
+        allowed = {"name", "base_url", "enabled", "ssl_status"}
+        sets, values = [], []
+        for k, v in fields.items():
+            if k in allowed and v is not None:
+                sets.append(f"{k}=?")
+                values.append((v or "").rstrip("/") if k == "base_url" else (1 if v is True else 0 if v is False else v))
+        if not sets:
+            return
+        values.append(int(profile_id))
+        with self._get_conn() as conn:
+            conn.execute(f"UPDATE dsub_profiles SET {', '.join(sets)} WHERE id=?", values)
+
+    def dsp_set_settings(self, profile_id: int, settings: dict):
+        with self._get_conn() as conn:
+            conn.execute("UPDATE dsub_profiles SET settings=? WHERE id=?",
+                         (json.dumps(settings or {}, ensure_ascii=False), int(profile_id)))
+
+    def dsp_delete(self, profile_id: int):
+        with self._get_conn() as conn:
+            conn.execute("UPDATE panel_servers SET dsub_profile_id=NULL WHERE dsub_profile_id=?", (int(profile_id),))
+            conn.execute("DELETE FROM dsub_profiles WHERE id=?", (int(profile_id),))
+
+    def dsp_panel_ids(self, profile_id: int):
+        with self._get_conn() as conn:
+            rows = conn.execute("SELECT id FROM panel_servers WHERE dsub_profile_id=?", (int(profile_id),)).fetchall()
+        return [int(r["id"]) for r in rows]
+
+    def dsp_set_panels(self, profile_id: int, panel_ids):
+        """پنل‌های این پروفایل را دقیقاً برابر لیست می‌گذارد (پنل‌های دیگرِ همین پروفایل آزاد می‌شوند)."""
+        ids = [int(x) for x in dict.fromkeys(panel_ids or [])]
+        with self._get_conn() as conn:
+            conn.execute("UPDATE panel_servers SET dsub_profile_id=NULL WHERE dsub_profile_id=?", (int(profile_id),))
+            for sid in ids:
+                conn.execute("UPDATE panel_servers SET dsub_profile_id=? WHERE id=?", (int(profile_id), sid))
+
+    def dsp_for_panel(self, server_id):
+        try:
+            sid = int(server_id)
+        except (TypeError, ValueError):
+            return None
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT dsub_profile_id FROM panel_servers WHERE id=?", (sid,)).fetchone()
+        if not row or not row["dsub_profile_id"]:
+            return None
+        return self.dsp_get(row["dsub_profile_id"])

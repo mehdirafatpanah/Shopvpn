@@ -109,12 +109,15 @@ class PanelsMixin:
                    "max_services", "capacity_alert_sent", "transfer_price", "allow_transfer_target",
                    "xui_inbound_id", "xui_inbound_ids", "xui_sub_base_url", "xui_sub_base_urls", "sort_order",
                    "geo_cc", "geo_city", "geo_city_fa", "geo_lat", "geo_lon", "geo_manual", "panel_category_id",
-                   "naming_mode", "naming_prefix", "naming_suffix", "dsub_enabled"}
+                   "naming_mode", "naming_prefix", "naming_suffix", "dsub_enabled", "dsub_profile_id"}
         sets, values = [], []
         for k, v in fields.items():
             if k == "panel_category_id" and v in ("", 0, "0"):
                 v = None
                 sets.append("panel_category_id=NULL")
+                continue
+            if k == "dsub_profile_id" and v in (None, "", 0, "0"):
+                sets.append("dsub_profile_id=NULL")
                 continue
             if k in allowed and (v is not None or k == "max_services"):
                 sets.append(f"{k}=?")

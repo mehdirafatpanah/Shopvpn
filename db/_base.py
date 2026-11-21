@@ -2116,6 +2116,7 @@ class DatabaseBase:
             ("panel_servers", "naming_suffix", "TEXT DEFAULT ''"),
             ("panel_servers", "naming_counter", "INTEGER DEFAULT 0"),
             ("panel_servers", "dsub_enabled", "INTEGER DEFAULT 1"),
+            ("panel_servers", "dsub_profile_id", "INTEGER"),
             ("panel_servers", "api_key", "TEXT"),
             ("panel_servers", "api_username", "TEXT"),
             ("panel_servers", "api_password", "TEXT"),
@@ -2438,6 +2439,13 @@ class DatabaseBase:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_configs_sub_token "
             "ON custom_configs(sub_token) WHERE sub_token IS NOT NULL"
+        )
+        # پروفایل‌های ساب اختصاصی (چند دامنه، هر کدام با تنظیمات مستقل)؛ ساب مرکزی همان تنظیمات settings است
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS dsub_profiles ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, base_url TEXT NOT NULL DEFAULT '', "
+            "enabled INTEGER NOT NULL DEFAULT 1, settings TEXT NOT NULL DEFAULT '{}', "
+            "ssl_status TEXT DEFAULT '', created_at TEXT DEFAULT CURRENT_TIMESTAMP)"
         )
         conn.execute(
             "CREATE TABLE IF NOT EXISTS sub_access_log ("
