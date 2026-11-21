@@ -1749,3 +1749,221 @@ def create_payg_router(db, is_main_bot=True):
         await message.answer("\n".join(lines), parse_mode="HTML")
 
     return router
+
+
+# ---------------------------------------------------------------------------
+# API مستقل از ربات (مینی‌اپ): همان قوانین و همان منطق ساخت سرویس مصرفی
+# ---------------------------------------------------------------------------
+class PaygProvisionError(Exception):
+    """خطایی که متنش مستقیم به کاربر نمایش داده می‌شود."""
+
+
+_schema_ready_dbs: set = set()
+
+
+def _ensure_schema_once(db):
+    key = id(db)
+    if key not in _schema_ready_dbs:
+        ensure_schema(db)
+        _schema_ready_dbs.add(key)
+
+
+def _max_services_per_user(db) -> int:
+    try:
+        return max(1, min(100, int(db.get_setting("payg_max_services_per_user", "5") or 5)))
+    except (TypeError, ValueError):
+        return 5
+
+
+def _active_service_count(db, uid: int) -> int:
+    with db._get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) n FROM payg_provisioned_services p "
+            "JOIN custom_configs cc ON p.service_kind='vpn' AND p.service_id=('custom_config:' || cc.id) "
+            "WHERE p.user_id=? AND cc.status='active'",
+            (int(uid),),
+        ).fetchone()
+    return int(row["n"] or 0)
+
+
+def provision_blocker(db, uid: int):
+    """اگر کاربر الان نمی‌تواند سرویس مصرفی بسازد متن دلیل (فارسی)، وگرنه None.
+
+    دقیقاً همان چک‌های دکمه‌ی «ساخت سرویس مصرفی جدید» در ربات."""
+    uid = int(uid)
+    if db.get_setting("payg_enabled", "1") != "1":
+        return tr("⛔️ فروش Pay As You Go در حال حاضر غیرفعال است.")
+    with db._get_conn() as conn:
+        acc = conn.execute("SELECT status FROM payg_accounts WHERE user_id=?", (uid,)).fetchone()
+    if acc and acc["status"] == "suspended_admin":
+        return tr("⛔️ حساب Pay As You Go شما توسط مدیریت تعلیق شده است. برای پیگیری با پشتیبانی تماس بگیرید.")
+    free = is_free_payg_user(db, uid)
+    balance = int(db.get_wallet_credit(uid) or 0)
+    if balance <= 0 and not free:
+        return tr("برای ساخت سرویس مصرفی، ابتدا کیف پول تومانی خود را شارژ کنید.")
+    min_balance = get_min_balance(db)
+    if min_balance and balance < min_balance and not free:
+        return _tformat(
+            "⛔️ برای ساخت سرویس مصرفی، موجودی کیف پول باید حداقل {minimum} تومان باشد.\nموجودی فعلی شما: {current} تومان",
+            minimum=f"{min_balance:,}", current=f"{balance:,}",
+        )
+    max_services = _max_services_per_user(db)
+    if _active_service_count(db, uid) >= max_services:
+        return _tformat("⛔️ حداکثر {count} سرویس Pay As You Go برای هر کاربر مجاز است.", count=max_services)
+    if not get_payg_panel_ids(db):
+        return tr("⛔️ هیچ پنل فعالی برای ساخت سرویس Pay As You Go توسط مدیریت انتخاب نشده است.")
+    if not get_usable_payg_panel_ids(db):
+        return tr("⛔️ ساب اختصاصی همه پنل‌های انتخاب‌شده برای Pay As You Go غیرفعال است؛ مدیریت باید آن را روشن کند.")
+    return None
+
+
+async def provision_service_for_user(db, uid: int) -> dict:
+    """ساخت یک سرویس مصرفی برای کاربر (بدون وابستگی به ربات/aiogram).
+
+    خروجی: {username, subscription_url, custom_config_id, multi, panels, nodes}
+    در هر شکست: PaygProvisionError با پیام قابل‌نمایش؛ هرچه ساخته شده پاک می‌شود."""
+    uid = int(uid)
+    await asyncio.to_thread(_ensure_schema_once, db)
+    blocker = await asyncio.to_thread(provision_blocker, db, uid)
+    if blocker:
+        raise PaygProvisionError(blocker)
+    plan = payg_multi_plan(db)
+    server = None
+    if not plan:
+        server = await asyncio.to_thread(_choose_payg_panel, db, get_usable_payg_panel_ids(db))
+        if not server:
+            raise PaygProvisionError(tr("⛔️ هیچ‌یک از پنل‌های انتخاب‌شده فعال یا دارای ظرفیت کافی نیستند."))
+    if not await asyncio.to_thread(_acquire_provision_lock, db, uid):
+        raise PaygProvisionError(tr("⏳ درخواست ساخت سرویس شما در حال پردازش است؛ لطفاً چند لحظه صبر کنید."))
+    try:
+        if plan:
+            panel_ids, node_ids, protocols = plan
+            try:
+                result = await _provision_payg_multi(db, uid, panel_ids, node_ids, protocols)
+            except Exception as exc:
+                logger.exception("PAYG multi-target provisioning (miniapp) failed for user=%s", uid)
+                raise PaygProvisionError(_tformat(
+                    "⛔️ ساخت سرویس Pay As You Go ناموفق بود: {error}\nهیچ هزینه مصرفی برای این سرویس ثبت نشده است.",
+                    error=str(exc)[:250])) from exc
+            return {"username": result["username"], "custom_config_id": int(result["custom_config_id"]),
+                    "subscription_url": result["subscription_url"], "multi": True,
+                    "panels": int(result["panels"]), "nodes": int(result["nodes"])}
+
+        server_id = int(server["id"])
+        provisioned = None
+        enrolled_ok = False
+        try:
+            from direct_panel_provision import provision_direct
+            from panel_providers import get_provider
+            targets = get_payg_targets(db)
+            fake_product = {
+                "id": None, "name": "Pay As You Go", "auto_provision_volume_gb": 0,
+                "duration_days": 0, "provision_server_id": server_id,
+                "provision_ssh_node_id": None, "provision_ssh_protocol": "ssh",
+                "provision_target_config": (
+                    json.dumps(targets[server_id], ensure_ascii=False) if server_id in targets else None),
+                "is_auto_provision": 1,
+                "base_users": 0, "extra_user_price": 0, "max_users": 0,
+            }
+            results = await provision_direct(db, fake_product, quantity=1, user_id=uid, order_id=None)
+            provisioned = (results or [None])[0]
+            if not provisioned or not provisioned.get("custom_config_id") or not provisioned.get("subscription_url"):
+                raise RuntimeError("ساخت سرویس روی پنل کامل نشد.")
+            usage = await get_provider(server).get_user_usage(provisioned["username"])
+            if not isinstance(usage, dict) or usage.get("used_bytes") is None or int(usage["used_bytes"]) < 0:
+                raise RuntimeError("پنل انتخاب‌شده شمارنده مصرف معتبر ندارد؛ این پنل برای Pay As You Go قابل استفاده نیست.")
+            sid = f"custom_config:{int(provisioned['custom_config_id'])}"
+            db.record_usage_snapshot(
+                "vpn", sid, int(usage["used_bytes"]),
+                uploaded_bytes=usage.get("uploaded_bytes", 0), downloaded_bytes=usage.get("downloaded_bytes", 0),
+                source=f"panel:{server['panel_type']}", reported_at=usage.get("reported_at") or _now(),
+            )
+            with db._get_conn() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO payg_provisioned_services(service_kind,service_id,user_id,created_at) VALUES('vpn',?,?,?)",
+                    (sid, uid, _now()),
+                )
+            enrolled = await asyncio.to_thread(activate_payg, db, uid)
+            with db._get_conn() as conn:
+                member = conn.execute(
+                    "SELECT 1 FROM payg_services WHERE user_id=? AND service_kind='vpn' AND service_id=?",
+                    (uid, sid)).fetchone()
+            if not enrolled.get("ok") or not member:
+                raise RuntimeError("اتصال سرویس ساخته‌شده به حساب مصرفی ناموفق بود.")
+            enrolled_ok = True
+        except Exception as exc:
+            logger.exception("PAYG service provisioning (miniapp) failed for user=%s", uid)
+            if provisioned and not enrolled_ok:
+                try:
+                    sid = f"custom_config:{int(provisioned.get('custom_config_id') or 0)}"
+                    with db._get_conn() as conn:
+                        conn.execute("DELETE FROM payg_provisioned_services WHERE service_kind='vpn' AND service_id=? AND user_id=?",
+                                     (sid, uid))
+                    await _rollback_payg_vpn(db, server, provisioned)
+                except Exception:
+                    logger.exception("PAYG provisioning rollback/marker cleanup failed for user=%s", uid)
+            raise PaygProvisionError(_tformat(
+                "⛔️ ساخت سرویس Pay As You Go ناموفق بود: {error}\nهیچ هزینه مصرفی برای این سرویس ثبت نشده است.",
+                error=str(exc)[:250])) from exc
+        return {"username": provisioned["username"], "custom_config_id": int(provisioned["custom_config_id"]),
+                "subscription_url": provisioned["subscription_url"], "multi": False, "panels": 1, "nodes": 0}
+    finally:
+        await asyncio.to_thread(_release_provision_lock, db, uid)
+
+
+def miniapp_overview(db, uid: int) -> dict:
+    """همه‌ی داده‌ی لازم برای صفحه‌ی «پرداخت به‌ازای مصرف» در مینی‌اپ."""
+    uid = int(uid)
+    _ensure_schema_once(db)
+    enabled = db.get_setting("payg_enabled", "1") == "1"
+    status = payg_status(db, uid)
+    free = is_free_payg_user(db, uid)
+    blocker = provision_blocker(db, uid) if enabled else None
+    with db._get_conn() as conn:
+        service_rows = conn.execute(
+            "SELECT cc.id,cc.username,cc.subscription_url,cc.panel_server_id,ps.name AS panel_name "
+            "FROM payg_provisioned_services p JOIN custom_configs cc "
+            "ON p.service_kind='vpn' AND p.service_id=('custom_config:' || cc.id) "
+            "LEFT JOIN panel_servers ps ON ps.id=cc.panel_server_id "
+            "WHERE p.user_id=? AND cc.status='active' ORDER BY cc.id DESC",
+            (uid,),
+        ).fetchall()
+        tx_rows = conn.execute(
+            "SELECT service_kind,used_bytes,amount,rate_snapshot,created_at FROM payg_transactions "
+            "WHERE user_id=? ORDER BY id DESC LIMIT 10", (uid,)).fetchall()
+    services = []
+    for item in service_rows:
+        url = str(item["subscription_url"] or "").strip()
+        multi = _is_multi_service(db, int(item["id"]))
+        try:
+            import dedicated_sub
+            url = str(dedicated_sub.display_link(db, int(item["id"]), url) or url).strip()
+        except Exception:
+            pass
+        services.append({
+            "id": int(item["id"]), "username": str(item["username"] or ""),
+            "panel": tr("چندمقصدی") if multi else str(item["panel_name"] or ""), "link": url,
+        })
+    history = []
+    for row in tx_rows:
+        try:
+            snap = json.loads(row["rate_snapshot"] or "{}")
+        except Exception:
+            snap = {}
+        if snap.get("type") == "users":
+            detail = _tformat("ظرفیت {amount} کاربر", amount=int(snap.get("capacity") or 0))
+        elif snap.get("type") == "days":
+            detail = _tformat("{amount} روز فعال", amount=int(snap.get("days") or 0))
+        else:
+            detail = _tformat("ترافیک {amount} GB", amount=f"{int(row['used_bytes'] or 0)/GIB:.3f}")
+        history.append({"kind": str(row["service_kind"] or "").upper(), "detail": detail,
+                        "amount": int(row["amount"] or 0), "at": str(row["created_at"] or "")[:16]})
+    return {
+        "enabled": enabled, "active": bool(status["active"]), "free": bool(free),
+        "balance": int(status["balance"]), "spent": int(status["spent"]),
+        "used_gb": round(int(status.get("month_used_bytes") or 0) / GIB, 3),
+        "services_count": int(status["services"]), "max_services": _max_services_per_user(db),
+        "min_balance": get_min_balance(db), "cycle": cycle_text(db),
+        "can_provision": enabled and not blocker, "blocker": blocker,
+        "services": services, "history": history,
+    }
