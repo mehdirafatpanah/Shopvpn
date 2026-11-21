@@ -1539,6 +1539,55 @@ async def api_create_custom_config(body: CustomConfigPurchase, auth=Depends(requ
 
 
 
+# ---------------------------------------------------------------------------
+# پرداخت به‌ازای مصرف (PayG) در مینی‌اپ — همان قوانین و منطق ربات (payg.py)
+# ---------------------------------------------------------------------------
+def _payg_available(tenant) -> bool:
+    # مثل ربات: Pay As You Go فقط در ربات اصلی است، نه ربات‌های نمایندگی.
+    return not bool(tenant.tenant_id)
+
+
+@app.get("/api/payg/info")
+def api_payg_info(auth=Depends(get_verified_user)):
+    tg_id, db, tenant = auth
+    if not _payg_available(tenant):
+        return {"enabled": False}
+    import payg
+    try:
+        return payg.miniapp_overview(db, tg_id)
+    except Exception:
+        logging.getLogger("miniapp.payg").exception("خواندن اطلاعات PayG برای کاربر %s ناموفق بود", tg_id)
+        return {"enabled": False}
+
+
+@app.post("/api/payg/provision")
+async def api_payg_provision(auth=Depends(require_joined)):
+    tg_id, db, tenant = auth
+    if not _payg_available(tenant):
+        raise HTTPException(status_code=400, detail=tr("این بخش در حال حاضر غیرفعال است."))
+    user_row = db.get_user(tg_id)
+    if user_row and user_row["is_blocked"]:
+        raise HTTPException(status_code=403, detail=tr("حساب شما مسدود شده است."))
+    import payg
+    try:
+        result = await payg.provision_service_for_user(db, tg_id)
+    except payg.PaygProvisionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logging.getLogger("miniapp.payg").exception("ساخت سرویس PayG (مینی‌اپ) برای کاربر %s ناموفق بود", tg_id)
+        raise HTTPException(status_code=500, detail=tr("خطای غیرمنتظره‌ای رخ داد. دوباره تلاش کنید."))
+    link = result["subscription_url"]
+    try:
+        link = dedicated_sub.display_link(db, result["custom_config_id"], link) or link
+    except Exception:
+        pass
+    return {
+        "status": "approved", "username": result["username"], "link": link,
+        "multi": bool(result["multi"]), "panels": result["panels"], "nodes": result["nodes"],
+        "free": bool(payg.is_free_payg_user(db, tg_id)), "cycle": payg.cycle_text(db),
+    }
+
+
 def _category_photo_file_id(db, cat_id) -> Optional[str]:
     """file_id عکس دسته/زیردسته (همان عکسی که از ربات یا پنل وب ثبت شده)؛ بدون عکس: None."""
     try:
