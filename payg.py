@@ -1295,6 +1295,17 @@ async def _provision_payg_multi(db, uid: int, panel_ids, node_ids, protocols) ->
             "ssh_accounts": len(ssh_items)}
 
 
+def _central_link(db, custom_config_id, upstream_url) -> str:
+    """لینک ساب مرکزی سرویس PayG (هر سرویس PayG همیشه ساب مرکزی می‌گیرد، چه تک‌پنلی چه چندمقصدی).
+    اگر ساب مرکزی خاموش باشد یا خطایی رخ دهد همان لینک پنل برمی‌گردد."""
+    url = str(upstream_url or "").strip()
+    try:
+        import dedicated_sub
+        return str(dedicated_sub.display_link(db, int(custom_config_id), url) or url).strip()
+    except Exception:
+        return url
+
+
 def _is_multi_service(db, custom_config_id: int) -> bool:
     with db._get_conn() as conn:
         n = conn.execute("SELECT COUNT(*) n FROM config_panel_links WHERE custom_config_id=? AND status='active'",
@@ -1455,9 +1466,7 @@ def create_payg_router(db, is_main_bot=True):
             for item in service_rows:
                 url = str(item["subscription_url"] or "").strip()
                 multi = await asyncio.to_thread(_is_multi_service, db, int(item["id"]))
-                if multi:
-                    import dedicated_sub
-                    url = str(dedicated_sub.display_link(db, int(item["id"]), url) or url).strip()
+                url = await asyncio.to_thread(_central_link, db, int(item["id"]), url)
                 if not url:
                     continue
                 safe_url = url.replace("&", "&amp;").replace('"', "&quot;")
@@ -1671,7 +1680,9 @@ def create_payg_router(db, is_main_bot=True):
             if not enrolled.get("ok") or not member:
                 raise RuntimeError("اتصال سرویس ساخته‌شده به حساب مصرفی ناموفق بود.")
             enrolled_ok = True
-            safe_url = str(provisioned["subscription_url"]).replace("&", "&amp;").replace('"', "&quot;")
+            central_url = await asyncio.to_thread(_central_link, db, int(provisioned["custom_config_id"]),
+                                                  provisioned["subscription_url"])
+            safe_url = central_url.replace("&", "&amp;").replace('"', "&quot;")
             default_text = (
                 tr("✅ <b>سرویس Pay As You Go ساخته شد.</b>") + "\n\n"
                 + _tformat("👤 نام کاربری: <code>{username}</code>\n", username=provisioned["username"])
@@ -1906,7 +1917,8 @@ async def provision_service_for_user(db, uid: int) -> dict:
                 "⛔️ ساخت سرویس Pay As You Go ناموفق بود: {error}\nهیچ هزینه مصرفی برای این سرویس ثبت نشده است.",
                 error=str(exc)[:250])) from exc
         return {"username": provisioned["username"], "custom_config_id": int(provisioned["custom_config_id"]),
-                "subscription_url": provisioned["subscription_url"], "multi": False, "panels": 1, "nodes": 0}
+                "subscription_url": _central_link(db, int(provisioned["custom_config_id"]), provisioned["subscription_url"]),
+                "multi": False, "panels": 1, "nodes": 0}
     finally:
         await asyncio.to_thread(_release_provision_lock, db, uid)
 
