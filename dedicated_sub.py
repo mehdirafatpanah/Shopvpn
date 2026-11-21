@@ -283,6 +283,11 @@ def panel_enabled(db, server_id) -> bool:
     if not row:
         return True
     try:
+        if row["dsub_profile_id"]:  # پنل به یک ساب اختصاصی وصل شده = ساب اختصاصی این پنل روشن است
+            return True
+    except (KeyError, IndexError):
+        pass
+    try:
         value = row["dsub_enabled"]
     except (KeyError, IndexError):
         return True
