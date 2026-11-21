@@ -5162,7 +5162,7 @@ def api_panel_servers_lite(admin=Depends(require_permission("catalog"))):
              "supports_user_limit": provider_capabilities(s["panel_type"])[USER_LIMIT],
              "onhold_supported": s["panel_type"] in PANEL_ONHOLD_TYPES,
              "start_on_first_use": bool(_row_get(s, "start_on_first_use", 0)),
-             "dsub_enabled": _row_get(s, "dsub_enabled", 1) is None or int(_row_get(s, "dsub_enabled", 1)) != 0}
+             "dsub_enabled": bool(_row_get(s, "dsub_profile_id", None)) or _row_get(s, "dsub_enabled", 1) is None or int(_row_get(s, "dsub_enabled", 1)) != 0}
             for s in db.get_panel_servers(active_only=True)]
 
 @app.get("/api/panel-servers/{server_id}/product-targets")
@@ -8626,7 +8626,7 @@ def _panel_server_public(s, health=None) -> dict:
         "onhold_supported": s["panel_type"] in PANEL_ONHOLD_TYPES,
         "max_services": _row_get(s, "max_services", None),
         "allow_transfer_target": bool(_row_get(s, "allow_transfer_target", 0)),
-        "dsub_enabled": _row_get(s, "dsub_enabled", 1) is None or int(_row_get(s, "dsub_enabled", 1)) != 0,
+        "dsub_enabled": bool(_row_get(s, "dsub_profile_id", None)) or _row_get(s, "dsub_enabled", 1) is None or int(_row_get(s, "dsub_enabled", 1)) != 0,
         "dsub_required": s["panel_type"] in _dsub_module().PANEL_DSUB_REQUIRED_TYPES,
         "transfer_price": int(_row_get(s, "transfer_price", 0) or 0),
         "naming_mode": account_naming.server_mode(s),
@@ -9292,6 +9292,8 @@ async def api_panel_server_advanced_update(server_id: int, body: PanelServerAdva
         if not body.dsub_enabled and server["panel_type"] in _dsub_module().PANEL_DSUB_REQUIRED_TYPES:
             raise HTTPException(400, tr("این نوع پنل بدون ساب اختصاصی کار نمی‌کند؛ خاموش‌کردن آن مجاز نیست."))
         fields["dsub_enabled"] = 1 if body.dsub_enabled else 0
+        if not body.dsub_enabled:
+            fields["dsub_profile_id"] = None  # خاموش‌کردن ساب اختصاصی پنل = جداشدن از ساب اختصاصی
         notes.append(f"dsub_enabled={fields['dsub_enabled']}")
     if body.start_on_first_use is not None:
         if body.start_on_first_use and server["panel_type"] not in PANEL_ONHOLD_TYPES:
