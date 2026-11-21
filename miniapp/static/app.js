@@ -2650,7 +2650,14 @@ async function renderStore() {
 
     let customConfigRow = "";
     let buyGuideRow = "";
+    let paygRow = "";
     if (storeCategoryView == null) {
+      try {
+        const paygInfo = await api("/api/payg/info");
+        if (paygInfo.enabled) {
+          paygRow = `<div class="list-row" id="payg-entry-row"><div class="list-row-main"><div class="list-row-ic">💳</div><div class="list-row-text"><span class="list-row-title">پرداخت به‌ازای مصرف</span><span class="list-row-sub">بدون حجم و زمان ثابت؛ فقط مصرف واقعی از کیف پول کسر می‌شود</span></div></div><span class="list-row-chev">‹</span></div>`;
+        }
+      } catch (e) {}
       try {
         const cfgInfo = await api("/api/custom-config/info");
         if (cfgInfo.enabled || cfgInfo.reseller_available) {
@@ -2684,7 +2691,7 @@ async function renderStore() {
       ? categories.find((c) => Number(c.id) === Number(selected.parent_id)) : null;
 
     content.innerHTML = `
-      ${selected ? `<div class="list-row" id="store-back-row"><div class="list-row-main"><span class="list-row-ic">‹</span><div class="list-row-text"><span class="list-row-title">بازگشت ${parentOfSelected ? "به " + parentOfSelected.name : "به دسته‌بندی‌ها"}</span></div></div></div>` : `<div class="eyebrow">${title}</div>${buyGuideRow}${customConfigRow}`}
+      ${selected ? `<div class="list-row" id="store-back-row"><div class="list-row-main"><span class="list-row-ic">‹</span><div class="list-row-text"><span class="list-row-title">بازگشت ${parentOfSelected ? "به " + parentOfSelected.name : "به دسته‌بندی‌ها"}</span></div></div></div>` : `<div class="eyebrow">${title}</div>${buyGuideRow}${customConfigRow}${paygRow}`}
       ${selected && selected.has_image ? `<div class="cat-frame cat-frame-hero"><img data-cat-img="${selected.id}" alt="${escHtml(title)}" /></div>` : ""}
       ${selected ? `<div class="eyebrow">${escHtml(title)}</div>${selectedDescription}` : ""}
       ${visibleCategories.map((c) => `
@@ -2706,6 +2713,8 @@ async function renderStore() {
     hydrateCategoryImages(content);
     const ccRow = document.getElementById("custom-config-entry-row");
     if (ccRow) ccRow.onclick = renderCustomConfigBuilder;
+    const paygEntry = document.getElementById("payg-entry-row");
+    if (paygEntry) paygEntry.onclick = renderPaygScreen;
     const bgRow = document.getElementById("buy-guide-entry-row");
     if (bgRow) bgRow.onclick = () => renderBuyGuide(0, {});
     content.querySelectorAll(".list-row[data-cat]").forEach((el) => {
@@ -2955,6 +2964,82 @@ function _priceForVolume(tiers, gb) {
     if (gb >= t.from_gb && (t.to_gb == null || gb <= t.to_gb)) return gb * t.price_per_gb;
   }
   return 0;
+}
+
+async function renderPaygScreen() {
+  content.innerHTML = skeleton(3);
+  try {
+    const info = await api("/api/payg/info");
+    if (!info.enabled) {
+      content.innerHTML = `<div class="state-msg"><span class="ic">◌</span>این بخش در حال حاضر غیرفعال است.</div>`;
+      return;
+    }
+    const stats = info.active ? `
+      <div class="stat-row"><span>هزینه این ماه</span><b>${fmt(info.spent)} تومان</b></div>
+      <div class="stat-row"><span>مصرف ثبت‌شده</span><b>${fmt(info.used_gb)} گیگ</b></div>
+      <div class="stat-row"><span>سرویس‌های متصل</span><b>${fmt(info.services_count)} از ${fmt(info.max_services)}</b></div>` : "";
+    const services = info.services.length ? `
+      <div class="card">
+        <h3><span class="ic">🔗</span>سرویس‌های مصرفی من</h3>
+        ${info.services.map((sv) => `
+          <div class="stat-row"><span>${escHtml(sv.username)}${sv.panel ? " · " + escHtml(sv.panel) : ""}</span></div>
+          <div class="code" style="word-break:break-all;direction:ltr;text-align:left;margin:6px 0">${escHtml(sv.link)}</div>
+          <button class="btn outline small payg-copy" data-link="${escHtml(sv.link)}" style="margin-bottom:10px">📋 کپی لینک</button>`).join("")}
+      </div>` : "";
+    const history = info.history.length ? `
+      <div class="card">
+        <h3><span class="ic">🧾</span>آخرین برداشت‌ها</h3>
+        ${info.history.map((h) => `<div class="stat-row"><span>${h.kind} · ${escHtml(h.detail)}<br><small class="hint-text">${escHtml(h.at)}</small></span><b>${fmt(h.amount)} تومان</b></div>`).join("")}
+      </div>` : "";
+    content.innerHTML = `
+      <button class="btn outline small" id="payg-back-btn" style="width:auto;margin-bottom:12px">→ بازگشت به فروشگاه</button>
+      <div class="eyebrow">💳 پرداخت به‌ازای مصرف</div>
+      <div class="card">
+        ${info.free ? `<div class="hint-text" style="margin-bottom:8px">🎁 حساب شما مدیریتی است؛ بدون کسر از کیف پول و بدون سقف حجم.</div>` : ""}
+        <div class="stat-row"><span>موجودی کیف پول</span><b>${fmt(info.balance)} تومان</b></div>
+        ${info.min_balance && !info.free ? `<div class="stat-row"><span>حداقل موجودی برای ساخت سرویس</span><b>${fmt(info.min_balance)} تومان</b></div>` : ""}
+        ${stats}
+        <div class="hint-text" style="margin-top:8px">حجم و زمان ثابت ندارید؛ هزینه ترافیک مصرفی، روزهای فعال و ظرفیت کاربران از کیف پول شما کسر و مصرف هر ${escHtml(info.cycle)} تسویه می‌شود.</div>
+        ${info.blocker ? `<div class="hint-text" style="margin-top:10px;color:#dc2626;white-space:pre-line">${escHtml(info.blocker)}</div>` : ""}
+        <button class="btn" id="payg-create-btn" style="margin-top:12px" ${info.can_provision ? "" : "disabled"}>🚀 ساخت سرویس مصرفی جدید</button>
+        <button class="btn outline" id="payg-topup-btn" style="margin-top:8px">💰 شارژ کیف پول</button>
+      </div>
+      ${services}${history}`;
+    document.getElementById("payg-back-btn").onclick = renderStore;
+    document.getElementById("payg-topup-btn").onclick = () => switchTab("wallet");
+    const createBtn = document.getElementById("payg-create-btn");
+    createBtn.onclick = () => submitPaygProvision(createBtn);
+    content.querySelectorAll(".payg-copy").forEach((el) => {
+      el.onclick = () => navigator.clipboard.writeText(el.dataset.link).then(() => notify("لینک کپی شد."));
+    });
+  } catch (e) {
+    content.innerHTML = errorState(e.message);
+  }
+}
+
+async function submitPaygProvision(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = "در حال ساخت سرویس..."; }
+  try {
+    const result = await api("/api/payg/provision", { method: "POST" });
+    tg.HapticFeedback.notificationOccurred("success");
+    content.innerHTML = `
+      <div class="eyebrow">💳 سرویس مصرفی شما آماده شد</div>
+      <div class="card">
+        <div class="stat-row"><span>نام کاربری</span><b style="direction:ltr">${escHtml(result.username)}</b></div>
+        ${result.multi ? `<div class="stat-row"><span>مقصدها</span><b>${fmt(result.panels)} پنل + ${fmt(result.nodes)} نود</b></div>` : ""}
+        <div class="stat-row"><span>حجم / مدت</span><b>به‌ازای مصرف · بدون انقضای ثابت</b></div>
+        <div class="hint-text" style="margin:8px 0">${result.free ? "🎁 رایگان برای مدیریت؛ هزینه‌ای کسر نمی‌شود." : "💳 هزینه از کیف پول تومانی شما کسر می‌شود."} مصرف هر ${escHtml(result.cycle)} تسویه می‌شود.</div>
+        <div class="stat-row"><span>لینک اشتراک</span></div>
+        <div class="code" style="word-break:break-all;direction:ltr;text-align:left;margin-top:6px">${escHtml(result.link)}</div>
+        <button class="btn outline small" id="payg-copy-btn" style="margin-top:10px">📋 کپی لینک</button>
+        <button class="btn outline small" id="payg-done-btn" style="margin-top:10px">مشاهده وضعیت مصرف</button>
+      </div>`;
+    document.getElementById("payg-copy-btn").onclick = () => navigator.clipboard.writeText(result.link).then(() => notify("لینک کپی شد."));
+    document.getElementById("payg-done-btn").onclick = renderPaygScreen;
+  } catch (e) {
+    notify("خطا: " + e.message);
+    renderPaygScreen();
+  }
 }
 
 async function renderCustomConfigBuilder() {
