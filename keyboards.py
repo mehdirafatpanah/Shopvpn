@@ -754,7 +754,7 @@ def service_detail_kb(db, cb_id: str, kind: str, deletable: bool, show_links: bo
             add("svc_update", "♻️ بروزرسانی کانفیگ", f"mo_refresh:{cb_id}")
         if on("svc_show_qr"):
             add("svc_qr", "⬜ کیوآر کانفیگ", f"svc_qr:{cb_id}")
-        if show_links:
+        if show_links and on("svc_show_links"):
             add("svc_links", "📋 کانفیگ‌های تکی", f"mo_links:{cb_id}")
     if deletable and on("svc_show_delete"):
         add("svc_delete", "🗑 حذف کامل این سرویس", f"mo_del:{cb_id}")
@@ -904,6 +904,10 @@ def account_settings_kb(db) -> InlineKeyboardMarkup:
         state_on = db.get_setting(key, default) == "1"
         icon = "🟢" if state_on else "🔴"
         rows.append([InlineKeyboardButton(text=f"{icon} {label}", callback_data=f"adm_acct_toggle:{key}")])
+    rows.append([
+        InlineKeyboardButton(text=tr("🔴 غیرفعال‌کردن همه"), callback_data="adm_acct_all:0"),
+        InlineKeyboardButton(text=tr("🟢 فعال‌کردن همه"), callback_data="adm_acct_all:1"),
+    ])
     rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data="adm_cat:alerts")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -2228,7 +2232,7 @@ USER_SCREENS = {
             ("svc_inquiry", "🔍 استعلام", "svc_show_inquiry", False),
             ("svc_update", "♻️ بروزرسانی کانفیگ", "svc_show_update_config", False),
             ("svc_qr", "⬜ کیوآر کانفیگ", "svc_show_qr", False),
-            ("svc_links", "📋 کانفیگ‌های تکی", None, False),
+            ("svc_links", "📋 کانفیگ‌های تکی", "svc_show_links", False),
             ("svc_delete", "🗑 حذف کامل این سرویس", "svc_show_delete", False),
         ],
         "default_rows": [

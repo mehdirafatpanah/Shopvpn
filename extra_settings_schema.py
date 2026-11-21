@@ -76,7 +76,7 @@ _SVC_EXTRA_KEYS = ("svc_show_inquiry", "svc_show_location_transfer",
                    "wallet_show_transfer")  # آخری از قبل در گروه «کیف پول و کش‌بک» هست
 # کلیدهای ACCOUNT_TOGGLE_KEYS که فرم فعلی پنل وب (تب برندینگ) ندارد.
 _WEB_MISSING_TOGGLES = (
-    "acct_show_tutorial", "acct_show_lootbox", "svc_show_rating",
+    "acct_show_tutorial", "acct_show_lootbox", "svc_show_rating", "svc_show_links",
 )
 
 

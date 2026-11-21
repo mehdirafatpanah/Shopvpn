@@ -5255,6 +5255,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     async def cb_my_orders_links(call: CallbackQuery):
         """دکمه‌ی واحد «کانفیگ‌های تکی»: فقط با زدن همین دکمه، تمام لینک‌های
         تکیِ این سرویس (نه از همان ابتدا) به‌صورت یک پیام جدا ارسال می‌شوند."""
+        if (await asyncio.to_thread(db.get_setting, "svc_show_links", "1")) != "1":
+            await call.answer(tr("این قابلیت غیرفعال است."), show_alert=True)
+            return
         cb_id = call.data.split(":", 1)[1]
         item = _find_my_orders_item(call.from_user.id, cb_id)
         if not item:

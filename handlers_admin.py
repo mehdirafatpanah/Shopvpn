@@ -11619,6 +11619,21 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         )
         await call.answer(db.get_text('handlers_admin.auto_d5ebb39c', 'وضعیت تغییر کرد.'))
 
+    @router.callback_query(F.data.startswith("adm_acct_all:"))
+    async def cb_admin_acct_all(call: CallbackQuery):
+        if not full_admin_only(call.from_user.id):
+            return await deny_support(call)
+        value = "1" if call.data.split(":", 1)[1] == "1" else "0"
+        from db.constants import BULK_TOGGLE_KEYS
+        for key in BULK_TOGGLE_KEYS:
+            await asyncio.to_thread(db.set_setting, key, value)
+        await safe_edit(
+            call,
+            db.get_text('handlers_admin.auto_3591a960', '🧾 تنظیمات حساب کاربری کاربران\n\nهر دکمه را برای فعال/غیرفعال\u200cکردن لمس کنید:'),
+            reply_markup=kb.account_settings_kb(db),
+        )
+        await call.answer(db.get_text('handlers_admin.auto_d5ebb39c', 'وضعیت تغییر کرد.'))
+
     @router.callback_query(F.data.startswith("adm_btn_edit:"))
     async def cb_admin_btn_edit(call: CallbackQuery, state: FSMContext):
         key = call.data.split(":")[1]
