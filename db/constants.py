@@ -569,8 +569,11 @@ ACCOUNT_TOGGLE_KEYS = [
     ("svc_show_history", "📜 دکمه «تاریخچه سرویس»", "1"),
     ("svc_show_inquiry", "🔍 دکمه «استعلام»", "1"),
     ("svc_show_rating", "⭐ دکمه «امتیازدهی به سرویس»", "1"),
+    ("svc_show_links", "📋 دکمه «کانفیگ‌های تکی»", "1"),
     ("wallet_show_transfer", "💸 دکمه «انتقال موجودی به کاربر دیگر»", "1"),
 ]
+
+BULK_TOGGLE_KEYS = [k for k, _l, _d in ACCOUNT_TOGGLE_KEYS if k != "acct_add_service_by_username"]
 
 # ---------------------------------------------------------------------------
 # رجیستری سراسری «کاستوم‌سازی دکمه‌ها» (پنل وب، تب مستقل «دکمه‌ها»)
