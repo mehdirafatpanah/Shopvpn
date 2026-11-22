@@ -4416,6 +4416,7 @@ function renderUserAdminOps(u) {
       ${b('discount', '🎁 کد تخفیف اختصاصی')}
       ${b('invoice', '🧾 فاکتور کلی سرویس‌ها')}
       ${b('invoice-one', '🧾 فاکتور تکی')}
+      ${b('wgift-resend', '🎁 ارسال مجدد اشتراک هدیه عضویت')}
     </div>`;
 }
 
@@ -4453,6 +4454,20 @@ function wireUserAdminOps(body, tgId, close, ov) {
         toast(`فاکتور ارسال شد (${fmt(r.items)} سرویس، جمع ${fmt(r.total)} تومان).`);
       }
       else if (op === 'invoice-one') openUserInvoicePicker(tgId);
+      else if (op === 'wgift-resend') {
+        const choices = await apiGet('/welcome-gift/choices');
+        if (!choices.length) { toast('هیچ گزینه‌ی هدیه‌ای تعریف نشده است.', true); return; }
+        let optionId = 0;
+        if (choices.length > 1) {
+          const raw = prompt('کدام اشتراک هدیه ارسال شود؟ شماره را وارد کنید:\n' + choices.map((c, i) => `${i + 1}. ${c.title}`).join('\n'));
+          if (raw === null) return;
+          const idx = Number(String(raw).trim().replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d)));
+          if (!Number.isInteger(idx) || idx < 1 || idx > choices.length) { toast('شماره‌ی نامعتبر.', true); return; }
+          optionId = choices[idx - 1].id;
+        } else if (!confirm(`اشتراک «${choices[0].title}» دوباره برای این کاربر ارسال شود؟`)) return;
+        await apiPost(`/users/${tgId}/welcome-gift/resend`, { option_id: optionId });
+        toast('اشتراک هدیه در صف ارسال قرار گرفت و تا چند ثانیه‌ی دیگر برای کاربر ارسال می‌شود.');
+      }
     } catch (e) { handleErr(e); }
   }));
 }
@@ -7644,13 +7659,14 @@ function _referralFraudFlagsRows(items) {
 }
 
 async function renderSalesSettings() {
-  const [referral, wheel, renewal, churn, volumeReminder, connectAlert, earlyRenewal, testConfig, testPlans, panelServers, forceJoin, stockAlert, products, referralFraud, fraudFlags] = await Promise.all([
+  const [referral, wheel, renewal, churn, volumeReminder, connectAlert, earlyRenewal, testConfig, testPlans, panelServers, forceJoin, stockAlert, products, referralFraud, fraudFlags, wgift] = await Promise.all([
     apiGet('/settings/referral'), apiGet('/settings/wheel'),
     apiGet('/settings/renewal'), apiGet('/settings/churn'), apiGet('/settings/volume-reminder'), apiGet('/settings/connect-alert'),
     apiGet('/settings/early-renewal-discount'), apiGet('/settings/test-config'),
     apiGet('/test-config/plans'), apiGet('/test-config/panel-servers-lite'),
     apiGet('/settings/force-join'), apiGet('/settings/stock-alert'), apiGet('/products'),
     apiGet('/settings/referral-fraud'), apiGet('/referral-fraud/flags?resolved=false'),
+    apiGet('/welcome-gift').catch(() => null),
   ]);
 
   const eligibleProducts = (products || []).filter(p => p.is_auto_provision && p.provision_server_id);
@@ -7782,6 +7798,20 @@ async function renderSalesSettings() {
       <div id="test-plans-list"></div>
       <button class="btn btn-sm" id="add-test-plan" style="margin-top:8px">➕ افزودن پلن کانفیگ تست</button>
     </div>
+
+    ${wgift ? `<div class="card">
+      <h3>🎁 اشتراک هدیه عضویت</h3>
+      <div class="card-sub" style="margin-bottom:8px">
+        فعال/غیرفعال و تأخیر ارسال از «تنظیمات اضافه ← هدیه‌ی کانفیگ عضویت» است. هر کاربر یک سهمیه‌ی مشترک بین همه‌ی گزینه‌ها دارد
+        و فقط بعد از تحویل موفق مصرف می‌شود. اگر بیش از یک گزینه‌ی فعال باشد، کاربر عنوان آن‌ها را می‌بیند و یکی را انتخاب می‌کند.
+      </div>
+      <div class="card-sub" id="wgift-stats" style="margin-bottom:8px"></div>
+      <div style="display:flex;gap:8px;margin:8px 0 16px">
+        <button class="btn btn-sm btn-danger" id="wgift-reset-all">بازنشانی اشتراک هدیه برای همه‌ی کاربران</button>
+      </div>
+      <div id="wgift-options"></div>
+      <button class="btn btn-sm" id="add-wgift-option" style="margin-top:8px">➕ افزودن گزینه‌ی هدیه</button>
+    </div>` : ''}
 
     <div class="card">
       <h3>📢 عضویت اجباری در کانال</h3>
@@ -8029,6 +8059,80 @@ async function renderSalesSettings() {
           await reloadTestPlans();
         } catch (e) { handleErr(e); }
       });
+    });
+  }
+
+  if (wgift) {
+    let wgiftState = wgift;
+    const wgAmt = v => (v === '' || v === null || v === undefined) ? 'پیش‌فرض' : (Number(v) === 0 ? 'نامحدود' : v);
+    function renderWgift() {
+      const st = wgiftState.stats || {};
+      $('#wgift-stats', root).textContent = `تحویل‌شده: ${fmt(st.done || 0)} · در صف: ${fmt((st.pending || 0) + (st.processing || 0) + (st.provisioned || 0))} · «بعداً»: ${fmt(st.deferred || 0)} · ناموفق: ${fmt(st.failed || 0)}`;
+      const box = $('#wgift-options', root);
+      const opts = wgiftState.options || [];
+      if (!opts.length) {
+        box.innerHTML = `<div class="card-sub">${wgiftState.legacy_active ? 'گزینه‌ای تعریف نشده؛ فعلاً محصول پیش‌فرض تنظیمات اضافه به‌عنوان تنها گزینه استفاده می‌شود.' : 'هنوز هیچ گزینه‌ای تعریف نشده.'}</div>`;
+        return;
+      }
+      box.innerHTML = opts.map(o => `
+        <div class="row-item" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border,#333)">
+          <div>
+            <b>${o.is_active ? '🟢' : '🔴'} ${esc(o.title)}</b>
+            <div class="card-sub">محصول: ${esc(o.product_name || '—')} · پنل: ${esc(o.panel_server_name || '—')} · حجم: ${esc(String(wgAmt(o.volume_gb)))} · مدت: ${esc(String(wgAmt(o.days)))}</div>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-sm" data-wg-edit="${o.id}">ویرایش</button>
+            <button class="btn btn-sm" data-wg-toggle="${o.id}">${o.is_active ? 'غیرفعال کن' : 'فعال کن'}</button>
+            <button class="btn btn-sm btn-danger" data-wg-del="${o.id}">حذف</button>
+          </div>
+        </div>`).join('');
+      $$('[data-wg-toggle]', box).forEach(b => b.addEventListener('click', async () => {
+        try { await apiPost(`/welcome-gift/options/${b.dataset.wgToggle}/toggle`); await reloadWgift(); } catch (e) { handleErr(e); }
+      }));
+      $$('[data-wg-del]', box).forEach(b => b.addEventListener('click', async () => {
+        if (!confirm('این گزینه حذف شود؟ اشتراک‌های قبلاً تحویل‌شده دست‌نخورده می‌مانند.')) return;
+        try { await apiDelete(`/welcome-gift/options/${b.dataset.wgDel}`); await reloadWgift(); } catch (e) { handleErr(e); }
+      }));
+      $$('[data-wg-edit]', box).forEach(b => b.addEventListener('click', () => openWgiftForm(opts.find(o => o.id === Number(b.dataset.wgEdit)))));
+    }
+    async function reloadWgift() { wgiftState = await apiGet('/welcome-gift'); renderWgift(); }
+    function openWgiftForm(opt) {
+      const products = wgiftState.products || [];
+      if (!products.length) { toast('اول باید یک محصول متصل به پنل/نود بسازی.'); return; }
+      openModal(opt ? 'ویرایش گزینه‌ی هدیه' : 'افزودن گزینه‌ی هدیه', `
+        <div class="form-grid">
+          <label class="field"><span>عنوان نمایشی برای کاربر</span><input class="input" id="wgf-title" maxlength="60" value="${opt ? esc(opt.title) : ''}"></label>
+          <label class="field"><span>محصول (تعیین‌کننده‌ی پنل/نود)</span><select class="input" id="wgf-product">${products.map(p => `<option value="${p.id}" ${opt && opt.product_id === p.id ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}</select></label>
+          <label class="field"><span>حجم (گیگ؛ خالی = پیش‌فرض، 0 = نامحدود)</span><input class="input" id="wgf-volume" value="${opt ? esc(opt.volume_gb || '') : ''}"></label>
+          <label class="field"><span>مدت (روز؛ خالی = پیش‌فرض، 0 = نامحدود)</span><input class="input" id="wgf-days" value="${opt ? esc(opt.days || '') : ''}"></label>
+          <button class="btn btn-primary btn-sm" id="wgf-save">ذخیره</button>
+        </div>`, (body, close) => {
+        $('#wgf-save', body).addEventListener('click', async () => {
+          const payload = {
+            title: $('#wgf-title', body).value.trim(),
+            product_id: Number($('#wgf-product', body).value),
+            volume_gb: $('#wgf-volume', body).value.trim(),
+            days: $('#wgf-days', body).value.trim(),
+          };
+          if (!payload.title) { toast('عنوان گزینه الزامی است.'); return; }
+          try {
+            if (opt) await apiPut(`/welcome-gift/options/${opt.id}`, payload); else await apiPost('/welcome-gift/options', payload);
+            close();
+            toast('گزینه ذخیره شد.');
+            await reloadWgift();
+          } catch (e) { handleErr(e); }
+        });
+      });
+    }
+    renderWgift();
+    $('#add-wgift-option', root).addEventListener('click', () => openWgiftForm(null));
+    $('#wgift-reset-all', root).addEventListener('click', async () => {
+      if (!confirm('همه‌ی کاربرانی که قبلاً اشتراک هدیه گرفته‌اند دوباره یک‌بار امکان دریافت پیدا می‌کنند. ادامه بدم؟')) return;
+      try {
+        const res = await apiPost('/welcome-gift/reset-all');
+        toast(`سهمیه‌ی هدیه برای ${res.count} کاربر بازنشانی شد.`);
+        await reloadWgift();
+      } catch (e) { handleErr(e); }
     });
   }
 
@@ -14931,7 +15035,7 @@ const ACTION_LABEL = {
   reseller_panel_set: 'تنظیم پنل نماینده', reseller_request_admin_cancel: 'لغو درخواست نمایندگی',
   reseller_request_payment_approve: 'تایید پرداخت نمایندگی', reseller_request_quote: 'ثبت مبلغ درخواست نمایندگی',
   reseller_request_reject: 'رد درخواست نمایندگی', reseller_status_toggle: 'فعال/غیرفعال کردن نماینده',
-  reset_test_configs: 'ریست کانفیگ‌های تست', setting_change: 'تغییر تنظیمات', support_reply: 'پاسخ پشتیبانی',
+  reset_test_configs: 'ریست کانفیگ‌های تست', welcome_gift_reset_all: 'ریست اشتراک هدیه عضویت', welcome_gift_resend: 'ارسال مجدد اشتراک هدیه', setting_change: 'تغییر تنظیمات', support_reply: 'پاسخ پشتیبانی',
   ticket_close: 'بستن تیکت', ticket_reply: 'پاسخ تیکت', topup_approve: 'تایید شارژ کیف پول',
   topup_reject: 'رد شارژ کیف پول', user_block: 'مسدودسازی کاربر', user_unblock: 'رفع مسدودی کاربر',
   user_message: 'پیام مستقیم به کاربر',
