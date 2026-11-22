@@ -133,7 +133,7 @@ if [[ "${WANT_SSH}" -eq 1 ]]; then
     rm -rf /tmp/shopvpn-badvpn-build
     git clone --depth 1 https://github.com/ambrop72/badvpn /tmp/shopvpn-badvpn-build
     cmake -S /tmp/shopvpn-badvpn-build -B /tmp/shopvpn-badvpn-build/build \
-      -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1
+      -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
     cmake --build /tmp/shopvpn-badvpn-build/build --parallel "$(nproc)"
     cmake --install /tmp/shopvpn-badvpn-build/build
     UDPGW_BIN="$(command -v badvpn-udpgw 2>/dev/null || true)"
