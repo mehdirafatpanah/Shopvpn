@@ -354,7 +354,7 @@ def _describe_order(o) -> tuple[str, str]:
     ادمین (در handlers_user.py) از قبل نشان می‌دهد، اما پوش اپ اندروید نه."""
     if o["is_renewal"]:
         mode_label = _RENEW_MODE_LABEL.get(o["renewal_mode"], o["renewal_mode"] or "تمدید سرویس")
-        target_label = "کانفیگ شخصی" if o["renewal_target_kind"] == "custom" else "کانفیگ بانک (استخر)"
+        target_label = {"custom": "کانفیگ شخصی", "node": "سرویس نودی", "bank": "کانفیگ بانک (استخر)"}.get(o["renewal_target_kind"], "سرویس")
         return (
             "🔄 سفارش تمدید سرویس",
             f"{mode_label} - {target_label} #{o['renewal_target_id']}",
@@ -3193,7 +3193,7 @@ async def api_order_full(order_id: int, admin=Depends(get_current_admin)):
     # داده می‌شد و معلوم نبود اصلاً سفارش تمدید است یا برای کدام سرویس.
     if o.get("is_renewal"):
         mode_label = _RENEW_MODE_LABEL.get(o.get("renewal_mode"), o.get("renewal_mode") or "-")
-        target_label = "کانفیگ شخصی" if o.get("renewal_target_kind") == "custom" else "کانفیگ بانک (استخر)"
+        target_label = {"custom": "کانفیگ شخصی", "node": "سرویس نودی", "bank": "کانفیگ بانک (استخر)"}.get(o.get("renewal_target_kind"), "سرویس")
         result["product_name"] = f"🔄 {mode_label}"
         result["renewal_target"] = f"{target_label} #{o.get('renewal_target_id')}"
         if o.get("renewal_add_volume_gb"):
