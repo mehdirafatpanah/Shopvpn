@@ -7052,6 +7052,9 @@ async def api_support_send(user_id: int, body: SupportReplyBody, admin=Depends(g
     if not is_owner:
         (await asyncio.to_thread(db.set_support_conversation_admin, user_id, my_lock_id))
 
+    dup_id = await asyncio.to_thread(db.find_recent_duplicate_admin_reply, user_id, text)
+    if dup_id:
+        return {"ok": True, "id": dup_id, "duplicate": True}
     msg_id = (await asyncio.to_thread(db.add_support_message, user_id, "admin", text))
     await notify_user(user_id, f"💬 پشتیبانی:\n\n{text}")
     (await asyncio.to_thread(db.log_admin_action, admin["id"], "support_reply", f"پاسخ چت زنده به کاربر {user_id} (پنل وب - {admin['username']})", "user", user_id))
