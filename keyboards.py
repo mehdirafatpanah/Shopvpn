@@ -817,6 +817,8 @@ def account_hub_kb(db, is_main_bot: bool = True) -> InlineKeyboardMarkup:
         text = tr(db.get_setting(f"{key}_text", ACCOUNT_HUB_META[key]["default_text"]))
         entries.append((key, text, _styled_inline(db, text, callback_data, f"{key}_style")))
     rows = _layout_group_rows(db, "account_hub", entries)
+    if db.is_full_access_bot(is_main_bot) and db.get_setting("welcome_gift_enabled", "0") == "1" and db.get_welcome_gift_choices():
+        rows.append([InlineKeyboardButton(text=tr("🎁 اشتراک هدیه عضویت"), callback_data="acct:wgift")])
     if _widgets_on(db):
         rows.append([InlineKeyboardButton(text=tr("🧩 ویجت‌ها"), callback_data="u_widgets")])
     rows.append([InlineKeyboardButton(text=tr(LANGUAGE_BTN_TEXT), callback_data="acct:language")])

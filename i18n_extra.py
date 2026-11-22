@@ -2381,3 +2381,35 @@ EXTRA_PHRASES.update({
 })
 
 EXTRA_PHRASES.update({'⏱ زمان این محصول از چه لحظه\u200cای شروع شود؟\n\n🛒 از لحظه خرید: مدت از همان لحظه\u200cی خرید حساب می\u200cشود.\n📡 از اولین اتصال: مدت بعد از اولین اتصال کاربر شروع می\u200cشود.': "When should this product's time start?\n\n🛒 From purchase: the period counts from the moment of purchase.\n📡 From first connection: the period starts after the user's first connection.", '✅ شروع زمان محصول ذخیره شد.': '✅ Product start time saved.', 'این نوع پنل شروع زمان از اولین اتصال را پشتیبانی نمی\u200cکند.': 'This panel type does not support starting time from the first connection.', '🛒 از لحظه خرید': '🛒 From purchase', '📡 از اولین اتصال': '📡 From first connection', '✅ 🛒 از لحظه خرید': '✅ 🛒 From purchase', '✅ 📡 از اولین اتصال': '✅ 📡 From first connection', '⏱ شروع زمان: از اولین اتصال': '⏱ Start time: from first connection', '⏱ شروع زمان: از لحظه خرید': '⏱ Start time: from purchase', '⏱ شروع زمان: طبق تنظیم پنل': '⏱ Start time: per panel setting', 'ساخت\u200cهای بعدی این محصول طبق انتخاب جدید انجام می\u200cشود؛ سرویس\u200cهای قبلاً ساخته\u200cشده تغییر نمی\u200cکنند.': 'Future services of this product follow the new choice; already created services are unchanged.'})
+
+
+EXTRA_PHRASES.update({
+    '🎁 عضویت شما تکمیل شد! برای دریافت اشتراک هدیه روی دکمه\u200cی زیر بزنید.': '🎁 Your membership is complete! Tap the button below to get your gift subscription.',
+    '🎁 یکی از اشتراک\u200cهای هدیه را انتخاب کنید:': '🎁 Choose one of the gift subscriptions:',
+    '🎁 این اشتراک فقط یک\u200cبار قابل دریافت است.': '🎁 This subscription can only be received once.',
+    'باشه؛ سهمیه\u200cی هدیه\u200cی شما محفوظ است. هر زمان خواستید از «حساب کاربری» روی «🎁 اشتراک هدیه عضویت» بزنید.': 'Okay, your gift allowance is saved. Whenever you want it, open "Account" and tap "🎁 Membership gift subscription".',
+    'هدیه\u200cی عضویت در حال حاضر غیرفعال است.': 'The membership gift is currently disabled.',
+    'شما قبلاً اشتراک هدیه عضویت را دریافت کرده\u200cاید.': 'You have already received the membership gift subscription.',
+    'درخواست هدیه\u200cی شما قبلاً ثبت شده و در حال آماده\u200cسازی است.': 'Your gift request has already been submitted and is being prepared.',
+    '🎁 درخواست ثبت شد؛ اشتراک پس از نوبت شما ارسال می\u200cشود.': '🎁 Request submitted; the subscription will be sent when it is your turn.',
+    '🎁 درخواست اشتراک هدیه ثبت شد؛ به\u200cزودی برای شما ارسال می\u200cشود.': '🎁 Your gift subscription request was submitted; it will be sent to you shortly.',
+    'در حال حاضر اشتراک هدیه\u200cای موجود نیست.': 'No gift subscription is available right now.',
+    'این گزینه دیگر فعال نیست.': 'This option is no longer active.',
+    'ابتدا در همه\u200cی کانال\u200cهای عضویت اجباری عضو شوید.': 'Please join all the required channels first.',
+    'امکان ثبت درخواست هدیه وجود ندارد؛ تنظیمات را بررسی کنید.': 'The gift request cannot be submitted; please check the settings.',
+    '✅ دریافت الان': '✅ Get it now',
+    '⏳ الان نیازی ندارم، بعداً دریافت می\u200cکنم': "⏳ I don't need it now, I'll get it later",
+    '🎁 دریافت کانفیگ هدیه': '🎁 Get gift config',
+    '🎁 اشتراک هدیه عضویت': '🎁 Membership gift subscription',
+    'اشتراک هدیه عضویت فقط برای بات اصلی قابل تنظیم است.': 'The membership gift subscription can only be configured for the main bot.',
+    'عنوان گزینه الزامی است.': 'The option title is required.',
+    'محصول انتخاب\u200cشده معتبر نیست (باید به پنل/نود متصل باشد).': 'The selected product is not valid (it must be connected to a panel/node).',
+    'این گزینه یافت نشد.': 'This option was not found.',
+    'هیچ گزینه\u200cی هدیه\u200cای تعریف نشده است.': 'No gift option has been defined.',
+    'این گزینه فعال نیست.': 'This option is not active.',
+})
+
+EXTRA_DYNAMIC_PHRASES.extend([
+    ('{x} نامعتبر است.', '{x} is invalid.'),
+    ('{x} باید عدد باشد (یا خالی).', '{x} must be a number (or empty).'),
+])

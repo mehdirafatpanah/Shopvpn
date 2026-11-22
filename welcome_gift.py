@@ -79,10 +79,11 @@ def product_is_giftable(db, product) -> bool:
     return bool(targets["panels"] or targets["ssh"])
 
 
-def build_gift_product(db, product) -> dict:
+def build_gift_product(db, product, option=None) -> dict:
     gift = dict(product)
-    volume = (db.get_setting("welcome_gift_volume_gb", "") or "").strip()
-    days = (db.get_setting("welcome_gift_days", "") or "").strip()
+    option = option or {}
+    volume = str(option.get("volume_gb") or "").strip() or (db.get_setting("welcome_gift_volume_gb", "") or "").strip()
+    days = str(option.get("days") or "").strip() or (db.get_setting("welcome_gift_days", "") or "").strip()
     if volume != "":
         gift["auto_provision_volume_gb"] = float(volume)
     if days != "":
@@ -92,12 +93,24 @@ def build_gift_product(db, product) -> dict:
     return gift
 
 
-async def _provision(db, user_id: int) -> dict:
-    product_id = int(await asyncio.to_thread(db.get_setting, "welcome_gift_product_id", "0") or 0)
+def resolve_option(db, option_id: int):
+    """گزینه‌ی هدیه؛ شناسه‌ی ۰ یعنی اولین گزینه‌ی فعال (یا محصول تنظیمات قدیمی)."""
+    option_id = int(option_id or 0)
+    if option_id > 0:
+        return db.get_welcome_gift_option(option_id)
+    choices = db.get_welcome_gift_choices()
+    return choices[0] if choices else None
+
+
+async def _provision(db, user_id: int, option_id: int = 0) -> dict:
+    option = await asyncio.to_thread(resolve_option, db, option_id)
+    if not option:
+        raise direct_panel_provision.ProvisionError("گزینه‌ی هدیه‌ی عضویت پیدا نشد.")
+    product_id = int(option["product_id"])
     product = await asyncio.to_thread(db.get_product, product_id) if product_id > 0 else None
     if not product:
         raise direct_panel_provision.ProvisionError("محصول هدیه‌ی عضویت پیدا نشد.")
-    gift = await asyncio.to_thread(build_gift_product, db, product)
+    gift = await asyncio.to_thread(build_gift_product, db, product, option)
     items = await direct_panel_provision.provision_direct(db, gift, quantity=1, user_id=user_id)
     for item in items:
         if item.get("custom_config_id"):
@@ -108,6 +121,7 @@ async def _provision(db, user_id: int) -> dict:
     first = items[0]
     return {
         "name": product["name"],
+        "title": option.get("title") or product["name"],
         "username": first.get("username") or "",
         "subscription_url": first["subscription_url"],
         "volume_gb": first.get("volume_gb"),
@@ -127,11 +141,12 @@ async def _deliver(bot, db, user_id: int, result: dict) -> bool:
         return False
 
 
-async def _report(bot, db, user_id: int, result: dict) -> None:
+async def _report(bot, db, user_id: int, result: dict, resent_by: int = 0) -> None:
     vol = "نامحدود" if not result.get("volume_gb") else f"{result['volume_gb']:g} گیگ"
     dur = "نامحدود" if not result.get("duration_days") else f"{result['duration_days']:g} روز"
+    head = "🎁 اشتراک هدیه‌ی عضویت دوباره ارسال شد (درخواست ادمین)" if resent_by else "🎁 هدیه‌ی کانفیگ عضویت ارسال شد"
     text = (
-        "🎁 هدیه‌ی کانفیگ عضویت ارسال شد\n\n"
+        f"{head}\n\n"
         f'👤 <a href="tg://user?id={user_id}">{user_id}</a>\n'
         f"📦 {html.escape(result['name'])} - {vol} / {dur}\n"
         f"🔑 <code>{html.escape(result['username'])}</code>"
@@ -159,7 +174,7 @@ async def welcome_gift_once(bot, db) -> int:
                 # فقط همان لینک ذخیره‌شده دوباره ارسال می‌شود؛ حساب جدید نمی‌سازیم.
                 result = json.loads(queue_item["result_json"])
             else:
-                result = await _provision(db, user_id)
+                result = await _provision(db, user_id, int(queue_item.get("option_id") or 0))
                 await asyncio.to_thread(db.save_welcome_gift_result, user_id, result)
         except Exception as exc:
             state = await asyncio.to_thread(db.retry_or_fail_welcome_gift, user_id, str(exc))
@@ -182,10 +197,43 @@ async def welcome_gift_once(bot, db) -> int:
     return sent
 
 
+async def welcome_gift_resend_once(bot, db) -> int:
+    """ارسال مجدد اشتراک هدیه که ادمین از پنل وب درخواست کرده؛ به سهمیه‌ی کاربر کاری ندارد و محدودیت تعداد ندارد."""
+    jobs = await asyncio.to_thread(db.claim_due_welcome_gift_resends, 5)
+    sent = 0
+    for job in jobs:
+        job_id, user_id = int(job["id"]), int(job["user_id"])
+        user = await asyncio.to_thread(db.get_user, user_id)
+        if not user or user["is_blocked"]:
+            await asyncio.to_thread(db.finish_welcome_gift_resend, job_id, "skipped", "blocked or missing user")
+            continue
+        try:
+            if job.get("result_json"):
+                result = json.loads(job["result_json"])
+            else:
+                result = await _provision(db, user_id, int(job.get("option_id") or 0))
+                await asyncio.to_thread(db.save_welcome_gift_resend_result, job_id, result)
+        except Exception as exc:
+            state = await asyncio.to_thread(db.retry_or_fail_welcome_gift_resend, job_id, str(exc))
+            logger.warning("ارسال مجدد هدیه‌ی عضویت برای %s ناموفق (%s): %s", user_id, state, exc)
+            await asyncio.sleep(2.0)
+            continue
+        if not await _deliver(bot, db, user_id, result):
+            await asyncio.to_thread(db.retry_or_fail_welcome_gift_resend, job_id, "ارسال تلگرام ناموفق بود.", True)
+            await asyncio.sleep(2.0)
+            continue
+        await asyncio.to_thread(db.finish_welcome_gift_resend, job_id, "done")
+        await _report(bot, db, user_id, result, resent_by=int(job.get("requested_by") or 1))
+        sent += 1
+        await asyncio.sleep(2.0)
+    return sent
+
+
 async def welcome_gift_loop(bot, db, interval: int = 5):
     while True:
         try:
             await welcome_gift_once(bot, db)
+            await welcome_gift_resend_once(bot, db)
         except asyncio.CancelledError:
             raise
         except Exception:

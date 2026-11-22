@@ -152,10 +152,10 @@ EXTRA_SETTINGS_GROUPS: List[Dict[str, Any]] = [
         "id": "welcome_gift", "title": "🎁 هدیه‌ی کانفیگ عضویت (ارسال سرویس به کاربر تازه‌عضو)", "web": True, "mini": True,
         "fields": [
             _b("welcome_gift_enabled", "فعال بودن هدیه‌ی کانفیگ عضویت", "0", "فقط کاربرانی که بعد از فعال‌سازی عضو شوند هدیه می‌گیرند."),
-            _dyn_sel("welcome_gift_product_id", "محصول هدیه (متصل به پنل/نود)", "giftable_products", "0",
-                     "از بین محصولات متصل به پنل/نود انتخاب کنید."),
-            _t("welcome_gift_volume_gb", "حجم هدیه (گیگابایت)", "", "خالی = حجم پیش‌فرض محصول، 0 = نامحدود"),
-            _t("welcome_gift_days", "مدت هدیه (روز)", "", "خالی = مدت پیش‌فرض محصول، 0 = نامحدود"),
+            _dyn_sel("welcome_gift_product_id", "محصول هدیه‌ی پیش‌فرض (متصل به پنل/نود)", "giftable_products", "0",
+                     "فقط وقتی استفاده می‌شود که در کارت «اشتراک هدیه عضویت» هیچ گزینه‌ای تعریف نشده باشد."),
+            _t("welcome_gift_volume_gb", "حجم هدیه (گیگابایت)", "", "برای همه‌ی گزینه‌ها مگر گزینه حجم خودش را داشته باشد. خالی = حجم پیش‌فرض محصول، 0 = نامحدود"),
+            _t("welcome_gift_days", "مدت هدیه (روز)", "", "برای همه‌ی گزینه‌ها مگر گزینه مدت خودش را داشته باشد. خالی = مدت پیش‌فرض محصول، 0 = نامحدود"),
             _n("welcome_gift_delay_minutes", "ارسال چند دقیقه بعد از عضویت", "0", "0 = بلافاصله (مثلاً 60 = یک ساعت، 1440 = یک روز)", min=0, max=525600),
         ],
     },
@@ -831,8 +831,9 @@ def _cross_check(values: Dict[str, str], db) -> None:
         if cur("signup_gift_enabled") == "1" and float(cur("signup_gift_amount") or 0) <= 0:
             raise SettingsValidationError("برای فعال‌سازی هدیه‌ی ثبت‌نام، مبلغ باید بزرگ‌تر از صفر باشد.")
     if "welcome_gift_enabled" in values or "welcome_gift_product_id" in values:
-        if cur("welcome_gift_enabled") == "1" and int(float(cur("welcome_gift_product_id") or 0)) <= 0:
-            raise SettingsValidationError("برای فعال‌سازی هدیه‌ی کانفیگ عضویت، یک محصول از فهرست انتخاب کنید.")
+        if (cur("welcome_gift_enabled") == "1" and int(float(cur("welcome_gift_product_id") or 0)) <= 0
+                and not db.list_welcome_gift_options(active_only=True)):
+            raise SettingsValidationError("برای فعال‌سازی هدیه‌ی کانفیگ عضویت، یک گزینه‌ی هدیه تعریف کنید یا یک محصول از فهرست انتخاب کنید.")
     if "welcome_gift_product_id" in values and int(values["welcome_gift_product_id"] or 0) > 0:
         _pid = int(values["welcome_gift_product_id"])
         _prod = db.get_product(_pid)

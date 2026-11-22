@@ -601,46 +601,123 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
     async def _send_welcome_gift_offer(message: Message, user_id: int):
         if not full_access_bot or await asyncio.to_thread(db.get_setting, "welcome_gift_enabled", "0") != "1":
             return
-        if not await asyncio.to_thread(db.get_setting, "welcome_gift_product_id", "0"):
+        if not await asyncio.to_thread(db.get_welcome_gift_choices):
             return
-        status = await asyncio.to_thread(db.get_welcome_gift_status, user_id)
-        if status:
+        if await asyncio.to_thread(db.get_welcome_gift_status, user_id):
             return
         await message.answer(
             tr("🎁 عضویت شما تکمیل شد! برای دریافت اشتراک هدیه روی دکمه‌ی زیر بزنید."),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=tr("🎁 دریافت اشتراک هدیه"), callback_data="welcome_gift_claim")]
+                [InlineKeyboardButton(text=tr("🎁 دریافت کانفیگ هدیه"), callback_data="welcome_gift_claim")]
             ]),
         )
 
-    @router.callback_query(F.data == "welcome_gift_claim")
-    async def cb_welcome_gift_claim(call: CallbackQuery):
+    async def _wg_precheck(call: CallbackQuery) -> bool:
         if not full_access_bot or await asyncio.to_thread(db.get_setting, "welcome_gift_enabled", "0") != "1":
             await call.answer(tr("هدیه‌ی عضویت در حال حاضر غیرفعال است."), show_alert=True)
-            return
+            return False
         terms = await asyncio.to_thread(db.get_terms_settings)
         if terms["enabled"] and not await asyncio.to_thread(db.is_terms_accepted, call.from_user.id):
             await call.answer(tr("ابتدا قوانین و مقررات را تأیید کنید."), show_alert=True)
-            return
+            return False
         fj = await asyncio.to_thread(db.get_force_join_settings)
         if fj["enabled"] and fj["channels"]:
             missing = await missing_channels(call.bot, fj["channels"], call.from_user.id)
             if missing:
                 await call.answer(tr("ابتدا در همه‌ی کانال‌های عضویت اجباری عضو شوید."), show_alert=True)
-                return
-        status = await asyncio.to_thread(db.get_welcome_gift_status, call.from_user.id)
-        if status:
-            await call.answer(tr("درخواست هدیه‌ی شما قبلاً ثبت شده است."), show_alert=True)
-            return
-        queued = await asyncio.to_thread(db.enqueue_welcome_gift, call.from_user.id)
+                return False
+        return True
+
+    async def _wg_quota_blocked(call: CallbackQuery) -> bool:
+        quota = await asyncio.to_thread(db.welcome_gift_quota, call.from_user.id)
+        if quota == "used":
+            await call.answer(tr("شما قبلاً اشتراک هدیه عضویت را دریافت کرده‌اید."), show_alert=True)
+            return True
+        if quota == "pending":
+            await call.answer(tr("درخواست هدیه‌ی شما قبلاً ثبت شده و در حال آماده‌سازی است."), show_alert=True)
+            return True
+        return False
+
+    async def _wg_edit(call: CallbackQuery, text: str, markup=None):
+        try:
+            await call.message.edit_text(text, reply_markup=markup)
+        except Exception:
+            await call.message.answer(text, reply_markup=markup)
+
+    async def _wg_enqueue(call: CallbackQuery, option_id: int):
+        queued = await asyncio.to_thread(db.enqueue_welcome_gift, call.from_user.id, int(option_id))
         if queued:
             await call.answer(tr("🎁 درخواست ثبت شد؛ اشتراک پس از نوبت شما ارسال می‌شود."), show_alert=True)
-            try:
-                await call.message.edit_reply_markup(reply_markup=None)
-            except Exception:
-                pass
-        else:
+            await _wg_edit(call, tr("🎁 درخواست اشتراک هدیه ثبت شد؛ به‌زودی برای شما ارسال می‌شود."))
+        elif not await _wg_quota_blocked(call):
             await call.answer(tr("امکان ثبت درخواست هدیه وجود ندارد؛ تنظیمات را بررسی کنید."), show_alert=True)
+
+    async def _wg_choose(call: CallbackQuery, back_callback: str):
+        """یک گزینه‌ی فعال: همان تحویل داده می‌شود؛ چند گزینه: عنوان‌ها برای انتخاب کاربر نمایش داده می‌شود."""
+        choices = await asyncio.to_thread(db.get_welcome_gift_choices)
+        if not choices:
+            await call.answer(tr("در حال حاضر اشتراک هدیه‌ای موجود نیست."), show_alert=True)
+            return
+        if len(choices) == 1:
+            await _wg_enqueue(call, int(choices[0]["id"]))
+            return
+        rows = [[InlineKeyboardButton(text=str(c["title"])[:60], callback_data=f"wg_pick:{int(c['id'])}")] for c in choices]
+        rows.append([InlineKeyboardButton(text=tr("⬅️ بازگشت"), callback_data=back_callback)])
+        await _wg_edit(call, tr("🎁 یکی از اشتراک‌های هدیه را انتخاب کنید:"), InlineKeyboardMarkup(inline_keyboard=rows))
+        await call.answer()
+
+    @router.callback_query(F.data == "welcome_gift_claim")
+    async def cb_welcome_gift_claim(call: CallbackQuery):
+        if not await _wg_precheck(call) or await _wg_quota_blocked(call):
+            return
+        await _wg_edit(
+            call,
+            tr("🎁 این اشتراک فقط یک‌بار قابل دریافت است."),
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=tr("✅ دریافت الان"), callback_data="wg_now")],
+                [InlineKeyboardButton(text=tr("⏳ الان نیازی ندارم، بعداً دریافت می‌کنم"), callback_data="wg_later")],
+            ]),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data == "wg_now")
+    async def cb_wg_now(call: CallbackQuery):
+        if not await _wg_precheck(call) or await _wg_quota_blocked(call):
+            return
+        await _wg_choose(call, "welcome_gift_claim")
+
+    @router.callback_query(F.data == "wg_later")
+    async def cb_wg_later(call: CallbackQuery):
+        if await _wg_quota_blocked(call):
+            return
+        await asyncio.to_thread(db.defer_welcome_gift, call.from_user.id)
+        await _wg_edit(
+            call,
+            tr("باشه؛ سهمیه‌ی هدیه‌ی شما محفوظ است. هر زمان خواستید از «حساب کاربری» روی «🎁 اشتراک هدیه عضویت» بزنید."),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("wg_pick:"))
+    async def cb_wg_pick(call: CallbackQuery):
+        if not await _wg_precheck(call) or await _wg_quota_blocked(call):
+            return
+        try:
+            option_id = int(call.data.split(":", 1)[1])
+        except ValueError:
+            await call.answer()
+            return
+        choices = await asyncio.to_thread(db.get_welcome_gift_choices)
+        if option_id not in {int(c["id"]) for c in choices}:
+            await call.answer(tr("این گزینه دیگر فعال نیست."), show_alert=True)
+            await _wg_choose(call, "welcome_gift_claim")
+            return
+        await _wg_enqueue(call, option_id)
+
+    @router.callback_query(F.data == "acct:wgift")
+    async def cb_account_wgift(call: CallbackQuery):
+        if not await _wg_precheck(call) or await _wg_quota_blocked(call):
+            return
+        await _wg_choose(call, "acct:hub")
 
     async def _send_welcome_after_terms(message: Message, user_id: int, state: FSMContext, bot: Bot):
         welcome = await asyncio.to_thread(db.get_welcome_text)
