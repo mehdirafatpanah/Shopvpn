@@ -77,12 +77,15 @@ def _renew_quota_pool(db, pool, mode, add_volume, add_days, fresh=False):
     if add_days and db.quota_pool_first_use_pending(pool):
         # هنوز شروع نشده: روزهای تمدید به مدتِ ذخیره‌شده اضافه می‌شود تا از اولین اتصال حساب شود.
         db.add_quota_pool_first_use_days(pool_id, float(add_days))
-    elif add_days and expires_at:
-        try:
-            current = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
-            if current.tzinfo is None:
-                current = current.replace(tzinfo=timezone.utc)
-        except ValueError:
+    elif add_days:
+        if expires_at:
+            try:
+                current = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+                if current.tzinfo is None:
+                    current = current.replace(tzinfo=timezone.utc)
+            except ValueError:
+                current = datetime.now(timezone.utc)
+        else:
             current = datetime.now(timezone.utc)
         base = max(current, datetime.now(timezone.utc))
         expires_at = (base + timedelta(days=int(add_days))).isoformat()
@@ -149,6 +152,35 @@ async def execute_renewal(db, order) -> str:
     mode = order["renewal_mode"]
     add_volume = order["renewal_add_volume_gb"] or 0
     add_days = order["renewal_add_days"] or 0
+
+    if kind == "node":
+        sub = db.get_node_subscription(int(target_id)) if hasattr(db, "get_node_subscription") else None
+        if not sub or int(sub.get("user_id") or 0) != int(order["user_id"]):
+            raise RenewalError("سرویس نودی پیدا نشد یا متعلق به شما نیست.")
+        if mode not in ("full", "volume", "time"):
+            raise RenewalError("این نوع تمدید برای سرویس نودی پشتیبانی نمی‌شود.")
+        pool = db.get_quota_pool(int(sub.get("quota_pool_id") or 0)) if sub.get("quota_pool_id") else None
+        if not pool or int(pool.get("user_id") or 0) != int(order["user_id"]):
+            raise RenewalError("استخر حجم سرویس نودی پیدا نشد.")
+        try:
+            new_limit = _renew_quota_pool(db, pool, mode, add_volume, add_days)
+            fresh_pool = db.get_quota_pool(int(pool["id"])) or {}
+            with db._get_conn() as conn:
+                conn.execute("UPDATE node_subscriptions SET volume_gb=?, expires_at=? WHERE id=? AND user_id=?",
+                             (float(new_limit), fresh_pool.get("expires_at"), int(target_id), int(order["user_id"])))
+            try:
+                from quota_reconciler import QuotaReconciler
+                reconciler = QuotaReconciler(db)
+                await reconciler.push_pool_expiry(int(pool["id"]))
+                await reconciler.reconcile_pool(db.get_quota_pool(int(pool["id"])))
+            except Exception:
+                # Pool is already the billing source of truth. Do not report a paid
+                # renewal as failed after the database terms were committed; the
+                # periodic reconciler will retry enforcement on the nodes.
+                logger.exception("node subscription renewal committed but node sync is pending (pool=%s)", pool["id"])
+        except Exception as exc:
+            raise RenewalError(f"تمدید استخر سرویس نودی ناموفق بود: {str(exc)[:220]}") from exc
+        return f"✅ سرویس نودی با موفقیت تمدید شد. سقف حجم جدید: {new_limit:g} گیگابایت."
 
     if kind == "custom":
         cc = db.get_custom_config_owned(target_id, order["user_id"])

@@ -135,7 +135,8 @@ async def provision_direct(db, product, quantity: int = 1, user_id: int = None, 
     except (KeyError, IndexError):
         pass
     targets = db.product_target_counts(product)
-    if len(targets["panels"]) + len(targets["ssh"]) > 1:
+    if (len(targets["panels"]) + len(targets["ssh"]) > 1
+            or (ssh_node_id and len(_product_ssh_protocols(product)) > 1)):
         import dedicated_sub
         if not dedicated_sub.is_enabled(db):
             raise ProvisionError(MULTI_TARGET_NEEDS_DSUB)
@@ -307,7 +308,7 @@ async def _provision_combined(db, product, quantity: int = 1, user_id: int = Non
         raise ProvisionError(off_message)
     # ابتدا SSH (شکست‌پذیرتر: نیاز به شمارنده معتبر)، بعد VPN.
     ssh_items = await provision_ssh_direct(db, product, quantity=quantity, user_id=user_id, order_id=order_id,
-                                           allow_openvpn=True)
+                                           allow_openvpn=True, create_node_subscription=False)
     pool_id = ssh_items[0]["quota_pool_id"]
 
     async def _rollback_ssh():
@@ -405,11 +406,21 @@ async def _provision_multi(db, product, targets: dict, quantity: int = 1, user_i
 
 async def _provision_multi_unit(db, product, panel_ids, node_ids, user_id, order_id, volume_gb, expires_at,
                                 first_use=False, duration_days=0):
+    if not panel_ids and node_ids:
+        import dedicated_sub
+        if not dedicated_sub.is_enabled(db):
+            raise ProvisionError("برای محصولات تک‌نودی/چندنودی، ابتدا ساب اختصاصی ShopVPN را فعال کنید تا لینک اشتراک ساخته شود.")
     pool_id = db.create_quota_pool(int(user_id), volume_gb, expires_at,
         label=f"{product['name']}" + (f" · order #{order_id}" if order_id else ""),
         metadata=_first_use_pool_meta(duration_days) if first_use else None)
     ssh_items, vpn_items = [], []
     primary_cc_id = None
+    node_sub_id = None
+    if not panel_ids and node_ids:
+        node_sub_id = db.create_node_subscription(
+            int(user_id), order_id=order_id, product_id=int(product["id"]), quota_pool_id=int(pool_id),
+            display_name=str(product["name"] or "سرویس نودی"), volume_gb=volume_gb,
+            duration_days=duration_days, expires_at=expires_at)
 
     async def rollback():
         for item in ssh_items:
@@ -431,6 +442,9 @@ async def _provision_multi_unit(db, product, panel_ids, node_ids, user_id, order
                 conn.execute("DELETE FROM quota_pool_members WHERE service_kind='vpn' AND service_id=?",
                              (f"custom_config:{int(primary_cc_id)}",))
                 conn.execute("DELETE FROM custom_configs WHERE id=?", (int(primary_cc_id),))
+        if node_sub_id:
+            with db._get_conn() as conn:
+                conn.execute("DELETE FROM node_subscriptions WHERE id=?", (int(node_sub_id),))
         db.delete_quota_pool(pool_id)
 
     try:
@@ -452,7 +466,7 @@ async def _provision_multi_unit(db, product, panel_ids, node_ids, user_id, order
                 ssh_items.extend(await provision_ssh_direct(
                     db, product, quantity=1, user_id=user_id, order_id=order_id,
                     allow_openvpn=bool(panel_ids), node_id=node_id, pool_id=pool_id, protocol=proto,
-                    first_use=first_use))
+                    first_use=first_use, node_subscription_id=node_sub_id, create_node_subscription=False))
         for index, server_id in enumerate(panel_ids):
             # هر پنل مقصد مستقل محصول را می‌گیرد؛ پنل اصلی از provision_target_config
             # و پنل‌های اضافه از product_extra_targets.target_config استفاده می‌کنند.
@@ -486,6 +500,15 @@ async def _provision_multi_unit(db, product, panel_ids, node_ids, user_id, order
         raise ProvisionError(f"ساخت محصول چندمقصدی ناموفق بود: {exc}") from exc
 
     if not panel_ids:
+        if node_sub_id:
+            import dedicated_sub
+            sub_link = await __import__("asyncio").to_thread(dedicated_sub.link_for_node_subscription, db, int(node_sub_id))
+            if not sub_link:
+                await rollback()
+                raise ProvisionError("ساخت لینک اشتراک اختصاصی محصول نودی ناموفق بود؛ تنظیمات دامنه ساب اختصاصی را بررسی کنید.")
+            for entry in ssh_items:
+                entry["subscription_url"] = sub_link
+                entry["node_subscription_id"] = int(node_sub_id)
         return ssh_items, rollback
     primary = dict(vpn_items[0])
     primary["quota_pool_id"] = int(pool_id)
@@ -512,7 +535,8 @@ def _product_ssh_protocol(product) -> str:
 
 async def provision_ssh_direct(db, product, quantity: int = 1, user_id: int = None, order_id: int = None,
                                allow_openvpn: bool = False, node_id: int = None, pool_id: int = None,
-                               protocol: str = None, first_use: bool = None) -> list:
+                               protocol: str = None, first_use: bool = None, node_subscription_id: int = None,
+                               create_node_subscription: bool = True) -> list:
     """Provision a paid SSH product on a Linux Agent and create one shared quota pool.
 
     Commercial delivery fails closed unless the Agent reports a valid per-account
@@ -527,11 +551,12 @@ async def provision_ssh_direct(db, product, quantity: int = 1, user_id: int = No
         raise ProvisionError("نود Linux Agent فعال پیدا نشد؛ پنل SSH هنوز آداپتور عملیاتی ندارد.")
     from ssh_service import node_protocols
     protocol = protocol or _product_ssh_protocol(product)
-    if protocol in FILE_PROTOCOLS and not allow_openvpn:
-        label = "WireGuard" if protocol == "wireguard" else "OpenVPN"
-        raise ProvisionError(f"{label} فقط در محصول ترکیبی VPN + SSH پشتیبانی می‌شود (فایل آن داخل لینک ساب اختصاصی تحویل می‌شود).")
     if protocol not in node_protocols(node):
         raise ProvisionError(f"پروتکل {protocol} روی این نود نصب نشده است.")
+    if create_node_subscription and node_subscription_id is None:
+        import dedicated_sub
+        if not dedicated_sub.is_enabled(db):
+            raise ProvisionError("برای فروش محصول تک‌نودی باید ساب اختصاصی ShopVPN فعال باشد تا لینک اشتراک به کاربر تحویل شود.")
     volume_gb = float(product["auto_provision_volume_gb"] or 0)
     duration_days = _whole_or_fraction(product["duration_days"] if product["duration_days"] is not None else 30)
     if volume_gb < 0 or duration_days < 0:
@@ -596,6 +621,9 @@ async def provision_ssh_direct(db, product, quantity: int = 1, user_id: int = No
                 credential_enc = encrypt_credential(secret)
                 db.register_ssh_account(int(node_id), int(user_id), result.account_id, result.username,
                     result.host, result.port, int(pool_id), expires_at, credential_enc, protocol=protocol)
+                if node_subscription_id:
+                    if not db.link_ssh_account_to_node_subscription(result.account_id, int(node_subscription_id)):
+                        raise ProvisionError("اتصال حساب نود به لینک اشتراک اختصاصی ناموفق بود.")
                 if usage.get("accounting_ready"):
                     db.record_usage_snapshot("ssh", result.account_id, int(usage["used_bytes"]),
                         uploaded_bytes=usage.get("uploaded_bytes", 0), downloaded_bytes=usage.get("downloaded_bytes", 0),
@@ -636,4 +664,36 @@ async def provision_ssh_direct(db, product, quantity: int = 1, user_id: int = No
             "password": password, "account_id": item.account_id, "quota_pool_id": int(pool_id), "node_id": int(node_id),
             "subscription_url": uri, "extra_uris": extra, "volume_gb": volume_gb, "duration_days": duration_days,
             "protocol": protocol, "accounting_ready": bool(item.metadata.get("accounting_ready"))})
+    if node_subscription_id is None and create_node_subscription:
+        if protocol in FILE_PROTOCOLS:
+            import dedicated_sub
+            if not dedicated_sub.is_enabled(db):
+                raise ProvisionError("برای تحویل لینک اشتراک OpenVPN/WireGuard باید ساب اختصاصی ShopVPN فعال باشد.")
+        sub_id = db.create_node_subscription(int(user_id), order_id=order_id, product_id=int(product["id"]),
+            quota_pool_id=int(pool_id), display_name=str(product["name"] or "سرویس نودی"),
+            volume_gb=volume_gb, duration_days=duration_days, expires_at=expires_at)
+        try:
+            for entry in output:
+                if not db.link_ssh_account_to_node_subscription(entry["account_id"], sub_id):
+                    raise ProvisionError("اتصال حساب نود به اشتراک اختصاصی ناموفق بود.")
+                entry["node_subscription_id"] = sub_id
+            import dedicated_sub
+            sub_link = await __import__("asyncio").to_thread(dedicated_sub.link_for_node_subscription, db, sub_id)
+            if not sub_link:
+                raise ProvisionError("ساخت لینک اشتراک اختصاصی محصول نودی ناموفق بود؛ تنظیمات دامنه ساب اختصاصی را بررسی کنید.")
+            for entry in output:
+                entry["subscription_url"] = sub_link
+        except Exception as exc:
+            try:
+                for built_item in built:
+                    await provider.delete_account(built_item.account_id)
+            except Exception:
+                logger.exception("Node-only subscription rollback failed")
+            with db._get_conn() as conn:
+                conn.execute("DELETE FROM node_subscriptions WHERE id=?", (int(sub_id),))
+            if own_pool:
+                db.delete_quota_pool(int(pool_id))
+            if isinstance(exc, ProvisionError):
+                raise
+            raise ProvisionError(f"ساخت لینک اشتراک اختصاصی ناموفق بود: {exc}") from exc
     return output

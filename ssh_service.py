@@ -495,9 +495,11 @@ async def account_action(db, account_id: str, action: str, force: bool = False) 
         return "deleted"
     node = next((n for n in db.list_ssh_nodes() if int(n["id"]) == int(account["node_id"])), None)
     if not node:
-        if action == "delete":
+        if action == "delete" and force:
             _force_delete_local(db, account)
             return "deleted"
+        if action == "delete":
+            raise SSHServiceError("نود حساب پیدا نشد؛ حذف کامل بدون دسترسی به نود ممکن نیست. برای حذف محلی اجباری با مدیر تماس بگیرید.", 404)
         raise SSHServiceError("نود حساب پیدا نشد.", 404)
     if action == "delete" and force:
         # اگر نود سالم است همچنان تلاش می‌کنیم از روی آن هم پاک شود؛ در غیر این صورت فقط محلی.
@@ -510,13 +512,17 @@ async def account_action(db, account_id: str, action: str, force: bool = False) 
     try:
         provider = get_ssh_provider(node, secret_resolver=_env_secret_resolver)
         if action == "enable":
-            await provider.set_account_enabled(account_id, True)
+            changed = await provider.set_account_enabled(account_id, True)
+            if changed is not True:
+                raise SSHServiceError("نود فعال‌سازی حساب را تأیید نکرد؛ وضعیت دیتابیس تغییر نکرد.", 502)
             db.set_ssh_account_status(account["id"], "active")
             if account.get("quota_pool_id"):
                 db.set_quota_enforcement_state(int(account["quota_pool_id"]), "ssh", account_id,
                     is_disabled=False, reason="manual_enabled", last_error=None)
         elif action == "disable":
-            await provider.set_account_enabled(account_id, False)
+            changed = await provider.set_account_enabled(account_id, False)
+            if changed is not True:
+                raise SSHServiceError("نود غیرفعال‌سازی حساب را تأیید نکرد؛ وضعیت دیتابیس تغییر نکرد.", 502)
             db.set_ssh_account_status(account["id"], "disabled")
             if account.get("quota_pool_id"):
                 db.set_quota_enforcement_state(int(account["quota_pool_id"]), "ssh", account_id,
@@ -532,7 +538,9 @@ async def account_action(db, account_id: str, action: str, force: bool = False) 
                     db.record_usage_snapshot("ssh", account_id, int(usage["used_bytes"]),
                         uploaded_bytes=usage.get("uploaded_bytes", 0), downloaded_bytes=usage.get("downloaded_bytes", 0),
                         source=str(usage.get("source") or "ssh-agent"), reported_at=usage.get("reported_at"))
-            await provider.delete_account(account_id)
+            deleted = await provider.delete_account(account_id)
+            if deleted is not True:
+                raise SSHServiceError("نود حذف حساب را تأیید نکرد؛ رکورد پنل حذف نشد.", 502)
             if pool_id:
                 db.detach_quota_service(int(pool_id), "ssh", account_id)
             db.set_ssh_account_status(account["id"], "deleted")
@@ -545,6 +553,42 @@ async def account_action(db, account_id: str, action: str, force: bool = False) 
     except SSHProviderError as exc:
         raise SSHServiceError(str(exc)[:300])
     return "deleted" if action == "delete" else ("active" if action == "enable" else "disabled")
+
+
+async def refresh_account(db, account_id: str, user_id: int) -> dict:
+    """استعلام زنده از Agent برای حساب متعلق به کاربر و ثبت snapshot معتبر."""
+    from ssh_providers import get_ssh_provider, SSHProviderError
+    from quota_reconciler import _env_secret_resolver
+    account = next((a for a in db.list_ssh_accounts(int(user_id))
+                    if str(a.get("account_id")) == str(account_id)
+                    and str(a.get("status") or "").lower() != "deleted"), None)
+    if not account:
+        raise SSHServiceError("حساب پیدا نشد یا متعلق به شما نیست.", 404)
+    node = db.get_ssh_node(int(account["node_id"]))
+    if not node:
+        raise SSHServiceError("نود مربوط به این حساب پیدا نشد.", 404)
+    try:
+        provider = get_ssh_provider(node, secret_resolver=_env_secret_resolver)
+        usage = await provider.get_usage(str(account_id))
+    except SSHProviderError as exc:
+        raise SSHServiceError(f"استعلام زنده از نود ناموفق بود: {str(exc)[:240]}", 502)
+    except Exception as exc:
+        logger.exception("Live node account refresh failed: %s", account_id)
+        raise SSHServiceError(f"خطا در استعلام نود: {str(exc)[:200]}", 502)
+    if not usage:
+        raise SSHServiceError("Agent نود اطلاعات این حساب را برنگرداند.", 502)
+    saved = False
+    if usage.get("accounting_ready"):
+        saved = db.record_usage_snapshot(
+            "ssh", str(account_id), int(usage.get("used_bytes") or 0),
+            uploaded_bytes=int(usage.get("uploaded_bytes") or 0),
+            downloaded_bytes=int(usage.get("downloaded_bytes") or 0),
+            source=str(usage.get("source") or "ssh-agent"), reported_at=usage.get("reported_at"),
+        )
+    reported_status = str(usage.get("status") or "").strip().lower()
+    if reported_status in {"active", "disabled", "expired", "error"}:
+        db.set_ssh_account_status(int(account["id"]), reported_status)
+    return {"account": account, "usage": usage, "snapshot_saved": bool(saved)}
 
 
 async def reconcile(db) -> list:

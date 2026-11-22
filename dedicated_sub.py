@@ -350,12 +350,24 @@ def profile_for_config(db, config_id: int, cc=None) -> Optional[dict]:
         return None
 
 
+def link_for_node_subscription(db, subscription_id: int) -> Optional[str]:
+    """Build a dedicated URL by the node-subscription primary key (never confused
+    with custom_configs IDs, which are from a separate SQLite sequence)."""
+    if not is_enabled(db):
+        return None
+    sub = db.get_node_subscription(int(subscription_id)) if hasattr(db, "get_node_subscription") else None
+    if not sub or str(sub.get("status") or "active").lower() in ("deleted", "disabled", "cancelled"):
+        return None
+    token = db.ds_node_sub_get_or_create_token(int(subscription_id))
+    return link_for_token(db, token, None) if token else None
+
+
 def link_for_config(db, config_id: int) -> Optional[str]:
     if not is_enabled(db):
         return None
     cc = db.ds_get_config(config_id)
     if cc is None:
-        return None
+        return link_for_node_subscription(db, int(config_id))
     panel_id = _row(cc, "panel_server_id")
     if panel_id and not panel_enabled(db, panel_id) and not _is_multi_target_config(db, config_id):
         return None
@@ -675,6 +687,11 @@ def quota_info_for_config(db, config_id: int, any_status: bool = False) -> Optio
     subscription headers, so the bot and subscription link show the same limits.
     """
     try:
+        cc = db.ds_get_config(int(config_id))
+        if cc is None and hasattr(db, "get_node_subscription"):
+            node_sub = db.get_node_subscription(int(config_id))
+            if node_sub:
+                return db.node_subscription_quota_info(int(config_id))
         pool = db.quota_pool_for_custom_config(int(config_id))
         if not pool or (not any_status and str(pool.get("status") or "active") != "active"):
             return None
@@ -708,7 +725,8 @@ def ssh_uris_for_config(db, config_id, cc=None) -> List[str]:
     if is_scoped(cc):
         return []
     try:
-        rows = db.ssh_accounts_for_config(int(config_id))
+        rows = (db.ssh_accounts_for_node_subscription(int(_row(cc, "node_subscription_id") or config_id), protocol="ssh")
+                if cc is not None and _row(cc, "is_node_subscription", 0) else db.ssh_accounts_for_config(int(config_id)))
     except Exception:
         return []
     if not rows:
@@ -743,7 +761,8 @@ def ovpn_files_for_config(db, config_id, cc=None) -> List[dict]:
     if is_scoped(cc):
         return []
     try:
-        rows = db.ssh_accounts_for_config(int(config_id), protocol="openvpn")
+        rows = (db.ssh_accounts_for_node_subscription(int(_row(cc, "node_subscription_id") or config_id), protocol="openvpn")
+                if cc is not None and _row(cc, "is_node_subscription", 0) else db.ssh_accounts_for_config(int(config_id), protocol="openvpn"))
     except Exception:
         return []
     if not rows:
@@ -777,7 +796,8 @@ def wg_files_for_config(db, config_id, cc=None) -> List[dict]:
     if is_scoped(cc):
         return []
     try:
-        rows = db.ssh_accounts_for_config(int(config_id), protocol="wireguard")
+        rows = (db.ssh_accounts_for_node_subscription(int(_row(cc, "node_subscription_id") or config_id), protocol="wireguard")
+                if cc is not None and _row(cc, "is_node_subscription", 0) else db.ssh_accounts_for_config(int(config_id), protocol="wireguard"))
     except Exception:
         return []
     if not rows:
