@@ -2138,8 +2138,19 @@ async def api_support_send(body: SupportMessageCreate, auth=Depends(get_verified
     }
     # فقط به اولین ادمین/مالک آنلاین اطلاع بده تا مکالمه به او اختصاص یابد؛
     # اگر هیچ‌کس آنلاین نبود، طبق روال قدیم به همه‌ی ادمین‌ها اطلاع بده.
+    # گزینه‌ی «ارسال پیام‌های پشتیبانی به چت خصوصی مدیر»: خاموش = فقط تاپیک گروه (با فالبک به چت خصوصی).
+    grp_rows = [
+        ("کاربر", report_router.user_link(tg_id, (user["first_name"] if user else "") or "", (user["username"] if user else "") or "")),
+    ]
+    if ref_label:
+        grp_rows.append(("سرویس", ref_label))
+    if cur_priority != "medium":
+        grp_rows.append(("اولویت", _SUPPORT_PRIORITY_FA[cur_priority]))
+    grp_rows.append(("متن", text[:300]))
+    grp_ok = await report_router.notify_live_chat_raw(tenant.bot_token, db, tg_id, report_router.format_event(
+        "پیام جدید از کاربر (چت مستقیم)", grp_rows, icon="📩", note=report_router.LIVE_CHAT_GROUP_NOTE))
     target_admin = db.resolve_support_admin_for_message(tg_id)
-    admin_ids = [target_admin] if target_admin else db.list_admins()
+    admin_ids = [] if grp_ok else ([target_admin] if target_admin else db.list_admins())
     async with aiohttp.ClientSession() as session:
         for admin_id in admin_ids:
             try:
@@ -2229,7 +2240,7 @@ async def api_create_ticket(body: TicketCreate, auth=Depends(get_verified_user))
         + (f"📦 سرویس: {escape_md(ref_label)}\n" if ref_label else "")
         + f"\n📌 {subject}\n✉️ {message}"
     )
-    # گروه تاپیک فعال: اعلان با دکمه‌های «مشاهده کامل» و «پاسخ» در تاپیک پشتیبانی می‌نشیند و پیام خصوصی نمی‌رود.
+    # گروه تاپیک فعال: اعلان با دکمه‌های «مشاهده کامل» و «پاسخ» در تاپیک «تیکت‌ها» می‌نشیند و پیام خصوصی نمی‌رود.
     grp_rows = [
         ("شماره", report_router.code(f"#{ticket_id}")),
         ("کاربر", report_router.user_link(tg_id, (user["first_name"] if user else "") or "", (user["username"] if user else "") or "")),
@@ -7929,6 +7940,9 @@ async def api_admin_send_support_message(user_id: int, body: AdminSupportMessage
     if not db.is_owner(tg_id):
         db.set_support_conversation_admin(user_id, tg_id)
 
+    dup_id = db.find_recent_duplicate_admin_reply(user_id, text)
+    if dup_id:
+        return {"id": dup_id, "sender": "admin", "message": text}
     msg_id = db.add_support_message(user_id, "admin", text)
 
     try:
