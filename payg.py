@@ -1179,8 +1179,26 @@ async def _provision_payg_multi(db, uid: int, panel_ids, node_ids, protocols) ->
     with db._get_conn() as conn:
         account = conn.execute("SELECT status,quota_pool_id FROM payg_accounts WHERE user_id=?", (int(uid),)).fetchone()
     created_pool = False
+    # رفع باگ «سرویس VPN یا استخر سهمیه پیدا نشد»: attach_custom_config_to_quota_pool فقط به استخرِ
+    # status='active' وصل می‌شود، ولی استخر حساب PayG موجود می‌تواند stale/exceeded/expired/error شده باشد
+    # (مثلاً وقتی همه‌ی سرویس‌هایش حذف شده یا موجودی تمام شده بود) یا اصلاً پاک شده باشد. قبلاً در این
+    # حالت ساخت سرویس جدید روی همه‌ی پنل‌ها انجام می‌شد و بعد با همین خطا کامل rollback می‌شد.
+    pool_restore = {"status": None, "old_pool_id": None}
     if account and account["status"] == "active" and account["quota_pool_id"]:
         pool_id = int(account["quota_pool_id"])
+        with db._get_conn() as conn:
+            pool_row = conn.execute("SELECT user_id,status FROM quota_pools WHERE id=?", (pool_id,)).fetchone()
+        if pool_row and int(pool_row["user_id"]) == int(uid):
+            if str(pool_row["status"]) != "active":
+                pool_restore["status"] = str(pool_row["status"])
+                # تا چرخه‌ی بعدی quota_reconciler فعال می‌ماند؛ اگر هنوز سقف/موجودی تمام باشد همان‌جا دوباره تعلیق می‌شود.
+                db.set_quota_pool_status(pool_id, "active")
+        else:
+            pool_restore["old_pool_id"] = pool_id
+            pool_id = int(db.create_quota_pool(int(uid), 1_000_000_000, label="Pay As You Go", metadata={"payg": True}))
+            created_pool = True
+            with db._get_conn() as conn:
+                conn.execute("UPDATE payg_accounts SET quota_pool_id=? WHERE user_id=?", (pool_id, int(uid)))
     else:
         pool_id = int(db.create_quota_pool(int(uid), 1_000_000_000, label="Pay As You Go", metadata={"payg": True}))
         created_pool = True
@@ -1221,8 +1239,17 @@ async def _provision_payg_multi(db, uid: int, panel_ids, node_ids, protocols) ->
                 conn.execute("DELETE FROM quota_enforcement_state WHERE service_kind='vpn' AND service_id=?", (sid_key,))
                 conn.execute("DELETE FROM usage_snapshots WHERE service_kind='vpn' AND service_id=?", (sid_key,))
                 conn.execute("DELETE FROM custom_configs WHERE id=?", (int(primary["custom_config_id"]),))
+        if pool_restore["old_pool_id"] is not None:
+            with db._get_conn() as conn:
+                conn.execute("UPDATE payg_accounts SET quota_pool_id=? WHERE user_id=?",
+                             (pool_restore["old_pool_id"], int(uid)))
         if created_pool:
             db.delete_quota_pool(pool_id)
+        elif pool_restore["status"]:
+            try:
+                db.set_quota_pool_status(pool_id, pool_restore["status"])
+            except Exception:
+                logger.exception("PAYG multi rollback: pool status restore failed")
 
     try:
         ssh_product_base = {"name": "Pay As You Go", "auto_provision_volume_gb": 0, "duration_days": 0}

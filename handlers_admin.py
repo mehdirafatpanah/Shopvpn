@@ -14350,7 +14350,7 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         text = "\n".join(lines)
         # گروه تاپیک فعال: پاسخ‌دادن فقط از دکمه‌ی «پاسخ به تیکت» داخل گروه انجام می‌شود، نه از ربات.
         markup = kb.admin_ticket_view_kb(ticket_id, ticket["status"], active_status,
-                                         show_reply=not report_router.group_active(db))
+                                         show_reply=not report_router.ticket_group_mode(db))
         return text, markup
 
     @router.callback_query(F.data == "adm_tickets_menu")
@@ -14396,8 +14396,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
         if ticket_id is None:
             await call.answer(db.get_text('handlers_admin.auto_524e296b', '❌ درخواست نامعتبر است.'), show_alert=True)
             return
-        if report_router.group_active(db):
-            await call.answer(tr("↩️ پاسخ به تیکت‌ها فقط از داخل تاپیک پشتیبانی گروه انجام می‌شود."), show_alert=True)
+        if report_router.ticket_group_mode(db):
+            await call.answer(tr("↩️ پاسخ به تیکت‌ها فقط از داخل تاپیک تیکت‌های گروه انجام می‌شود."), show_alert=True)
             return
         ticket = (await asyncio.to_thread(db.get_ticket, ticket_id))
         if not ticket:

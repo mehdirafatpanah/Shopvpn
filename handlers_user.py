@@ -8879,12 +8879,14 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if cur_priority != "medium":
             event_rows.append(("اولویت", priority_label))
         event_rows.append(("متن", (message.text or "(بدون متن / رسانه)")[:300]))
-        await report_router.notify(bot, db, "support", report_router.format_event(
-            "پیام جدید از کاربر (چت مستقیم)", event_rows, icon="📩"))
+        # گزینه‌ی «ارسال پیام‌های پشتیبانی به چت خصوصی مدیر»: روشن = فقط چت خصوصی؛ خاموش = فقط تاپیک گروه
+        # (اگر گروه تنظیم نشده یا ارسال ناموفق بود، به چت خصوصی می‌رود).
+        grp_ok = await report_router.notify_live_chat(bot, db, user.id, report_router.format_event(
+            "پیام جدید از کاربر (چت مستقیم)", event_rows, icon="📩", note=report_router.LIVE_CHAT_GROUP_NOTE))
         # فقط به اولین ادمین/مالک آنلاین اطلاع بده تا مکالمه به او اختصاص یابد؛
         # اگر هیچ‌کس آنلاین نبود، طبق روال قدیم به همه‌ی ادمین‌ها اطلاع بده.
         target_admin = (await asyncio.to_thread(db.resolve_support_admin_for_message, user.id))
-        admin_ids = [target_admin] if target_admin else (await asyncio.to_thread(db.list_admins))
+        admin_ids = [] if grp_ok else ([target_admin] if target_admin else (await asyncio.to_thread(db.list_admins)))
         for admin_id in admin_ids:
             try:
                 await bot.send_message(admin_id, text, reply_markup=kb.contact_reply_kb(user.id))
@@ -8915,15 +8917,15 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             for row in history:
                 who = "👤 کاربر" if row["role"] == "user" else "🤖 دستیار"
                 lines.append(f"{who}: {row['message']}")
-        await report_router.notify(bot, db, "support", report_router.format_event(
+        grp_ok = await report_router.notify_live_chat(bot, db, user.id, report_router.format_event(
             "ارجاع از دستیار هوشمند به انسان", [
                 ("کاربر", report_router.user_link(user.id, user.first_name or "", user.username or "")),
                 ("دلیل", reason),
                 ("تعداد پیام‌های گفتگو", len(history) if history else 0),
-            ], icon="🤖"))
+            ], icon="🤖", note=report_router.LIVE_CHAT_GROUP_NOTE))
         text = "\n".join(lines)
         target_admin = (await asyncio.to_thread(db.resolve_support_admin_for_message, user.id))
-        admin_ids = [target_admin] if target_admin else (await asyncio.to_thread(db.list_admins))
+        admin_ids = [] if grp_ok else ([target_admin] if target_admin else (await asyncio.to_thread(db.list_admins)))
         for admin_id in admin_ids:
             try:
                 await bot.send_message(admin_id, text, reply_markup=kb.contact_reply_kb(user.id))

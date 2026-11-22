@@ -70,7 +70,9 @@ TOPIC_SPECS = (
     # ---- مشتریان و پشتیبانی ----
     TopicSpec("signup", "🆕 ثبت‌نام", "کاربران جدید و منبع ورودشان (رفرال، مینی‌اپ، کانال).", "customers", COLOR_BLUE, True),
     TopicSpec("referral", "🤝 رفرال", "دعوت‌های موفق و پاداش‌های زیرمجموعه‌گیری.", "customers", COLOR_BLUE, True, profiles=("standard",)),
-    TopicSpec("support", "🎧 پشتیبانی", "تیکت‌های جدید، پیام‌های کاربران به پشتیبانی و ارجاع از هوش مصنوعی به انسان. با ریپلای روی پیام هر تیکت، مستقیم از همین تاپیک پاسخ بدهید.", "customers", COLOR_PURPLE),
+    # کلید "support" عمداً ثابت مانده (در دیتابیس و تنظیمات گروه‌های موجود ذخیره شده)؛ فقط «تیکت‌ها» را نشان می‌دهد.
+    TopicSpec("support", "🎫 تیکت‌ها", "فقط تیکت‌های پشتیبانی: تیکت جدید، پیام تازه‌ی کاربر روی تیکت و بازکردن دوباره‌ی تیکت. با ریپلای روی پیام هر تیکت، مستقیم از همین تاپیک پاسخ بدهید. چت زنده تاپیک جداگانه دارد.", "customers", COLOR_PURPLE),
+    TopicSpec("live_chat", "💬 چت زنده", "فقط گفتگوهای چت زنده: پیام مستقیم کاربر به پشتیبانی و ارجاع دستیار هوشمند به انسان. با ریپلای روی پیام هر گفتگو، مستقیم از همین تاپیک پاسخ بدهید. تیکت‌ها تاپیک جداگانه دارند.", "customers", COLOR_PURPLE),
     TopicSpec("test", "🧪 تست", "کانفیگ‌های تست تحویل‌داده‌شده؛ فرصت پیگیری برای تبدیل به خرید.", "customers", COLOR_PURPLE, True, profiles=("standard",)),
     TopicSpec("reseller", "🏪 نمایندگی", "درخواست نمایندگی/ارتقای سطح، فعال‌سازی و خرید اعتبار نمایندگان.", "customers", COLOR_PURPLE),
     TopicSpec("prize", "🎁 جوایز", "گردونه‌ی شانس، قرعه‌کشی و هدیه‌ی ثبت‌نام.", "customers", COLOR_PINK, True, profiles=("standard",)),
@@ -615,7 +617,7 @@ async def notify(bot, db, topic_key: str, text: str, reply_markup=None) -> bool:
 
 
 def ticket_group_kb(ticket_id: int) -> InlineKeyboardMarkup:
-    """دکمه‌های زیر اعلان تیکت در تاپیک پشتیبانی گروه: مشاهده کامل + پاسخ."""
+    """دکمه‌های زیر اعلان تیکت در تاپیک «تیکت‌ها»ی گروه: مشاهده کامل + پاسخ."""
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text=tr("👁 مشاهده کامل تیکت"), callback_data=f"grp_tk_view:{ticket_id}"),
         InlineKeyboardButton(text=tr("↩️ پاسخ به تیکت"), callback_data=f"grp_tk_reply:{ticket_id}"),
@@ -638,11 +640,75 @@ def group_active(db) -> bool:
         return False
 
 
-async def notify_ticket(bot, db, ticket_id: int, text: str, reply_markup=None) -> bool:
-    """ارسال اعلان تیکت به تاپیک «پشتیبانی» همراه با دکمه‌های «مشاهده کامل» و «پاسخ»؛ شناسه‌ی پیام برای
-    پاسخ با ریپلای مدیران ثبت می‌شود. True یعنی اعلان واقعاً در گروه نشست (فراخوان دیگر پیام خصوصی نمی‌فرستد)."""
+SUPPORT_PRIVATE_KEY = "support_to_admin_private"
+
+
+def support_to_private(db) -> bool:
+    """True یعنی پیام‌های پشتیبانی (تیکت و چت زنده) فقط به چت خصوصی مدیر می‌رود، نه تاپیک گروه."""
     try:
-        sent = await send_text(bot, db, "support", text, reply_markup or ticket_group_kb(ticket_id))
+        return str(db.get_setting(SUPPORT_PRIVATE_KEY, "0")).strip() == "1"
+    except Exception:
+        return False
+
+
+def ticket_group_mode(db) -> bool:
+    """True اگر اعلان و پاسخ تیکت باید از داخل گروه گزارش انجام شود (گروه فعال و گزینه‌ی چت خصوصی خاموش)."""
+    return group_active(db) and not support_to_private(db)
+
+
+LIVE_CHAT_GROUP_NOTE = "↩️ برای پاسخ، روی همین پیام ریپلای کنید."
+
+# تاپیک‌های جداگانه: هر پیامِ گروه فقط در تاپیکِ هم‌نوع خودش می‌نشیند.
+TICKET_TOPIC = "support"      # کلید قدیمیِ ثابت؛ نام نمایشی «تیکت‌ها»
+LIVE_CHAT_TOPIC = "live_chat"
+
+
+async def notify_live_chat(bot, db, user_id: int, text: str) -> bool:
+    """اعلان چت زنده به تاپیک «چت زنده» گروه (با امکان پاسخ با ریپلای). اگر گزینه‌ی «ارسال به چت خصوصی مدیر»
+    روشن باشد، گروه گزارش تنظیم نشده یا ارسال ناموفق باشد False برمی‌گرداند (فراخوان پیام خصوصی می‌فرستد)."""
+    if support_to_private(db):
+        return False
+    try:
+        sent = await send_text(bot, db, LIVE_CHAT_TOPIC, text)
+        if sent is None:
+            return False
+        try:
+            await _db(db.link_live_chat_group_message, sent.chat.id, sent.message_id, int(user_id))
+        except Exception:
+            logger.warning("ثبت پیام گروه برای چت زنده‌ی %s ناموفق بود.", user_id, exc_info=True)
+        return True
+    except Exception:
+        logger.warning("notify_live_chat(%s) ناموفق بود.", user_id, exc_info=True)
+        return False
+
+
+async def notify_live_chat_raw(bot_token: str, db, user_id: int, text: str, parse_mode: str = "HTML") -> bool:
+    """مثل notify_live_chat ولی با HTTP خام (برای مینی‌اپ و وب‌شاپ)."""
+    if support_to_private(db):
+        return False
+    try:
+        result = await send_raw_to_group(bot_token, db, LIVE_CHAT_TOPIC, text, parse_mode, want_result=True)
+        if not result:
+            return False
+        if isinstance(result, dict) and result.get("message_id"):
+            try:
+                chat_id = (result.get("chat") or {}).get("id") or get_chat_id(db)
+                await _db(db.link_live_chat_group_message, chat_id, result["message_id"], int(user_id))
+            except Exception:
+                logger.warning("ثبت پیام گروه برای چت زنده‌ی %s ناموفق بود.", user_id, exc_info=True)
+        return True
+    except Exception:
+        logger.warning("notify_live_chat_raw(%s) ناموفق بود.", user_id, exc_info=True)
+        return False
+
+
+async def notify_ticket(bot, db, ticket_id: int, text: str, reply_markup=None) -> bool:
+    """ارسال اعلان تیکت به تاپیک «تیکت‌ها» همراه با دکمه‌های «مشاهده کامل» و «پاسخ»؛ شناسه‌ی پیام برای
+    پاسخ با ریپلای مدیران ثبت می‌شود. True یعنی اعلان واقعاً در گروه نشست (فراخوان دیگر پیام خصوصی نمی‌فرستد)."""
+    if support_to_private(db):
+        return False
+    try:
+        sent = await send_text(bot, db, TICKET_TOPIC, text, reply_markup or ticket_group_kb(ticket_id))
         if sent is None:
             return False
         try:
@@ -657,9 +723,11 @@ async def notify_ticket(bot, db, ticket_id: int, text: str, reply_markup=None) -
 
 async def notify_ticket_raw(bot_token: str, db, ticket_id: int, text: str, parse_mode: str = "HTML") -> bool:
     """مثل notify_ticket ولی با HTTP خام (برای مینی‌اپ). True یعنی اعلان در گروه نشست."""
+    if support_to_private(db):
+        return False
     try:
         result = await send_raw_to_group(
-            bot_token, db, "support", text, parse_mode,
+            bot_token, db, TICKET_TOPIC, text, parse_mode,
             reply_markup=ticket_group_kb_json(ticket_id), want_result=True,
         )
         if not result:
@@ -677,7 +745,7 @@ async def notify_ticket_raw(bot_token: str, db, ticket_id: int, text: str, parse
 
 
 async def handle_group_ticket_reply(bot, db, message) -> bool:
-    """ریپلای یک مدیر روی اعلان تیکت داخل تاپیک پشتیبانی را به‌عنوان پاسخ تیکت برای کاربر می‌فرستد.
+    """ریپلای یک مدیر روی اعلان تیکت داخل تاپیک «تیکت‌ها» را به‌عنوان پاسخ تیکت برای کاربر می‌فرستد.
     True یعنی پیام مربوط به یک تیکت بود و مصرف شد."""
     reply = message.reply_to_message
     user = message.from_user
@@ -685,7 +753,7 @@ async def handle_group_ticket_reply(bot, db, message) -> bool:
         return False
     ticket_id = await _db(db.get_ticket_id_by_group_message, message.chat.id, reply.message_id)
     if not ticket_id:
-        return False
+        return await _handle_group_live_chat_reply(bot, db, message)
     ticket = await _db(db.get_ticket, ticket_id)
     if not ticket:
         return False
@@ -724,6 +792,45 @@ async def handle_group_ticket_reply(bot, db, message) -> bool:
         await _say(tr("⛔️ ارسال پاسخ با خطا مواجه شد."))
         return True
     await _say(tr(f"✅ پاسخ به تیکت #{ticket_id} ارسال شد."))
+    return True
+
+
+async def _handle_group_live_chat_reply(bot, db, message) -> bool:
+    """ریپلای مدیر روی اعلان چت زنده در تاپیک گروه را به‌عنوان پاسخ چت زنده برای کاربر می‌فرستد."""
+    reply = message.reply_to_message
+    user = message.from_user
+    target_id = await _db(db.get_live_chat_user_by_group_message, message.chat.id, reply.message_id)
+    if not target_id:
+        return False
+
+    async def _say(text: str):
+        try:
+            await bot.send_message(
+                message.chat.id, text, message_thread_id=message.message_thread_id,
+                reply_to_message_id=message.message_id,
+            )
+        except Exception:
+            logger.warning("ارسال وضعیت پاسخ چت زنده %s به گروه ناموفق بود.", target_id, exc_info=True)
+
+    if not await _db(db.is_admin, user.id):
+        return True
+    is_owner = await _db(db.is_owner, user.id)
+    conv = await _db(db.get_support_conversation, target_id)
+    assigned = conv["assigned_admin_id"] if conv else None
+    if assigned and assigned != user.id and not is_owner:
+        await _say(tr("⛔️ این گفتگو در حال حاضر توسط ادمین دیگری پاسخ داده می‌شود."))
+        return True
+    try:
+        from notification_i18n import send_telegram
+        await send_telegram(bot, db, target_id, f"📩 پاسخ پشتیبانی:\n\n{message.html_text}")
+        if not is_owner:
+            await _db(db.set_support_conversation_admin, target_id, user.id)
+        await _db(db.add_support_message, target_id, "admin", message.text)
+    except Exception:
+        logger.warning("ارسال پاسخ چت زنده‌ی %s از گروه ناموفق بود.", target_id, exc_info=True)
+        await _say(tr("⛔️ ارسال پاسخ با خطا مواجه شد."))
+        return True
+    await _say(tr("✅ پاسخ ارسال شد."))
     return True
 
 
