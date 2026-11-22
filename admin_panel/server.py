@@ -11038,6 +11038,148 @@ def api_delete_test_plan(plan_id: int, admin=Depends(require_permission("setting
 
 
 
+# --- اشتراک هدیه عضویت: گزینه‌ها، ریست همگانی، ارسال مجدد برای یک کاربر ---
+
+class WelcomeGiftOptionBody(BaseModel):
+    title: str
+    product_id: int
+    volume_gb: str = ""
+    days: str = ""
+
+
+class WelcomeGiftResendBody(BaseModel):
+    option_id: int = 0
+
+
+def _wgift_guard(admin):
+    if _tenant_restricted(admin):
+        raise HTTPException(403, tr("اشتراک هدیه عضویت فقط برای بات اصلی قابل تنظیم است."))
+
+
+def _wgift_amount(raw: str, label: str) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    try:
+        value = float(text)
+    except ValueError:
+        raise HTTPException(400, tr(f"{label} باید عدد باشد (یا خالی)."))
+    if value < 0 or value > 100000:
+        raise HTTPException(400, tr(f"{label} نامعتبر است."))
+    return str(int(value)) if value == int(value) else str(value)
+
+
+def _wgift_checked_option(body: WelcomeGiftOptionBody) -> dict:
+    import extra_settings_schema as _xs
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(400, tr("عنوان گزینه الزامی است."))
+    product = db.get_product(body.product_id) if body.product_id > 0 else None
+    if not product or not _xs._product_is_giftable(db, product):
+        raise HTTPException(400, tr("محصول انتخاب‌شده معتبر نیست (باید به پنل/نود متصل باشد)."))
+    return {
+        "title": title[:60], "product_id": int(body.product_id),
+        "volume_gb": _wgift_amount(body.volume_gb, tr("حجم")),
+        "days": _wgift_amount(body.days, tr("مدت")),
+    }
+
+
+def _serialize_wgift_option(o: dict) -> dict:
+    product = db.get_product(o["product_id"]) if o["product_id"] else None
+    server = None
+    if product and product["provision_server_id"]:
+        server = db.get_panel_server(product["provision_server_id"])
+    return {
+        "id": o["id"], "title": o["title"], "product_id": o["product_id"],
+        "product_name": product["name"] if product else None,
+        "panel_server_name": server["name"] if server else None,
+        "volume_gb": o["volume_gb"], "days": o["days"],
+        "is_active": bool(o["is_active"]),
+    }
+
+
+@app.get("/api/welcome-gift")
+def api_welcome_gift_overview(admin=Depends(require_permission("settings"))):
+    import extra_settings_schema as _xs
+    options = db.list_welcome_gift_options()
+    return {
+        "enabled": db.get_setting("welcome_gift_enabled", "0") == "1",
+        "options": [_serialize_wgift_option(o) for o in options],
+        "legacy_active": (not any(o["is_active"] for o in options)) and bool(db.get_welcome_gift_choices()),
+        "stats": db.welcome_gift_stats(),
+        "products": [{"id": int(v), "label": label} for v, label in _xs._giftable_product_options(db) if v != "0"],
+    }
+
+
+@app.post("/api/welcome-gift/options")
+def api_create_welcome_gift_option(body: WelcomeGiftOptionBody, admin=Depends(require_permission("settings"))):
+    _wgift_guard(admin)
+    spec = _wgift_checked_option(body)
+    option_id = db.add_welcome_gift_option(**spec)
+    db.log_admin_action(admin["id"], "welcome_gift_option_create", f"«{spec['title']}» (پنل وب)", "welcome_gift_option", str(option_id))
+    return _serialize_wgift_option(db.get_welcome_gift_option(option_id))
+
+
+@app.put("/api/welcome-gift/options/{option_id}")
+def api_update_welcome_gift_option(option_id: int, body: WelcomeGiftOptionBody, admin=Depends(require_permission("settings"))):
+    _wgift_guard(admin)
+    if not db.get_welcome_gift_option(option_id):
+        raise HTTPException(404, tr("این گزینه یافت نشد."))
+    db.update_welcome_gift_option(option_id, **_wgift_checked_option(body))
+    db.log_admin_action(admin["id"], "welcome_gift_option_update", f"گزینه #{option_id} (پنل وب)", "welcome_gift_option", str(option_id))
+    return _serialize_wgift_option(db.get_welcome_gift_option(option_id))
+
+
+@app.post("/api/welcome-gift/options/{option_id}/toggle")
+def api_toggle_welcome_gift_option(option_id: int, admin=Depends(require_permission("settings"))):
+    _wgift_guard(admin)
+    if not db.get_welcome_gift_option(option_id):
+        raise HTTPException(404, tr("این گزینه یافت نشد."))
+    db.toggle_welcome_gift_option(option_id)
+    db.log_admin_action(admin["id"], "welcome_gift_option_toggle", f"گزینه #{option_id} (پنل وب)", "welcome_gift_option", str(option_id))
+    return _serialize_wgift_option(db.get_welcome_gift_option(option_id))
+
+
+@app.delete("/api/welcome-gift/options/{option_id}")
+def api_delete_welcome_gift_option(option_id: int, admin=Depends(require_permission("settings"))):
+    _wgift_guard(admin)
+    if not db.get_welcome_gift_option(option_id):
+        raise HTTPException(404, tr("این گزینه یافت نشد."))
+    db.delete_welcome_gift_option(option_id)
+    db.log_admin_action(admin["id"], "welcome_gift_option_delete", f"گزینه #{option_id} (پنل وب)", "welcome_gift_option", str(option_id))
+    return {"ok": True}
+
+
+@app.post("/api/welcome-gift/reset-all")
+def api_reset_all_welcome_gifts(admin=Depends(require_permission("settings"))):
+    """هر کاربری که قبلاً اشتراک هدیه گرفته، دوباره یک‌بار سهمیه‌ی دریافت پیدا می‌کند."""
+    _wgift_guard(admin)
+    count = db.reset_all_welcome_gifts()
+    db.log_admin_action(admin["id"], "welcome_gift_reset_all", f"{count} کاربر (پنل وب - {admin['username']})", "setting", "welcome_gift")
+    return {"ok": True, "count": count}
+
+
+@app.get("/api/welcome-gift/choices")
+def api_welcome_gift_choices(admin=Depends(require_permission("users"))):
+    return [{"id": c["id"], "title": c["title"]} for c in db.get_welcome_gift_choices()]
+
+
+@app.post("/api/users/{tg_id}/welcome-gift/resend")
+def api_resend_welcome_gift(tg_id: int, body: WelcomeGiftResendBody, admin=Depends(require_permission("users"))):
+    """هر بار فراخوانی یک اشتراک هدیه‌ی تازه برای همان کاربر در صف ربات می‌گذارد (بدون محدودیت تعداد، بدون مصرف سهمیه)."""
+    _wgift_guard(admin)
+    if not db.get_user(tg_id):
+        raise HTTPException(404, tr("کاربر یافت نشد."))
+    choices = db.get_welcome_gift_choices()
+    if not choices:
+        raise HTTPException(400, tr("هیچ گزینه‌ی هدیه‌ای تعریف نشده است."))
+    if body.option_id > 0 and body.option_id not in {int(c["id"]) for c in choices}:
+        raise HTTPException(400, tr("این گزینه فعال نیست."))
+    job_id = db.enqueue_welcome_gift_resend(tg_id, body.option_id, admin["id"])
+    db.log_admin_action(admin["id"], "welcome_gift_resend", f"کاربر {tg_id} (پنل وب - {admin['username']})", "user", str(tg_id))
+    return {"ok": True, "job_id": job_id}
+
+
 
 class ForceJoinSettingsBody(BaseModel):
     enabled: bool
