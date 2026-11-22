@@ -5064,7 +5064,6 @@ function catOrderButtonsHtml(c, categories, cls = 'btn btn-sm') {
   return `<button class="${cls}" data-cat-up="${c.id}" ${i <= 0 ? 'disabled' : ''} title="بالا">▲</button>
     <button class="${cls}" data-cat-down="${c.id}" ${i === sibs.length - 1 ? 'disabled' : ''} title="پایین">▼</button>
     <button class="${cls}" data-add-subcat="${c.id}" title="افزودن زیردسته">＋ زیردسته</button>
-    ${catColorSelectHtml(c, `data-cat-color="${c.id}"`)}
     <button class="${cls}" data-edit-cat="${c.id}">✏️ ویرایش</button>`;
 }
 function wireCategoryActions(body, categories, basePath = '/categories') {
@@ -5075,11 +5074,6 @@ function wireCategoryActions(body, categories, basePath = '/categories') {
     try { await apiPost(`${basePath}/${id}/move`, { direction }); reload(); } catch (e) { handleErr(e); }
   }));
   $$('[data-add-subcat]', body).forEach(btn => btn.addEventListener('click', () => openCategoryCreateModal(categories, Number(btn.dataset.addSubcat))));
-  $$('[data-cat-color]', body).forEach(sel => sel.addEventListener('change', async () => {
-    const cat = categories.find(x => x.id === Number(sel.dataset.catColor));
-    if (!cat) return;
-    try { await apiPut(`${basePath}/${cat.id}`, { name: cat.name, button_color: sel.value }); toast('رنگ دکمه ذخیره شد.'); reload(); } catch (e) { handleErr(e); }
-  }));
   $$('[data-edit-cat]', body).forEach(btn => btn.addEventListener('click', () => {
     const cat = categories.find(x => x.id === Number(btn.dataset.editCat));
     if (!cat) return;
@@ -7032,15 +7026,26 @@ async function showSupportChat(userId) {
     const input = $('#sc-input', body);
     log.scrollTop = log.scrollHeight;
     const reopenModal = () => { clearInterval(pollTimer); close(); showSupportChat(userId); };
+    // شناسه‌ی پیام‌های نمایش‌داده‌شده؛ مانع دوبار نمایش پیام (ارسال + polling) می‌شود.
+    const seenIds = new Set((d.messages || []).map(m => m.id));
+    const addBubble = m => {
+      if (m.id != null) { if (seenIds.has(m.id)) return false; seenIds.add(m.id); lastId = Math.max(lastId, m.id); }
+      log.insertAdjacentHTML('beforeend', bubble(m));
+      return true;
+    };
+    let sending = false;
     const send = async () => {
+      if (sending) return;
       const text = input.value.trim();
       if (!text) return;
+      sending = true;
       input.value = '';
       try {
-        await apiPost(`/support/${userId}/messages`, { message: text });
-        log.insertAdjacentHTML('beforeend', bubble({ sender: 'admin', message: text, created_at: new Date().toISOString() }));
+        const r = await apiPost(`/support/${userId}/messages`, { message: text });
+        addBubble({ id: r && r.id, sender: 'admin', message: text, created_at: new Date().toISOString() });
         log.scrollTop = log.scrollHeight;
       } catch (e) { handleErr(e); }
+      finally { sending = false; }
     };
     $('#sc-send', body).addEventListener('click', send);
     input.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
@@ -7067,11 +7072,9 @@ async function showSupportChat(userId) {
     pollTimer = setInterval(async () => {
       try {
         const fresh = await apiGet(`/support/${userId}/messages?since_id=${lastId}`);
-        fresh.messages.forEach(m => {
-          log.insertAdjacentHTML('beforeend', bubble(m));
-          lastId = m.id;
-        });
-        if (fresh.messages.length) log.scrollTop = log.scrollHeight;
+        let added = false;
+        fresh.messages.forEach(m => { if (addBubble(m)) added = true; lastId = Math.max(lastId, m.id); });
+        if (added) log.scrollTop = log.scrollHeight;
       } catch (e) { /* silent */ }
     }, 4000);
   });
@@ -10369,17 +10372,13 @@ async function renderPanels() {
   setContent(`
     <div class="toolbar"><button class="btn btn-primary btn-sm" id="add-panel">+ پنل جدید</button></div>
     <div class="card"><div class="table-wrap"><table>
-      <thead><tr><th>نام</th><th>نوع</th><th>آدرس</th><th>وضعیت</th><th>مصرف</th><th>عملیات</th></tr></thead>
+      <thead><tr><th>نام</th><th>نوع</th><th>آدرس</th><th>وضعیت</th><th>عملیات</th></tr></thead>
       <tbody>${servers.map(s => `<tr>
         <td>${esc(s.name)}</td><td>${esc(s.type_label)}</td><td class="mono" style="direction:ltr;text-align:right">${esc(s.api_url)}</td>
         <td>
           <button class="btn btn-sm ${s.is_active ? '' : 'btn-danger'}" data-toggle-active="${s.id}">${s.is_active ? '✅ فعال' : '⛔️ غیرفعال'}</button>
           ${s.is_configured ? '' : '<div style="font-size:11px;color:#FB7185;margin-top:4px">⚠️ تکمیل‌نشده</div>'}
           ${panelHealthHtml(s)}
-        </td>
-        <td>
-          <label style="display:flex;gap:4px;align-items:center;font-size:12px;white-space:nowrap"><input type="checkbox" data-usage="custom" data-usage-id="${s.id}" ${s.used_for_custom_config ? 'checked' : ''}> کانفیگ شخصی</label>
-          <label style="display:flex;gap:4px;align-items:center;font-size:12px;white-space:nowrap"><input type="checkbox" data-usage="test" data-usage-id="${s.id}" ${s.used_for_test_config ? 'checked' : ''}> کانفیگ تست</label>
         </td>
         <td>
           <button class="btn btn-sm" data-move-up="${s.id}" title="یک پله بالا">↑</button>
@@ -10413,10 +10412,6 @@ async function renderPanels() {
   }));
   $$('[data-toggle-active]', content()).forEach(b => b.addEventListener('click', async () => {
     try { await apiPost(`/panel-servers/${b.dataset.toggleActive}/toggle`); renderPanels(); } catch (e) { handleErr(e); }
-  }));
-  $$('[data-usage]', content()).forEach(cb => cb.addEventListener('change', async () => {
-    try { await apiPost(`/panel-servers/${cb.dataset.usageId}/usage/${cb.dataset.usage}`); toast('ذخیره شد.'); }
-    catch (e) { handleErr(e); cb.checked = !cb.checked; }
   }));
   $$('[data-edit]', content()).forEach(b => b.addEventListener('click', () => openPanelEditModal(servers.find(s => s.id === Number(b.dataset.edit)))));
   $$('[data-retemplate]', content()).forEach(b => b.addEventListener('click', () => openPanelRetemplateModal(Number(b.dataset.retemplate))));
