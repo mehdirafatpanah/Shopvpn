@@ -184,6 +184,16 @@ class UsageMixin:
                                (int(subscription_id), str(account_id)))
             return bool(cur.rowcount)
 
+
+    def rename_owned_node_subscription(self, subscription_id: int, user_id: int, display_name: str) -> bool:
+        name = str(display_name or "").strip()[:60]
+        if not name:
+            return False
+        with self._get_conn() as conn:
+            cur = conn.execute("UPDATE node_subscriptions SET display_name=? WHERE id=? AND user_id=?",
+                              (name, int(subscription_id), int(user_id)))
+            return bool(cur.rowcount)
+
     def get_node_subscription(self, subscription_id: int):
         with self._get_conn() as conn:
             row = conn.execute("SELECT * FROM node_subscriptions WHERE id=?", (int(subscription_id),)).fetchone()

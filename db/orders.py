@@ -249,6 +249,19 @@ class OrdersMixin:
             return order_id
 
 
+
+    def list_node_subscription_renewals(self, subscription_id: int, user_id: int, limit: int = 10):
+        """Recent renewal orders for a node subscription, scoped to its owner."""
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT id,status,created_at,updated_at,base_price,wallet_used,final_price,renewal_mode, "
+                "renewal_add_volume_gb,renewal_add_days FROM orders "
+                "WHERE is_renewal=1 AND renewal_target_kind='node' AND renewal_target_id=? AND user_id=? "
+                "ORDER BY id DESC LIMIT ?",
+                (int(subscription_id), int(user_id), max(1, min(int(limit or 10), 50))),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     def approve_renewal_order(self, order_id: int) -> bool:
         """تایید اتمیک تمدید و پرداخت یک‌باره‌ی کش‌بک؛ فقط از مبلغ پرداخت‌شده‌ی
         غیرکیف‌پول محاسبه می‌شود تا کش‌بک باعث چرخه‌ی کیف‌پول نشود."""
