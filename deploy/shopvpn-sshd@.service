@@ -12,11 +12,8 @@ RuntimeDirectoryMode=0755
 User=root
 Group=root
 UMask=0077
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=full
-ProtectHome=read-only
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# No sandboxing directives: NoNewPrivileges/ProtectSystem/PrivateTmp/RestrictAddressFamilies
+# make OpenSSH 10 (Ubuntu 26.04) fail with "setresuid: Operation not permitted [preauth]".
 
 [Install]
 WantedBy=multi-user.target
