@@ -56,6 +56,20 @@ class TicketsMixin:
             return cur.lastrowid
 
 
+    def find_recent_duplicate_admin_reply(self, user_id: int, message: str, seconds: int = 8):
+        """اگر همین پاسخ مدیر چند ثانیه‌ی اخیر برای همین کاربر ثبت شده باشد، شناسه‌ی آن را برمی‌گرداند
+        (جلوگیری از ارسال تکراری با دابل‌کلیک یا ارسال مجدد درخواست)؛ در غیر این صورت None."""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT id, sender, message, "
+                "(strftime('%s','now') - strftime('%s', created_at)) AS age "
+                "FROM support_messages WHERE user_id=? ORDER BY id DESC LIMIT 1",
+                (user_id,),
+            ).fetchone()
+        if row and row["sender"] == "admin" and row["message"] == message and row["age"] is not None and row["age"] <= seconds:
+            return row["id"]
+        return None
+
     def get_support_messages(self, user_id: int, since_id: int = 0, limit: int = 100):
         with self._get_conn() as conn:
             return conn.execute(
@@ -804,6 +818,31 @@ class TicketsMixin:
             ).fetchone()
             return row[0] if row else None
 
+
+    def _ensure_live_chat_group_table(self, conn):
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS live_chat_group_messages ("
+            "chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL, user_id INTEGER NOT NULL, "
+            "created_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (chat_id, message_id))"
+        )
+
+    def link_live_chat_group_message(self, chat_id: int, message_id: int, user_id: int):
+        """اعلان چت زنده‌ی داخل تاپیک گروه را به کاربر وصل می‌کند تا ریپلای مدیر به او برسد."""
+        with self._get_conn() as conn:
+            self._ensure_live_chat_group_table(conn)
+            conn.execute(
+                "INSERT OR REPLACE INTO live_chat_group_messages (chat_id, message_id, user_id) VALUES (?, ?, ?)",
+                (chat_id, message_id, user_id),
+            )
+
+    def get_live_chat_user_by_group_message(self, chat_id: int, message_id: int):
+        with self._get_conn() as conn:
+            self._ensure_live_chat_group_table(conn)
+            row = conn.execute(
+                "SELECT user_id FROM live_chat_group_messages WHERE chat_id=? AND message_id=?",
+                (chat_id, message_id),
+            ).fetchone()
+            return row[0] if row else None
 
     def claim_ticket_if_open(self, ticket_id: int, admin_id: int):
         """اولین ادمین یا مالکی که به تیکت پاسخ می‌دهد، مالک آن پاسخ‌گویی می‌شود؛

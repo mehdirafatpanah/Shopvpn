@@ -188,6 +188,7 @@ DEFAULT_SETTINGS = {
     # پشتیبانی (از طریق لینک tg://user?id=... بدون نیاز به یوزرنیم عمومی باز می‌شود).
     "support_admin_id": "",
     "support_direct_enabled": "1",
+    "support_to_admin_private": "0",
     "support_ticket_new_enabled": "1",
     "support_ticket_mine_enabled": "1",
     "support_admin_chat_enabled": "1",
