@@ -1276,11 +1276,12 @@ class SystemMixin:
             ).fetchone()
         return dict(row) if row else None
 
-    def enqueue_welcome_gift(self, user_id: int) -> bool:
-        """کاربر تازه‌عضو را (در صورت فعال بودن هدیه‌ی کانفیگ عضویت) با زمان سررسید در صف می‌گذارد."""
+    def enqueue_welcome_gift(self, user_id: int, option_id: int = 0) -> bool:
+        """درخواست هدیه‌ی کاربر را ثبت می‌کند؛ سهمیه فقط با ردیف موفق (done) یا در حال پردازش مصرف‌شده حساب می‌شود
+        و ردیف شکست‌خورده دوباره قابل درخواست است."""
         if self.get_setting("welcome_gift_enabled", "0") != "1":
             return False
-        if int(self.get_setting("welcome_gift_product_id", "0") or 0) <= 0:
+        if not self.get_welcome_gift_choices():
             return False
         try:
             delay = max(0, int(float(self.get_setting("welcome_gift_delay_minutes", "0") or 0)))
@@ -1289,10 +1290,163 @@ class SystemMixin:
         now = int(time.time())
         with self._get_conn() as conn:
             cur = conn.execute(
-                "INSERT OR IGNORE INTO welcome_gift_queue (user_id, due_at, status, updated_at) VALUES (?, ?, 'pending', ?)",
-                (int(user_id), now + delay * 60, now),
+                "INSERT INTO welcome_gift_queue (user_id, due_at, status, option_id, updated_at) VALUES (?, ?, 'pending', ?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET due_at=excluded.due_at, status='pending', attempts=0, error=NULL, "
+                "result_json=NULL, option_id=excluded.option_id, updated_at=excluded.updated_at "
+                "WHERE welcome_gift_queue.status IN ('failed','deferred')",
+                (int(user_id), now + delay * 60, int(option_id or 0), now),
             )
             return cur.rowcount == 1
+
+    def welcome_gift_quota(self, user_id: int) -> str:
+        """available = سهمیه‌ی دریافت دارد، pending = درخواستش در صف است، used = قبلاً دریافت کرده."""
+        row = self.get_welcome_gift_status(user_id)
+        if not row or row["status"] in ("failed", "skipped", "deferred"):
+            return "available"
+        return "used" if row["status"] == "done" else "pending"
+
+    def defer_welcome_gift(self, user_id: int) -> None:
+        """کاربر گفته «بعداً»؛ سهمیه محفوظ می‌ماند و فقط پیشنهاد خودکار دیگر نمایش داده نمی‌شود."""
+        now = int(time.time())
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO welcome_gift_queue (user_id, due_at, status, updated_at) VALUES (?, ?, 'deferred', ?)",
+                (int(user_id), now, now),
+            )
+
+    def reset_all_welcome_gifts(self) -> int:
+        """سهمیه‌ی هدیه‌ی عضویت را برای همه بازنشانی می‌کند (ردیف‌های در حال پردازش دست‌نخورده می‌مانند)."""
+        with self._get_conn() as conn:
+            cur = conn.execute("DELETE FROM welcome_gift_queue WHERE status IN ('done','failed','skipped')")
+            return int(cur.rowcount or 0)
+
+    def list_welcome_gift_options(self, active_only: bool = False) -> list:
+        sql = "SELECT id, title, product_id, volume_gb, days, is_active, sort_order FROM welcome_gift_options"
+        if active_only:
+            sql += " WHERE is_active=1"
+        sql += " ORDER BY sort_order, id"
+        with self._get_conn() as conn:
+            return [dict(r) for r in conn.execute(sql).fetchall()]
+
+    def get_welcome_gift_option(self, option_id: int):
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT id, title, product_id, volume_gb, days, is_active, sort_order FROM welcome_gift_options WHERE id=?",
+                (int(option_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_welcome_gift_choices(self) -> list:
+        """گزینه‌های فعال هدیه برای کاربر؛ اگر هیچ گزینه‌ای تعریف نشده باشد، محصول تنظیمات قدیمی تنها گزینه است (id=0)."""
+        options = self.list_welcome_gift_options(active_only=True)
+        if options:
+            return options
+        try:
+            legacy = int(float(self.get_setting("welcome_gift_product_id", "0") or 0))
+        except (TypeError, ValueError):
+            legacy = 0
+        if legacy > 0:
+            return [{"id": 0, "title": "🎁 اشتراک هدیه", "product_id": legacy,
+                     "volume_gb": "", "days": "", "is_active": 1, "sort_order": 0}]
+        return []
+
+    def add_welcome_gift_option(self, title: str, product_id: int, volume_gb: str = "", days: str = "") -> int:
+        with self._get_conn() as conn:
+            nxt = conn.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM welcome_gift_options").fetchone()[0]
+            cur = conn.execute(
+                "INSERT INTO welcome_gift_options (title, product_id, volume_gb, days, sort_order) VALUES (?, ?, ?, ?, ?)",
+                ((title or "").strip()[:60], int(product_id), str(volume_gb or ""), str(days or ""), int(nxt)),
+            )
+            return int(cur.lastrowid)
+
+    def update_welcome_gift_option(self, option_id: int, title: str, product_id: int, volume_gb: str = "", days: str = "") -> None:
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE welcome_gift_options SET title=?, product_id=?, volume_gb=?, days=? WHERE id=?",
+                ((title or "").strip()[:60], int(product_id), str(volume_gb or ""), str(days or ""), int(option_id)),
+            )
+
+    def toggle_welcome_gift_option(self, option_id: int) -> None:
+        with self._get_conn() as conn:
+            conn.execute("UPDATE welcome_gift_options SET is_active=1-is_active WHERE id=?", (int(option_id),))
+
+    def delete_welcome_gift_option(self, option_id: int) -> None:
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM welcome_gift_options WHERE id=?", (int(option_id),))
+
+    def enqueue_welcome_gift_resend(self, user_id: int, option_id: int = 0, requested_by: int = 0) -> int:
+        now = int(time.time())
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO welcome_gift_resends (user_id, option_id, status, due_at, updated_at, requested_by) "
+                "VALUES (?, ?, 'pending', ?, ?, ?)",
+                (int(user_id), int(option_id or 0), now, now, int(requested_by or 0)),
+            )
+            return int(cur.lastrowid)
+
+    def claim_due_welcome_gift_resends(self, limit: int = 5) -> list:
+        now = int(time.time())
+        claimed = []
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE welcome_gift_resends SET status=CASE WHEN result_json IS NOT NULL THEN 'provisioned' ELSE 'pending' END, updated_at=? "
+                "WHERE status='processing' AND updated_at<?", (now, now - 900),
+            )
+            rows = conn.execute(
+                "SELECT id, user_id, option_id, result_json, requested_by FROM welcome_gift_resends "
+                "WHERE status IN ('pending','provisioned') AND due_at<=? ORDER BY due_at, id LIMIT ?",
+                (now, int(limit)),
+            ).fetchall()
+            for row in rows:
+                old_status = "provisioned" if row["result_json"] else "pending"
+                cur = conn.execute(
+                    "UPDATE welcome_gift_resends SET status='processing', attempts=attempts+1, updated_at=? "
+                    "WHERE id=? AND status=?", (now, row["id"], old_status),
+                )
+                if cur.rowcount == 1:
+                    claimed.append(dict(row))
+        return claimed
+
+    def save_welcome_gift_resend_result(self, resend_id: int, result: dict) -> None:
+        now = int(time.time())
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE welcome_gift_resends SET status='provisioned', result_json=?, due_at=?, error='', updated_at=? WHERE id=?",
+                (json.dumps(result, ensure_ascii=False), now, now, int(resend_id)),
+            )
+
+    def finish_welcome_gift_resend(self, resend_id: int, status: str = "done", error: str = "") -> None:
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE welcome_gift_resends SET status=?, error=?, updated_at=? WHERE id=?",
+                (status, (error or "")[:500], int(time.time()), int(resend_id)),
+            )
+
+    def retry_or_fail_welcome_gift_resend(self, resend_id: int, error: str, delivery_only: bool = False,
+                                          max_attempts: int = 3, retry_after: int = 300) -> str:
+        now = int(time.time())
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT attempts FROM welcome_gift_resends WHERE id=?", (int(resend_id),)).fetchone()
+            if row and int(row["attempts"]) < max_attempts:
+                state = "provisioned" if delivery_only else "pending"
+                conn.execute(
+                    "UPDATE welcome_gift_resends SET status=?, due_at=?, error=?, updated_at=? WHERE id=?",
+                    (state, now + retry_after, (error or "")[:500], now, int(resend_id)),
+                )
+                return state
+            conn.execute(
+                "UPDATE welcome_gift_resends SET status='failed', error=?, updated_at=? WHERE id=?",
+                ((error or "")[:500], now, int(resend_id)),
+            )
+        return "failed"
+
+    def list_welcome_gift_resends(self, user_id: int, limit: int = 5) -> list:
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT id, option_id, status, error, updated_at FROM welcome_gift_resends WHERE user_id=? ORDER BY id DESC LIMIT ?",
+                (int(user_id), int(limit)),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def claim_due_welcome_gifts(self, limit: int = 5) -> list:
         now = int(time.time())
@@ -1303,7 +1457,7 @@ class SystemMixin:
                 "WHERE status='processing' AND updated_at<?", (now, now - 900),
             )
             rows = conn.execute(
-                "SELECT user_id, result_json FROM welcome_gift_queue "
+                "SELECT user_id, result_json, option_id FROM welcome_gift_queue "
                 "WHERE status IN ('pending','provisioned') AND due_at<=? ORDER BY due_at LIMIT ?",
                 (now, int(limit)),
             ).fetchall()
@@ -1314,7 +1468,7 @@ class SystemMixin:
                     "WHERE user_id=? AND status=?", (now, row["user_id"], old_status),
                 )
                 if cur.rowcount == 1:
-                    claimed.append({"user_id": int(row["user_id"]), "result_json": row["result_json"]})
+                    claimed.append({"user_id": int(row["user_id"]), "result_json": row["result_json"], "option_id": int(row["option_id"] or 0)})
         return claimed
 
     def save_welcome_gift_result(self, user_id: int, result: dict) -> None:
@@ -1358,7 +1512,7 @@ class SystemMixin:
     def welcome_gift_stats(self) -> dict:
         with self._get_conn() as conn:
             rows = conn.execute("SELECT status, COUNT(*) AS n FROM welcome_gift_queue GROUP BY status").fetchall()
-        stats = {"pending": 0, "processing": 0, "provisioned": 0, "done": 0, "failed": 0, "skipped": 0}
+        stats = {"pending": 0, "processing": 0, "provisioned": 0, "done": 0, "failed": 0, "skipped": 0, "deferred": 0}
         for row in rows:
             stats[row["status"]] = int(row["n"])
         return stats

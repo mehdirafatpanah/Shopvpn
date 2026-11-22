@@ -1434,6 +1434,32 @@ class DatabaseBase:
                 );
                 CREATE INDEX IF NOT EXISTS idx_welcome_gift_queue_due ON welcome_gift_queue(status, due_at);
 
+                CREATE TABLE IF NOT EXISTS welcome_gift_options (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    product_id INTEGER NOT NULL,
+                    volume_gb TEXT NOT NULL DEFAULT '',
+                    days TEXT NOT NULL DEFAULT '',
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS welcome_gift_resends (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    option_id INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    error TEXT,
+                    result_json TEXT,
+                    due_at INTEGER NOT NULL,
+                    updated_at INTEGER,
+                    requested_by INTEGER,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_welcome_gift_resends_due ON welcome_gift_resends(status, due_at);
+
                 CREATE TABLE IF NOT EXISTS product_waitlist (
                     product_id INTEGER NOT NULL,
                     user_id INTEGER NOT NULL,
@@ -1810,7 +1836,7 @@ class DatabaseBase:
     FACTORY_RESET_TABLES = (
         "users", "categories", "products", "configs", "config_activity", "test_configs",
         "test_config_plans", "wheel_prizes", "orders", "discount_codes", "discount_redemptions", "wallet_topups",
-        "crypto_invoices", "support_messages", "support_conversations", "welcome_gift_queue",
+        "crypto_invoices", "support_messages", "support_conversations", "welcome_gift_queue", "welcome_gift_options", "welcome_gift_resends",
         "admin_presence", "tickets", "ticket_messages", "ticket_departments", "ticket_department_admins", "admin_logs",
         "abangateway_invoices", "blupal_invoices", "noapay_invoices", "extra_gateway_invoices", "custom_gateways", "custom_gateway_invoices",
         "card_to_card_cards", "card_to_card_invoices", "payment_cards", "payment_card_assignments", "quota_enforcement_state", "quota_pool_members", "quota_pool_adjustments",
@@ -2058,6 +2084,7 @@ class DatabaseBase:
             ("products", "duration_days", "INTEGER DEFAULT 30"),
             ("users", "test_limit_override", "INTEGER"),
             ("welcome_gift_queue", "result_json", "TEXT"),
+            ("welcome_gift_queue", "option_id", "INTEGER"),
             ("products", "is_hidden", "INTEGER DEFAULT 0"),
             ("products", "btn_style", "TEXT DEFAULT ''"),
             ("products", "product_kind", "TEXT DEFAULT 'config'"),
