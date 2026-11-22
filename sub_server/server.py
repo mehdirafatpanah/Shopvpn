@@ -503,8 +503,9 @@ async def sub_endpoint(request: Request) -> Response:
         return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
     token = request.path_params["token"]
     cc = await _cc_for(request)
-    if cc is None or str(cc["status"] or "").lower() == "deleted" or \
-            not str(cc["subscription_url"] or "").startswith(("http://", "https://")):
+    is_node_subscription = bool(cc and isinstance(cc, dict) and cc.get("is_node_subscription"))
+    if cc is None or str(cc["status"] or "").lower() == "deleted" or (
+            not is_node_subscription and not str(cc["subscription_url"] or "").startswith(("http://", "https://"))):
         if not limiter.allow("miss:" + ip, RATE_MISS):
             return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
         return _not_found()
@@ -517,6 +518,45 @@ async def sub_endpoint(request: Request) -> Response:
         ttl = max(0, min(600, int(settings["dsub_cache_ttl"] or 30)))
     except ValueError:
         ttl = 30
+
+    # Node-only products have no upstream panel subscription URL. Their dedicated
+    # token serves the active SSH/OpenVPN/WireGuard accounts attached to the node bundle.
+    if is_node_subscription:
+        info = await asyncio.to_thread(db.node_subscription_quota_info, int(cc["node_subscription_id"])) or {}
+        uris = await asyncio.to_thread(ds.ssh_uris_for_config, db, int(cc["id"]), cc)
+        ovpn_files = await asyncio.to_thread(ds.ovpn_files_for_config, db, int(cc["id"]), cc)
+        wg_files = await asyncio.to_thread(ds.wg_files_for_config, db, int(cc["id"]), cc)
+        page_url = ds.link_for_token(db, token, None) if ds.base_url(db) else ""
+        if settings.get("dsub_web_page") == "1" and ds.wants_page(ua, request.headers.get("accept", ""), query):
+            series = None
+            if settings.get("dsub_show_chart") == "1":
+                points = await asyncio.to_thread(db.ds_usage_points, int(cc["id"]), int(time.time()) - 31 * 86400)
+                series = ds.build_series(points, int(time.time()))
+            data = ds.build_page_data(cc, info, uris, settings, _brand(settings), page_url or str(request.url).split("?")[0],
+                                      series, ovpn=ovpn_files, wg=wg_files, panels=[])
+            data["live"] = True
+            await _log(int(cc["id"]), request, "page", 200, settings)
+            return render_page(data, f"{_brand(settings)} · اشتراک {ds.service_name(cc)}".strip(" ·"), settings)
+        payload = ds.merge_extra_uris(b"", uris)
+        if payload is None:
+            payload = b""
+        headers = {"cache-control": "no-store"}
+        if info:
+            headers["subscription-userinfo"] = "; ".join(
+                f"{key}={int(info.get(key) or 0)}" for key in ("upload", "download", "total", "expire") if key in info)
+        title = ds.render_template(settings.get("dsub_profile_title") or "", name=ds.service_name(cc),
+                                   user=cc.get("username", ""), brand=_brand(settings)).strip()
+        if title:
+            headers["profile-title"] = ds.b64_header(title[:80])
+        if page_url and settings.get("dsub_web_page") == "1":
+            headers["profile-web-page-url"] = page_url
+        if (settings.get("dsub_notice") or "").strip():
+            headers["announce"] = ds.b64_header(settings["dsub_notice"].strip()[:200])
+        if settings.get("dsub_support_url"):
+            headers["support-url"] = settings["dsub_support_url"]
+        await _log(int(cc["id"]), request, "sub", 200, settings)
+        return _raw(200, headers, "text/plain; charset=utf-8", payload)
+
     upstream_url = _forward_query(cc["subscription_url"], query)
 
     # --- حالت خاموش: عبور خام بدون هیچ تغییری (لینک‌های قبلی کاربران قطع نمی‌شوند)
@@ -679,13 +719,16 @@ async def qr_endpoint(request: Request) -> Response:
             n = int(idx)
         except ValueError:
             return _not_found()
-        try:
-            up = await cache.get(cc["subscription_url"], PAGE_UA, 30)
-        except Exception:
-            return PlainTextResponse("Upstream unavailable", status_code=502)
-        uris = ds.extract_uris(up.body) if up.status == 200 else []
-        if up.status == 200:
-            uris.extend(await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc))
+        if isinstance(cc, dict) and cc.get("is_node_subscription"):
+            uris = await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc)
+        else:
+            try:
+                up = await cache.get(cc["subscription_url"], PAGE_UA, 30)
+            except Exception:
+                return PlainTextResponse("Upstream unavailable", status_code=502)
+            uris = ds.extract_uris(up.body) if up.status == 200 else []
+            if up.status == 200:
+                uris.extend(await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc))
         if not 0 <= n < min(len(uris), 60):
             return _not_found()
         text = uris[n]
