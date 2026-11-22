@@ -626,7 +626,7 @@ function renderSupportChat() {
     const text = input.value.trim();
     if (!text) return;
     input.value = "";
-    appendChatMessage({ sender: "user", message: text, created_at: new Date().toISOString() }, true);
+    const optimisticBubble = appendChatMessage({ sender: "user", message: text, created_at: new Date().toISOString() }, true);
     const payload = { message: text };
     const prioSel = document.getElementById("chat-priority");
     if (prioSel && prioSel.value) payload.priority = prioSel.value;
@@ -637,7 +637,8 @@ function renderSupportChat() {
       payload.service_id = Number(id);
     }
     try {
-      await api("/api/support/messages", { method: "POST", body: JSON.stringify(payload) });
+      const sent = await api("/api/support/messages", { method: "POST", body: JSON.stringify(payload) });
+      adoptChatMessageId(document.getElementById("chat-messages"), optimisticBubble, sent && sent.id, (id) => { supportLastId = Math.max(supportLastId, id); });
       if (chatMetaState.status === "closed") { chatMetaState.status = "open"; renderChatMeta(); }
     } catch (e2) {
       notify("خطا: " + e2.message);
@@ -667,7 +668,8 @@ async function loadSupportMessages(initial) {
 
 function appendChatMessage(m, isOptimistic) {
   const box = document.getElementById("chat-messages");
-  if (!box) return;
+  if (!box) return null;
+  if (m.id && box.querySelector(`[data-mid="${m.id}"]`)) return null;
   if (box.querySelector(".state-msg")) box.innerHTML = "";
   if (m.id) supportLastId = Math.max(supportLastId, m.id);
   const time = new Date(m.created_at).toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit" });
@@ -675,8 +677,10 @@ function appendChatMessage(m, isOptimistic) {
   bubble.className = `chat-bubble ${m.sender === "user" ? "mine" : "admin"}`;
   bubble.innerHTML = `<div class="chat-text"></div><div class="chat-time">${time}</div>`;
   bubble.querySelector(".chat-text").textContent = m.message;
+  if (m.id) bubble.dataset.mid = String(m.id);
   box.appendChild(bubble);
   box.scrollTop = box.scrollHeight;
+  return bubble;
 }
 
 // ---------------------------------------------------------------------------
@@ -8466,14 +8470,19 @@ async function renderAdminLiveChatThread(body) {
     form.onsubmit = async (e) => {
       e.preventDefault();
       const text = input.value.trim();
-      if (!text) return;
+      if (!text || form.dataset.sending === "1") return;
+      form.dataset.sending = "1";
       input.value = "";
-      appendAdminChatMessage(box, { sender: "admin", message: text, created_at: new Date().toISOString() });
+      const optimistic = appendAdminChatMessage(box, { sender: "admin", message: text, created_at: new Date().toISOString() });
       box.scrollTop = box.scrollHeight;
       try {
-        await api(`/api/admin/support/${userId}/messages`, { method: "POST", body: JSON.stringify({ message: text }) });
+        const res = await api(`/api/admin/support/${userId}/messages`, { method: "POST", body: JSON.stringify({ message: text }) });
+        adoptChatMessageId(box, optimistic, res && res.id, (id) => { adminChatThreadLastId = Math.max(adminChatThreadLastId, id); });
       } catch (e2) {
+        if (optimistic) optimistic.remove();
         notify("خطا: " + e2.message);
+      } finally {
+        form.dataset.sending = "0";
       }
     };
   }
@@ -8491,8 +8500,18 @@ async function renderAdminLiveChatThread(body) {
   }, 4000);
 }
 
+// پیام خوش‌بینانه (optimistic) بعد از پاسخ سرور شناسه می‌گیرد؛ اگر polling زودتر همان پیام را آورده بود، نسخه‌ی موقت حذف می‌شود.
+function adoptChatMessageId(box, bubble, id, onId) {
+  if (!bubble || !id) return;
+  const dup = box.querySelector(`[data-mid="${id}"]`);
+  if (dup && dup !== bubble) bubble.remove();
+  else bubble.dataset.mid = String(id);
+  if (onId) onId(id);
+}
+
 function appendAdminChatMessage(box, m) {
-  if (!box) return;
+  if (!box) return null;
+  if (m.id && box.querySelector(`[data-mid="${m.id}"]`)) return null;
   if (box.querySelector(".state-msg")) box.innerHTML = "";
   if (m.id) adminChatThreadLastId = Math.max(adminChatThreadLastId, m.id);
   const time = new Date(m.created_at).toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit" });
@@ -8500,7 +8519,9 @@ function appendAdminChatMessage(box, m) {
   bubble.className = `chat-bubble ${m.sender === "admin" ? "mine" : "admin"}`;
   bubble.innerHTML = `<div class="chat-text"></div><div class="chat-time">${time}</div>`;
   bubble.querySelector(".chat-text").textContent = m.message;
+  if (m.id) bubble.dataset.mid = String(m.id);
   box.appendChild(bubble);
+  return bubble;
 }
 
 // ---------------------------------------------------------------------------
