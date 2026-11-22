@@ -498,7 +498,7 @@ const SECTION_PAGES = {
   salessettings: [
     { key: 'referral', label: '🔗 رفرال و جذب', match: ['رفرال', 'گردونه', 'زیرمجموعه‌گیری فیک'] },
     { key: 'renewal', label: '⏳ تمدید و نگهداشت', match: ['یادآوری تمدید', 'پیش‌بینی ریزش', 'یادآوری بر اساس حجم', 'هشدار اتصال', 'تخفیف تمدید'] },
-    { key: 'access', label: '🧪 تست، عضویت و موجودی', match: ['کانفیگ تست', 'عضویت اجباری', 'هشدار موجودی'] },
+    { key: 'access', label: '🧪 تست، عضویت و موجودی', match: ['کانفیگ تست', 'اشتراک هدیه عضویت', 'عضویت اجباری', 'هشدار موجودی'] },
   ],
   system: [
     { key: 'jobs', label: '📊 وضعیت اجراها و موجودی', match: ['یادآوری‌های تمدید', 'وضعیت لحظه‌ای موجودی'] },
@@ -7802,12 +7802,13 @@ async function renderSalesSettings() {
     ${wgift ? `<div class="card">
       <h3>🎁 اشتراک هدیه عضویت</h3>
       <div class="card-sub" style="margin-bottom:8px">
-        فعال/غیرفعال و تأخیر ارسال از «تنظیمات اضافه ← هدیه‌ی کانفیگ عضویت» است. هر کاربر یک سهمیه‌ی مشترک بین همه‌ی گزینه‌ها دارد
+        فعال/غیرفعال، حجم و مدت پیش‌فرض و تأخیر ارسال از «تنظیمات و برندینگ ← رشد و تعامل ← هدیه‌ی کانفیگ عضویت» است. هر کاربر یک سهمیه‌ی مشترک بین همه‌ی گزینه‌ها دارد
         و فقط بعد از تحویل موفق مصرف می‌شود. اگر بیش از یک گزینه‌ی فعال باشد، کاربر عنوان آن‌ها را می‌بیند و یکی را انتخاب می‌کند.
       </div>
       <div class="card-sub" id="wgift-stats" style="margin-bottom:8px"></div>
       <div style="display:flex;gap:8px;margin:8px 0 16px">
         <button class="btn btn-sm btn-danger" id="wgift-reset-all">بازنشانی اشتراک هدیه برای همه‌ی کاربران</button>
+        <button class="btn btn-sm" id="wgift-open-settings">⚙️ تنظیمات پایه‌ی هدیه</button>
       </div>
       <div id="wgift-options"></div>
       <button class="btn btn-sm" id="add-wgift-option" style="margin-top:8px">➕ افزودن گزینه‌ی هدیه</button>
@@ -8126,6 +8127,7 @@ async function renderSalesSettings() {
     }
     renderWgift();
     $('#add-wgift-option', root).addEventListener('click', () => openWgiftForm(null));
+    $('#wgift-open-settings', root)?.addEventListener('click', () => goTo('settings', 'growth'));
     $('#wgift-reset-all', root).addEventListener('click', async () => {
       if (!confirm('همه‌ی کاربرانی که قبلاً اشتراک هدیه گرفته‌اند دوباره یک‌بار امکان دریافت پیدا می‌کنند. ادامه بدم؟')) return;
       try {
@@ -11104,7 +11106,7 @@ const EXTRA_GROUP_TABS = {
   content: ['terms', 'welcome', 'support_texts', 'translation_keys', 'post_tools'],
   payment: ['currency', 'card_to_card_ui', 'crypto_payment_toggle_mini', 'wallet'],
   sales: ['main_menu', 'delivery', 'smart_sub', 'location', 'provisioning', 'free_test', 'cleanup', 'alerts', 'acct_svc_buttons_mini', 'acct_svc_buttons_web', 'service_buttons_extra'],
-  growth: ['signup_gift', 'referral_adv', 'referral_fraud', 'lottery', 'engagement', 'season', 'daily_quiz', 'gift_cards', 'renewal_adv', 'churn', 'reminder_discount_codes', 'force_join'],
+  growth: ['signup_gift', 'welcome_gift', 'referral_adv', 'referral_fraud', 'lottery', 'engagement', 'season', 'daily_quiz', 'gift_cards', 'renewal_adv', 'churn', 'reminder_discount_codes', 'force_join'],
   ai: ['ai_general', 'ai_providers', 'ai_buy_guide', 'ai_extra_agents', 'receipt_ai'],
   system: ['system', 'report_and_server_monitoring', 'backup', 'spam_limits', 'misc_admin', 'parity_extra'],
 };
