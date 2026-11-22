@@ -789,6 +789,7 @@ class AdminAddCustomConfigProductTier(StatesGroup):
 
 class ServiceRenameFlow(StatesGroup):
     waiting_suffix = State()
+    waiting_node_display_name = State()
 
 
 class ServiceTransferFlow(StatesGroup):

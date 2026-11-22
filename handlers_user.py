@@ -4837,6 +4837,38 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 return it
         return None
 
+    async def _ssh_service_kb(account, account_row_id=None):
+        """منوی یکپارچه حساب‌های نودی؛ دکمه‌ها فقط قابلیت‌های پشتیبانی‌شده را نشان می‌دهند."""
+        row_id = str(account_row_id or account.get("id"))
+        rows = []
+        action = "enable" if str(account.get("status") or "").lower() != "active" else "disable"
+        label = "🟢 فعال‌سازی حساب" if action == "enable" else "🔴 غیرفعال‌سازی حساب"
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"mo_ssh_action:{row_id}:{action}")])
+        if account.get("node_subscription_id"):
+            for mode, setting, label in (("full", "svc_show_renew_full", "🛠 تمدید کامل سرویس"), ("volume", "svc_show_renew_volume", "🔋 تمدید حجم سرویس"), ("time", "svc_show_renew_time", "⏱ تمدید زمان سرویس")):
+                if (await asyncio.to_thread(db.get_setting, setting, "1")) == "1":
+                    rows.append([InlineKeyboardButton(text=label, callback_data=f"svc_renew:{mode}:s{row_id}")])
+            if (await asyncio.to_thread(db.get_setting, "svc_show_rename", "1")) == "1":
+                rows.append([InlineKeyboardButton(text="✏️ تغییر نام سرویس", callback_data=f"svc_node_rename:s{row_id}")])
+            if (await asyncio.to_thread(db.get_setting, "svc_show_history", "1")) == "1":
+                rows.append([InlineKeyboardButton(text="📜 تاریخچه تمدید سرویس", callback_data=f"svc_node_history:s{row_id}")])
+            try:
+                link = await asyncio.to_thread(dedicated_sub.link_for_node_subscription, db, int(account["node_subscription_id"]))
+                if link:
+                    rows.append([InlineKeyboardButton(text="🌐 صفحه اشتراک اختصاصی", url=link)])
+                    if (await asyncio.to_thread(db.get_setting, "svc_show_qr", "1")) == "1":
+                        rows.append([InlineKeyboardButton(text="🔳 QR لینک اشتراک", callback_data=f"svc_qr:s{row_id}")])
+            except Exception:
+                logging.getLogger("handlers_user").debug("node subscription URL unavailable", exc_info=True)
+        rows.extend([
+            [InlineKeyboardButton(text="🔍 استعلام کامل سرویس", callback_data=f"svc_node_inquiry:{row_id}")],
+            [InlineKeyboardButton(text="🔄 بروزرسانی مصرف و وضعیت", callback_data=f"mo_ssh_refresh:{row_id}")],
+            [InlineKeyboardButton(text="⚠️ گزارش اختلال", callback_data=f"svc_node_disruption:{row_id}")],
+            [InlineKeyboardButton(text="🗑 حذف حساب", callback_data=f"mo_ssh_action:{row_id}:delete")],
+            [InlineKeyboardButton(text="⬅️ بازگشت به لیست سرویس‌ها", callback_data="mo_back")],
+        ])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
     def _svc_kb_kwargs(item) -> dict:
         if item["kind"] != "custom":
             order = item.get("order")
@@ -4917,8 +4949,16 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 logging.getLogger("handlers_user").exception("دریافت اطلاعات حساب نود برای کاربر %s ناموفق بود", user_tg_id)
 
             # HTML مستقل، تا کاراکترهای رمز/پروفایل موجب خراب‌شدن پیام نشوند.
+            node_display_name = account.get('node_name') or 'نود'
+            if account.get("node_subscription_id"):
+                try:
+                    node_sub = await asyncio.to_thread(db.get_node_subscription, int(account["node_subscription_id"]))
+                    if node_sub and int(node_sub.get("user_id") or 0) == user_tg_id and node_sub.get("display_name"):
+                        node_display_name = node_sub["display_name"]
+                except Exception:
+                    logging.getLogger("handlers_user").debug("node subscription display name lookup failed", exc_info=True)
             lines = [
-                f"🖥️ <b>حساب نود: {escape_html(account.get('node_name') or 'نود')}</b>",
+                f"🖥️ <b>حساب نود: {escape_html(node_display_name)}</b>",
                 f"🔌 پروتکل: {escape_html(protocol_label)}",
                 f"👤 نام کاربری: <code>{escape_html(account.get('username') or '')}</code>",
                 f"📍 سرور: <code>{escape_html(host)}:{port}</code>",
@@ -5124,27 +5164,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return
         if item["kind"] == "ssh":
             account = item["ssh_account"]
-            action = "enable" if account.get("status") != "active" else "disable"
-            action_label = "🟢 فعال‌سازی حساب" if action == "enable" else "🔴 غیرفعال‌سازی حساب"
-            ssh_rows = [
-                [InlineKeyboardButton(text=action_label, callback_data=f"mo_ssh_action:{account['id']}:{action}")],
-                [InlineKeyboardButton(text="🔄 استعلام و بروزرسانی مصرف", callback_data=f"mo_ssh_refresh:{account['id']}")],
-            ]
-            if account.get("node_subscription_id"):
-                for mode, key, label in (("volume", "svc_show_renew_volume", "🔋 تمدید حجم"), ("time", "svc_show_renew_time", "⏱ تمدید زمان")):
-                    if (await asyncio.to_thread(db.get_setting, key, "1")) == "1":
-                        ssh_rows.append([InlineKeyboardButton(text=label, callback_data=f"svc_renew:{mode}:s{account['id']}")])
-                try:
-                    node_link = await asyncio.to_thread(dedicated_sub.link_for_node_subscription, db, int(account["node_subscription_id"]))
-                    if node_link:
-                        ssh_rows.append([InlineKeyboardButton(text="🌐 صفحه اشتراک اختصاصی", url=node_link)])
-                except Exception:
-                    logging.getLogger("handlers_user").debug("node subscription URL unavailable", exc_info=True)
-            ssh_rows.extend([
-                [InlineKeyboardButton(text="🗑 حذف حساب", callback_data=f"mo_ssh_action:{account['id']}:delete")],
-                [InlineKeyboardButton(text="⬅️ بازگشت به لیست", callback_data="mo_back")],
-            ])
-            markup = InlineKeyboardMarkup(inline_keyboard=ssh_rows)
+            markup = await _ssh_service_kb(account)
         else:
             deletable = item["kind"] in ("config", "custom")
             show_links = _item_has_individual_links(item)
@@ -5170,24 +5190,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             item = _find_my_orders_item(call.from_user.id, f"s{raw_id}")
             if item:
                 text = await _my_orders_item_text(item)
-                action = "enable" if refreshed and refreshed.get("status") != "active" else "disable"
-                action_label = "🟢 فعال‌سازی حساب" if action == "enable" else "🔴 غیرفعال‌سازی حساب"
-                rows = [
-                    [InlineKeyboardButton(text=action_label, callback_data=f"mo_ssh_action:{raw_id}:{action}")],
-                    [InlineKeyboardButton(text="🔄 استعلام و بروزرسانی مصرف", callback_data=f"mo_ssh_refresh:{raw_id}")],
-                ]
-                if refreshed and refreshed.get("node_subscription_id"):
-                    for mode, key, label in (("volume", "svc_show_renew_volume", "🔋 تمدید حجم"), ("time", "svc_show_renew_time", "⏱ تمدید زمان")):
-                        if (await asyncio.to_thread(db.get_setting, key, "1")) == "1":
-                            rows.append([InlineKeyboardButton(text=label, callback_data=f"svc_renew:{mode}:s{raw_id}")])
-                    link = await asyncio.to_thread(dedicated_sub.link_for_node_subscription, db, int(refreshed["node_subscription_id"]))
-                    if link:
-                        rows.append([InlineKeyboardButton(text="🌐 صفحه اشتراک اختصاصی", url=link)])
-                rows.extend([
-                    [InlineKeyboardButton(text="🗑 حذف حساب", callback_data=f"mo_ssh_action:{raw_id}:delete")],
-                    [InlineKeyboardButton(text="⬅️ بازگشت به لیست", callback_data="mo_back")],
-                ])
-                markup = InlineKeyboardMarkup(inline_keyboard=rows)
+                markup = await _ssh_service_kb(refreshed, raw_id) if refreshed else kb.my_order_error_back_kb()
                 await _safe_edit(call.message, text, parse_mode="HTML", reply_markup=markup)
             refresh_note = ("مصرف از Agent نود دریافت و ثبت شد." if usage.get("accounting_ready")
                             else "وضعیت حساب از Agent دریافت شد؛ شمارنده مصرف برای این حساب فعال نیست.")
@@ -5230,24 +5233,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 if not current or current.get("status") == "deleted":
                     await _show_my_orders_list(call.message, call.from_user.id, edit=True)
                     return
-                next_action = "enable" if current.get("status") != "active" else "disable"
-                next_label = "🟢 فعال‌سازی حساب" if next_action == "enable" else "🔴 غیرفعال‌سازی حساب"
-                rows = [
-                    [InlineKeyboardButton(text=next_label, callback_data=f"mo_ssh_action:{account_row_id}:{next_action}")],
-                    [InlineKeyboardButton(text="🔄 استعلام و بروزرسانی مصرف", callback_data=f"mo_ssh_refresh:{account_row_id}")],
-                ]
-                if current.get("node_subscription_id"):
-                    for mode, key, label in (("volume", "svc_show_renew_volume", "🔋 تمدید حجم"), ("time", "svc_show_renew_time", "⏱ تمدید زمان")):
-                        if (await asyncio.to_thread(db.get_setting, key, "1")) == "1":
-                            rows.append([InlineKeyboardButton(text=label, callback_data=f"svc_renew:{mode}:s{account_row_id}")])
-                    link = await asyncio.to_thread(dedicated_sub.link_for_node_subscription, db, int(current["node_subscription_id"]))
-                    if link:
-                        rows.append([InlineKeyboardButton(text="🌐 صفحه اشتراک اختصاصی", url=link)])
-                rows.extend([
-                    [InlineKeyboardButton(text="🗑 حذف حساب", callback_data=f"mo_ssh_action:{account_row_id}:delete")],
-                    [InlineKeyboardButton(text="⬅️ بازگشت به لیست", callback_data="mo_back")],
-                ])
-                markup = InlineKeyboardMarkup(inline_keyboard=rows)
+                markup = await _ssh_service_kb(current, account_row_id)
                 await _safe_edit(call.message, text, parse_mode="HTML", reply_markup=markup)
         except Exception as exc:
             await call.answer(str(exc)[:180], show_alert=True)
@@ -5279,6 +5265,139 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             text = text[:3950] + "\n\n… (فهرست کوتاه شد؛ تعداد کانفیگ‌ها زیاد است)"
         await _safe_edit(call.message, text, parse_mode="Markdown", reply_markup=markup)
         await call.answer(db.get_text('handlers_user.auto_dcd3a0df', '✅ اطلاعات بروزرسانی شد.'))
+
+    @router.callback_query(F.data.startswith("svc_node_history:"))
+    async def cb_node_service_history(call: CallbackQuery):
+        if (await asyncio.to_thread(db.get_setting, "svc_show_history", "1")) != "1":
+            await call.answer("این قابلیت غیرفعال است.", show_alert=True); return
+        cb_id = call.data.split(":", 1)[1]
+        item = _find_my_orders_item(call.from_user.id, cb_id)
+        if not item or item["kind"] != "ssh" or not item["ssh_account"].get("node_subscription_id"):
+            await call.answer("اشتراک نودی یافت نشد.", show_alert=True); return
+        sub_id = int(item["ssh_account"]["node_subscription_id"])
+        sub = await asyncio.to_thread(db.get_node_subscription, sub_id)
+        if not sub or int(sub.get("user_id") or 0) != call.from_user.id:
+            await call.answer("اشتراک یافت نشد یا متعلق به شما نیست.", show_alert=True); return
+        orders = await asyncio.to_thread(db.list_node_subscription_renewals, sub_id, call.from_user.id, 10)
+        if not orders:
+            history_text = "📜 تاریخچه تمدید سرویس\n\nهنوز تمدیدی برای این اشتراک ثبت نشده است."
+        else:
+            mode_labels = {"full":"تمدید کامل", "volume":"تمدید حجم", "time":"تمدید زمان"}
+            status_labels = {"approved":"✅ موفق", "pending":"🕓 در انتظار پرداخت/بررسی", "rejected":"❌ ناموفق/ردشده", "processing":"⏳ در حال پردازش", "cancelled":"🚫 لغو"}
+            chunks = ["📜 <b>تاریخچه تمدید سرویس</b>", f"اشتراک: <b>{escape_html(sub.get('display_name') or item['ssh_account'].get('node_name') or 'نودی')}</b>"]
+            for n, order in enumerate(orders, 1):
+                mode = mode_labels.get(str(order.get("renewal_mode") or ""), str(order.get("renewal_mode") or "تمدید"))
+                status = status_labels.get(str(order.get("status") or ""), escape_html(str(order.get("status") or "نامشخص")))
+                date = to_jalali_str(order.get("created_at"), with_time=True) if order.get("created_at") else "—"
+                details = []
+                if int(order.get("renewal_add_volume_gb") or 0): details.append(f"+{int(order['renewal_add_volume_gb'])} GB")
+                if int(order.get("renewal_add_days") or 0): details.append(f"+{int(order['renewal_add_days'])} روز")
+                chunks.append(f"\n<b>{n}. {mode}</b> | {status}\n📅 {escape_html(str(date))} | 💰 {int(order.get('final_price') or 0):,} تومان" + (f"\n📦 {'، '.join(details)}" if details else ""))
+            history_text = "\n\n".join(chunks)
+        await call.answer()
+        await _safe_edit(call.message, history_text, parse_mode="HTML", reply_markup=await _ssh_service_kb(item["ssh_account"], item["ssh_account"]["id"]))
+
+    @router.callback_query(F.data.startswith("svc_node_rename:"))
+    async def cb_node_service_rename(call: CallbackQuery, state: FSMContext):
+        if (await asyncio.to_thread(db.get_setting, "svc_show_rename", "1")) != "1":
+            await call.answer("این قابلیت غیرفعال است.", show_alert=True); return
+        cb_id = call.data.split(":", 1)[1]
+        item = _find_my_orders_item(call.from_user.id, cb_id)
+        if not item or item["kind"] != "ssh" or not item["ssh_account"].get("node_subscription_id"):
+            await call.answer("سرویس نودی اشتراکی یافت نشد.", show_alert=True); return
+        sub = await asyncio.to_thread(db.get_node_subscription, int(item["ssh_account"]["node_subscription_id"]))
+        if not sub or int(sub.get("user_id") or 0) != call.from_user.id:
+            await call.answer("سرویس یافت نشد یا متعلق به شما نیست.", show_alert=True); return
+        await state.set_state(ServiceRenameFlow.waiting_node_display_name)
+        await state.update_data(node_rename_cb_id=cb_id, node_subscription_id=int(sub["id"]))
+        await call.answer()
+        await call.message.answer(f"✏️ نام فعلی: {sub.get('display_name') or item['ssh_account'].get('node_name') or 'سرویس نودی'}\n\nنام جدید سرویس را ارسال کنید (حداکثر ۶۰ کاراکتر).", reply_markup=kb.cancel_kb())
+
+    @router.message(ServiceRenameFlow.waiting_node_display_name)
+    async def receive_node_service_rename(message: Message, state: FSMContext):
+        name = (message.text or "").strip()
+        if not name or len(name) > 60:
+            await message.answer("نام باید بین ۱ تا ۶۰ کاراکتر باشد. دوباره ارسال کنید."); return
+        data = await state.get_data(); sub_id = int(data.get("node_subscription_id") or 0); cb_id = data.get("node_rename_cb_id")
+        sub = await asyncio.to_thread(db.get_node_subscription, sub_id)
+        if not sub or int(sub.get("user_id") or 0) != message.from_user.id:
+            await state.clear(); await message.answer("سرویس یافت نشد یا متعلق به شما نیست."); return
+        ok = await asyncio.to_thread(db.rename_owned_node_subscription, sub_id, message.from_user.id, name)
+        await state.clear()
+        if not ok:
+            await message.answer("تغییر نام انجام نشد؛ سرویس یافت نشد."); return
+        item = _find_my_orders_item(message.from_user.id, cb_id) if cb_id else None
+        if item:
+            await message.answer("✅ نام سرویس تغییر کرد.\n\n" + await _my_orders_item_text(item), parse_mode="HTML", reply_markup=await _ssh_service_kb(item["ssh_account"], item["ssh_account"]["id"]))
+        else:
+            await message.answer("✅ نام سرویس تغییر کرد.")
+
+    @router.callback_query(F.data.startswith("svc_node_inquiry:"))
+    async def cb_node_service_inquiry(call: CallbackQuery):
+        row_id = call.data.split(":", 1)[1]
+        account = next((a for a in await asyncio.to_thread(db.list_ssh_accounts, call.from_user.id)
+                       if str(a.get("id")) == row_id and a.get("status") != "deleted"), None)
+        if not account:
+            await call.answer("حساب یافت نشد یا متعلق به شما نیست.", show_alert=True); return
+        try:
+            import ssh_service
+            await asyncio.to_thread(ssh_service.refresh_account, db, account["account_id"], call.from_user.id)
+            account = next((a for a in await asyncio.to_thread(db.list_ssh_accounts, call.from_user.id)
+                           if str(a.get("id")) == row_id), account)
+        except Exception as exc:
+            logging.getLogger("handlers_user").info("node inquiry refresh failed: %s", exc)
+        proto = str(account.get("protocol") or "ssh").upper()
+        status = str(account.get("status") or "unknown").lower()
+        status_fa = {"active":"فعال 🟢", "disabled":"غیرفعال 🔴", "expired":"منقضی ⏳", "error":"خطا ⚠️", "pending":"در انتظار"}.get(status,status)
+        lines = ["🔍 <b>استعلام کامل سرویس نودی</b>", f"🖥️ نود: <b>{escape_html(account.get('node_name') or '—')}</b>",
+                 f"🔌 پروتکل: <b>{escape_html(proto)}</b>", f"👤 نام کاربری: <code>{escape_html(account.get('username') or '—')}</code>",
+                 f"📍 آدرس: <code>{escape_html(account.get('host') or '—')}:{int(account.get('port') or (22 if proto == 'SSH' else 0))}</code>",
+                 f"📌 وضعیت: <b>{escape_html(status_fa)}</b>"]
+        if account.get("expires_at"):
+            lines.append(f"⏳ انقضا: {escape_html(to_jalali_str(account['expires_at'], with_time=True))}")
+        if account.get("quota_pool_id"):
+            try:
+                pool = await asyncio.to_thread(db.get_quota_pool, int(account["quota_pool_id"]))
+                usage = await asyncio.to_thread(db.get_quota_usage, int(account["quota_pool_id"]))
+                if pool and int(pool.get("user_id") or 0) == call.from_user.id:
+                    used = float(usage.get("used_bytes") or 0)/(1024**3); limit = float(usage.get("limit_bytes") or 0)/(1024**3)
+                    lines.append(f"📊 مصرف: <b>{used:.2f} از {limit:.2f} گیگ</b>" if limit else f"📊 مصرف ثبت‌شده: <b>{used:.2f} گیگ</b>")
+                    if usage.get("status") == "stale": lines.append("⚠️ داده مصرف ممکن است به‌روز نباشد.")
+            except Exception: logging.getLogger("handlers_user").debug("node inquiry quota unavailable", exc_info=True)
+        if account.get("node_subscription_id"):
+            try:
+                link = await asyncio.to_thread(dedicated_sub.link_for_node_subscription, db, int(account["node_subscription_id"]))
+                if link: lines.append(f"🔗 لینک اشتراک: <code>{escape_html(link)}</code>")
+            except Exception: pass
+        lines.append("\nبرای دریافت آخرین اطلاعات، استعلام/بروزرسانی را دوباره اجرا کنید.")
+        await call.answer("استعلام انجام شد.")
+        await _safe_edit(call.message, "\n".join(lines), parse_mode="HTML", reply_markup=await _ssh_service_kb(account,row_id))
+
+    @router.callback_query(F.data.startswith("svc_node_disruption:"))
+    async def cb_node_service_disruption(call: CallbackQuery, bot: Bot):
+        row_id = call.data.split(":",1)[1]
+        account = next((a for a in await asyncio.to_thread(db.list_ssh_accounts, call.from_user.id)
+                       if str(a.get("id")) == row_id and a.get("status") != "deleted"), None)
+        if not account:
+            await call.answer("حساب یافت نشد یا متعلق به شما نیست.", show_alert=True); return
+        deps = await asyncio.to_thread(db.list_ticket_departments, True)
+        dep = next((d for d in deps if d.get("name") == "فنی"), deps[0] if deps else None)
+        proto = str(account.get("protocol") or "ssh").upper()
+        subject = f"گزارش اختلال سرویس نودی «{account.get('node_name') or account.get('username') or row_id}»"
+        details = ("کاربر گزارش اختلال حساب مستقیم نود را ثبت کرد.\n\n"
+                   f"حساب: {account.get('username') or '-'}\nنود: {account.get('node_name') or '-'}\nپروتکل: {proto}\n"
+                   f"شناسه حساب: {account.get('account_id') or '-'}\nردیف: {account.get('id') or '-'}\nآدرس: {account.get('host') or '-'}:{account.get('port') or '-'}")
+        tid = await asyncio.to_thread(db.create_ticket, call.from_user.id, subject, details, dep["id"] if dep else None,
+                                     ref_kind="ssh_account", ref_id=int(account["id"]), ref_label=str(account.get("node_name") or account.get("username") or "SSH")[:120])
+        await call.answer(f"گزارش ثبت شد؛ تیکت #{tid}", show_alert=True)
+        await call.message.answer(f"✅ گزارش اختلال سرویس نودی ثبت شد. شماره تیکت: #{tid}\nبخش فنی بررسی می‌کند.")
+        notified = await report_router.notify_ticket(bot, db, tid, report_router.format_event("گزارش اختلال سرویس نودی", [
+            ("تیکت", report_router.code(f"#{tid}")), ("کاربر", report_router.user_link(call.from_user.id, call.from_user.first_name or "", call.from_user.username or "")),
+            ("سرویس", account.get("node_name") or account.get("username") or "SSH"), ("پروتکل", proto), ("بخش", dep["name"] if dep else "عمومی")], icon="⚠️", note="↩️ برای پاسخ از سیستم تیکت استفاده کنید."))
+        if not notified:
+            for admin_id in await asyncio.to_thread(db.list_ticket_admin_ids_for_department, dep["id"] if dep else None):
+                try: await bot.send_message(admin_id, f"⚠️ گزارش اختلال نود #{tid}\nکاربر: {call.from_user.id}\n{subject}\n\n{details}", reply_markup=kb.ticket_admin_notify_kb(tid))
+                except Exception: logging.getLogger("handlers_user").exception("node ticket notify failed")
 
     @router.callback_query(F.data.startswith("svc_inquiry:"))
     async def cb_service_inquiry(call: CallbackQuery):
@@ -5557,6 +5676,13 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             link = item["config"]["link"]
         elif item["kind"] == "custom":
             link = item["custom"]["subscription_url"]
+        elif item["kind"] == "ssh":
+            account = item["ssh_account"]
+            if account.get("node_subscription_id"):
+                try:
+                    link = await asyncio.to_thread(dedicated_sub.link_for_node_subscription, db, int(account["node_subscription_id"]))
+                except Exception:
+                    logging.getLogger("handlers_user").debug("node QR link lookup failed", exc_info=True)
         if not link:
             await call.answer(db.get_text('handlers_user.auto_4e32a60a', 'لینکی برای ساخت کیوآر پیدا نشد.'), show_alert=True)
             return
@@ -6260,8 +6386,30 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await call.answer(db.get_text('handlers_user.auto_6bf10f8b', 'این مورد یافت نشد.'), show_alert=True)
             return
         if item["kind"] == "ssh":
-            if mode == "full" or not item["ssh_account"].get("node_subscription_id"):
-                await call.answer("تمدید کامل برای این نوع حساب هنوز در دسترس نیست؛ تمدید حجم و زمان از همین بخش قابل انجام است.", show_alert=True)
+            account = item["ssh_account"]
+            sub_id = int(account.get("node_subscription_id") or 0)
+            if not sub_id:
+                await call.answer("این حساب به اشتراک نودی متصل نیست؛ تمدید از این بخش ممکن نیست.", show_alert=True); return
+            if mode == "full":
+                sub = await asyncio.to_thread(db.get_node_subscription, sub_id)
+                if not sub or int(sub.get("user_id") or 0) != call.from_user.id:
+                    await call.answer("اشتراک نودی یافت نشد.", show_alert=True); return
+                products = [dict(p) for p in (await asyncio.to_thread(db.get_all_products)) if p["is_auto_provision"] and p["is_active"]]
+                compatible = []
+                for product in products:
+                    targets = {int(product.get("provision_ssh_node_id") or 0)}
+                    try:
+                        extra = await asyncio.to_thread(db.get_product_extra_targets, int(product["id"]))
+                        targets.update(int(t) for t in (extra.get("ssh") or []))
+                    except Exception: pass
+                    targets.discard(0)
+                    if (int(account.get("node_id") or 0) in targets or
+                            int(product.get("id") or 0) == int(sub.get("product_id") or 0)):
+                        compatible.append(product)
+                if not compatible:
+                    await call.answer("پلن تمدید کامل سازگار با این نود تعریف نشده است.", show_alert=True); return
+                await call.answer()
+                await _safe_edit(call.message, "🛠 تمدید کامل سرویس نودی\n\nپلن تمدید را انتخاب کنید. حجم و زمان پلن به اشتراک فعلی اضافه می‌شود:", reply_markup=kb.renewal_plans_kb(compatible, mode, cb_id))
                 return
             rate_key = "renewal_price_per_gb" if mode == "volume" else "renewal_price_per_day"
             rate = int((await asyncio.to_thread(db.get_setting, rate_key, "0")) or "0")
@@ -6454,9 +6602,11 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         users = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 0
         user_tg_id = call.from_user.id
         item = _find_my_orders_item(user_tg_id, cb_id)
-        if not item or item["kind"] not in ("config", "custom"):
+        if not item or item["kind"] not in ("config", "custom", "ssh"):
             await call.answer(db.get_text('handlers_user.auto_848eae5d', 'این مورد یافت نشد (شاید قبلاً حذف شده).'), show_alert=True)
             return
+        if item["kind"] == "ssh" and (mode != "full" or not item["ssh_account"].get("node_subscription_id")):
+            await call.answer("این پلن فقط برای تمدید کامل اشتراک نودی قابل استفاده است.", show_alert=True); return
         if item["kind"] == "config" and mode != "time":
             await call.answer(db.get_text('handlers_user.auto_09ec17e1', 'برای این کانفیگ فقط «تمدید زمان» ممکن است.'), show_alert=True)
             return
@@ -6476,8 +6626,12 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         add_volume = product["auto_provision_volume_gb"] if mode in ("full", "volume") else 0
         add_days = product["duration_days"] if mode in ("full", "time") else 0
         target_kind = item["kind"]
-        target_id = item["custom"]["id"] if target_kind == "custom" else item["config"]["id"]
-        price = product["price"]
+        if target_kind == "ssh":
+            target_kind = "node"
+            target_id = int(item["ssh_account"]["node_subscription_id"])
+        else:
+            target_id = item["custom"]["id"] if target_kind == "custom" else item["config"]["id"]
+        price = int(product["price"] or 0)
         product_label = product["name"]
 
         if mode == "full" and target_kind == "custom":
