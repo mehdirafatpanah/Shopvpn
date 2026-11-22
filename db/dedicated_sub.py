@@ -24,6 +24,8 @@ class DedicatedSubMixin:
             for _ in range(5):
                 token = secrets.token_urlsafe(18)
                 try:
+                    if conn.execute("SELECT 1 FROM node_subscriptions WHERE token=? LIMIT 1", (token,)).fetchone():
+                        continue
                     conn.execute("UPDATE custom_configs SET sub_token=? WHERE id=?", (token, config_id))
                     return token
                 except Exception:  # برخورد بسیار نادر روی ایندکس یکتا
@@ -36,11 +38,26 @@ class DedicatedSubMixin:
             conn.execute("UPDATE custom_configs SET sub_token=NULL WHERE id=?", (config_id,))
         return self.ds_get_or_create_token(config_id)
 
+    def ds_node_sub_regenerate_token(self, subscription_id: int):
+        with self._get_conn() as conn:
+            conn.execute("UPDATE node_subscriptions SET token=NULL WHERE id=?", (int(subscription_id),))
+        return self.ds_node_sub_get_or_create_token(int(subscription_id))
+
     def ds_get_config_by_token(self, token: str):
         if not token or len(token) > 80:
             return None
         with self._get_conn() as conn:
-            return conn.execute("SELECT * FROM custom_configs WHERE sub_token=?", (token,)).fetchone()
+            row = conn.execute("SELECT * FROM custom_configs WHERE sub_token=?", (token,)).fetchone()
+            if row is not None:
+                return row
+            node_row = conn.execute("SELECT * FROM node_subscriptions WHERE token=?", (token,)).fetchone()
+            if node_row is None:
+                return None
+            data = dict(node_row)
+            data.update({"id": int(data["id"]), "panel_server_id": None, "username": data.get("display_name") or "Node service",
+                         "subscription_url": "", "start_on_first_use": 0, "is_node_subscription": 1,
+                         "node_subscription_id": int(data["id"]), "source": "node_product"})
+            return data
 
     def ds_get_config(self, config_id: int):
         with self._get_conn() as conn:

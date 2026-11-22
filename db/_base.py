@@ -1299,12 +1299,30 @@ class DatabaseBase:
                     expires_at TEXT,
                     credential_enc TEXT,
                     custom_config_id INTEGER,
+                    node_subscription_id INTEGER,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(node_id,account_id),
                     UNIQUE(node_id,username)
                 );
                 CREATE INDEX IF NOT EXISTS idx_ssh_accounts_user ON ssh_accounts(user_id,status);
+
+                CREATE TABLE IF NOT EXISTS node_subscriptions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    token TEXT UNIQUE,
+                    user_id INTEGER NOT NULL,
+                    order_id INTEGER,
+                    product_id INTEGER,
+                    quota_pool_id INTEGER,
+                    display_name TEXT NOT NULL DEFAULT '',
+                    volume_gb REAL NOT NULL DEFAULT 0,
+                    duration_days REAL NOT NULL DEFAULT 0,
+                    expires_at TEXT,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_node_subscriptions_user ON node_subscriptions(user_id,status);
+                CREATE INDEX IF NOT EXISTS idx_node_subscriptions_pool ON node_subscriptions(quota_pool_id);
 
                 CREATE TABLE IF NOT EXISTS product_extra_targets (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1966,6 +1984,11 @@ class DatabaseBase:
             conn.execute("ALTER TABLE ssh_accounts ADD COLUMN custom_config_id INTEGER")
         if self._column_exists(conn, "ssh_accounts", "id") and not self._column_exists(conn, "ssh_accounts", "protocol"):
             conn.execute("ALTER TABLE ssh_accounts ADD COLUMN protocol TEXT NOT NULL DEFAULT 'ssh'")
+        if self._column_exists(conn, "ssh_accounts", "id") and not self._column_exists(conn, "ssh_accounts", "node_subscription_id"):
+            conn.execute("ALTER TABLE ssh_accounts ADD COLUMN node_subscription_id INTEGER")
+        conn.execute("CREATE TABLE IF NOT EXISTS node_subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT UNIQUE, user_id INTEGER NOT NULL, order_id INTEGER, product_id INTEGER, quota_pool_id INTEGER, display_name TEXT NOT NULL DEFAULT '', volume_gb REAL NOT NULL DEFAULT 0, duration_days REAL NOT NULL DEFAULT 0, expires_at TEXT, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_node_subscriptions_user ON node_subscriptions(user_id,status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_node_subscriptions_pool ON node_subscriptions(quota_pool_id)")
 
         # Additive migration for unified quota counter epochs. Older DBs stored
         # only the provider's raw used_bytes, which could move backwards after a panel reset.

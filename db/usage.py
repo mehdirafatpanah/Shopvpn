@@ -157,6 +157,95 @@ class UsageMixin:
         return self.attach_quota_service(pool_id, "vpn", f"custom_config:{int(custom_config_id)}",
                                          node_id=int(row["panel_server_id"]) if row["panel_server_id"] else None)
 
+
+    def create_node_subscription(self, user_id: int, order_id: int = None, product_id: int = None,
+                                 quota_pool_id: int = None, display_name: str = "", volume_gb: float = 0,
+                                 duration_days: float = 0, expires_at: str = None) -> int:
+        """Create a standalone subscription container for node-only products."""
+        if int(user_id) <= 0:
+            raise ValueError("شناسه کاربر نامعتبر است")
+        if expires_at:
+            expires_at = _normalize_timestamp(expires_at)
+        with self._get_conn() as conn:
+            if quota_pool_id is not None:
+                pool = conn.execute("SELECT user_id,status FROM quota_pools WHERE id=?", (int(quota_pool_id),)).fetchone()
+                if not pool or int(pool["user_id"]) != int(user_id) or pool["status"] != "active":
+                    raise ValueError("استخر سهمیه نامعتبر است")
+            cur = conn.execute(
+                "INSERT INTO node_subscriptions (user_id,order_id,product_id,quota_pool_id,display_name,volume_gb,duration_days,expires_at) VALUES (?,?,?,?,?,?,?,?)",
+                (int(user_id), int(order_id) if order_id else None, int(product_id) if product_id else None,
+                 int(quota_pool_id) if quota_pool_id else None, str(display_name or ""), float(volume_gb or 0),
+                 float(duration_days or 0), expires_at))
+            return int(cur.lastrowid)
+
+    def link_ssh_account_to_node_subscription(self, account_id: str, subscription_id: int) -> bool:
+        with self._get_conn() as conn:
+            cur = conn.execute("UPDATE ssh_accounts SET node_subscription_id=? WHERE account_id=?",
+                               (int(subscription_id), str(account_id)))
+            return bool(cur.rowcount)
+
+    def get_node_subscription(self, subscription_id: int):
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT * FROM node_subscriptions WHERE id=?", (int(subscription_id),)).fetchone()
+            return dict(row) if row else None
+
+    def get_node_subscription_by_token(self, token: str):
+        if not token or len(str(token)) > 80:
+            return None
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT * FROM node_subscriptions WHERE token=?", (str(token),)).fetchone()
+            return dict(row) if row else None
+
+    def ds_node_sub_get_or_create_token(self, subscription_id: int):
+        import secrets
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT token FROM node_subscriptions WHERE id=?", (int(subscription_id),)).fetchone()
+            if not row:
+                return None
+            if row["token"]:
+                return row["token"]
+            for _ in range(5):
+                token = secrets.token_urlsafe(18)
+                try:
+                    if conn.execute("SELECT 1 FROM custom_configs WHERE sub_token=? LIMIT 1", (token,)).fetchone():
+                        continue
+                    conn.execute("UPDATE node_subscriptions SET token=? WHERE id=? AND token IS NULL", (token, int(subscription_id)))
+                    fresh = conn.execute("SELECT token FROM node_subscriptions WHERE id=?", (int(subscription_id),)).fetchone()
+                    return fresh["token"] if fresh else None
+                except Exception:
+                    continue
+        return None
+
+    def ssh_accounts_for_node_subscription(self, subscription_id: int, protocol: str = None) -> list:
+        sql = ("SELECT a.account_id,a.username,a.host,a.port,a.credential_enc,a.protocol,a.status, "
+               "n.name AS node_name,n.config_json AS node_config_json FROM ssh_accounts a "
+               "JOIN ssh_nodes n ON n.id=a.node_id WHERE a.node_subscription_id=? AND a.status='active'")
+        params = [int(subscription_id)]
+        if protocol:
+            sql += " AND a.protocol=?"; params.append(str(protocol))
+        sql += " ORDER BY a.id"
+        with self._get_conn() as conn:
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+    def node_subscription_quota_info(self, subscription_id: int):
+        sub = self.get_node_subscription(int(subscription_id))
+        if not sub or not sub.get("quota_pool_id"):
+            return None
+        usage = self.get_quota_usage(int(sub["quota_pool_id"]))
+        pool = self.get_quota_pool(int(sub["quota_pool_id"]))
+        if not usage or not pool:
+            return None
+        expire = 0
+        if pool.get("expires_at"):
+            try:
+                dt = datetime.fromisoformat(str(pool["expires_at"]).replace("Z", "+00:00"))
+                if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
+                expire = int(dt.timestamp())
+            except (TypeError, ValueError, OverflowError): pass
+        info = {"upload": int(usage.get("used_bytes") or 0), "download": 0, "total": int(usage.get("limit_bytes") or 0)}
+        if expire: info["expire"] = expire
+        return info
+
     def register_ssh_account(self, node_id: int, user_id: int, account_id: str, username: str,
                               host: str, port: int = 22, quota_pool_id: int = None,
                               expires_at: str = None, credential_enc: str = None,
@@ -202,7 +291,7 @@ class UsageMixin:
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         with self._get_conn() as conn:
             rows = conn.execute(
-                "SELECT a.id,a.node_id,a.user_id,a.quota_pool_id,a.account_id,a.username,a.host,a.port,a.protocol,a.status,a.expires_at,a.created_at,a.updated_at,n.name AS node_name,n.node_type FROM ssh_accounts a "
+                "SELECT a.id,a.node_id,a.user_id,a.quota_pool_id,a.account_id,a.username,a.host,a.port,a.protocol,a.status,a.expires_at,a.created_at,a.updated_at,a.node_subscription_id,n.name AS node_name,n.node_type FROM ssh_accounts a "
                 "JOIN ssh_nodes n ON n.id=a.node_id" + where + " ORDER BY a.id DESC", params
             ).fetchall()
             return [dict(r) for r in rows]
@@ -224,7 +313,7 @@ class UsageMixin:
 
     def link_ssh_account_to_config(self, account_id: str, custom_config_id: int) -> bool:
         with self._get_conn() as conn:
-            cur = conn.execute("UPDATE ssh_accounts SET custom_config_id=? WHERE account_id=?",
+            cur = conn.execute("UPDATE ssh_accounts SET custom_config_id=?, node_subscription_id=NULL WHERE account_id=?",
                                (int(custom_config_id), str(account_id)))
             return bool(cur.rowcount)
 
