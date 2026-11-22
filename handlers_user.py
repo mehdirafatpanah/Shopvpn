@@ -4884,6 +4884,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return text
         if kind == "ssh":
             account = item["ssh_account"]
+            user_tg_id = int(account.get("user_id") or 0)
             status = str(account.get("status") or "unknown").lower()
             status_label = {"active": "فعال", "disabled": "غیرفعال", "expired": "منقضی", "error": "خطا", "pending": "در انتظار"}.get(status, status)
             if account.get("expires_at"):
