@@ -5006,7 +5006,6 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 lines.append(f"⏳ انقضا: {escape_html(to_jalali_str(account['expires_at'], with_time=True))}")
             if account.get("node_subscription_id"):
                 try:
-                    import dedicated_sub
                     node_sub_link = await asyncio.to_thread(dedicated_sub.link_for_node_subscription, db, int(account["node_subscription_id"]))
                     if node_sub_link:
                         lines.append(f"🔗 لینک اشتراک اختصاصی: <code>{escape_html(node_sub_link)}</code>")
