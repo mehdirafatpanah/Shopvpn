@@ -20,11 +20,44 @@ from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 from db.constants import _wallet_tag
-from i18n import tr
+from i18n import tr as _base_tr
 
 logger = logging.getLogger("payg")
 GIB = 1024 ** 3
 DEFAULT_RATES = [5000, 4500, 4000, 3500]
+
+
+_DEFAULT_NAME = "Pay As You Go"
+PAYG_NAME_KEY = "payg_name"
+PAYG_NAME_MAX = 40
+_name_state = {"db": None, "value": "", "at": 0.0}
+
+
+def get_payg_name(db=None) -> str:
+    """نام اشتراک پرداخت به‌ازای مصرف؛ تعیین‌شده توسط مدیر یا پیش‌فرض."""
+    db = db or _name_state["db"]
+    if db is None:
+        return _DEFAULT_NAME
+    now = time.monotonic()
+    if db is not _name_state["db"] or now - _name_state["at"] > 5:
+        try:
+            value = str(db.get_setting(PAYG_NAME_KEY, "") or "").strip()[:PAYG_NAME_MAX]
+        except Exception:
+            value = ""
+        _name_state.update(db=db, value=value, at=now)
+    return _name_state["value"] or _DEFAULT_NAME
+
+
+def _n(text):
+    """نام پیش‌فرض را با نام تعیین‌شده توسط مدیر جایگزین می‌کند (برای متن HTML امن‌شده)."""
+    if not isinstance(text, str) or _DEFAULT_NAME not in text:
+        return text
+    name = get_payg_name()
+    return text if name == _DEFAULT_NAME else text.replace(_DEFAULT_NAME, html.escape(name, quote=False))
+
+
+def tr(text, language=None):
+    return _n(_base_tr(text, language))
 
 
 def _now():
@@ -33,7 +66,7 @@ def _now():
 
 def _tformat(template: str, **values) -> str:
     """Translate a Persian template before inserting dynamic values."""
-    return tr(template).format(**values)
+    return _n(tr(template).format(**values))
 
 
 def is_free_payg_user(db, user_id) -> bool:
@@ -45,6 +78,7 @@ def is_free_payg_user(db, user_id) -> bool:
 
 
 def ensure_schema(db):
+    _name_state.update(db=db, value=_name_state["value"] if _name_state["db"] is db else "", at=0.0)
     with db._get_conn() as conn:
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS payg_accounts (
@@ -107,6 +141,10 @@ def ensure_schema(db):
         columns = {r[1] for r in conn.execute("PRAGMA table_info(payg_accounts)").fetchall()}
         if "last_balance" not in columns:
             conn.execute("ALTER TABLE payg_accounts ADD COLUMN last_balance INTEGER NOT NULL DEFAULT 0")
+        if "cut_at" not in columns:
+            conn.execute("ALTER TABLE payg_accounts ADD COLUMN cut_at TEXT NOT NULL DEFAULT ''")
+        if "purged_at" not in columns:
+            conn.execute("ALTER TABLE payg_accounts ADD COLUMN purged_at TEXT NOT NULL DEFAULT ''")
         if "month_rates" not in columns:
             conn.execute("ALTER TABLE payg_accounts ADD COLUMN month_rates TEXT NOT NULL DEFAULT ''")
         service_columns = {r[1] for r in conn.execute("PRAGMA table_info(payg_services)").fetchall()}
@@ -255,6 +293,92 @@ def get_min_balance(db) -> int:
         return max(0, min(PAYG_MIN_BALANCE_MAX, int(db.get_setting(PAYG_MIN_BALANCE_KEY, "0") or 0)))
     except (TypeError, ValueError):
         return 0
+
+
+PAYG_ALERT1_MODE_KEY = "payg_alert1_mode"
+PAYG_ALERT1_VALUE_KEY = "payg_alert1_value"
+PAYG_ALERT1_TEXT_KEY = "payg_alert1_text"
+PAYG_ALERT2_MODE_KEY = "payg_alert2_mode"
+PAYG_ALERT2_VALUE_KEY = "payg_alert2_value"
+PAYG_ALERT2_TEXT_KEY = "payg_alert2_text"
+PAYG_CUT_MODE_KEY = "payg_cut_mode"
+PAYG_CUT_VALUE_KEY = "payg_cut_value"
+PAYG_CUT_TEXT_KEY = "payg_cut_text"
+PAYG_ALERT1_TEXT_MAX = 1000
+PAYG_ALERT2_TEXT_MAX = 1000
+PAYG_ALERT1_PLACEHOLDERS = ("percent", "threshold", "used", "balance", "initial", "retention_days")
+PAYG_RETENTION_KEY = "payg_retention_days"
+PAYG_RETENTION_MAX = 3650
+_ALERT_KEYS = {1: (PAYG_ALERT1_MODE_KEY, PAYG_ALERT1_VALUE_KEY, PAYG_ALERT1_TEXT_KEY, "80", "⚠️"),
+               2: (PAYG_ALERT2_MODE_KEY, PAYG_ALERT2_VALUE_KEY, PAYG_ALERT2_TEXT_KEY, "90", "🚨"),
+               3: (PAYG_CUT_MODE_KEY, PAYG_CUT_VALUE_KEY, PAYG_CUT_TEXT_KEY, "100", "⛔")}
+
+
+def get_retention_days(db) -> int:
+    """مهلت نگهداری اکانت (روز) پس از قطع؛ ۰ یعنی هرگز حذف نشود."""
+    try:
+        return max(0, min(PAYG_RETENTION_MAX, int(db.get_setting(PAYG_RETENTION_KEY, "0") or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def get_alert(db, n: int):
+    """(mode, value) آستانه هشدار n؛ mode = percent|toman و value = 0 یعنی خاموش."""
+    mode_key, value_key, _t, default, _e = _ALERT_KEYS[n]
+    mode = str(db.get_setting(mode_key, "percent") or "percent").strip()
+    if mode not in ("percent", "toman"):
+        mode = "percent"
+    try:
+        value = int(db.get_setting(value_key, default) or 0)
+    except (TypeError, ValueError):
+        value = int(default)
+    cap = 100 if mode == "percent" else PAYG_MIN_BALANCE_MAX
+    return mode, max(0, min(cap, value))
+
+
+def get_first_alert(db):
+    return get_alert(db, 1)
+
+
+def alert_reached(db, n: int, used: int, percent: float) -> bool:
+    mode, value = get_alert(db, n)
+    if value <= 0:
+        return False
+    return percent >= value if mode == "percent" else used >= value
+
+
+def first_alert_reached(db, used: int, percent: float) -> bool:
+    return alert_reached(db, 1, used, percent)
+
+
+def default_alert_template(n: int, mode: str) -> str:
+    emoji = _ALERT_KEYS[n][4]
+    tail = {1: "برای جلوگیری از توقف سرویس، کیف پول را شارژ کنید.",
+            2: "لطفاً هرچه زودتر کیف پول را شارژ کنید، در غیر این صورت سرویس قطع می‌شود.",
+            3: "دسترسی شما به اشتراک قطع شد. پس از شارژ کیف پول، اشتراک به‌صورت خودکار دوباره فعال می‌شود."}[n]
+    if mode == "toman":
+        return f"{emoji} شما {{used}} تومان از اعتبار کیف پول خود را مصرف کرده‌اید. موجودی فعلی: {{balance}} تومان. {tail}"
+    return f"{emoji} شما {{percent}} درصد از اعتبار کیف پول خود را مصرف کرده‌اید. موجودی فعلی: {{balance}} تومان. {tail}"
+
+
+def default_first_alert_template(mode: str) -> str:
+    return default_alert_template(1, mode)
+
+
+def render_alert_text(db, n: int, used: int, initial: int, balance: int, percent: float) -> str:
+    mode, value = get_alert(db, n)
+    custom = str(db.get_setting(_ALERT_KEYS[n][2], "") or "").strip()
+    values = {"percent": int(min(100, percent)), "threshold": value, "used": f"{int(used):,}",
+              "balance": f"{int(balance):,}", "initial": f"{int(initial):,}",
+              "retention_days": get_retention_days(db)}
+    text = custom if custom else tr(default_alert_template(n, mode))
+    for name in PAYG_ALERT1_PLACEHOLDERS:
+        text = text.replace("{" + name + "}", str(values[name]))
+    return text
+
+
+def render_first_alert_text(db, used: int, initial: int, balance: int, percent: float) -> str:
+    return render_alert_text(db, 1, used, initial, balance, percent)
 
 
 def get_usable_payg_panel_ids(db):
@@ -665,7 +789,7 @@ def activate_payg(db, user_id: int, existing_pool_id: int = None):
     # rebase it on settled usage and the wallet's exact tiered purchasing power.
     pool_id = (int(existing_pool_id) if existing_pool_id else
                db.create_quota_pool(user_id, 1_000_000_000,
-                                    label="Pay As You Go", metadata={"payg": True}))
+                                    label=get_payg_name(db), metadata={"payg": True}))
     with db._get_conn() as conn:
         conn.execute(
             "INSERT INTO payg_accounts(user_id,status,quota_pool_id,initial_balance,last_balance,month_key,month_rates,month_used_bytes,month_cost,last_alert_level,created_at,updated_at) "
@@ -770,7 +894,30 @@ def _pending_panel_fixed_cost(db, user_id: int) -> int:
     return reserve
 
 
+def _account_usage(db, user_id: int, balance: int):
+    """(used, initial, percent) مصرف از اعتبار آخرین شارژ؛ شارژ ثبت‌نشده همین‌جا لحاظ می‌شود."""
+    with db._get_conn() as conn:
+        row = conn.execute("SELECT initial_balance,last_balance FROM payg_accounts WHERE user_id=?",
+                           (int(user_id),)).fetchone()
+    if not row:
+        return 0, 1, 0.0
+    initial = int(row["initial_balance"] or 0)
+    if int(balance) > int(row["last_balance"] or 0):
+        initial = int(balance)
+    initial = max(1, initial)
+    used = max(0, initial - int(balance))
+    return used, initial, used * 100 / initial
+
+
+def cutoff_reached(db, user_id: int, balance: int) -> bool:
+    """آیا مصرف کاربر به آستانه‌ی قطع رسیده است؟ (۰ = خاموش)"""
+    used, _initial, percent = _account_usage(db, user_id, balance)
+    return alert_reached(db, 3, used, percent)
+
+
 def _affordable_payg_limit(db, user_id: int, balance: int, base_bytes: int, month_used_bytes: int, legacy_rates: list[int]):
+    if cutoff_reached(db, user_id, balance):
+        return max(1, int(base_bytes))
     panel_rates, has_panel = _panel_traffic_rates(db, user_id)
     reserve = _pending_panel_fixed_cost(db, user_id) if has_panel else 0
     usable = max(0, int(balance) - reserve)
@@ -1055,7 +1202,14 @@ class PaygEngine:
                     limit_bytes = _affordable_payg_limit(self.db, uid, balance,
                                                         _billing_base_bytes(self.db, uid), latest_month_used, month_rates)
                 self.db.set_quota_pool_limit(pool_id, limit_bytes / GIB)
-                if billing_insufficient:
+                cut = bool(cutoff_reached(self.db, uid, balance) or balance <= 0
+                           or billing_insufficient or fixed_insufficient)
+                with self.db._get_conn() as conn:
+                    if cut:
+                        conn.execute("UPDATE payg_accounts SET cut_at=? WHERE user_id=? AND cut_at=''", (_now(), uid))
+                    else:
+                        conn.execute("UPDATE payg_accounts SET cut_at='',purged_at='' WHERE user_id=? AND (cut_at<>'' OR purged_at<>'')", (uid,))
+                if billing_insufficient or cut:
                     self.db.set_quota_pool_status(pool_id, "exceeded")
                 alert = self._alert_payload(uid, account)
                 if alert:
@@ -1067,16 +1221,21 @@ class PaygEngine:
     def _alert_payload(self, uid, account):
         balance = int(self.db.get_wallet_credit(uid) or 0)
         initial = max(1, int(account.get('initial_balance') or 1))
-        level = 3 if balance <= 0 else 2 if balance <= initial * 0.10 else 1 if balance <= initial * 0.20 else 0
+        used = max(0, initial - balance)
+        percent = used * 100 / initial
+        if balance <= 0 or alert_reached(self.db, 3, used, percent):
+            level = 3
+        elif alert_reached(self.db, 2, used, percent):
+            level = 2
+        elif alert_reached(self.db, 1, used, percent):
+            level = 1
+        else:
+            level = 0
         previous = int(account.get('last_alert_level') or 0)
         if level <= previous:
             return None
-        messages = {
-            1: "⚠️ موجودی کیف پول شما به کمتر از ۲۰٪ موجودی شروع Pay As You Go رسیده است. برای جلوگیری از توقف سرویس، کیف پول را شارژ کنید.",
-            2: "🚨 موجودی کیف پول شما به کمتر از ۱۰٪ موجودی شروع رسیده است. لطفاً هرچه زودتر کیف پول را شارژ کنید.",
-            3: "⛔ موجودی کیف پول تمام شده و سرویس‌های Pay As You Go در حال تعلیق هستند. پس از شارژ کیف پول، سرویس به‌صورت خودکار دوباره فعال می‌شود.",
-        }
-        return {"user_id": uid, "level": level, "text": messages[level]}
+        return {"user_id": uid, "level": level,
+                "text": render_alert_text(self.db, level, used, initial, balance, percent)}
 
     async def run_forever(self):
         logger.info("Pay As You Go billing worker started (interval=%ss)", self.interval_seconds)
@@ -1094,6 +1253,7 @@ class PaygEngine:
                             await self.bot.send_message(alert["user_id"], alert["text"])
                         except Exception:
                             logger.warning("PAYG alert delivery failed for user=%s; threshold will not be spammed", alert["user_id"])
+                await retention_sweep(self.db, self.bot)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -1105,6 +1265,117 @@ class PaygEngine:
             except (TypeError, ValueError):
                 pass
             await asyncio.sleep(self.interval_seconds)
+
+
+async def _delete_payg_config(db, uid: int, cid: int) -> bool:
+    """یک سرویس ساخته‌شده توسط PayG را از همه سرورها و دیتابیس حذف می‌کند؛ ناموفق بودن حذف از سرور = تلاش مجدد بعدی."""
+    from multi_target import delete_linked_panel_users
+    sid = f"custom_config:{int(cid)}"
+    row = await asyncio.to_thread(db.get_custom_config_by_id, int(cid))
+    if row is not None and int(row["user_id"]) == int(uid):
+        with db._get_conn() as conn:
+            accounts = [dict(r) for r in conn.execute(
+                "SELECT account_id,node_id FROM ssh_accounts WHERE custom_config_id=?", (int(cid),)).fetchall()]
+        for acc in accounts:
+            try:
+                from ssh_providers import get_ssh_provider
+                from quota_reconciler import _env_secret_resolver
+                node = await asyncio.to_thread(db.get_ssh_node, int(acc["node_id"]))
+                if node:
+                    await get_ssh_provider(node, secret_resolver=_env_secret_resolver).delete_account(acc["account_id"])
+            except Exception:
+                logger.exception("PAYG retention: SSH delete failed for %s", acc["account_id"])
+                return False
+        if row["panel_server_id"]:
+            server = await asyncio.to_thread(db.get_panel_server, row["panel_server_id"])
+            if server:
+                try:
+                    from panel_providers import get_provider
+                    await get_provider(server).delete_user(row["username"])
+                except Exception:
+                    logger.exception("PAYG retention: panel delete failed for %s", row["username"])
+                    return False
+        link_ids = [int(l["id"]) for l in await asyncio.to_thread(db.panel_links_for_config, int(cid), False)]
+        await delete_linked_panel_users(db, int(cid))
+        with db._get_conn() as conn:
+            for acc in accounts:
+                conn.execute("DELETE FROM ssh_accounts WHERE account_id=?", (acc["account_id"],))
+                for table in ("usage_snapshots", "quota_enforcement_state"):
+                    conn.execute(f"DELETE FROM {table} WHERE service_kind='ssh' AND service_id=?", (acc["account_id"],))
+                conn.execute("DELETE FROM quota_pool_members WHERE service_kind='ssh' AND service_id=?", (acc["account_id"],))
+            for key in [sid] + [f"panel_link:{i}" for i in link_ids]:
+                conn.execute("DELETE FROM payg_services WHERE user_id=? AND service_id=?", (int(uid), key))
+                conn.execute("DELETE FROM quota_pool_members WHERE service_kind='vpn' AND service_id=?", (key,))
+                conn.execute("DELETE FROM quota_enforcement_state WHERE service_kind='vpn' AND service_id=?", (key,))
+                conn.execute("DELETE FROM usage_snapshots WHERE service_kind='vpn' AND service_id=?", (key,))
+        await asyncio.to_thread(db.delete_owned_custom_config, int(cid), int(uid), 0)
+    with db._get_conn() as conn:
+        conn.execute("DELETE FROM payg_provisioned_services WHERE service_kind='vpn' AND service_id=? AND user_id=?", (sid, int(uid)))
+    return True
+
+
+async def purge_cut_account(db, uid: int) -> dict:
+    """سرویس‌های ساخته‌شده توسط PayG برای یک کاربر قطع‌شده را حذف می‌کند (سرویس‌های قدیمیِ متصل‌شده دست‌نخورده می‌مانند)."""
+    with db._get_conn() as conn:
+        ids = [r["service_id"] for r in conn.execute(
+            "SELECT service_id FROM payg_provisioned_services WHERE service_kind='vpn' AND user_id=?", (int(uid),)).fetchall()]
+    deleted, ok = 0, True
+    for sid in ids:
+        try:
+            cid = int(str(sid).split(":", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        if await _delete_payg_config(db, uid, cid):
+            deleted += 1
+        else:
+            ok = False
+    if ok:
+        with db._get_conn() as conn:
+            account = conn.execute("SELECT quota_pool_id FROM payg_accounts WHERE user_id=?", (int(uid),)).fetchone()
+            remaining = conn.execute("SELECT COUNT(*) n FROM payg_services WHERE user_id=?", (int(uid),)).fetchone()["n"]
+            if remaining == 0:
+                conn.execute("DELETE FROM payg_accounts WHERE user_id=?", (int(uid),))
+            else:
+                conn.execute("UPDATE payg_accounts SET purged_at=? WHERE user_id=?", (_now(), int(uid)))
+        if remaining == 0 and account and account["quota_pool_id"]:
+            await asyncio.to_thread(db.delete_quota_pool, int(account["quota_pool_id"]))
+    return {"ok": ok, "deleted": deleted}
+
+
+async def retention_sweep(db, bot=None) -> int:
+    """اکانت‌هایی که بیش از مهلت نگهداری قطع مانده‌اند را حذف می‌کند؛ تعداد حساب‌های پاک‌شده را برمی‌گرداند."""
+    days = get_retention_days(db)
+    if days <= 0:
+        return 0
+    with db._get_conn() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT user_id,cut_at,last_balance FROM payg_accounts "
+            "WHERE status='active' AND cut_at<>'' AND purged_at=''").fetchall()]
+    done = 0
+    for row in rows:
+        uid = int(row["user_id"])
+        try:
+            if is_free_payg_user(db, uid):
+                continue
+            stamp = datetime.fromisoformat(str(row["cut_at"]).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - stamp).total_seconds() < days * 86400:
+                continue
+            if int(db.get_wallet_credit(uid) or 0) > int(row["last_balance"] or 0):
+                continue
+            result = await purge_cut_account(db, uid)
+            if result["ok"] and result["deleted"]:
+                done += 1
+                logger.info("PAYG retention expired; deleted %s services for user=%s", result["deleted"], uid)
+                if bot:
+                    try:
+                        await bot.send_message(uid, tr("🗑 مهلت نگهداری اشتراک شما به پایان رسید و چون کیف پول شارژ نشد، سرویس‌های آن از سرورها حذف شد."))
+                    except Exception:
+                        logger.warning("PAYG retention notice failed for user=%s", uid)
+        except Exception:
+            logger.exception("PAYG retention failed for user=%s", uid)
+    return done
 
 
 def _acquire_provision_lock(db, user_id: int) -> bool:
@@ -1195,12 +1466,12 @@ async def _provision_payg_multi(db, uid: int, panel_ids, node_ids, protocols) ->
                 db.set_quota_pool_status(pool_id, "active")
         else:
             pool_restore["old_pool_id"] = pool_id
-            pool_id = int(db.create_quota_pool(int(uid), 1_000_000_000, label="Pay As You Go", metadata={"payg": True}))
+            pool_id = int(db.create_quota_pool(int(uid), 1_000_000_000, label=get_payg_name(db), metadata={"payg": True}))
             created_pool = True
             with db._get_conn() as conn:
                 conn.execute("UPDATE payg_accounts SET quota_pool_id=? WHERE user_id=?", (pool_id, int(uid)))
     else:
-        pool_id = int(db.create_quota_pool(int(uid), 1_000_000_000, label="Pay As You Go", metadata={"payg": True}))
+        pool_id = int(db.create_quota_pool(int(uid), 1_000_000_000, label=get_payg_name(db), metadata={"payg": True}))
         created_pool = True
 
     ssh_items, panel_users, link_ids = [], [], []
@@ -1252,7 +1523,7 @@ async def _provision_payg_multi(db, uid: int, panel_ids, node_ids, protocols) ->
                 logger.exception("PAYG multi rollback: pool status restore failed")
 
     try:
-        ssh_product_base = {"name": "Pay As You Go", "auto_provision_volume_gb": 0, "duration_days": 0}
+        ssh_product_base = {"name": get_payg_name(db), "auto_provision_volume_gb": 0, "duration_days": 0}
         for nid, picks in node_plan:
             for proto in picks:
                 prod = dict(ssh_product_base, provision_ssh_node_id=nid, provision_ssh_protocol=proto)
@@ -1265,7 +1536,7 @@ async def _provision_payg_multi(db, uid: int, panel_ids, node_ids, protocols) ->
         primary_username = None
         for index, sid in enumerate(panel_ids):
             fake_product = {
-                "id": None, "name": "Pay As You Go", "auto_provision_volume_gb": 0, "duration_days": 0,
+                "id": None, "name": get_payg_name(db), "auto_provision_volume_gb": 0, "duration_days": 0,
                 "provision_server_id": int(sid), "provision_ssh_node_id": None, "provision_ssh_protocol": "ssh",
                 "is_auto_provision": 1, "base_users": 0, "extra_user_price": 0, "max_users": 0,
             }
@@ -1373,6 +1644,41 @@ PAYG_STATUS_PLACEHOLDERS = ("balance", "spent", "used_gb", "services", "cycle",
                             "min_balance", "panels", "free_note", "links")
 
 
+_PAYG_RATE_LINE = ("تعرفه هر سرویس بر اساس پنل و گروه/اینباند محل ساخت محاسبه می‌شود؛ "
+                   "هزینه ترافیک مصرفی، روزهای فعال و ظرفیت کاربران از کیف پول مشترک کسر خواهد شد.")
+_PAYG_SUPPORTED_LINE = "سرویس‌های قابل صورتحساب فعلی: VPN و SSH با شمارنده مصرف معتبر."
+
+
+def _default_status_template_raw(active: bool) -> str:
+    """متن پیش‌فرض صفحه‌ی Pay As You Go به‌شکل قالب (با متغیرها)؛ معادل پیامی که ربات وقتی متن سفارشی
+    ذخیره نشده نشان می‌دهد. پنل وب این را از ابتدا داخل فیلد می‌گذارد تا مدیر مستقیم ویرایشش کند.
+    اگر متن ذخیره‌شده دقیقاً همین باشد به‌صورت «خالی» ذخیره می‌شود (= همان پیام پیش‌فرض و ترجمه‌ی خودکار)."""
+    if active:
+        return ("💳 <b>Pay As You Go</b>\n\n"
+                "{free_note}\n"
+                "وضعیت: فعال\n"
+                "موجودی کیف پول: {balance} تومان\n"
+                "هزینه این ماه: {spent} تومان\n"
+                "مصرف ثبت‌شده: {used_gb} GB\n"
+                "سرویس‌های متصل: {services}\n"
+                f"{_PAYG_RATE_LINE}\n{_PAYG_SUPPORTED_LINE}\n"
+                "حداقل موجودی کیف پول برای ساخت سرویس جدید: {min_balance} تومان\n"
+                "تسویه مصرف هر {cycle} انجام می‌شود.\n"
+                "پنل‌های فعال ساخت سرویس: {panels}\n"
+                "برای ساخت سرویس مصرفی جدید از دکمه زیر استفاده کنید.")
+    return ("💳 <b>Pay As You Go</b>\n\n"
+            "موجودی کیف پول: {balance} تومان\n"
+            f"{_PAYG_RATE_LINE}\n{_PAYG_SUPPORTED_LINE}\n"
+            "حداقل موجودی کیف پول برای ساخت سرویس جدید: {min_balance} تومان\n"
+            "با ساخت سرویس مصرفی، حجم و زمان ثابت نخواهید داشت و هزینه از کیف پول کسر می‌شود.\n"
+            "{free_note}\n"
+            "برای شروع، کیف پول باید موجودی مثبت داشته باشد.")
+
+
+def default_status_template(active: bool) -> str:
+    return _n(_default_status_template_raw(active))
+
+
 def render_status_text(db, active: bool, values: dict):
     """Admin-defined PayG status text with placeholders filled; None means use the default text."""
     key = PAYG_STATUS_TEXT_ACTIVE_KEY if active else PAYG_STATUS_TEXT_INACTIVE_KEY
@@ -1457,7 +1763,7 @@ def create_payg_router(db, is_main_bot=True):
             ) + "\n"
 
         if status["active"]:
-            text = "💳 <b>Pay As You Go</b>\n\n"
+            text = _n("💳 <b>Pay As You Go</b>\n\n")
             if free:
                 text += tr("🎁 حالت رایگان مدیریت: بدون کسر از کیف پول و بدون سقف حجم") + "\n"
             text += _tformat(
@@ -1475,7 +1781,7 @@ def create_payg_router(db, is_main_bot=True):
                 text += tr("⚠️ پنل فعالی برای ساخت سرویس انتخاب نشده است.") + "\n"
             text += tr("برای ساخت سرویس مصرفی جدید از دکمه زیر استفاده کنید.")
         else:
-            text = "💳 <b>Pay As You Go</b>\n\n"
+            text = _n("💳 <b>Pay As You Go</b>\n\n")
             text += _tformat("موجودی کیف پول: {balance} تومان\n", balance=f"{balance:,}")
             text += rate_text + supported_text
             text += tr("با ساخت سرویس مصرفی، حجم و زمان ثابت نخواهید داشت و هزینه از کیف پول کسر می‌شود.") + "\n"
@@ -1532,7 +1838,7 @@ def create_payg_router(db, is_main_bot=True):
     async def payg_command(message: Message):
         await show(message, message.from_user.id)
 
-    @router.message(F.text.func(lambda t: t in (db.get_setting("btn_payg", "💳 پرداخت به‌ازای مصرف"), "💳 پرداخت به‌ازای مصرف")))
+    @router.message(F.text.func(lambda t: t in (db.get_setting("btn_payg", "💳 پرداخت به‌ازای مصرف"), "💳 پرداخت به‌ازای مصرف", f"💳 {get_payg_name(db)}")))
     async def payg_menu_button(message: Message):
         await show(message, message.from_user.id)
 
@@ -1667,7 +1973,7 @@ def create_payg_router(db, is_main_bot=True):
         try:
             from direct_panel_provision import provision_direct
             fake_product = {
-                "id": None, "name": "Pay As You Go", "auto_provision_volume_gb": 0,
+                "id": None, "name": get_payg_name(db), "auto_provision_volume_gb": 0,
                 "duration_days": 0, "provision_server_id": server_id,
                 "provision_ssh_node_id": None, "provision_ssh_protocol": "ssh",
                 "provision_target_config": (
@@ -1764,8 +2070,8 @@ def create_payg_router(db, is_main_bot=True):
             return
         confirmation = tr("✅ Pay As You Go فعال شد. سرویس‌های دارای اندازه‌گیری مصرف معتبر متصل شدند.") + "\n" + _tformat("تسویه مصرف هر {cycle} انجام می‌شود.\n", cycle=cycle_text(db))
         if result.get('conflicts'):
-            confirmation += (f"\n\n⚠️ تعداد {result['conflicts']} سرویس به دلیل اتصال به استخر سهمیه‌ی دیگری وارد Pay As You Go نشد؛ "
-                             "برای جلوگیری از تداخل سهمیه‌ها، انتقال آن‌ها خودکار انجام نشد.")
+            confirmation += _n(f"\n\n⚠️ تعداد {result['conflicts']} سرویس به دلیل اتصال به استخر سهمیه‌ی دیگری وارد Pay As You Go نشد؛ "
+                               "برای جلوگیری از تداخل سهمیه‌ها، انتقال آن‌ها خودکار انجام نشد.")
         await call.message.answer(confirmation)
         await show(call.message, call.from_user.id)
 
@@ -1895,7 +2201,7 @@ async def provision_service_for_user(db, uid: int) -> dict:
             from panel_providers import get_provider
             targets = get_payg_targets(db)
             fake_product = {
-                "id": None, "name": "Pay As You Go", "auto_provision_volume_gb": 0,
+                "id": None, "name": get_payg_name(db), "auto_provision_volume_gb": 0,
                 "duration_days": 0, "provision_server_id": server_id,
                 "provision_ssh_node_id": None, "provision_ssh_protocol": "ssh",
                 "provision_target_config": (

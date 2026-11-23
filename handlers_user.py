@@ -4775,6 +4775,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 # کانفیگ‌هایی که ادمین غیرفعال کرده در «سفارش‌های من» نشان داده
                 # نمی‌شوند (لینک دیگر متعلق به کاربر شناخته نمی‌شود).
                 configs = [c for c in configs if not (("is_disabled" in c.keys()) and c["is_disabled"])]
+                configs = [c for c in configs if c["assigned_user_id"] in (None, 0, user_tg_id)]
                 if had_configs and not configs:
                     continue
                 if configs:
@@ -4793,6 +4794,15 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             items.append({
                 "cb_id": f"o{o['id']}", "kind": "order", "label": base_label, "order": o,
                 "product_name": pname, "_ts": order_ts,
+            })
+
+        for cfg in db.get_gifted_in_configs(user_tg_id):
+            if cfg["is_disabled"]:
+                continue
+            pname = cfg["product_name"] or "کانفیگ"
+            items.append({
+                "cb_id": f"c{cfg['id']}", "kind": "config", "label": f"🎁 {pname}",
+                "order": None, "product_name": pname, "config": cfg, "_ts": cfg["assigned_at"] or "",
             })
 
         payg_ids = _payg_config_ids(user_tg_id)
@@ -4904,8 +4914,13 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         kind = item["kind"]
         if kind == "config":
             cfg, o, pname = item["config"], item["order"], item["product_name"]
-            text = f"📦 محصول: {escape_md(pname)} (سفارش #{o['id']})\n"
-            text += f"🗓 تاریخ خرید: {to_jalali_str(o['created_at'], with_time=True)}\n"
+            if o is None:
+                text = f"🎁 اشتراک هدیه: {escape_md(pname)}\n"
+                if cfg["assigned_at"]:
+                    text += f"🗓 تاریخ دریافت: {to_jalali_str(cfg['assigned_at'], with_time=True)}\n"
+            else:
+                text = f"📦 محصول: {escape_md(pname)} (سفارش #{o['id']})\n"
+                text += f"🗓 تاریخ خرید: {to_jalali_str(o['created_at'], with_time=True)}\n"
             if cfg["expires_at"]:
                 text += f"⏳ انقضا: {to_jalali_str(cfg['expires_at'], with_time=True)}\n"
             text += f"🔗 `{cfg['link']}`\n"

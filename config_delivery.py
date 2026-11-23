@@ -413,7 +413,133 @@ async def collect_service_info(link: str, product_name: str = "") -> dict:
         "name": name,
         "volume": _format_volume(info.get("total")) if info else None,
         "duration": _format_duration(info.get("expire")) if info else None,
+        # مقادیر خام برای پارامترهای قالب تحویل (فقط وقتی هدر مصرف پنل موجود باشد)
+        "total_bytes": int(info.get("total") or 0) if info else None,
+        "used_bytes": (int(info.get("upload") or 0) + int(info.get("download") or 0)) if info else None,
+        "expire_ts": info.get("expire") if info else None,
     }
+
+
+def template_param_values(svc: dict, product_name: str, idx: int, total: int,
+                          username: str = "", raw_link: str = "") -> dict:
+    """پارامترهای قابل استفاده در «قالب پیام تحویل بر اساس نوع پنل»؛ مقدار ناموجود = رشته‌ی خالی.
+    لیست باید با راهنمای پارامترها در پنل وب (DELIVERY_TEMPLATE_PARAMS در app.js) یکی بماند."""
+    total_b = svc.get("total_bytes")
+    used_b = svc.get("used_bytes")
+    expire_ts = svc.get("expire_ts")
+    if expire_ts:
+        try:
+            expire_date = to_jalali_str(datetime.fromtimestamp(int(expire_ts)))
+            days_left = str(max(0, math.ceil((int(expire_ts) - time.time()) / 86400)))
+        except Exception:
+            expire_date, days_left = "", ""
+    else:
+        expire_date = "نامحدود" if svc.get("duration") else ""
+        days_left = ""
+    if used_b is not None:
+        used = _format_used(used_b)
+        remaining = _format_used(max(0, total_b - used_b)) if total_b and total_b > 0 else "نامحدود"
+    else:
+        used, remaining = "", ""
+    return {
+        "product_name": product_name or "", "protocol": svc.get("protocol") or "",
+        "service_name": svc.get("name") or "", "volume": svc.get("volume") or "",
+        "usage_limit": svc.get("volume") or "",
+        "used": used, "remaining": remaining,
+        "duration": svc.get("duration") or "", "expire_date": expire_date, "days_left": days_left,
+        "index": idx, "total": total,
+        "username": username or "",
+        "subscription_url": svc.get("sub_url") or "", "subscription_link": svc.get("sub_url") or "",
+        "raw_link": raw_link or "",
+        "config_links": "\n".join(svc.get("configs") or []),
+    }
+
+
+# ---------------------------------------------------------------------------
+# متن پیش‌فرض «قالب پیام تحویل بر اساس نوع پنل»
+# وقتی ادمین قالبی ذخیره نکرده باشد ربات همان پیام غنی پیش‌فرض (با QR و تقسیم خودکار لینک‌های بلند)
+# را می‌فرستد؛ متن‌های زیر معادل همان پیام‌اند و در پنل وب از ابتدا داخل فیلد پر می‌شوند تا
+# ادمین نمونه‌ی استفاده از پارامترهای هر پنل را ببیند و مستقیم ویرایش کند. اگر متن ذخیره‌شده دقیقاً
+# با پیش‌فرض یکی باشد به‌صورت «خالی» ذخیره می‌شود (یعنی همچنان پیام پیش‌فرض فعال است).
+# ---------------------------------------------------------------------------
+_TPL_INFO_BASE = ("<blockquote><b>اطلاعات سرویس</b>\n"
+                  "📡 پروتکل: {protocol}\n🔮 نام سرویس: {service_name}\n"
+                  "🔋 حجم سرویس: {volume}\n⏰ مدت سرویس: {duration}</blockquote>")
+_TPL_FOOT = "با لمس کردن هر یک از لینک ها، خودکار کپی میشود"
+
+DELIVERY_TEMPLATE_PANEL_KEYS = (
+    "default", "pasarguard", "3xui", "marzban", "marzneshin", "hiddify", "alireza", "rebecca",
+    "sui", "wgdashboard", "mikrotik", "ibsng", "wui", "stealth", "doctordns",
+)
+_TPL_SUB_PANELS = ("pasarguard", "3xui", "marzban", "marzneshin", "hiddify", "alireza", "rebecca", "sui", "stealth")
+_TPL_FILE_PANELS = ("wgdashboard", "wui", "doctordns")
+
+
+def default_delivery_template(key: str) -> str:
+    """نمونه/پیش‌فرض قالب تحویل برای یک نوع پنل (key همان پسوند delivery_message_template_*)."""
+    key = str(key or "default")
+    if key in _TPL_SUB_PANELS:
+        # پنل‌های لینک اشتراک: نام کاربری و تاریخ انقضا هم کنار اطلاعات سرویس می‌آید
+        return ("سفارش جدید شما 😍\n\n"
+                "<blockquote><b>اطلاعات سرویس</b>\n"
+                "👤 نام کاربری: {username}\n📡 پروتکل: {protocol}\n🔮 نام سرویس: {service_name}\n"
+                "🔋 حجم سرویس: {volume}\n⏰ مدت سرویس: {duration}\n📅 تاریخ انقضا: {expire_date}</blockquote>\n\n"
+                "<blockquote><b>لینک های اتصال</b>\n\n"
+                "🌐 subscription : <code>{subscription_link}</code>\n\n"
+                "💝 config : <code>{config_links}</code></blockquote>\n\n" + _TPL_FOOT)
+    if key in _TPL_FILE_PANELS:
+        # پنل‌های مبتنی بر فایل (WireGuard / OpenVPN / DNS): فایل کانفیگ جداگانه ارسال می‌شود
+        return ("سفارش جدید شما 😍\n\n"
+                "<blockquote><b>اطلاعات سرویس</b>\n"
+                "👤 نام کاربری: {username}\n🔮 نام سرویس: {service_name}\n"
+                "🔋 حجم سرویس: {volume}\n📅 تاریخ انقضا: {expire_date}</blockquote>\n\n"
+                "<blockquote><b>لینک های اتصال</b>\n\n"
+                "🌐 subscription : <code>{subscription_link}</code></blockquote>\n\n"
+                "📎 فایل‌های اتصال این سرویس در پیام بعدی ارسال می‌شود.")
+    if key in ("mikrotik", "ibsng"):
+        # پنل‌های حساب‌محور: اتصال با نام کاربری؛ لینک اشتراک ندارند
+        return ("سفارش جدید شما 😍\n\n"
+                "<blockquote><b>اطلاعات سرویس</b>\n"
+                "👤 نام کاربری: {username}\n🔮 نام سرویس: {service_name}\n"
+                "🔋 حجم سرویس: {volume}\n⏰ مدت سرویس: {duration}\n📅 تاریخ انقضا: {expire_date}</blockquote>\n\n"
+                "<blockquote><b>اطلاعات اتصال</b>\n\n<code>{config_links}</code></blockquote>")
+    # default: معادل پیام پیش‌فرض ربات
+    return ("سفارش جدید شما 😍\n\n" + _TPL_INFO_BASE + "\n\n"
+            "<blockquote><b>لینک های اتصال</b>\n\n"
+            "🌐 subscription : <code>{subscription_link}</code>\n\n"
+            "💝 config : <code>{config_links}</code></blockquote>\n\n" + _TPL_FOOT)
+
+
+def split_custom_delivery_text(text: str):
+    """متن قالب سفارشی را به (کپشن ≤۱۰۲۴ نویسه، [پیام‌های بعدی]) تقسیم می‌کند تا ارسال عکس QR خطا ندهد."""
+    text = str(text or "").strip()
+    if _visible_len(text) <= CAPTION_LIMIT:
+        return text, []
+    parts = [p for p in re.split(r"\n\n+", text) if p.strip()]
+    caption, rest = "", []
+    for p in parts:
+        if not rest and _visible_len((caption + "\n\n" + p) if caption else p) <= CAPTION_LIMIT:
+            caption = (caption + "\n\n" + p) if caption else p
+        else:
+            rest.append(p)
+    if not caption:  # بند اول به‌تنهایی بلند است
+        caption, rest = parts[0][:CAPTION_LIMIT - 1], ([parts[0][CAPTION_LIMIT - 1:]] + parts[1:])
+    chunks, cur, cur_len = [], [], 0
+    for p in rest:
+        ln = _visible_len(p) + 2
+        if cur and cur_len + ln > CHUNK_LIMIT:
+            chunks.append("\n\n".join(cur)); cur, cur_len = [], 0
+        cur.append(p[:CHUNK_LIMIT]); cur_len += ln
+    if cur:
+        chunks.append("\n\n".join(cur))
+    return caption, chunks
+
+
+def _format_used(n):
+    n = int(n or 0)
+    if n >= 1024 ** 3:
+        return f"{round(n / 1024 ** 3, 2):g} گیگ"
+    return f"{round(n / 1024 ** 2):g} مگ"
 
 
 def build_delivery_message(svc: dict, idx: int, total: int, sub_link_on: bool,
@@ -499,16 +625,20 @@ async def prepare_delivery(link: str, product_name: str, idx: int, total: int,
         if not template:
             template = (await asyncio.to_thread(db.get_setting, "delivery_message_template_default", "") or "").strip()
         if template:
-            safe_values = {
-                "product_name": product_name or "", "protocol": svc.get("protocol") or "",
-                "service_name": svc.get("name") or "", "volume": svc.get("volume") or "",
-                "duration": svc.get("duration") or "", "index": idx, "total": total,
-                "subscription_url": svc.get("sub_url") or "", "config_links": "\n".join(svc.get("configs") or []),
-            }
+            username, raw_link = "", ""
+            if svc.get("is_sub"):
+                try:
+                    raw_link = await asyncio.to_thread(dedicated_sub.upstream_for_link, db, link)
+                    cc = await asyncio.to_thread(db.ds_find_config_by_sub_url, raw_link)
+                    if cc is not None:
+                        username = str(cc["username"] or "")
+                except Exception:
+                    logger.debug("خواندن نام کاربری سرویس برای قالب تحویل ناموفق بود.", exc_info=True)
+            safe_values = template_param_values(svc, product_name, idx, total, username, raw_link)
             try:
                 custom = template.format_map({k: html_lib.escape(str(v)) for k, v in safe_values.items()})
                 if custom.strip():
-                    return custom, []
+                    return split_custom_delivery_text(custom)
             except (KeyError, ValueError, IndexError):
                 logger.warning("قالب تحویل %s نامعتبر است؛ از قالب پیش‌فرض استفاده شد.", provider_key)
     return build_delivery_message(svc, idx, total, sub_link_on, individual_on, alternates, L, header_text)

@@ -1321,7 +1321,7 @@ def build_page_data(cc, info: dict, uris: List[str], settings: Dict[str, str], b
 # ---------------------------------------------------------------------------
 # قالب اختصاصی صفحه‌ی ساب
 # ---------------------------------------------------------------------------
-CUSTOM_TEMPLATE_MAX = 400_000  # بایت
+CUSTOM_TEMPLATE_MAX = 2 * 1024 * 1024  # بایت
 _TPL_TOKEN_RE = re.compile(r"__(NONCE|TITLE|THEME|DATA)__")
 _SCRIPT_NO_NONCE_RE = re.compile(r"<script\b(?![^>]*\bnonce\s*=)", re.I)
 
@@ -1332,7 +1332,7 @@ def validate_custom_template(text: str) -> Optional[str]:
     if not text.strip():
         return None
     if len(text.encode("utf-8")) > CUSTOM_TEMPLATE_MAX:
-        return "حجم قالب بیش از حد مجاز است (حداکثر ۴۰۰ کیلوبایت)."
+        return "حجم قالب بیش از حد مجاز است (حداکثر ۲ مگابایت)."
     if "__DATA__" not in text:
         return "قالب باید شامل __DATA__ باشد؛ مثلاً const D=__DATA__; داخل تگ script."
     return None

@@ -37,5 +37,7 @@
   "web_store_og_image",
   "web_store_terms_custom"
  ],
- "mini_only": []
+ "mini_only": [
+  "post_delivery_custom_text"
+ ]
 }

@@ -399,7 +399,11 @@ def categories_kb(db, categories, is_main_bot: bool = True, show_payg: bool = Fa
     except Exception:
         pass
     if show_payg and db.get_setting("payg_enabled", "1") == "1":
-        payg_text = db.get_setting("btn_payg", "💳 پرداخت به‌ازای مصرف")
+        payg_default = "💳 پرداخت به‌ازای مصرف"
+        payg_text = db.get_setting("btn_payg", payg_default)
+        payg_custom_name = (db.get_setting("payg_name", "") or "").strip()
+        if payg_custom_name and payg_text == payg_default:
+            payg_text = f"💳 {payg_custom_name}"
         payg_style = db.get_setting("btn_payg_style", "success")
         rows.append([InlineKeyboardButton(
             text=payg_text, callback_data="payg:open",
