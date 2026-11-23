@@ -1033,7 +1033,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             f"\n🕒 {_jstr(_dt.now(), with_time=True)}"
         )
         try:
-            await report_router.send_text(bot, db, "signup", text, kb.user_quick_actions_kb(message.from_user.id))
+            await report_router.report(bot, db, "signup", text, kb.user_quick_actions_kb(message.from_user.id))
         except Exception:
             logging.getLogger("handlers_user").warning("ارسال کارت ثبت‌نام به گروه گزارش ناموفق بود.", exc_info=True)
 

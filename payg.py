@@ -834,6 +834,100 @@ def payg_status(db, user_id: int):
             "quota_pool_id": int(row['quota_pool_id'] or 0)}
 
 
+
+def build_payg_daily_report(db, day_key: str = None) -> str:
+    """گزارش روزانه‌ی کامل PayG بر اساس روز تهران: مصرف، برداشت‌ها و وضعیت سرویس کاربران."""
+    from zoneinfo import ZoneInfo
+    from datetime import datetime as _dt
+    day_key = day_key or _dt.now(ZoneInfo("Asia/Tehran")).strftime("%Y-%m-%d")
+    with db._get_conn() as conn:
+        txs = [dict(r) for r in conn.execute(
+            "SELECT user_id,service_kind,service_id,used_bytes,amount,rate_snapshot,created_at FROM payg_transactions "
+            "WHERE date(created_at,'+3 hours','+30 minutes')=? ORDER BY user_id,id", (day_key,)).fetchall()]
+        activated = [dict(r) for r in conn.execute(
+            "SELECT user_id,status,initial_balance,last_balance,month_used_bytes,month_cost,created_at,updated_at "
+            "FROM payg_accounts WHERE date(created_at,'+3 hours','+30 minutes')=? ORDER BY user_id", (day_key,)).fetchall()]
+        active_accounts = [dict(r) for r in conn.execute(
+            "SELECT user_id,status,last_balance,month_used_bytes,month_cost,created_at,updated_at FROM payg_accounts "
+            "WHERE status='active' ORDER BY user_id").fetchall()]
+        service_counts = {int(r['user_id']): int(r['n'] or 0) for r in conn.execute(
+            "SELECT user_id,COUNT(*) n FROM payg_services GROUP BY user_id").fetchall()}
+    if not txs and not activated:
+        return f"📡 گزارش روزانه PayG — {day_key}\n\nامروز فعالیت یا فعال‌سازی جدیدی ثبت نشده است."
+    by_user = {}
+    for tx in txs:
+        u = by_user.setdefault(int(tx['user_id']), {'bytes':0,'amount':0,'items':[]})
+        u['bytes'] += max(0,int(tx['used_bytes'] or 0)); u['amount'] += max(0,int(tx['amount'] or 0)); u['items'].append(tx)
+    lines = [f"📡 <b>گزارش روزانه خریدهای پرداخت به‌ازای مصرف</b>", f"📅 {day_key}", "",
+             f"👥 کاربران دارای تراکنش: {len(by_user):,}", f"🧾 تعداد برداشت‌ها: {len(txs):,}",
+             f"📥 مصرف ثبت‌شده: {sum(int(x['used_bytes'] or 0) for x in txs)/GIB:.3f} GB",
+             f"💰 مجموع هزینه/برداشت: {sum(int(x['amount'] or 0) for x in txs):,} تومان",
+             f"🆕 فعال‌سازی جدید: {len(activated):,}", f"🟢 حساب‌های فعال فعلی: {len(active_accounts):,}", "", "━━━━━━━━━━━━━━━━━━"]
+    user_cache = {}
+    for uid in sorted(set(by_user) | {int(x['user_id']) for x in activated}):
+        info = by_user.get(uid, {'bytes':0,'amount':0,'items':[]})
+        if uid not in user_cache:
+            try:
+                row = db.get_user(uid)
+                user_cache[uid] = row
+            except Exception:
+                user_cache[uid] = None
+        row = user_cache[uid]
+        first = (row['first_name'] if row and 'first_name' in row.keys() else '') or ''
+        username = (row['username'] if row and 'username' in row.keys() else '') or ''
+        name = html.escape(first or 'کاربر')
+        handle = f" (@{html.escape(username)})" if username else ''
+        lines += [f"\n👤 <b>{name}{handle}</b> — <code>{uid}</code>",
+                  f"📊 مصرف امروز: {info['bytes']/GIB:.3f} GB",
+                  f"💳 برداشت امروز: {info['amount']:,} تومان",
+                  f"🔢 تراکنش‌ها: {len(info['items']):,}"]
+        for tx in info['items']:
+            try: snap = json.loads(tx.get('rate_snapshot') or '{}')
+            except Exception: snap = {}
+            if snap.get('type') == 'users': detail = f"ظرفیت {int(snap.get('capacity') or 0)} کاربر"
+            elif snap.get('type') == 'days': detail = f"{int(snap.get('days') or 0)} روز سرویس"
+            else: detail = f"مصرف {int(tx['used_bytes'] or 0)/GIB:.3f} GB"
+            service_label = str(tx['service_id'])
+            try:
+                sid = str(tx['service_id'])
+                if sid.startswith('custom_config:'):
+                    cid = int(sid.split(':',1)[1])
+                    service = conn = None
+                    with db._get_conn() as c:
+                        service = c.execute("SELECT cc.username,ps.name panel_name FROM custom_configs cc LEFT JOIN panel_servers ps ON ps.id=cc.panel_server_id WHERE cc.id=?", (cid,)).fetchone()
+                    if service: service_label = f"VPN {service['username']} · {service['panel_name'] or 'پنل نامشخص'}"
+                elif sid.startswith('panel_link:'):
+                    lid = int(sid.split(':',1)[1])
+                    with db._get_conn() as c:
+                        service = c.execute("SELECT l.username,ps.name panel_name,cc.username parent_username FROM config_panel_links l LEFT JOIN panel_servers ps ON ps.id=l.panel_server_id LEFT JOIN custom_configs cc ON cc.id=l.custom_config_id WHERE l.id=?", (lid,)).fetchone()
+                    if service: service_label = f"لینک پنل {service['username']} · {service['panel_name'] or 'پنل'} (سرویس {service['parent_username']})"
+            except Exception:
+                pass
+            lines.append(f"▫️ {html.escape(service_label)}: {detail} — {int(tx['amount'] or 0):,} تومان")
+    lines += ["", "━━━━━━━━━━━━━━━━━━", "📌 خلاصه وضعیت حساب‌های فعال:"]
+    for acc in active_accounts[:40]:
+        uid=int(acc['user_id']); spent=int(acc['month_cost'] or 0); used=int(acc['month_used_bytes'] or 0)
+        lines.append(f"• <code>{uid}</code> | سرویس‌ها: {service_counts.get(uid,0)} | ماه: {used/GIB:.2f} GB | هزینه ماه: {spent:,} تومان | موجودی: {int(acc['last_balance'] or 0):,} تومان")
+    return "\n".join(lines)
+
+
+async def send_payg_daily_report(bot, db, day_key: str = None) -> bool:
+    text = await asyncio.to_thread(build_payg_daily_report, db, day_key)
+    # تلگرام سقف طول پیام دارد؛ متن را در مرز خطوط به چند پیام مستقل تقسیم می‌کنیم.
+    chunks, current = [], ""
+    for line in text.splitlines():
+        candidate = current + ("\n" if current else "") + line
+        if len(candidate) > 3500 and current:
+            chunks.append(current); current = line
+        else:
+            current = candidate
+    if current: chunks.append(current)
+    delivered = True
+    for chunk in chunks:
+        ok = await report_router.report(bot, db, "payg", chunk, senior_only=True)
+        delivered = delivered and bool(ok)
+    return delivered
+
 def _billing_base_bytes(db, user_id: int) -> int:
     """Bytes already settled (or grandfathered at activation), excluding pending usage.
 
@@ -1713,6 +1807,26 @@ async def send_delivery_message(message, db, default_text: str, username: str, s
         await message.answer(default_text, parse_mode="HTML", disable_web_page_preview=True)
 
 
+
+async def _report_payg_event(bot, db, uid: int, title: str, details: dict = None):
+    """ارسال رویداد فعال‌سازی/ساخت سرویس PayG به تاپیک گزارش خریدها."""
+    try:
+        import report_router
+        row = await asyncio.to_thread(db.get_user, int(uid))
+        first = (row['first_name'] if row and 'first_name' in row.keys() else '') or 'کاربر'
+        username = (row['username'] if row and 'username' in row.keys() else '') or ''
+        handle = f" (@{html.escape(username)})" if username else ''
+        lines = [f"📡 <b>{html.escape(title)}</b>", "", f"👤 {html.escape(first)}{handle}", f"🆔 <code>{int(uid)}</code>"]
+        details = details or {}
+        for label, value in details.items():
+            if value is not None and value != '':
+                lines.append(f"▫️ {html.escape(str(label))}: {html.escape(str(value))}")
+        lines.append(f"🕒 {_now()}")
+        await report_router.report(bot, db, 'payg', '\n'.join(lines), senior_only=True)
+    except Exception:
+        logger.exception("PAYG event report failed for user=%s", uid)
+
+
 def create_payg_router(db, is_main_bot=True):
     router = Router(name="payg_router")
     if not is_main_bot:
@@ -1889,6 +2003,11 @@ def create_payg_router(db, is_main_bot=True):
         try:
             try:
                 result = await _provision_payg_multi(db, uid, panel_ids, node_ids, protocols)
+                await _report_payg_event(call.bot, db, uid, "سرویس PayG جدید ساخته شد", {
+                    "نام کاربری": result.get("username"), "مقصدها": f"{result.get('panels',0)} پنل + {result.get('nodes',0)} نود",
+                    "تعداد SSH": result.get("ssh_accounts", 0), "نوع سرویس": "پرداخت به‌ازای مصرف",
+                    "وضعیت": "فعال",
+                })
             except Exception as exc:
                 logger.exception("PAYG multi-target provisioning failed for user=%s", uid)
                 await call.message.answer(_tformat("⛔️ ساخت سرویس Pay As You Go ناموفق بود: {error}\nهیچ هزینه مصرفی برای این سرویس ثبت نشده است.", error=str(exc)[:250]))
@@ -2013,6 +2132,10 @@ def create_payg_router(db, is_main_bot=True):
             if not enrolled.get("ok") or not member:
                 raise RuntimeError("اتصال سرویس ساخته‌شده به حساب مصرفی ناموفق بود.")
             enrolled_ok = True
+            await _report_payg_event(call.bot, db, uid, "سرویس PayG جدید ساخته شد", {
+                "نام کاربری": provisioned.get("username"), "پنل": server.get("name"),
+                "شناسه سرویس": provisioned.get("custom_config_id"), "نوع سرویس": "پرداخت به‌ازای مصرف", "وضعیت": "فعال",
+            })
             central_url = await asyncio.to_thread(_central_link, db, int(provisioned["custom_config_id"]),
                                                   provisioned["subscription_url"])
             safe_url = central_url.replace("&", "&amp;").replace('"', "&quot;")
@@ -2068,6 +2191,11 @@ def create_payg_router(db, is_main_bot=True):
                 reason = tr("برای فعال‌سازی ابتدا کیف پول را شارژ کنید.")
             await call.message.answer(reason)
             return
+        if not result.get("existing"):
+            await _report_payg_event(call.bot, db, call.from_user.id, "حساب PayG فعال شد", {
+                "سرویس‌های متصل": result.get("attached", 0), "موجودی کیف پول": f"{int(db.get_wallet_credit(call.from_user.id) or 0):,} تومان",
+                "تسویه": cycle_text(db), "وضعیت": "فعال",
+            })
         confirmation = tr("✅ Pay As You Go فعال شد. سرویس‌های دارای اندازه‌گیری مصرف معتبر متصل شدند.") + "\n" + _tformat("تسویه مصرف هر {cycle} انجام می‌شود.\n", cycle=cycle_text(db))
         if result.get('conflicts'):
             confirmation += _n(f"\n\n⚠️ تعداد {result['conflicts']} سرویس به دلیل اتصال به استخر سهمیه‌ی دیگری وارد Pay As You Go نشد؛ "

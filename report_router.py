@@ -64,6 +64,7 @@ TOPIC_SPECS = (
     TopicSpec("delivered_stock", "📦 اشتراک‌های تحویل‌شده", "ثبت جزئیات هر اشتراک خریداری‌شده و تحویل‌شده به مشتری.", "sales", COLOR_GREEN, True),
     TopicSpec("renewal", "🔄 تمدید", "تمدیدهای انجام‌شده، یادآورهای تمدید و پیشنهادهای تمدید هوشمند.", "sales", COLOR_GREEN, True, profiles=("standard",)),
     TopicSpec("finance", "💰 مالی", "شارژ کیف پول، رسیدهای واریز و تراکنش‌های مالی.", "sales", COLOR_YELLOW),
+    TopicSpec("payg", "📡 خریدهای پرداخت به‌ازای مصرف", "فعال‌سازی سرویس‌های PayG، جزئیات سرویس و گزارش کامل مصرف/هزینه روزانه کاربران.", "sales", COLOR_PURPLE, True, profiles=("standard",)),
     TopicSpec("gateway", "💳 درگاه‌های پرداخت", "خطاها و مشکلات درگاه‌های پرداخت اضافه (زرین‌پال، کریپتو، استارز و...).", "sales", COLOR_YELLOW, profiles=("standard",)),
     TopicSpec("refund", "↩️ بازگشت وجه", "بازگشت وجه به کیف پول بعد از حذف سرویس توسط کاربر یا نماینده.", "sales", COLOR_PINK, profiles=("standard",)),
     TopicSpec("discount", "🎴 گیفت‌کارت", "گیفت‌کارت‌های دریافت‌شده توسط کاربران (کیف پول یا کانفیگ).", "sales", COLOR_PINK, True, profiles=()),
@@ -107,7 +108,7 @@ PROFILES = {
     "standard": "🔸 استاندارد — پیشنهادی برای اغلب فروشگاه‌ها",
     "full": "💠 کامل — همه‌ی تاپیک‌ها",
 }
-MISSING_THREAD_MARKERS = ("thread not found", "topic_id_invalid", "topic_deleted")
+MISSING_THREAD_MARKERS = ("thread not found", "topic_id_invalid", "topic_deleted", "message thread not found", "message_thread_id is invalid", "forum topic not found", "topic not found")
 GROUP_CALLBACK_PREFIXES = (
     "order_approve:", "order_reject:", "order_fake_receipt:",
     "topup_approve:", "topup_reject:",

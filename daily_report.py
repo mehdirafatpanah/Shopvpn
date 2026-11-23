@@ -141,12 +141,34 @@ async def check_and_send_daily_report(bot, db) -> bool:
     return True
 
 
+
+async def check_and_send_payg_daily_report(bot, db) -> bool:
+    """گزارش PayG مستقل از فعال/غیرفعال بودن گزارش فروش روزانه، در همان ساعت تنظیم‌شده."""
+    now = datetime.now(TEHRAN)
+    today = now.strftime("%Y-%m-%d")
+    hour, minute = parse_report_time(db.get_setting("daily_report_time", "23:45"))
+    if (now.hour, now.minute) < (hour, minute):
+        return False
+    key = "_job_payg_daily_report_last_date"
+    if db.get_setting(key, "") == today:
+        return False
+    try:
+        import payg
+        await payg.send_payg_daily_report(bot, db, today)
+        await _db(db.set_setting, key, today)
+        return True
+    except Exception:
+        logger.exception("خطا در ارسال گزارش روزانه PayG")
+        return False
+
+
 async def daily_report_loop(bot, db, interval_seconds: int = CHECK_INTERVAL_SECONDS) -> None:
     while True:
         try:
             await check_and_send_daily_report(bot, db)
+            await check_and_send_payg_daily_report(bot, db)
         except Exception:
-            logger.exception("خطا در چرخه‌ی گزارش روزانه‌ی فروش")
+            logger.exception("خطا در چرخه‌ی گزارش روزانه‌ی فروش/PayG")
         await asyncio.sleep(interval_seconds)
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 # 		   		 		  	 	 		 		   		  	 	 		 			  		 				 			  	 
