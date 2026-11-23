@@ -69,9 +69,12 @@ import time
 import uuid
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 import asyncio
+import logging
 import aiohttp
 
 from .base import BasePanelProvider, PanelUserResult, PanelError, PanelUsernameTakenError
+
+logger = logging.getLogger(__name__)
 
 
 class ThreeXUIProvider(BasePanelProvider):
@@ -142,6 +145,53 @@ class ThreeXUIProvider(BasePanelProvider):
         legacy = self.server["xui_inbound_id"] if "xui_inbound_id" in self.server.keys() else None
         return [int(legacy)] if legacy else []
 
+    async def _live_inbounds(self, session: aiohttp.ClientSession) -> list:
+        """لیست زنده‌ی inbound های پنل: [{id, remark, protocol, port}, ...].
+        اگر خواندن لیست ممکن نباشد (خطای شبکه/احراز هویت)، None برمی‌گرداند تا
+        فراخوان بتواند بدون اعتبارسنجی ادامه دهد و خطای واقعی پنل را نشان بدهد."""
+        try:
+            async with session.get(f"{self._base_url()}/panel/api/inbounds/list") as resp:
+                if resp.status >= 400:
+                    return None
+                data = await resp.json()
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+            return None
+        if not isinstance(data, dict) or data.get("success") is False:
+            return None
+        out = []
+        for ib in (data.get("obj") or []):
+            if isinstance(ib, dict) and ib.get("id") is not None:
+                out.append({"id": int(ib["id"]), "remark": ib.get("remark", ""),
+                            "protocol": ib.get("protocol", ""), "port": ib.get("port")})
+        return out
+
+    async def _resolve_inbound_ids(self, session: aiohttp.ClientSession, wanted: list) -> list:
+        """رفع باگ «inbound N: record not found»: شناسه‌ی inbound ذخیره‌شده روی سرور/محصول
+        ممکن است دیگر روی پنل وجود نداشته باشد (inbound حذف/دوباره ساخته شده یا دیتابیس پنل
+        عوض شده)؛ آن‌وقت پنل کل ساخت کلاینت را رد می‌کرد. اینجا قبل از ساخت، شناسه‌ها با
+        لیست زنده‌ی پنل تطبیق داده می‌شوند:
+        - شناسه‌های ناموجود حذف می‌شوند و ساخت با بقیه ادامه پیدا می‌کند (لاگ هشدار)؛
+        - اگر هیچ‌کدام وجود نداشت، خطای روشن به‌همراه inbound های موجود پنل داده می‌شود."""
+        live = await self._live_inbounds(session)
+        if live is None:
+            return wanted
+        live_ids = {ib["id"] for ib in live}
+        valid = [i for i in wanted if i in live_ids]
+        missing = [i for i in wanted if i not in live_ids]
+        if missing and valid:
+            logger.warning("3x-ui سرور #%s: inbound های %s روی پنل وجود ندارند و نادیده گرفته شدند؛ ساخت با %s ادامه یافت.",
+                           self.server["id"] if "id" in self.server.keys() else "?", missing, valid)
+        if not valid:
+            available = "، ".join(
+                f"#{ib['id']} ({ib['remark'] or ib['protocol']}:{ib['port']})" for ib in live
+            ) or "هیچ inbound ای روی پنل نیست"
+            raise PanelError(
+                "inbound انتخاب‌شده (" + "، ".join(f"#{i}" for i in wanted) + ") دیگر روی پنل 3X-UI وجود ندارد "
+                "(احتمالاً حذف یا دوباره ساخته شده). از تنظیمات سرور پنل یا محصول، inbound را دوباره انتخاب کن. "
+                f"inbound های موجود: {available}"
+            )
+        return valid
+
     def _build_client(self, username: str, volume_gb: int, duration_days: int, user_limit: int = 0) -> tuple:
         """کلاینت را می‌سازد؛ خروجی: (client_dict, sub_id)
 
@@ -177,6 +227,7 @@ class ThreeXUIProvider(BasePanelProvider):
             raise PanelError("این سرور هنوز کامل تنظیم نشده (inbound یا آدرس Subscription خالی است).")
 
         async with self._session() as session:
+            inbound_ids = await self._resolve_inbound_ids(session, inbound_ids)
             client, sub_id = self._build_client(username, volume_gb, duration_days, user_limit)
             payload = {"inboundIds": inbound_ids, "client": client}
             try:
