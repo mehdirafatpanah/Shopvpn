@@ -1421,6 +1421,139 @@ async function renderBulkOps() {
   };
 }
 
+/* ============================================ socat / port forwarding === */
+function portForwardCardHtml() {
+  return `<div class="card" id="pf-card"><h3>🔀 socat و فوروارد پورت</h3>
+    <p class="card-sub">برای هر آدرس (ساب مرکزی، هر ساب اختصاصی، وب‌شاپ و پنل وب) جداگانه قانون فوروارد بساز. قانون می‌تواند روی همین سرور یا روی یک سرور رله از طریق SSH اجرا شود و با سرویس systemd ماندگار است. رمز SSH فقط برای همین عملیات استفاده می‌شود مگر ذخیره‌اش را روشن کنی.</p>
+    <div id="pf-root"><div class="card-sub">در حال بارگذاری...</div></div></div>`;
+}
+
+async function bindPortForwards() {
+  const box = $('#pf-root');
+  if (!box) return;
+  const statusChip = r => {
+    const m = { active: ['فعال', '#34D399'], pending: ['نیاز به اعمال مجدد', '#FBBF24'], stopped: ['متوقف', '#FB7185'],
+      error: ['خطا', '#FB7185'], removed: ['حذف‌شده از سرور', '#94A3B8'], new: ['اعمال نشده', '#94A3B8'] }[r.status] || ['اعمال نشده', '#94A3B8'];
+    return `<span class="chip" style="color:${m[1]}">${m[0]}</span>`;
+  };
+  const where = r => r.run_on === 'ssh' ? `سرور رله ${esc(r.ssh_host)}:${esc(r.ssh_port)}` : 'همین سرور';
+  const render = d => {
+    box.innerHTML = d.targets.map(t => {
+      const rules = d.rules.filter(r => r.target === t.key);
+      const rows = rules.map(r => `<div class="card" style="margin:8px 0;padding:10px" data-pf="${esc(r.id)}">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b dir="ltr">${esc(r.proto.toUpperCase())} ${esc(r.bind)}:${esc(r.listen_port)} → ${esc(r.dest_host)}:${esc(r.dest_port)}</b>
+          <span class="chip">${r.method === 'socat' ? 'socat' : 'iptables'}</span> ${statusChip(r)}</div>
+        <div class="card-sub">${where(r)}${r.note ? ' — ' + esc(r.note) : ''}</div>
+        ${r.last_error ? `<div class="card-sub" style="color:#FB7185;white-space:pre-wrap">${esc(r.last_error)}</div>` : ''}
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+          <button class="btn btn-sm" data-act="apply">▶️ اعمال روی سرور</button>
+          ${r.enabled ? '<button class="btn btn-sm" data-act="status">🔍 وضعیت</button><button class="btn btn-sm" data-act="remove">⏹ حذف از سرور</button>' : ''}
+          <button class="btn btn-sm" data-act="edit">✏️ ویرایش</button>
+          <button class="btn btn-ghost btn-sm" data-act="delete">🗑 حذف قانون</button>
+        </div></div>`).join('');
+      return `<div class="card" style="margin:10px 0;padding:12px" data-pft="${esc(t.key)}">
+        <b>${esc(t.label)}</b><div class="card-sub" dir="ltr" style="text-align:left">${esc(t.url || '—')}</div>
+        ${rows || '<div class="card-sub">قانونی ثبت نشده.</div>'}
+        <button class="btn btn-sm" data-act="add">➕ قانون جدید</button></div>`;
+    }).join('') + (d.local_root ? '' : '<p class="card-sub">پنل وب با کاربر غیرروت اجرا می‌شود؛ قانون‌های «همین سرور» به sudo بدون رمز نیاز دارند.</p>');
+    $$('[data-pft]', box).forEach(tc => {
+      const target = d.targets.find(t => t.key === tc.dataset.pft);
+      $('[data-act="add"]', tc).onclick = () => editModal(null, target);
+      $$('[data-pf]', tc).forEach(rc => {
+        const rule = d.rules.find(r => r.id === rc.dataset.pf);
+        $$('[data-act]', rc).forEach(b => b.onclick = () => {
+          const act = b.dataset.act;
+          if (act === 'edit') editModal(rule, target);
+          else if (act === 'delete') {
+            if (!confirm('این قانون حذف شود؟' + (rule.enabled ? ' فوروارد از روی سرور هم برداشته می‌شود.' : ''))) return;
+            runAct(rule, 'delete');
+          } else runAct(rule, act);
+        });
+      });
+    });
+  };
+  const load = async () => {
+    try { render(await apiGet('/port-forwards')); }
+    catch (e) { box.innerHTML = `<div class="card-sub" style="color:#FB7185">${esc(e.message)}</div>`; }
+  };
+  const call = async (rule, act, creds, force) => {
+    const r = await apiPost(`/port-forwards/${rule.id}/action`, { action: act, ssh_password: creds.password || null, ssh_key: creds.key || null, force: !!force });
+    toast({ apply: 'فوروارد روی سرور فعال شد.', remove: 'فوروارد از روی سرور حذف شد.', delete: 'قانون حذف شد.' }[act] ||
+      (r.rule && r.rule.status === 'active' ? 'فوروارد فعال و در حال شنود است.' : 'فوروارد فعال نیست.'), act === 'status' && r.rule && r.rule.status !== 'active');
+    load();
+  };
+  const runAct = (rule, act) => {
+    const go = async (creds, close, force) => {
+      try { await call(rule, act, creds, force); if (close) close(); }
+      catch (e) {
+        handleErr(e);
+        if (act === 'delete' && rule.enabled && !force && confirm('حذف از سرور ناموفق بود. فقط خود قانون از پنل حذف شود؟')) { await go(creds, close, true); return; }
+        load();
+      }
+    };
+    if (rule.run_on !== 'ssh' || rule.ssh_saved) { go({}, null); return; }
+    openModal('🔑 دسترسی SSH سرور ' + esc(rule.ssh_host), `
+      <label class="field"><span>رمز SSH</span><input class="input" id="pf-pw" type="password" dir="ltr" autocomplete="off"></label>
+      <label class="field"><span>یا کلید خصوصی (اختیاری)</span><textarea class="input" id="pf-key" dir="ltr" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></label>
+      <button class="btn" id="pf-go">ادامه</button>`, (body, close) => {
+      $('#pf-go', body).onclick = async () => {
+        const btn = $('#pf-go', body); btn.disabled = true;
+        await go({ password: $('#pf-pw', body).value, key: $('#pf-key', body).value.trim() }, close);
+        btn.disabled = false;
+      };
+    });
+  };
+  const editModal = (r, target) => {
+    let u = null;
+    try { u = target.url ? new URL(target.url) : null; } catch (e) { u = null; }
+    const dh = r ? r.dest_host : (u ? u.hostname : '');
+    const dp = r ? r.dest_port : (u ? (u.port || (u.protocol === 'https:' ? 443 : 80)) : '');
+    const sel = (id, val, opts) => `<select class="input" id="${id}">${opts.map(o => `<option value="${o[0]}" ${String(val) === o[0] ? 'selected' : ''}>${o[1]}</option>`).join('')}</select>`;
+    openModal((r ? '✏️ ویرایش قانون' : '➕ قانون جدید') + ' — ' + esc(target.label), `
+      ${r && r.enabled ? '<p class="card-sub">این قانون روی سرور فعال است؛ تغییر پورت ورودی، روش، پروتکل، آدرس شنود یا سرور فقط بعد از «حذف از سرور» ممکن است. بعد از ذخیره‌ی تغییر مقصد، دوباره «اعمال روی سرور» را بزن.</p>' : ''}
+      <div class="form-grid">
+        <label class="field"><span>روش</span>${sel('pf-method', r ? r.method : 'socat', [['socat', 'socat (پروکسی TCP/UDP)'], ['iptables', 'iptables (فوروارد کرنل - NAT)']])}</label>
+        <label class="field"><span>پروتکل</span>${sel('pf-proto', r ? r.proto : 'tcp', [['tcp', 'TCP'], ['udp', 'UDP']])}</label>
+        <label class="field"><span>آدرس شنود</span><input class="input" id="pf-bind" dir="ltr" value="${esc(r ? r.bind : '0.0.0.0')}"></label>
+        <label class="field"><span>پورت ورودی</span><input class="input" id="pf-lp" type="number" dir="ltr" value="${esc(r ? r.listen_port : '')}" placeholder="443"></label>
+        <label class="field"><span>آدرس مقصد (IP یا دامنه)</span><input class="input" id="pf-dh" dir="ltr" value="${esc(dh)}"></label>
+        <label class="field"><span>پورت مقصد</span><input class="input" id="pf-dp" type="number" dir="ltr" value="${esc(dp)}"></label>
+        <label class="field"><span>اجرا روی</span>${sel('pf-run', r ? r.run_on : 'local', [['local', 'همین سرور'], ['ssh', 'سرور رله (SSH)']])}</label>
+        <label class="field"><span>توضیح (اختیاری)</span><input class="input" id="pf-note" value="${esc(r ? r.note : '')}"></label>
+      </div>
+      <div id="pf-ssh" style="display:none"><div class="form-grid">
+        <label class="field"><span>IP / دامنه سرور رله</span><input class="input" id="pf-sh" dir="ltr" value="${esc(r ? r.ssh_host : '')}"></label>
+        <label class="field"><span>پورت SSH</span><input class="input" id="pf-sp" type="number" dir="ltr" value="${esc(r ? r.ssh_port : 22)}"></label>
+        <label class="field"><span>کاربر SSH</span><input class="input" id="pf-su" dir="ltr" value="${esc(r ? r.ssh_user : 'root')}"></label>
+        <label class="field"><span>رمز SSH (برای ذخیره‌ی رمزگذاری‌شده)</span><input class="input" id="pf-spw" type="password" dir="ltr" autocomplete="off" placeholder="${r && r.ssh_saved ? 'ذخیره شده؛ برای تغییر بنویس' : ''}"></label>
+      </div>
+      <label class="field field-row"><input type="checkbox" id="pf-save" ${r && r.ssh_saved ? 'checked' : ''}><span>رمز SSH رمزگذاری و ذخیره شود (وگرنه هر بار پرسیده می‌شود)</span></label></div>
+      <p class="card-sub">فقط IPv4 یا نام دامنه. اگر پورت ورودی روی سرور اجرا از قبل در حال استفاده باشد، اعمال قانون خطا می‌دهد.</p>
+      <button class="btn btn-primary" id="pf-save-btn">ذخیره</button>`, (body, close) => {
+      const run = $('#pf-run', body), ssh = $('#pf-ssh', body);
+      const sync = () => { ssh.style.display = run.value === 'ssh' ? '' : 'none'; };
+      run.onchange = sync; sync();
+      $('#pf-save-btn', body).onclick = async () => {
+        const v = id => $(id, body).value.trim();
+        const payload = { target: target.key, method: v('#pf-method'), proto: v('#pf-proto'), bind: v('#pf-bind'),
+          listen_port: Number(v('#pf-lp')) || 0, dest_host: v('#pf-dh'), dest_port: Number(v('#pf-dp')) || 0,
+          run_on: v('#pf-run'), note: v('#pf-note') };
+        if (payload.run_on === 'ssh') {
+          Object.assign(payload, { ssh_host: v('#pf-sh'), ssh_port: Number(v('#pf-sp')) || 22, ssh_user: v('#pf-su'),
+            ssh_save_secret: $('#pf-save', body).checked });
+          const pw = $('#pf-spw', body).value;
+          if (pw) payload.ssh_password = pw;
+        }
+        try {
+          if (r) await apiPut(`/port-forwards/${r.id}`, payload); else await apiPost('/port-forwards', payload);
+          toast('ذخیره شد. برای فعال‌سازی «اعمال روی سرور» را بزن.'); close(); load();
+        } catch (e) { handleErr(e); }
+      };
+    });
+  };
+  load();
+}
+
 /* ============================================ links & SSL manager === */
 async function renderLinksSSL() {
   const data = await apiGet('/links-ssl');
@@ -1440,6 +1573,7 @@ async function renderLinksSSL() {
       <p class="card-sub">با ذخیره آدرس مینی‌اپ، دکمه منوی ربات تلگرام نیز از طریق Bot API به آدرس جدید منتقل می‌شود. این کار جایگزین ثبت دامنه در BotFather یا تنظیم DNS و Nginx نیست.</p>
       <button class="btn btn-primary" id="lm-save">ذخیره آدرس‌ها</button>
     </div>
+    ${portForwardCardHtml()}
     <div class="card">
       <h3>🔐 مدیریت گواهی SSL</h3>
       <p class="card-sub">${data.certbot_installed ? 'Certbot شناسایی شد.' : 'Certbot روی سرور شناسایی نشد؛ ابتدا Certbot و افزونه Nginx را نصب کنید.'}</p>
@@ -1456,6 +1590,7 @@ async function renderLinksSSL() {
       <p class="card-sub">صدور گواهی از افزونه Nginx در Certbot استفاده می‌کند؛ دامنه باید به IP سرور اشاره کند و پورت ۸۰ از اینترنت در دسترس باشد. قبل از اجرا از تنظیمات Nginx بکاپ بگیرید.</p>
       <pre class="mono" id="lm-output" style="display:none;white-space:pre-wrap;margin-top:10px"></pre>
     </div>`);
+  bindPortForwards();
   const val = id => document.getElementById(id)?.value?.trim() || '';
   $('#lm-save').onclick = async () => {
     const btn = $('#lm-save'); btn.disabled = true;
@@ -5669,6 +5804,9 @@ function productEditFormHtml(product, categories, panelServers, sshNodes) {
       <textarea class="input" id="pe-desc" placeholder="توضیحات (اختیاری)" rows="2">${esc(product.description || '')}</textarea>
       ${productBtnStyleHtml('pe', product.btn_style)}
       <textarea class="input" id="pe-ai-desc" placeholder="🤖 توضیح برای هوش مصنوعی (راهنمای خرید؛ به کاربر نمایش داده نمی‌شود)" rows="2">${esc(product.ai_description || '')}</textarea>
+      <label class="field-label" style="display:block">📨 متن تحویل کانفیگ این محصول (اختیاری)
+        <textarea class="input" id="pe-delivery-text" placeholder="پس از تحویل سرویس برای کاربر ارسال می‌شود. متغیرها: {product_name} و {order_id}. خالی = بدون متن اختصاصی" rows="3" maxlength="3500">${esc(product.delivery_text || '')}</textarea>
+      </label>
       ${productProvisionFieldsHtml(panelServers, sshNodes, product)}
       <button class="btn btn-primary" id="pe-save">ذخیره</button>
     </div>`;
@@ -5688,7 +5826,7 @@ function openProductEditModal(product, categories, panelServers, sshNodes) {
       if (!prov.ok) return;
       const payload = {
         category_id: Number($('#pe-cat', b).value), name, price: disc.price, compare_price: disc.compare_price, discount_days: disc.discount_days, discount_max_uses: disc.discount_max_uses,
-        description: $('#pe-desc', b).value, btn_style: readProductBtnStyle(b, 'pe'), ai_description: $('#pe-ai-desc', b)?.value ?? '', duration_days: prov.duration_days, product_kind: prov.product_kind || 'config',
+        description: $('#pe-desc', b).value, btn_style: readProductBtnStyle(b, 'pe'), ai_description: $('#pe-ai-desc', b)?.value ?? '', delivery_text: $('#pe-delivery-text', b)?.value ?? '', duration_days: prov.duration_days, product_kind: prov.product_kind || 'config',
         source: prov.source,
       };
       if (prov.source === 'direct') {
@@ -5722,6 +5860,32 @@ function productSearchAttr(p) {
 
 function productSearchInputHtml() {
   return `<input class="input" id="prod-search" type="search" placeholder="جستجو در محصولات (نام یا دسته‌بندی)" value="${esc(catalogSearch)}" style="max-width:300px;min-width:180px">`;
+}
+
+// «متن تحویل کانفیگ» عمومی (پیش‌فرض همه‌ی محصولات) — قبلاً در تنظیمات تکمیلی بود و به بخش محصولات منتقل شد.
+function wireProductDeliveryText(body) {
+  const btn = $('#prod-delivery-text', body);
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    let d;
+    try { d = await apiGet('/products/delivery-text'); } catch (e) { return handleErr(e); }
+    openModal('📨 متن تحویل کانفیگ', `
+      <div class="form-grid">
+        <div class="card-sub">این متن بعد از تحویل هر سرویس برای کاربر ارسال می‌شود. برای ارسال متن اختصاصی هر محصول، از «ویرایش» همان محصول استفاده کنید.</div>
+        ${d.media_overrides ? '<div class="card-sub" style="color:var(--warn,#d97706)">⚠️ در بات یک پیام چندرسانه‌ای برای بعد از تحویل تنظیم شده و بر این متن اولویت دارد.</div>' : ''}
+        <textarea class="input" id="pdt-text" rows="7" maxlength="${Number(d.max) || 3500}" placeholder="خالی = بدون متن">${esc(d.text || '')}</textarea>
+        <button class="btn btn-primary" id="pdt-save">ذخیره</button>
+      </div>`, (b, close) => {
+      addResetDefaultButton($('#pdt-text', b), async () => d.default_text ?? '');
+      $('#pdt-save', b).addEventListener('click', async () => {
+        try {
+          await apiPut('/products/delivery-text', { text: $('#pdt-text', b).value });
+          toast('متن تحویل کانفیگ ذخیره شد.');
+          close();
+        } catch (e) { handleErr(e); }
+      });
+    });
+  });
 }
 
 function wireProductSearch(body, itemSelector, containerSelector) {
@@ -5797,6 +5961,7 @@ async function renderCatalog() {
       <button class="btn btn-primary btn-sm" id="add-prod" ${activeCategories.length ? '' : 'disabled'}>+ محصول جدید</button>
       ${activeCategories.length ? '' : '<span class="card-sub">برای ساخت محصول، ابتدا حداقل یک دسته‌بندی فعال بسازید.</span>'}
       <button class="btn btn-sm" id="add-cat-inline">+ دسته‌بندی جدید</button>
+      <button class="btn btn-sm" id="prod-delivery-text">📨 متن تحویل کانفیگ</button>
       ${productSearchInputHtml()}
     </div>
     ${activeCategories.length ? '' : '<div class="card" style="margin-bottom:12px"><div class="empty-state">هنوز دسته‌بندی فعالی برای فروش وجود ندارد. ابتدا دسته‌بندی بسازید و آن را فعال نگه دارید.</div></div>'}
@@ -5826,6 +5991,7 @@ async function renderCatalog() {
 
   $('#add-cat-inline').addEventListener('click', () => openCategoryCreateModal(categories));
   wireProductSearch(body, 'tbody tr[data-search]', '.card');
+  wireProductDeliveryText(body);
   if (!activeCategories.length) return;
   $('#add-prod').addEventListener('click', () => { window.__productPrefillTargetConfig = null; openModal('محصول جدید', `
     <div class="form-grid">
@@ -5938,7 +6104,7 @@ function renderCatalogBento(categories, products, panelServers, sshNodes, paymen
   }
 
   body.innerHTML = `
-    <div class="bn-toolbar" style="justify-content:flex-end;gap:8px">${productSearchInputHtml()}<button class="bn-btn bn-btn-ok" id="add-prod">+ محصول جدید</button></div>
+    <div class="bn-toolbar" style="justify-content:flex-end;gap:8px">${productSearchInputHtml()}<button class="bn-btn bn-btn-ghost" id="prod-delivery-text">📨 متن تحویل کانفیگ</button><button class="bn-btn bn-btn-ok" id="add-prod">+ محصول جدید</button></div>
     <div class="bn-card-grid">
       ${products.map((p, i) => `
         <div class="bn-card bn-card-anim" data-search="${productSearchAttr(p)}" style="animation-delay:${Math.min(i * 30, 260)}ms">
@@ -5960,6 +6126,7 @@ function renderCatalogBento(categories, products, panelServers, sshNodes, paymen
     </div>`;
 
   wireProductSearch(body, '.bn-card[data-search]', '.bn-card-grid');
+  wireProductDeliveryText(body);
   $('#add-prod').addEventListener('click', () => openModal('محصول جدید', `
     <div class="form-grid">
       <select class="input" id="prod-cat">${categories.map(c => `<option value="${c.id}">${esc(c.path || c.name)}</option>`).join('')}</select>
@@ -6066,6 +6233,7 @@ function renderCatalogBrutalist(categories, products, panelServers, sshNodes, pa
   body.innerHTML = `
     <div class="bru-toolbar" style="justify-content:flex-end;gap:8px">
       ${productSearchInputHtml()}
+      <button class="bru-stamp" id="prod-delivery-text" style="--r:2deg">📨 متن تحویل کانفیگ</button>
       <button class="bru-stamp bru-stamp-ok" id="add-prod" style="--r:-3deg">+ محصول جدید</button>
     </div>
     <div class="bru-product-grid">
@@ -6093,6 +6261,7 @@ function renderCatalogBrutalist(categories, products, panelServers, sshNodes, pa
     </div>`;
 
   wireProductSearch(body, '.bru-product-card[data-search]', '.bru-product-grid');
+  wireProductDeliveryText(body);
   $('#add-prod').addEventListener('click', () => openModal('محصول جدید', `
     <div class="form-grid">
       <select class="input" id="prod-cat">${categories.map(c => `<option value="${c.id}">${esc(c.path || c.name)}</option>`).join('')}</select>
@@ -9692,6 +9861,25 @@ async function paygSettingsHtml() {
         <label class="field"><span>چرخه تسویه (ثانیه، ۶۰ تا ۸۶۴۰۰)</span><input class="input" type="number" min="60" max="86400" dir="ltr" id="payg-cycle" value="${Number(d.cycle_seconds)}"></label>
         <label class="field"><span>حداکثر سرویس PayG برای هر کاربر</span><input class="input" type="number" min="1" max="100" dir="ltr" id="payg-max" value="${Number(d.max_services)}"></label>
         <label class="field"><span>حداقل موجودی کیف پول برای ساخت سرویس مصرفی جدید (تومان، ۰ = فقط موجودی مثبت)</span><input class="input" type="number" min="0" dir="ltr" id="payg-min-balance" value="${Number(d.min_balance || 0)}"></label>
+        <b>نام اشتراک</b><div class="card-sub">نامی که به‌جای «Pay As You Go» در دکمه، متن‌های ربات و نام سرویس‌های ساخته‌شده به کاربر نشان داده می‌شود. خالی = نام پیش‌فرض.</div>
+        <label class="field"><span>نام اشتراک پرداخت به‌ازای مصرف</span><input class="input" type="text" id="payg-name" maxlength="${Number(d.payg_name_max)}" placeholder="${esc(d.payg_name_default)}" value="${esc(d.payg_name || '')}"></label>
+        <b>هشدار اول مصرف اعتبار</b><div class="card-sub">وقتی مصرف کاربر از اعتبار کیف پولش (از آخرین شارژ) به این حد رسید یا از آن گذشت، ربات پیام هشدار اول را می‌فرستد. مقدار ۰ = خاموش.</div>
+        <label class="field"><span>نوع آستانه</span><select class="input" id="payg-alert1-mode"><option value="percent" ${d.alert1_mode === 'percent' ? 'selected' : ''}>درصد اعتبار مصرف‌شده</option><option value="toman" ${d.alert1_mode === 'toman' ? 'selected' : ''}>مبلغ مصرف‌شده (تومان)</option></select></label>
+        <label class="field"><span id="payg-alert1-unit">${d.alert1_mode === 'percent' ? 'آستانه (۰ تا ۱۰۰ درصد)' : 'آستانه (تومان)'}</span><input class="input" type="number" min="0" dir="ltr" id="payg-alert1-value" value="${Number(d.alert1_value || 0)}"></label>
+        <label class="field"><span>متن هشدار اول (قابل استفاده: {percent} درصد مصرف‌شده، {threshold} آستانه، {used} مبلغ مصرف‌شده، {balance} موجودی فعلی، {initial} اعتبار ابتدای دوره، {retention_days} مهلت نگهداری به روز؛ خالی = متن پیش‌فرض)</span>
+          <textarea class="input" id="payg-alert1-text" rows="3" maxlength="${Number(d.alert1_text_max)}" placeholder="مثلاً: شما {percent} درصد از اعتبار کیف پول خود را مصرف کرده‌اید.">${esc(d.alert1_text || '')}</textarea></label>
+        <b>هشدار دوم مصرف اعتبار</b><div class="card-sub">جدا از هشدار اول؛ با رسیدن مصرف به این حد یا عبور از آن، ربات هشدار دوم را می‌فرستد. مقدار ۰ = خاموش.</div>
+        <label class="field"><span>نوع آستانه</span><select class="input" id="payg-alert2-mode"><option value="percent" ${d.alert2_mode === 'percent' ? 'selected' : ''}>درصد اعتبار مصرف‌شده</option><option value="toman" ${d.alert2_mode === 'toman' ? 'selected' : ''}>مبلغ مصرف‌شده (تومان)</option></select></label>
+        <label class="field"><span id="payg-alert2-unit">${d.alert2_mode === 'percent' ? 'آستانه (۰ تا ۱۰۰ درصد)' : 'آستانه (تومان)'}</span><input class="input" type="number" min="0" dir="ltr" id="payg-alert2-value" value="${Number(d.alert2_value || 0)}"></label>
+        <label class="field"><span>متن هشدار دوم (قابل استفاده: {percent} درصد مصرف‌شده، {threshold} آستانه، {used} مبلغ مصرف‌شده، {balance} موجودی فعلی، {initial} اعتبار ابتدای دوره، {retention_days} مهلت نگهداری به روز؛ خالی = متن پیش‌فرض)</span>
+          <textarea class="input" id="payg-alert2-text" rows="3" maxlength="${Number(d.alert1_text_max)}" placeholder="مثلاً: شما {percent} درصد از اعتبار کیف پول خود را مصرف کرده‌اید.">${esc(d.alert2_text || '')}</textarea></label>
+        <b>آستانه قطع</b><div class="card-sub">با رسیدن مصرف به این حد یا عبور از آن، دسترسی کاربر به اشتراک قطع می‌شود و اکانت روی سرور می‌ماند؛ با شارژ کیف پول (تا زیر این حد) خودکار وصل می‌شود. مقدار ۰ = خاموش (فقط با صفر شدن موجودی قطع می‌شود).</div>
+        <label class="field"><span>نوع آستانه</span><select class="input" id="payg-alert3-mode"><option value="percent" ${d.alert3_mode === 'percent' ? 'selected' : ''}>درصد اعتبار مصرف‌شده</option><option value="toman" ${d.alert3_mode === 'toman' ? 'selected' : ''}>مبلغ مصرف‌شده (تومان)</option></select></label>
+        <label class="field"><span id="payg-alert3-unit">${d.alert3_mode === 'percent' ? 'آستانه (۰ تا ۱۰۰ درصد)' : 'آستانه (تومان)'}</span><input class="input" type="number" min="0" dir="ltr" id="payg-alert3-value" value="${Number(d.alert3_value || 0)}"></label>
+        <label class="field"><span>متن پیام قطع (قابل استفاده: {percent} درصد مصرف‌شده، {threshold} آستانه، {used} مبلغ مصرف‌شده، {balance} موجودی فعلی، {initial} اعتبار ابتدای دوره، {retention_days} مهلت نگهداری به روز؛ خالی = متن پیش‌فرض)</span>
+          <textarea class="input" id="payg-alert3-text" rows="3" maxlength="${Number(d.alert1_text_max)}" placeholder="مثلاً: دسترسی شما به اشتراک قطع شد؛ کیف پول را شارژ کنید.">${esc(d.alert3_text || '')}</textarea></label>
+        <b>مهلت نگهداری</b><div class="card-sub">تعداد روزهایی که اکانت پس از قطع روی سرور می‌ماند. از لحظه قطع شروع می‌شود (از جمله وقتی به آستانه قطع رسیده یا موجودی تمام شده). اگر پس از پایان مهلت هنوز قطع باشد، سرویس‌هایی که خود PayG ساخته از سرورها و ربات حذف می‌شوند. با شارژ کیف پول و وصل شدن دوباره، مهلت از اول حساب می‌شود. ۰ = هرگز حذف نشود.</div>
+        <label class="field"><span>مهلت نگهداری (روز، ۰ تا ۳۶۵۰)</span><input class="input" type="number" min="0" max="3650" dir="ltr" id="payg-retention" value="${Number(d.retention_days || 0)}"></label>
         <b>پیام ارسال کانفیگ</b><div class="card-sub">متن و عکس پیامی که بعد از ساخت سرویس مصرفی همراه لینک اشتراک برای کاربر ارسال می‌شود. خالی بودن متن = متن پیش‌فرض، بدون عکس = فقط متن.</div>
         <label class="field"><span>متن پیام (قابل استفاده: {username} نام کاربری، {link} لینک اشتراک، {url} آدرس لینک، {cycle} چرخه تسویه؛ اگر {link} یا {url} نباشد لینک انتها اضافه می‌شود)</span>
           <textarea class="input" id="payg-delivery-text" rows="6" maxlength="${Number(d.delivery_text_max)}" placeholder="متن پیش‌فرض">${esc(d.delivery_text || '')}</textarea></label>
@@ -9703,7 +9891,7 @@ async function paygSettingsHtml() {
           <input class="input" id="payg-delivery-photo" type="file" accept="image/jpeg,image/png,image/webp" style="margin-top:8px">
           <span class="hint-text">انتخاب فایل جدید هنگام «ذخیره تنظیمات» جایگزین عکس فعلی می‌شود.</span>
         </div>
-        <b>متن صفحه‌ی «Pay As You Go» (وضعیت و جزئیات مصرف)</b><div class="card-sub">پیامی که کاربر با زدن دکمه‌ی پرداخت به‌ازای مصرف یا «وضعیت و جزئیات مصرف» می‌بیند. خالی = متن پیش‌فرض. می‌توانید از تگ‌های HTML تلگرام مثل &lt;b&gt; استفاده کنید.</div>
+        <b>متن صفحه‌ی «Pay As You Go» (وضعیت و جزئیات مصرف)</b><div class="card-sub">پیامی که کاربر با زدن دکمه‌ی پرداخت به‌ازای مصرف یا «وضعیت و جزئیات مصرف» می‌بیند. متن پیش‌فرض ربات از ابتدا داخل فیلدها آمده و فعال است؛ همان را مستقیم ویرایش کنید (پاک کردن یا برگرداندن به پیش‌فرض = دوباره پیام پیش‌فرض ربات). می‌توانید از تگ‌های HTML تلگرام مثل &lt;b&gt; استفاده کنید.</div>
         <div class="card-sub">متغیرها: {balance} موجودی کیف پول، {spent} هزینه این ماه، {used_gb} مصرف ثبت‌شده (GB)، {services} تعداد سرویس‌های متصل، {cycle} چرخه تسویه، {min_balance} حداقل موجودی ساخت سرویس، {panels} پنل‌های فعال، {free_note} پیام حالت رایگان مدیریت، {links} لینک‌های اشتراک فعال کاربر (اگر ننویسید، انتهای متن اضافه می‌شود).</div>
         <label class="field"><span>متن وقتی حساب کاربر فعال است</span>
           <textarea class="input" id="payg-status-active" rows="8" maxlength="${Number(d.status_text_max)}" placeholder="متن پیش‌فرض">${esc(d.status_text_active || '')}</textarea></label>
@@ -9717,6 +9905,11 @@ async function paygSettingsHtml() {
 function paygBindSettings() {
   const root = content();
   _bindSwitches(root);
+  addResetDefaultButton($('#payg-status-active', root), async () => window.__paygOverview?.status_text_active_default || '');
+  addResetDefaultButton($('#payg-status-inactive', root), async () => window.__paygOverview?.status_text_inactive_default || '');
+  [1, 2, 3].forEach(n => $('#payg-alert' + n + '-mode', root)?.addEventListener('change', e => {
+    $('#payg-alert' + n + '-unit', root).textContent = e.target.value === 'percent' ? 'آستانه (۰ تا ۱۰۰ درصد)' : 'آستانه (تومان)';
+  }));
   $('#payg-suggest-tiers', root)?.addEventListener('click', async () => {
     try {
       const r = await apiGet('/accounting/suggest-payg');
@@ -9739,6 +9932,17 @@ function paygBindSettings() {
         cycle_seconds: parseInt($('#payg-cycle', root).value, 10),
         max_services: parseInt($('#payg-max', root).value, 10),
         min_balance: parseInt($('#payg-min-balance', root).value, 10) || 0,
+        payg_name: $('#payg-name', root).value,
+        retention_days: parseInt($('#payg-retention', root).value, 10) || 0,
+        alert1_mode: $('#payg-alert1-mode', root).value,
+        alert1_value: parseInt($('#payg-alert1-value', root).value, 10) || 0,
+        alert1_text: $('#payg-alert1-text', root).value,
+        alert2_mode: $('#payg-alert2-mode', root).value,
+        alert2_value: parseInt($('#payg-alert2-value', root).value, 10) || 0,
+        alert2_text: $('#payg-alert2-text', root).value,
+        alert3_mode: $('#payg-alert3-mode', root).value,
+        alert3_value: parseInt($('#payg-alert3-value', root).value, 10) || 0,
+        alert3_text: $('#payg-alert3-text', root).value,
         delivery_text: $('#payg-delivery-text', root).value,
         status_text_active: $('#payg-status-active', root).value,
         status_text_inactive: $('#payg-status-inactive', root).value,
@@ -11119,6 +11323,30 @@ const EXTRA_GROUP_TAB_INDEX = (() => {
 // عضویت اجباری و هشدار موجودی همگی به‌طور کامل‌تر در صفحه‌ی «تنظیمات فروش» هستند؛
 // اینجا تکرار نمی‌شوند تا تنظیمات فروش فقط یک مرجع داشته باشد.
 
+// پارامترهای قابل استفاده در قالب پیام تحویل؛ هنگام ارسال، ربات مقدار واقعی همان سرویس را جایگزین می‌کند.
+// (با config_delivery.template_param_values هم‌خوان نگه دارید)
+const DELIVERY_TEMPLATE_PARAMS = [
+  ['username', 'نام کاربری سرویس در پنل'],
+  ['subscription_link', 'لینک اشتراک'],
+  ['raw_link', 'آدرس خام لینک (لینک اصلی پنل، بدون ساب اختصاصی)'],
+  ['config_links', 'کانفیگ‌های تکی'],
+  ['volume', 'حجم'],
+  ['usage_limit', 'سقف مصرف'],
+  ['used', 'حجم مصرف‌شده'],
+  ['remaining', 'حجم باقی‌مانده'],
+  ['expire_date', 'تاریخ انقضا (شمسی)'],
+  ['days_left', 'روز باقی‌مانده'],
+  ['duration', 'مدت (مثلاً «۳۰ روز»)'],
+  ['protocol', 'پروتکل'],
+  ['service_name', 'نام سرویس'],
+  ['product_name', 'نام محصول'],
+  ['index', 'شماره‌ی این سرویس'],
+  ['total', 'تعداد کل سرویس‌های سفارش'],
+];
+const DELIVERY_TEMPLATE_NOTE = 'می‌توانید از پارامترهای زیر داخل آکولاد استفاده کنید؛ هنگام ارسال، ربات مقدار واقعی هر پارامتر را جایگزین می‌کند. متن پیش‌فرض ربات از ابتدا داخل هر فیلد آمده و فعال است؛ همان را (که نمونه‌ی استفاده از پارامترهای همان پنل است) مستقیم ویرایش کنید. اگر متن را به پیش‌فرض برگردانید یا پاک کنید، ربات دوباره پیام پیش‌فرض را می‌فرستد. اگر برای یک پنل قالب سفارشی نگذارید، قالب «عمومی» استفاده می‌شود. اگر داده‌ای از پنل در دسترس نباشد، پارامتر مربوط خالی می‌شود.\n'
+  + DELIVERY_TEMPLATE_PARAMS.map(([k, d]) => '{' + k + '}  ←  ' + d).join('\n')
+  + '\nمثال: نام کاربری: {username} | حجم: {volume} | انقضا: {expire_date}\n{subscription_link}';
+
 const SETTINGS_GROUPS = [
   // ---------------------------------------------------------- محتوا و متن‌ها
   { tab: 'content', title: 'متن‌های پایه', fields: [
@@ -11135,7 +11363,7 @@ const SETTINGS_GROUPS = [
     { key: 'miniapp_button_style', label: 'رنگ دکمه فروشگاه', type: 'select', options: [['', 'پیش‌فرض'], ['primary', 'آبی'], ['success', 'سبز'], ['danger', 'قرمز']] },
     { key: 'miniapp_menu_button_text', label: 'نام دکمه فروشگاه کنار کادر پیام تلگرام', type: 'text' },
   ]},
-  { tab: 'content', title: '📨 قالب پیام تحویل کانفیگ بر اساس نوع پنل', fields: [
+  { tab: 'content', title: '📨 قالب پیام تحویل کانفیگ بر اساس نوع پنل', note: DELIVERY_TEMPLATE_NOTE, fields: [
     { key: 'delivery_message_template_default', label: 'قالب تحویل — عمومی', type: 'textarea' },
     { key: 'delivery_message_template_pasarguard', label: 'قالب تحویل — PasarGuard', type: 'textarea' },
     { key: 'delivery_message_template_3xui', label: 'قالب تحویل — 3X-UI', type: 'textarea' },
@@ -11656,6 +11884,7 @@ function renderSettingsGroups(settings) {
           <span class="settings-group-arrow">˅</span>
         </button>
         <div class="settings-group-body"><div class="form-grid">
+          ${g.note ? `<div class="card-sub settings-group-note" style="white-space:pre-line;line-height:1.9" dir="auto">${esc(settingsUiText(g.note))}</div>` : ''}
           ${g.fields.map(f => settingsFieldHtml(f, settings)).join('')}
         </div></div>
       </div>`;
@@ -12424,7 +12653,37 @@ function _subTemplateGuideHtml() {
   </div>`;
 }
 
+// دکمه‌ی «بازگردانی به پیش‌فرض ربات» کنار یک کادر متن؛ فقط متن کادر را برمی‌گرداند و با «ذخیره» ثبت می‌شود.
+function addResetDefaultButton(ta, getDefault) {
+  if (!ta || ta.dataset.resetBtn) return;
+  ta.dataset.resetBtn = '1';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn btn-sm';
+  btn.style.marginTop = '6px';
+  btn.textContent = '↩️ بازگردانی به پیش‌فرض ربات';
+  btn.addEventListener('click', async () => {
+    try {
+      const def = await getDefault();
+      if (ta.value.trim() && ta.value.trim() !== String(def).trim() && !confirm('متن فعلی با متن پیش‌فرض ربات جایگزین شود؟')) return;
+      ta.value = def;
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      toast('متن پیش‌فرض ربات در کادر قرار گرفت؛ برای ثبت، ذخیره را بزنید.');
+    } catch (e) { handleErr(e); }
+  });
+  ta.insertAdjacentElement('afterend', btn);
+}
+
+let _deliveryTplDefaults = null;
+function bindDeliveryTemplateResets(root) {
+  $$('textarea[data-key^="delivery_message_template_"]', root).forEach(ta => addResetDefaultButton(ta, async () => {
+    if (!_deliveryTplDefaults) _deliveryTplDefaults = await apiGet('/settings/delivery-template-defaults');
+    return _deliveryTplDefaults[ta.dataset.key] || '';
+  }));
+}
+
 function bindSettingsGroupEvents(root) {
+  bindDeliveryTemplateResets(root);
   $$('.sub-tpl-guide-btn', root).forEach((btn) => {
     btn.addEventListener('click', () => openModal('📖 راهنمای قالب اختصاصی صفحه ساب', _subTemplateGuideHtml(), null, { wide: true }));
   });
@@ -12438,7 +12697,7 @@ function bindSettingsGroupEvents(root) {
       if (!file) return;
       const ta = $('textarea[data-key="dsub_custom_template"]', root);
       if (!ta) return;
-      if (file.size > 400000) { toast('حجم فایل بیش از ۴۰۰ کیلوبایت است.'); return; }
+      if (file.size > 2 * 1024 * 1024) { toast('حجم فایل بیش از ۲ مگابایت است.'); return; }
       try {
         const text = await file.text();
         if (!text.includes('__DATA__')) { toast('این فایل شامل __DATA__ نیست؛ قالب معتبر نیست (راهنمای متغیرها را ببین).'); return; }
