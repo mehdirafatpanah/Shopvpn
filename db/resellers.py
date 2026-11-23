@@ -848,6 +848,11 @@ class ResellersMixin:
             return conn.execute("SELECT * FROM reseller_bots WHERE id=?", (bot_id,)).fetchone()
 
 
+    def set_reseller_db_path(self, bot_id: int, db_path: str):
+        """ثبت مسیر محلی جدید دیتابیس نماینده (برای انتقال بکاپ/سرور)."""
+        with self._get_conn() as conn:
+            conn.execute("UPDATE reseller_bots SET db_path=? WHERE id=?", (db_path, bot_id))
+
     def get_reseller_bot_by_slug(self, slug: str):
         with self._get_conn() as conn:
             return conn.execute("SELECT * FROM reseller_bots WHERE link_slug=?", (slug,)).fetchone()
