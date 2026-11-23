@@ -1507,6 +1507,17 @@ class CatalogMixin:
             ).fetchall()
 
 
+    def get_gifted_in_configs(self, user_tg_id: int):
+        """کانفیگ‌های بانک که از طریق کارت هدیه به این کاربر رسیده‌اند (سفارششان مال کاربر دیگری است)."""
+        with self._get_conn() as conn:
+            return conn.execute(
+                "SELECT cf.*, p.name AS product_name FROM configs cf "
+                "LEFT JOIN products p ON p.id=cf.product_id "
+                "WHERE cf.assigned_user_id=? AND cf.is_used=1 AND cf.order_id IS NOT NULL "
+                "AND cf.order_id NOT IN (SELECT id FROM orders WHERE user_id=?) ORDER BY cf.id DESC",
+                (user_tg_id, user_tg_id),
+            ).fetchall()
+
     def delete_owned_config(self, config_id: int, user_tg_id: int):
         """حذف کامل و برگشت‌ناپذیر یک کانفیگ متعلق به همین کاربر (از بانک محصولات).
         اگر کانفیگ متعلق به این کاربر نباشد، None برمی‌گرداند و کاری انجام نمی‌شود.
