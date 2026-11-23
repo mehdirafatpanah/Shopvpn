@@ -5188,6 +5188,17 @@ class PaygSettingsBody(BaseModel):
     status_text_active: Optional[str] = None
     status_text_inactive: Optional[str] = None
     min_balance: Optional[int] = None
+    alert1_mode: Optional[str] = None
+    alert1_value: Optional[int] = None
+    alert1_text: Optional[str] = None
+    alert2_mode: Optional[str] = None
+    alert2_value: Optional[int] = None
+    alert2_text: Optional[str] = None
+    alert3_mode: Optional[str] = None
+    alert3_value: Optional[int] = None
+    alert3_text: Optional[str] = None
+    payg_name: Optional[str] = None
+    retention_days: Optional[int] = None
 
 
 class PaygTargetBody(BaseModel):
@@ -5309,11 +5320,28 @@ def api_payg_overview(admin=Depends(require_permission("catalog")), _mt=Depends(
         "cycle_seconds": max(60, int(db.get_setting("payg_cycle_seconds", "600") or 600)),
         "max_services": int(db.get_setting("payg_max_services_per_user", "5") or 5),
         "min_balance": payg.get_min_balance(db),
+        "alert1_mode": payg.get_first_alert(db)[0],
+        "alert1_value": payg.get_first_alert(db)[1],
+        "alert1_text": db.get_setting(payg.PAYG_ALERT1_TEXT_KEY, "") or "",
+        "alert1_text_max": payg.PAYG_ALERT1_TEXT_MAX,
+        "alert2_mode": payg.get_alert(db, 2)[0],
+        "alert2_value": payg.get_alert(db, 2)[1],
+        "alert2_text": db.get_setting(payg.PAYG_ALERT2_TEXT_KEY, "") or "",
+        "alert3_mode": payg.get_alert(db, 3)[0],
+        "alert3_value": payg.get_alert(db, 3)[1],
+        "alert3_text": db.get_setting(payg.PAYG_CUT_TEXT_KEY, "") or "",
+        "payg_name": (db.get_setting(payg.PAYG_NAME_KEY, "") or "").strip(),
+        "retention_days": payg.get_retention_days(db),
+        "payg_name_default": payg._DEFAULT_NAME,
+        "payg_name_max": payg.PAYG_NAME_MAX,
         "delivery_text": db.get_setting(payg.PAYG_DELIVERY_TEXT_KEY, "") or "",
         "delivery_has_photo": bool(db.get_setting(payg.PAYG_DELIVERY_PHOTO_KEY, "")),
         "delivery_text_max": payg.PAYG_DELIVERY_TEXT_MAX,
-        "status_text_active": db.get_setting(payg.PAYG_STATUS_TEXT_ACTIVE_KEY, "") or "",
-        "status_text_inactive": db.get_setting(payg.PAYG_STATUS_TEXT_INACTIVE_KEY, "") or "",
+        # فیلد «متن صفحه»: اگر متنی ذخیره نشده، متن پیش‌فرض فعال ربات داخل فیلد نشان داده می‌شود
+        "status_text_active": (db.get_setting(payg.PAYG_STATUS_TEXT_ACTIVE_KEY, "") or "").strip() or payg.default_status_template(True),
+        "status_text_inactive": (db.get_setting(payg.PAYG_STATUS_TEXT_INACTIVE_KEY, "") or "").strip() or payg.default_status_template(False),
+        "status_text_active_default": payg.default_status_template(True),
+        "status_text_inactive_default": payg.default_status_template(False),
         "status_text_max": payg.PAYG_STATUS_TEXT_MAX,
         "mode": payg.get_payg_mode(db),
         "dsub_enabled": bool(dedicated_sub.is_enabled(db)),
@@ -5360,6 +5388,38 @@ def api_payg_settings(body: PaygSettingsBody, admin=Depends(require_permission("
             raise HTTPException(400, tr("حداقل موجودی باید عددی بین ۰ و ۱۰ میلیارد تومان باشد."))
         db.set_setting(payg.PAYG_MIN_BALANCE_KEY, str(int(body.min_balance)))
         changes.append(f"min_balance={int(body.min_balance)}")
+    if body.retention_days is not None:
+        if not 0 <= int(body.retention_days) <= payg.PAYG_RETENTION_MAX:
+            raise HTTPException(400, tr("مهلت نگهداری باید بین ۰ تا ۳۶۵۰ روز باشد."))
+        db.set_setting(payg.PAYG_RETENTION_KEY, str(int(body.retention_days)))
+        changes.append(f"retention_days={int(body.retention_days)}")
+    if body.payg_name is not None:
+        name = " ".join(body.payg_name.split())
+        if len(name) > payg.PAYG_NAME_MAX:
+            raise HTTPException(400, tr(f"نام اشتراک نمی‌تواند بیشتر از {payg.PAYG_NAME_MAX} نویسه باشد."))
+        db.set_setting(payg.PAYG_NAME_KEY, name)
+        payg._name_state["at"] = 0.0
+        changes.append("payg_name")
+    for n in (1, 2, 3):
+        b_mode, b_value, b_text = (getattr(body, f"alert{n}_mode"), getattr(body, f"alert{n}_value"), getattr(body, f"alert{n}_text"))
+        mode_key, value_key, text_key = payg._ALERT_KEYS[n][:3]
+        if b_mode is not None or b_value is not None:
+            mode = (b_mode if b_mode is not None else payg.get_alert(db, n)[0]).strip()
+            if mode not in ("percent", "toman"):
+                raise HTTPException(400, tr("نوع آستانه هشدار باید درصد یا تومان باشد."))
+            value = int(b_value if b_value is not None else payg.get_alert(db, n)[1])
+            cap = 100 if mode == "percent" else payg.PAYG_MIN_BALANCE_MAX
+            if not 0 <= value <= cap:
+                raise HTTPException(400, tr("آستانه هشدار باید بین ۰ تا ۱۰۰ درصد باشد." if mode == "percent" else "مبلغ آستانه هشدار باید عددی مثبت (یا ۰ برای خاموش) باشد."))
+            db.set_setting(mode_key, mode)
+            db.set_setting(value_key, str(value))
+            changes.append(f"alert{n}={mode}:{value}")
+        if b_text is not None:
+            text = b_text.strip()
+            if len(text) > payg.PAYG_ALERT1_TEXT_MAX:
+                raise HTTPException(400, tr(f"متن هشدار نمی‌تواند بیشتر از {payg.PAYG_ALERT1_TEXT_MAX} نویسه باشد."))
+            db.set_setting(text_key, text)
+            changes.append(f"alert{n}_text")
     if body.delivery_text is not None:
         text = body.delivery_text.strip()
         if len(text) > payg.PAYG_DELIVERY_TEXT_MAX:
@@ -5373,6 +5433,9 @@ def api_payg_settings(body: PaygSettingsBody, admin=Depends(require_permission("
             value = value.strip()
             if len(value) > payg.PAYG_STATUS_TEXT_MAX:
                 raise HTTPException(400, tr(f"متن صفحه‌ی وضعیت نمی‌تواند بیشتر از {payg.PAYG_STATUS_TEXT_MAX} نویسه باشد."))
+            # برابر با متن پیش‌فرض = «خالی» (پیام پیش‌فرض ربات، با ترجمه‌ی خودکار برای زبان‌های دیگر)
+            if value.replace("\r\n", "\n") == payg.default_status_template(field == "status_text_active").strip():
+                value = ""
             db.set_setting(key, value)
             changes.append(field)
     if changes:
@@ -6083,6 +6146,43 @@ def _checked_ssh_protocol(requested, server_id, node, multi: bool = False) -> st
     return ",".join(wanted_list)
 
 
+PRODUCT_DELIVERY_TEXT_MAX = 3500
+POST_DELIVERY_TEXT_KEY = "post_delivery_custom_text"
+
+
+def _clean_product_delivery_text(value) -> str:
+    text = str(value or "").strip()
+    if len(text) > PRODUCT_DELIVERY_TEXT_MAX:
+        raise HTTPException(400, tr(f"متن تحویل کانفیگ نمی‌تواند بیشتر از {PRODUCT_DELIVERY_TEXT_MAX} نویسه باشد."))
+    return text
+
+
+class DeliveryTextBody(BaseModel):
+    text: str = ""
+
+
+@app.get("/api/products/delivery-text")
+def api_get_post_delivery_text(admin=Depends(require_permission("catalog"))):
+    """متن تحویل کانفیگِ عمومی (پیش‌فرض همه‌ی محصولات) که قبلاً در «تنظیمات تکمیلی ← نحوه‌ی تحویل کانفیگ» بود."""
+    from config_delivery import get_post_delivery_media
+    return {
+        "text": db.get_setting(POST_DELIVERY_TEXT_KEY, "") or "",
+        "max": PRODUCT_DELIVERY_TEXT_MAX,
+        "default_text": "",  # پیش‌فرض ربات: بدون متن اضافه بعد از تحویل
+        "media_overrides": bool(get_post_delivery_media(db)),
+    }
+
+
+@app.put("/api/products/delivery-text")
+def api_set_post_delivery_text(body: DeliveryTextBody, admin=Depends(require_permission("catalog"))):
+    text = _clean_product_delivery_text(body.text)
+    db.set_setting(POST_DELIVERY_TEXT_KEY, text)
+    db.log_admin_action(admin["id"], "post_delivery_text_change",
+                        "متن بعد از تحویل کانفیگ " + ("حذف شد" if not text else "تغییر کرد") + f" (پنل وب - {admin['username']})",
+                        "setting", POST_DELIVERY_TEXT_KEY)
+    return {"ok": True}
+
+
 class ProductEditBody(BaseModel):
     category_id: Optional[int] = None
     name: Optional[str] = None
@@ -6110,6 +6210,7 @@ class ProductEditBody(BaseModel):
     renew_rules: Optional[dict] = None
     ai_description: Optional[str] = None
     start_on_first_use: Optional[bool] = None
+    delivery_text: Optional[str] = None  # متن تحویل کانفیگ اختصاصی محصول؛ None=بدون تغییر، ""=حذف
 
 
 @app.put("/api/products/{product_id}")
@@ -6350,6 +6451,7 @@ async def api_edit_product(product_id: int, body: ProductEditBody, admin=Depends
         discount_max_uses=(max(int(body.discount_max_uses), 0) if body.discount_max_uses is not None else ...),
         provision_target_config=target_config_update, ai_description=body.ai_description,
         btn_style=(body.btn_style if body.btn_style is not None else ...),
+        delivery_text=(_clean_product_delivery_text(body.delivery_text) if body.delivery_text is not None else ...),
         start_on_first_use=(
             _checked_product_first_use(
                 body.start_on_first_use, effective_server_id, effective_ssh_node_id,
@@ -9689,9 +9791,113 @@ async def api_links_ssl_renew(admin=Depends(require_permission("settings"))):
 # --------------------------------------------------------------- settings --
 
 
+_DELIVERY_TPL_PREFIX = "delivery_message_template_"
+
+
+def _delivery_tpl_default(key: str):
+    """اگر key از کلیدهای «قالب پیام تحویل بر اساس نوع پنل» باشد متن پیش‌فرضش، وگرنه None."""
+    from config_delivery import DELIVERY_TEMPLATE_PANEL_KEYS, default_delivery_template
+    if key.startswith(_DELIVERY_TPL_PREFIX) and key[len(_DELIVERY_TPL_PREFIX):] in DELIVERY_TEMPLATE_PANEL_KEYS:
+        return default_delivery_template(key[len(_DELIVERY_TPL_PREFIX):])
+    return None
+
+
+@app.get("/api/settings/delivery-template-defaults")
+def api_delivery_template_defaults(admin=Depends(require_permission("settings"))):
+    """متن پیش‌فرض ربات برای هر قالب تحویل پنل (برای دکمه‌ی «بازگردانی به پیش‌فرض ربات»)."""
+    from config_delivery import DELIVERY_TEMPLATE_PANEL_KEYS, default_delivery_template
+    return {_DELIVERY_TPL_PREFIX + k: default_delivery_template(k) for k in DELIVERY_TEMPLATE_PANEL_KEYS}
+
+
 @app.get("/api/settings")
 def api_settings(admin=Depends(require_permission("settings"))):
-    return db.get_all_settings()
+    values = dict(db.get_all_settings())
+    # قالب تحویل هر پنل: اگر ذخیره نشده، متن پیش‌فرض فعال ربات داخل فیلد نشان داده می‌شود
+    from config_delivery import DELIVERY_TEMPLATE_PANEL_KEYS, default_delivery_template
+    for pk in DELIVERY_TEMPLATE_PANEL_KEYS:
+        k = _DELIVERY_TPL_PREFIX + pk
+        if not str(values.get(k) or "").strip():
+            values[k] = default_delivery_template(pk)
+    return values
+
+
+# ------------------------------------------ socat / فوروارد پورت آدرس‌ها --
+class PortForwardBody(BaseModel):
+    target: Optional[str] = None
+    method: Optional[str] = None
+    proto: Optional[str] = None
+    bind: Optional[str] = None
+    listen_port: Optional[int] = None
+    dest_host: Optional[str] = None
+    dest_port: Optional[int] = None
+    run_on: Optional[str] = None
+    ssh_host: Optional[str] = None
+    ssh_port: Optional[int] = None
+    ssh_user: Optional[str] = None
+    ssh_password: Optional[str] = None
+    ssh_save_secret: Optional[bool] = None
+    note: Optional[str] = None
+
+
+class PortForwardActionBody(BaseModel):
+    action: str
+    ssh_password: Optional[str] = None
+    ssh_key: Optional[str] = None
+    force: bool = False
+
+
+def _pf_guard(admin):
+    if admin["tenant"]:
+        raise HTTPException(403, "فوروارد پورت فقط در پنل بات اصلی در دسترس است.")
+
+
+@app.get("/api/port-forwards")
+def api_pf_list(admin=Depends(require_permission("settings"))):
+    _pf_guard(admin)
+    import port_forward
+    return {"targets": port_forward.targets(db), "rules": port_forward.list_rules(db),
+            "local_root": hasattr(os, "geteuid") and os.geteuid() == 0}
+
+
+@app.post("/api/port-forwards")
+def api_pf_create(body: PortForwardBody, admin=Depends(require_permission("settings"))):
+    _pf_guard(admin)
+    import port_forward
+    try:
+        rule = port_forward.create_rule(db, body.model_dump())
+    except port_forward.PortForwardError as exc:
+        raise HTTPException(400, str(exc))
+    db.log_admin_action(admin["id"], "port_forward_create",
+                        f"قانون فوروارد {rule['listen_port']}→{rule['dest_host']}:{rule['dest_port']} برای {rule['target']} ساخته شد", "setting", f"pf:{rule['id']}")
+    return {"ok": True, "rule": rule}
+
+
+@app.put("/api/port-forwards/{rule_id}")
+def api_pf_update(rule_id: str, body: PortForwardBody, admin=Depends(require_permission("settings"))):
+    _pf_guard(admin)
+    import port_forward
+    try:
+        rule = port_forward.update_rule(db, rule_id, body.model_dump())
+    except port_forward.PortForwardError as exc:
+        raise HTTPException(400, str(exc))
+    db.log_admin_action(admin["id"], "port_forward_update", f"قانون فوروارد {rule_id} ویرایش شد", "setting", f"pf:{rule_id}")
+    return {"ok": True, "rule": rule}
+
+
+@app.post("/api/port-forwards/{rule_id}/action")
+async def api_pf_action(rule_id: str, body: PortForwardActionBody, admin=Depends(require_permission("settings"))):
+    _pf_guard(admin)
+    import port_forward
+    try:
+        result = await port_forward.act(db, rule_id, body.action, body.ssh_password, body.ssh_key, body.force)
+    except port_forward.PortForwardError as exc:
+        raise HTTPException(400, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
+    if body.action != "status":
+        await asyncio.to_thread(db.log_admin_action, admin["id"], f"port_forward_{body.action}",
+                                f"قانون فوروارد {rule_id}: {body.action}", "setting", f"pf:{rule_id}")
+    return {"ok": True, **result}
 
 
 # ------------------------------------------------ ساب مرکزی و ساب‌های اختصاصی --
@@ -9856,7 +10062,7 @@ def api_dsp_settings_put(profile_id: int, body: DspSettingsBody, admin=Depends(r
                 raise HTTPException(400, err)
         if key in ("dsub_accent_color", "dsub_secondary_color") and value and not re.fullmatch(r"#[0-9a-fA-F]{6}", value):
             raise HTTPException(400, "رنگ نامعتبر است؛ کد HEX شش‌رقمی مثل #6366F1 لازم است.")
-        if len(value) > 420000:
+        if key != "dsub_custom_template" and len(value) > 420000:
             raise HTTPException(400, "مقدار بیش از حد بزرگ است.")
         own[key] = value
     db.dsp_set_settings(profile_id, own)
@@ -10041,6 +10247,13 @@ def api_set_setting(body: SettingBody, admin=Depends(require_permission("setting
                 assert isinstance(_o, dict) and str(_o.get("p", "")).isdigit() and str(_o.get("n", "")).strip()
         except Exception:
             raise HTTPException(400, "فرمت نامعتبر است: هر کشور باید پیش‌شماره‌ی عددی و نام داشته باشد")
+    _tpl_default = _delivery_tpl_default(body.key)
+    if _tpl_default is not None:
+        if len(body.value or "") > 3500:
+            raise HTTPException(400, tr("قالب تحویل نمی‌تواند بیشتر از ۳۵۰۰ نویسه باشد."))
+        # متن برابر با پیش‌فرض = «خالی» (همان پیام پیش‌فرض ربات با QR و تقسیم خودکار لینک‌ها)
+        if (body.value or "").strip().replace("\r\n", "\n") == _tpl_default.strip():
+            body.value = ""
     db.set_setting(body.key, body.value)
     _logged = f"<{len(body.value)} chars>" if body.key == "dsub_custom_template" else body.value
     db.log_admin_action(admin["id"], "setting_change", f"{body.key}={_logged} (پنل وب - {admin['username']})", "setting", body.key)
