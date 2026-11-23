@@ -397,7 +397,7 @@ async def fetch_sub_info(link: str) -> dict:
     result = await _fetch_sub_info_raw(link)
     pool = await asyncio.to_thread(_pool_override_sync, link)
     if pool:
-        base = result if result.get("ok") else {"ok": True, "title": None}
+        base = result if result.get("ok") else {"ok": True, "title": None, "expire": None}
         result = dict(base)
         result.update({"ok": True, "upload": int(pool.get("upload") or 0), "download": int(pool.get("download") or 0),
                        "total": int(pool.get("total") or 0)})
@@ -447,8 +447,8 @@ def format_sub_info_fa(info: dict) -> str:
     if not info.get("ok"):
         return "⚠️ دریافت اطلاعات مصرف از سرور امکان‌پذیر نبود."
 
-    used = info["upload"] + info["download"]
-    total = info["total"]
+    used = int(info.get("upload") or 0) + int(info.get("download") or 0)
+    total = int(info.get("total") or 0)
 
     def gb(n: int) -> str:
         return f"{n / (1024 ** 3):.2f}"
@@ -462,8 +462,8 @@ def format_sub_info_fa(info: dict) -> str:
     else:
         lines.append(f"📊 مصرف: {gb(used)} گیگابایت (نامحدود)")
 
-    if info["expire"]:
-        exp_dt = datetime.fromtimestamp(info["expire"], tz=timezone.utc)
+    if info.get("expire"):
+        exp_dt = datetime.fromtimestamp(int(info["expire"]), tz=timezone.utc)
         days_left = (exp_dt - datetime.now(timezone.utc)).days
         lines.append(f"📅 انقضا: {to_jalali_str(exp_dt)} ({max(0, days_left)} روز مانده)")
     else:

@@ -4910,6 +4910,17 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         link = _item_sub_link(item)
         return str(link).startswith(("http://", "https://"))
 
+    async def _sub_info_block(link) -> str:
+        """متن مصرف/انقضا از روی لینک ساب. هر خطایی (پنل خاموش، هدر ناقص، دیتای استخر
+        مشترک ناقص و...) فقط همین بخش را به یک پیام کوتاه تبدیل می‌کند و صفحه‌ی
+        جزئیات سرویس را خراب نمی‌کند."""
+        try:
+            info = await fetch_sub_info(link)
+            return format_sub_info_fa(info)
+        except Exception:
+            logging.getLogger("handlers_user").exception("دریافت/قالب‌بندی اطلاعات مصرف ساب ناموفق بود")
+            return "⚠️ دریافت اطلاعات مصرف از سرور امکان‌پذیر نبود."
+
     async def _my_orders_item_text(item) -> str:
         kind = item["kind"]
         if kind == "config":
@@ -4924,8 +4935,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             if cfg["expires_at"]:
                 text += f"⏳ انقضا: {to_jalali_str(cfg['expires_at'], with_time=True)}\n"
             text += f"🔗 `{cfg['link']}`\n"
-            info = await fetch_sub_info(cfg["link"])
-            text += f"\n{format_sub_info_fa(info)}"
+            text += f"\n{await _sub_info_block(cfg['link'])}"
             if str(cfg["link"]).startswith(("http://", "https://")):
                 text += "\n\n📋 برای دیدن کانفیگ‌های تکی این لینک، دکمه‌ی «کانفیگ‌های تکی» پایین را بزنید."
             return text
@@ -5036,12 +5046,19 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                     )
             if item.get("payg"):
                 import payg as _payg
-                st = await asyncio.to_thread(_payg.payg_status, db, cc["user_id"])
-                with db._get_conn() as conn:
-                    snap = conn.execute(
-                        "SELECT used_bytes FROM usage_snapshots WHERE service_kind='vpn' AND service_id=?",
-                        (f"custom_config:{int(cc['id'])}",),
-                    ).fetchone()
+                try:
+                    st = await asyncio.to_thread(_payg.payg_status, db, cc["user_id"])
+                except Exception:
+                    logging.getLogger("handlers_user").exception("payg_status ناموفق بود")
+                    st = {}
+                try:
+                    with db._get_conn() as conn:
+                        snap = conn.execute(
+                            "SELECT used_bytes FROM usage_snapshots WHERE service_kind='vpn' AND service_id=?",
+                            (f"custom_config:{int(cc['id'])}",),
+                        ).fetchone()
+                except Exception:
+                    snap = None
                 svc_gb = (int(snap["used_bytes"] or 0) / (1024 ** 3)) if snap else 0.0
                 enabled_now = (cc["enabled"] if "enabled" in cc.keys() else 1) == 1
                 text = (
@@ -5069,10 +5086,13 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             elif cc["expires_at"]:
                 text += f"📅 انقضا: {to_jalali_str(cc['expires_at'], with_time=True)}\n"
             if sub_url:
-                shown_url = await asyncio.to_thread(dedicated_sub.dedicated_link_for_upstream, db, sub_url)
+                try:
+                    shown_url = await asyncio.to_thread(dedicated_sub.dedicated_link_for_upstream, db, sub_url)
+                except Exception:
+                    logging.getLogger("handlers_user").exception("ساخت لینک اشتراک اختصاصی ناموفق بود؛ لینک اصلی نمایش داده می‌شود.")
+                    shown_url = sub_url
                 text += f"🔗 `{shown_url}`\n"
-                info = await fetch_sub_info(sub_url)
-                text += f"\n{format_sub_info_fa(info)}"
+                text += f"\n{await _sub_info_block(sub_url)}"
                 if str(sub_url).startswith(("http://", "https://")):
                     text += "\n\n📋 برای دیدن کانفیگ‌های تکی این لینک، دکمه‌ی «کانفیگ‌های تکی» پایین را بزنید."
             return text
