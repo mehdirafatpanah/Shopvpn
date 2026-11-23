@@ -155,10 +155,14 @@ header,#notes{grid-column:1/-1}
 .panel{--inv:#fff;--ink:#0b0b14;color:#fff;background:var(--accent);border-radius:calc(var(--rc) + 8px)}
 .tabs button[aria-pressed=true]{color:#0b0b14}
 .go{border-color:var(--line)}
+.tag{color:var(--accent2);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent2) 45%,transparent)}
+.sub code{color:var(--accent2)}
+h3{border-inline-start:4px solid var(--accent2);padding-inline-start:8px}
 
 /* ۱) مینیمال: تخت، تک‌رنگ، بدون سایه و گرادیان */
 :root[data-style="minimal"]{--rc:14px}
 :root[data-style="minimal"] .panel::before{display:none}
+:root[data-style="minimal"] .panel{box-shadow:inset 0 -6px 0 var(--accent2)}
 :root[data-style="minimal"] .go,:root[data-style="minimal"] .cfg li,:root[data-style="minimal"] .ap,:root[data-style="minimal"] .vc{box-shadow:none}
 
 /* ۲) مدرن: گرادیان، نورپردازی ملایم، کارت‌های بدون کادر با سایه‌ی نرم */
@@ -200,6 +204,7 @@ html:root[data-style="cyberpunk"]{--rc:8px;--bg:#06060d;--ink:#e6fbff;--mute:#7f
 :root[data-style="classic"] body{font-family:"Noto Naskh Arabic",Vazirmatn,Georgia,serif;font-weight:500;font-size:16px}
 :root[data-style="classic"] .panel{border:4px double rgba(255,255,255,.6);box-shadow:none}
 :root[data-style="classic"] .panel::before{display:none}
+:root[data-style="classic"] .panel{border-color:color-mix(in srgb,var(--accent2) 70%,#fff)}
 :root[data-style="classic"] .big{font-weight:700;letter-spacing:0}
 :root[data-style="classic"] .go,:root[data-style="classic"] .cfg li,:root[data-style="classic"] .ap,:root[data-style="classic"] .vc,:root[data-style="classic"] .note{background:transparent;border:1px solid var(--ink);box-shadow:none}
 :root[data-style="classic"] .grid div{background:color-mix(in srgb,var(--ink) 5%,var(--bg));border:1px solid var(--line);box-shadow:none}
@@ -340,9 +345,9 @@ const copy=async(txt,msg,btn)=>{
 const root=document.documentElement;
 function applyVisualStyle(cfg){
   cfg=cfg||{};
-  const safeColor=v=>/^#[0-9a-fA-F]{6}$/.test(String(v||''))?v:'#6366F1';
-  root.style.setProperty('--accent',safeColor(cfg.accent||D.accent));
-  root.style.setProperty('--accent2',safeColor(cfg.secondary||D.secondary));
+  const safeColor=(v,d)=>/^#[0-9a-fA-F]{6}$/.test(String(v||''))?v:d;
+  root.style.setProperty('--accent',safeColor(cfg.accent||D.accent,'#6366F1'));
+  root.style.setProperty('--accent2',safeColor(cfg.secondary||D.secondary,'#06B6D4'));
   root.dataset.style=cfg.style||D.style||'minimal';
   root.dataset.cards=cfg.cardStyle||D.cardStyle||'rounded';
   root.dataset.density=cfg.density||D.density||'comfortable';
