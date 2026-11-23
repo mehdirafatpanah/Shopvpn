@@ -4946,7 +4946,8 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 text += f"🗓 تاریخ خرید: {to_jalali_str(o['created_at'], with_time=True)}\n"
             if cfg["expires_at"]:
                 text += f"⏳ انقضا: {to_jalali_str(cfg['expires_at'], with_time=True)}\n"
-            text += f"🔗 `{cfg['link']}`\n"
+            shown_cfg_link = await _shown_item_link(item, cfg["link"])
+            text += f"🔗 `{shown_cfg_link}`\n"
             text += f"\n{await _sub_info_block(cfg['link'])}"
             if str(cfg["link"]).startswith(("http://", "https://")):
                 text += "\n\n📋 برای دیدن کانفیگ‌های تکی این لینک، دکمه‌ی «کانفیگ‌های تکی» پایین را بزنید."

@@ -397,9 +397,15 @@ def display_link(db, config_id, upstream_url: str) -> str:
     """لینک نمایشی سرویس با شناسه‌ی مشخص؛ در هر خطا یا خاموش بودن همان لینک پنل."""
     try:
         if config_id and is_enabled(db):
-            return link_for_config(db, config_id) or upstream_url
+            link = link_for_config(db, config_id)
+            if not link:
+                import logging
+                logging.getLogger("dedicated_sub").warning(
+                    "display_link: لینک اختصاصی برای سرویس %s ساخته نشد (ساب اختصاصی همین پنل خاموش است یا توکن ندارد)؛ لینک پنل نمایش داده شد.", config_id)
+            return link or upstream_url
     except Exception:
-        pass
+        import logging
+        logging.getLogger("dedicated_sub").exception("display_link برای سرویس %s خطا داد؛ لینک پنل نمایش داده شد.", config_id)
     return upstream_url
 
 
