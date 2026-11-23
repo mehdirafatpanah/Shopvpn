@@ -3682,7 +3682,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             link = _item_sub_link(item)
             if not link:
                 return "⚠️ این سرویس لینکی ندارد.", None
-            shown = await asyncio.to_thread(dedicated_sub.dedicated_link_for_upstream, db, link)
+            shown = await _shown_item_link(item, link)
             await bot.send_message(
                 user.id, f"🔗 <code>{html.escape(str(shown))}</code>", parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
@@ -4906,6 +4906,18 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             return item["custom"]["subscription_url"] or ""
         return ""
 
+    async def _shown_item_link(item, link: str) -> str:
+        """لینکی که به کاربر نشان داده می‌شود (ساب اختصاصی/مرکزی در صورت فعال بودن).
+        برای سرویس‌های custom بر اساس شناسه‌ی سرویس ساخته می‌شود (نه جستجو با آدرس پنل)
+        تا با مینی‌اپ/وب‌استور یکسان باشد و لینک پنل اصلی لو نرود."""
+        try:
+            if item["kind"] == "custom":
+                return await asyncio.to_thread(dedicated_sub.display_link, db, item["custom"]["id"], link)
+            return await asyncio.to_thread(dedicated_sub.dedicated_link_for_upstream, db, link)
+        except Exception:
+            logging.getLogger("handlers_user").exception("ساخت لینک نمایشی سرویس ناموفق بود؛ لینک اصلی نمایش داده می‌شود.")
+            return link
+
     def _item_has_individual_links(item) -> bool:
         link = _item_sub_link(item)
         return str(link).startswith(("http://", "https://"))
@@ -5085,9 +5097,15 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 text += "⏳ انقضا: شروع از اولین اتصال\n"
             elif cc["expires_at"]:
                 text += f"📅 انقضا: {to_jalali_str(cc['expires_at'], with_time=True)}\n"
+            if not sub_url:
+                # سرویس بدون لینک پنل (مثلاً چندپنلی/نودی): اگر ساب اختصاصی/مرکزی فعال است همان را نشان بده
+                try:
+                    sub_url = await asyncio.to_thread(dedicated_sub.link_for_config, db, cc["id"]) or sub_url
+                except Exception:
+                    logging.getLogger("handlers_user").debug("ساخت لینک ساب برای سرویس بدون لینک پنل ناموفق بود", exc_info=True)
             if sub_url:
                 try:
-                    shown_url = await asyncio.to_thread(dedicated_sub.dedicated_link_for_upstream, db, sub_url)
+                    shown_url = await asyncio.to_thread(dedicated_sub.display_link, db, cc["id"], sub_url)
                 except Exception:
                     logging.getLogger("handlers_user").exception("ساخت لینک اشتراک اختصاصی ناموفق بود؛ لینک اصلی نمایش داده می‌شود.")
                     shown_url = sub_url
@@ -5722,7 +5740,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             await call.answer(db.get_text('handlers_user.auto_4e32a60a', 'لینکی برای ساخت کیوآر پیدا نشد.'), show_alert=True)
             return
         await call.answer()
-        link = await asyncio.to_thread(dedicated_sub.dedicated_link_for_upstream, db, link)
+        link = await _shown_item_link(item, link)
         photo = BufferedInputFile(build_qr_bytes(link, db=db), filename="config_qr.png")
         await bot.send_photo(call.from_user.id, photo, caption=tr("⬜ کیوآر کانفیگ شما"))
 
@@ -9831,7 +9849,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         if not link:
             await message.answer(db.get_text('handlers_user.auto_1e7d994f', '⛔️ لینکی برای ساخت کیوآر پیدا نشد.'))
             return
-        link = await asyncio.to_thread(dedicated_sub.dedicated_link_for_upstream, db, link)
+        link = await _shown_item_link(item, link)
         photo = BufferedInputFile(build_qr_bytes(link, db=db), filename="config_qr.png")
         await bot.send_photo(user_id, photo, caption=tr("⬜ کیوآر کانفیگ شما"))
 
