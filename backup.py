@@ -180,7 +180,7 @@ def restore_full_backup(main_db, main_db_path: str, zip_path: str) -> dict:
       - resellers_restored: [{"id", "bot_username", "db_path"}, ...]
       - resellers_skipped: [{"file", "reason"}, ...]
     """
-    from config import resolve_db_path
+    from config import RESELLER_DBS_DIR, resolve_reseller_db_path
 
     result = {
         "main_restored": False,
@@ -208,7 +208,18 @@ def restore_full_backup(main_db, main_db_path: str, zip_path: str) -> dict:
         result["main_restored"] = True
 
         # ۲) حالا reseller_bots را از روی دیتابیس *تازه* بخوان‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
+        os.makedirs(RESELLER_DBS_DIR, exist_ok=True)
         resellers_by_id = {row["id"]: row for row in main_db.list_reseller_bots(active_only=False)}
+        # مسیرهای absolute از سرور مبدأ را به مسیر استاندارد نصب جدید منتقل کن.
+        for reseller_id, row in resellers_by_id.items():
+            old_path = row["db_path"]
+            target_path = os.path.join(RESELLER_DBS_DIR, os.path.basename(os.path.normpath(old_path or f"reseller_{reseller_id}.db")))
+            if not target_path.endswith(".db"):
+                target_path += ".db"
+            main_db.set_reseller_db_path(reseller_id, target_path)
+            # دیکشنری row را برای استفاده‌ی پایین با مسیر استاندارد به‌روزرسانی کن.
+            resellers_by_id[reseller_id] = dict(row)
+            resellers_by_id[reseller_id]["db_path"] = target_path
 
         for name in sorted(os.listdir(tmp_dir)):
             if not (name.startswith("reseller_") and name.endswith(".db")):
@@ -234,7 +245,7 @@ def restore_full_backup(main_db, main_db_path: str, zip_path: str) -> dict:
                 result["resellers_skipped"].append({"file": name, "reason": "دیتابیس sqlite معتبر نیست."})
                 continue
 
-            target_path = resolve_db_path(row["db_path"])
+            target_path = row["db_path"]
             try:
                 _raw_replace_db_file(extracted_path, target_path)
                 result["resellers_restored"].append({
@@ -243,6 +254,20 @@ def restore_full_backup(main_db, main_db_path: str, zip_path: str) -> dict:
             except Exception:
                 logger.exception("جایگزینی دیتابیس نماینده id=%s (%s) ناموفق بود.", reseller_id, target_path)
                 result["resellers_skipped"].append({"file": name, "reason": "خطا هنگام جایگزینی فایل."})
+        # Databases absent from the archive remain explicitly reported; do not
+        # silently initialize an empty tenant database later.
+        restored_ids = {item["id"] for item in result["resellers_restored"]}
+        for reseller_id, row in resellers_by_id.items():
+            if reseller_id not in restored_ids and not any(
+                item.get("file", "") == f"reseller_{reseller_id}.db"
+                or item.get("file", "") == f"reseller_{reseller_id}_level"
+                or item.get("file", "").startswith(f"reseller_{reseller_id}_level")
+                for item in result["resellers_skipped"]
+            ):
+                result["resellers_skipped"].append({
+                    "file": f"reseller_{reseller_id}.db",
+                    "reason": "فایل دیتابیس این نماینده داخل بکاپ نبود؛ مسیر محلی ثبت شد ولی دیتابیس ایجاد/بازسازی نشد.",
+                })
     finally:
         import shutil as _shutil
         _shutil.rmtree(tmp_dir, ignore_errors=True)

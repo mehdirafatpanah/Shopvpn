@@ -43,11 +43,30 @@ RESELLER_DBS_DIR = os.path.join(BASE_DIR, "reseller_dbs")
 
 
 def resolve_db_path(path: str) -> str:
-    """مسیرهای قدیمی که ممکن است نسبی داخل دیتابیس ذخیره شده باشند را هم
-    به مسیر مطلق تبدیل می‌کند (سازگاری با رکوردهای نمایندگی قدیمی‌تر)."""
+    """مسیر دیتابیس را به مسیر مطلق نسبت به پروژه تبدیل می‌کند."""
     if not path:
         return path
     return path if os.path.isabs(path) else os.path.join(BASE_DIR, path)
+
+
+def resolve_reseller_db_path(path: str, *, relocate_missing: bool = True) -> str:
+    """مسیر دیتابیس نماینده را پس از انتقال سرور به مسیر محلی استاندارد برساند.
+
+    اگر مسیر مطلقِ سرور قبلی دیگر وجود نداشته باشد، نام فایل را در پوشه
+    reseller_dbs همین نصب جست‌وجو/بازسازی می‌کند؛ مسیرهای موجود را دست نمی‌زند.
+    """
+    if not path:
+        return path
+    resolved = resolve_db_path(path)
+    if os.path.exists(resolved) or not relocate_missing:
+        return resolved
+    filename = os.path.basename(os.path.normpath(path))
+    if not filename or filename in ('.', '..'):
+        return resolved
+    local_path = os.path.join(RESELLER_DBS_DIR, filename)
+    # مسیر نماینده همیشه باید به پوشه‌ی استاندارد این نصب اشاره کند؛ حتی اگر
+    # فایل هنوز وجود نداشته باشد (در این حالت start_bot آن را ایجاد نمی‌کند).
+    return local_path
 
 # حالت دریافت آپدیت‌های تلگرام: "polling" (پیش‌فرض) یا "webhook"
 # توجه: تلگرام این دو را هم‌زمان روی یک توکن قبول نمی‌کند (ست‌کردن وب‌هوک

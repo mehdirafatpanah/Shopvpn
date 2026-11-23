@@ -27,7 +27,7 @@ from aiogram.types import MenuButtonWebApp, MenuButtonDefault, WebAppInfo, Error
 
 from config import (
     BOT_MODE, WEBHOOK_BASE_URL, WEBHOOK_SECRET,
-    WEBHOOK_LISTEN_HOST, WEBHOOK_LISTEN_PORT,
+    WEBHOOK_LISTEN_HOST, WEBHOOK_LISTEN_PORT, resolve_reseller_db_path,
 )
 from database import Database
 from handlers_user import create_user_router
@@ -467,6 +467,9 @@ class BotManager:
         if token in self.instances:
             return False
 
+        if not is_main_bot and not os.path.isfile(db_path):
+            logger.error("راه‌اندازی نمایندگی متوقف شد؛ فایل دیتابیس وجود ندارد: %s", db_path)
+            return False
         db = Database(db_path)
         db.init_db(owner_id=owner_id)
         # Dedicated reseller bots are intentionally a near-complete copy of the
@@ -757,7 +760,15 @@ class BotManager:
 
                 for token, row in active_tokens.items():
                     if token not in self.instances:
-                        resolved_path = resolve_db_path(row["db_path"])
+                        resolved_path = resolve_reseller_db_path(row["db_path"])
+                        if resolved_path != row["db_path"]:
+                            main_db.set_reseller_db_path(row["id"], resolved_path)
+                        if not os.path.isfile(resolved_path):
+                            logger.error(
+                                "نمایندگی @%s فعال است اما دیتابیس پیدا نشد؛ برای جلوگیری از ساخت دیتابیس خالی، استارت رد شد: %s",
+                                row["bot_username"], resolved_path,
+                            )
+                            continue
                         # قبل از استارت، شناسه‌ی تننت مینی‌اپ را sync کن - دقیقاً مثل
                         # حلقه‌ی استارتاپ در main.py - وگرنه اگر این تنظیم روی
                         # دیتابیس نماینده هنوز ست نشده باشد (مثلاً به‌خاطر تایمینگ

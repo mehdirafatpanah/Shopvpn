@@ -13,7 +13,7 @@ import logging
 import os
 from logging.handlers import RotatingFileHandler
 
-from config import BOT_TOKEN, OWNER_ID, DB_PATH, BOT_MODE, resolve_db_path
+from config import BOT_TOKEN, OWNER_ID, DB_PATH, BOT_MODE, resolve_db_path, resolve_reseller_db_path
 from database import Database
 from bot_manager import BotManager
 
@@ -82,7 +82,15 @@ async def main():
     # try/except دور هر آیتم (پایین‌تر) کرش نمی‌کرد، ولی بی‌فایده تلاش می‌شد.
     reseller_bots = [rb for rb in reseller_bots if (rb["has_live_bot"] if "has_live_bot" in rb.keys() else 1)]
     for rb in reseller_bots:
-        resolved_path = resolve_db_path(rb["db_path"])
+        resolved_path = resolve_reseller_db_path(rb["db_path"])
+        if resolved_path != rb["db_path"]:
+            main_db.set_reseller_db_path(rb["id"], resolved_path)
+        if not os.path.isfile(resolved_path):
+            logger.error(
+                "نمایندگی @%s فعال است اما دیتابیس پیدا نشد؛ استارت رد شد تا دیتابیس خالی ساخته نشود: %s",
+                rb["bot_username"], resolved_path,
+            )
+            continue
         # هماهنگ‌سازی شناسه‌ی تننت مینی‌اپ - باید قبل از start_bot باشد تا‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
         # لینک مینی‌اپ این نماینده از همون اول درست ساخته شود.
         try:
