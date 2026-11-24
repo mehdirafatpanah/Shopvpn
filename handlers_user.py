@@ -1333,7 +1333,9 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         # BlockedUserMiddleware ردیف را قبل از رسیدن به این هندلر می‌سازد.
         # دیپ‌لینک‌ها در state می‌مانند و بعد از انتخاب زبان (در cb_language) اجرا می‌شوند.
         if not await asyncio.to_thread(db.is_user_language_selected, message.from_user.id):
-            if not existing_user:
+            # existing_user همیشه truthy است (BlockedUserMiddleware ردیف را قبل از این هندلر
+            # می‌سازد)، پس تشخیص تازه‌بودن با پرچم اتمی signup_reported انجام می‌شود.
+            if await asyncio.to_thread(db.claim_signup_report, message.from_user.id):
                 await _notify_new_signup(message, bot)
             await state.update_data(
                 pending_welcome=True, pending_terms=False, pending_post_start_actions=post_start_actions
@@ -2123,6 +2125,56 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
         )
         return True
 
+    async def _order_panel_line(order, product=None) -> str:
+        """خطوط «🖥 پنل: ...» و «🌐 نود: ...» برای گزارش تاپیک خرید؛ اگر چیزی مشخص نباشد رشته‌ی خالی."""
+        def work():
+            panel_ids, node_ids = [], []
+
+            def add(bucket, value):
+                try:
+                    value = int(value or 0)
+                except (TypeError, ValueError):
+                    return
+                if value and value not in bucket:
+                    bucket.append(value)
+
+            if order["is_renewal"]:
+                if order["renewal_target_kind"] == "custom" and order["renewal_target_id"]:
+                    cc = db.get_custom_config_by_id(order["renewal_target_id"])
+                    add(panel_ids, cc["panel_server_id"] if cc else None)
+            elif order["is_custom_config"]:
+                add(panel_ids, order["custom_panel_server_id"])
+            elif product is not None:
+                add(panel_ids, product["provision_server_id"])
+                add(node_ids, product["provision_ssh_node_id"])
+                extra = db.get_product_extra_targets(product["id"])
+                for pid in extra.get("panels", []):
+                    add(panel_ids, pid)
+                for nid in extra.get("ssh", []):
+                    add(node_ids, nid)
+            panels = []
+            for pid in panel_ids:
+                row = db.get_panel_server(pid)
+                if row and row["name"]:
+                    panels.append(escape_html(str(row["name"])))
+            nodes = []
+            for nid in node_ids:
+                row = db.get_ssh_node(nid)
+                if row and row.get("name"):
+                    nodes.append(escape_html(str(row["name"])))
+            return panels, nodes
+
+        try:
+            panels, nodes = await asyncio.to_thread(work)
+        except Exception:
+            return ""
+        out = ""
+        if panels:
+            out += "🖥 پنل: " + "، ".join(panels) + "\n"
+        if nodes:
+            out += "🌐 نود: " + "، ".join(nodes) + "\n"
+        return out
+
     async def _notify_admins_of_order(bot: Bot, order_id: int, receipt_file_id: str = None, receipt_type: str = "photo", ai_note: str = None, ai_available: bool = True, ai_rejected_note: str = None):
         order = (await asyncio.to_thread(db.get_order, order_id))
 
@@ -2137,6 +2189,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 f"🆔 آیدی عددی: {order['user_id']}\n"
                 f"{purchase_info_line}"
                 f"🛠 نام کاربری: {order['custom_username']}\n"
+                f"{await _order_panel_line(order)}"
                 f"📶 حجم: {order['custom_volume_gb']} گیگابایت\n"
                 f"💰 قیمت پایه: {order['base_price']:,} تومان\n"
             )
@@ -2234,6 +2287,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
                 f"{purchase_info_line}"
                 f"🔄 نوع: {mode_label}\n"
                 f"🎯 هدف: {target_label} #{order['renewal_target_id']}\n"
+                f"{await _order_panel_line(order)}"
             )
             if order["renewal_add_volume_gb"]:
                 caption += f"🔋 افزایش حجم: {order['renewal_add_volume_gb']} گیگابایت\n"
@@ -2286,6 +2340,7 @@ def create_user_router(db, is_main_bot: bool = True, bot_manager=None) -> Router
             f"{purchase_info_line}"
             f"📦 محصول: {product['name']}"
             + (f" × {quantity}\n" if quantity > 1 else "\n")
+            + await _order_panel_line(order, product)
             + f"💰 قیمت پایه: {order['base_price']:,} تومان\n"
         )
         if order["user_limit"]:

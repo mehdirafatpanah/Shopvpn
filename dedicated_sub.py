@@ -188,6 +188,19 @@ def all_settings(db, profile: Optional[dict] = None) -> Dict[str, str]:
     return out
 
 
+def merge_profile_settings(own: Optional[dict], values: Optional[dict], reset=()) -> dict:
+    """تنظیمات اختصاصی پروفایل بعد از ذخیره: ابتدا کلیدهای reset حذف می‌شوند (برگشت به ارث‌بری از مرکزی)،
+    سپس values روی آن‌ها نوشته می‌شود. فقط کلیدهای PROFILE_SETTING_KEYS معتبرند."""
+    out = dict(own or {})
+    for k in reset or ():
+        if k in PROFILE_SETTING_KEYS:
+            out.pop(k, None)
+    for k, v in (values or {}).items():
+        if k in PROFILE_SETTING_KEYS:
+            out[k] = "" if v is None else str(v)
+    return out
+
+
 def get_profile(db, profile_id) -> Optional[dict]:
     try:
         return db.dsp_get(profile_id) if profile_id else None

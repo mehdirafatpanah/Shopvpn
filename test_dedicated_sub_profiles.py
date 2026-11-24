@@ -102,5 +102,27 @@ class ServerHostTests(unittest.TestCase):
         self.assertIn("NOTICE-IRAN", r2.text)
 
 
+class MergeProfileSettingsTests(unittest.TestCase):
+    def test_values_override_and_unknown_keys_ignored(self):
+        out = ds.merge_profile_settings({"dsub_brand": "A"}, {"dsub_theme": "dark", "bogus": "x", "dsub_enabled": "1"})
+        self.assertEqual(out, {"dsub_brand": "A", "dsub_theme": "dark"})
+
+    def test_reset_returns_to_inheritance(self):
+        out = ds.merge_profile_settings({"dsub_brand": "A", "dsub_theme": "dark"}, {}, ["dsub_brand", "nope"])
+        self.assertEqual(out, {"dsub_theme": "dark"})
+
+    def test_inherits_central_after_reset(self):
+        db = make_db()
+        db.set_setting("dsub_brand", "Central")
+        pid = db.dsp_create("Iran", "https://iran.example.com", True)
+        db.dsp_set_settings(pid, ds.merge_profile_settings({}, {"dsub_brand": "Iran"}))
+        self.assertEqual(ds.all_settings(db, ds.get_profile(db, pid))["dsub_brand"], "Iran")
+        prof = ds.get_profile(db, pid)
+        db.dsp_set_settings(pid, ds.merge_profile_settings(prof["settings"], {}, ["dsub_brand"]))
+        self.assertEqual(ds.all_settings(db, ds.get_profile(db, pid))["dsub_brand"], "Central")
+        db.set_setting("dsub_brand", "Central2")
+        self.assertEqual(ds.all_settings(db, ds.get_profile(db, pid))["dsub_brand"], "Central2")
+
+
 if __name__ == "__main__":
     unittest.main()

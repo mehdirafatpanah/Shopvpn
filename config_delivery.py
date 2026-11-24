@@ -198,6 +198,43 @@ def _build_qr_photo(link: str, filename: str = "config_qr.png", db=None) -> Buff
     return BufferedInputFile(build_qr_bytes(link, db=db), filename=filename)
 
 
+async def qr_bytes_with_fallback(link: str, db=None):
+    """بایت‌های PNG کد QR یا None. QR فقط به قالب تحویل وابسته نیست: اول لینک ساب اختصاصی، بعد خودِ لینک،
+    و اگر ساخت QR شکست خورد (مثلاً لینک خیلی بلند) از مشخصات خودِ سرویس (ساب/اولین کانفیگ) ساخته می‌شود."""
+    candidates = []
+    if db is not None and isinstance(link, str) and link.startswith(("http://", "https://")):
+        try:
+            candidates.append(await asyncio.to_thread(dedicated_sub.dedicated_link_for_upstream, db, link))
+        except Exception:
+            logger.debug("خواندن لینک ساب اختصاصی برای QR ناموفق بود.", exc_info=True)
+    candidates.append(link)
+    tried = set()
+
+    async def _try(value):
+        if not value or value in tried:
+            return None
+        tried.add(value)
+        try:
+            return await asyncio.to_thread(build_qr_bytes, value, db)
+        except Exception:
+            logger.warning("ساخت QR برای یک گزینه ناموفق بود.", exc_info=True)
+            return None
+
+    for cand in candidates:
+        data = await _try(cand)
+        if data:
+            return data
+    try:
+        svc = await collect_service_info(link)
+        for cand in [svc.get("sub_url")] + list(svc.get("configs") or [])[:3]:
+            data = await _try(cand)
+            if data:
+                return data
+    except Exception:
+        logger.debug("ساخت QR از مشخصات سرویس ناموفق بود.", exc_info=True)
+    return None
+
+
 def build_delivery_caption(
     product_name: str,
     idx: int,
@@ -860,12 +897,22 @@ async def deliver_config_to_user(
     for idx, link in enumerate(links, start=1):
         caption, extras = await prepare_delivery(link, product_name, idx, total, db=db, user_tg_id=user_tg_id, header_text=header_text, panel_type=delivery_panel_type)
 
-        try:
-            qr_link = await asyncio.to_thread(dedicated_sub.dedicated_link_for_upstream, db, link) if db is not None else link
-            qr_photo = _build_qr_photo(qr_link, db=db)
-            await bot.send_photo(user_tg_id, qr_photo, caption=caption, parse_mode="HTML")
-        except Exception:
-            # اگر ساخت/ارسال QR به هر دلیلی ناموفق بود، حداقل متن اطلاعات برای کاربر ارسال شود
+        # QR هیچ‌وقت به‌خاطر کپشن قالب (HTML نامعتبر/بلند) از دست نمی‌رود: اگر تلگرام کپشن را نپذیرد،
+        # عکس بدون کپشن فرستاده می‌شود و متن قالب جداگانه (با fallback متن ساده) می‌آید.
+        qr_bytes = await qr_bytes_with_fallback(link, db)
+        caption_sent = False
+        if qr_bytes:
+            try:
+                await bot.send_photo(user_tg_id, BufferedInputFile(qr_bytes, filename="config_qr.png"),
+                                     caption=caption, parse_mode="HTML")
+                caption_sent = True
+            except Exception:
+                logger.warning("ارسال QR همراه کپشن ناموفق بود؛ بدون کپشن دوباره ارسال می‌شود.", exc_info=True)
+                try:
+                    await bot.send_photo(user_tg_id, BufferedInputFile(qr_bytes, filename="config_qr.png"))
+                except Exception:
+                    logger.warning("ارسال QR ناموفق بود.", exc_info=True)
+        if not caption_sent:
             await _send_html(bot, user_tg_id, caption)
 
         for extra in extras:

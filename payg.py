@@ -30,6 +30,11 @@ DEFAULT_RATES = [5000, 4500, 4000, 3500]
 _DEFAULT_NAME = "Pay As You Go"
 PAYG_NAME_KEY = "payg_name"
 PAYG_NAME_MAX = 40
+PAYG_EMOJI_KEY = "payg_emoji"
+PAYG_EMOJI_DEFAULT = "💳"
+PAYG_EMOJI_MAX = 8
+_LEGACY_BTN = "💳 پرداخت به‌ازای مصرف"
+_BTN_TITLE = "پرداخت به‌ازای مصرف"
 _name_state = {"db": None, "value": "", "at": 0.0}
 
 
@@ -46,6 +51,26 @@ def get_payg_name(db=None) -> str:
             value = ""
         _name_state.update(db=db, value=value, at=now)
     return _name_state["value"] or _DEFAULT_NAME
+
+
+def get_payg_emoji(db=None) -> str:
+    """ایموجی دکمه‌ی پرداخت به‌ازای مصرف؛ تعیین‌شده توسط مدیر یا پیش‌فرض."""
+    db = db or _name_state["db"]
+    if db is None:
+        return PAYG_EMOJI_DEFAULT
+    try:
+        value = str(db.get_setting(PAYG_EMOJI_KEY, "") or "").strip()[:PAYG_EMOJI_MAX]
+    except Exception:
+        value = ""
+    return value or PAYG_EMOJI_DEFAULT
+
+
+def button_texts(db) -> list:
+    """همه‌ی متن‌های ممکن دکمه‌ی منوی اصلی (برای تطبیق پیام کیبورد قدیمی و جدید)."""
+    emoji, name = get_payg_emoji(db), get_payg_name(db)
+    out = [db.get_setting("btn_payg", f"{emoji} {_BTN_TITLE}"), _LEGACY_BTN, f"💳 {name}",
+           f"{emoji} {_BTN_TITLE}", f"{emoji} {name}"]
+    return [t for i, t in enumerate(out) if t and t not in out[:i]]
 
 
 def _n(text):
@@ -1952,7 +1977,7 @@ def create_payg_router(db, is_main_bot=True):
     async def payg_command(message: Message):
         await show(message, message.from_user.id)
 
-    @router.message(F.text.func(lambda t: t in (db.get_setting("btn_payg", "💳 پرداخت به‌ازای مصرف"), "💳 پرداخت به‌ازای مصرف", f"💳 {get_payg_name(db)}")))
+    @router.message(F.text.func(lambda t: t in button_texts(db)))
     async def payg_menu_button(message: Message):
         await show(message, message.from_user.id)
 
@@ -2439,4 +2464,5 @@ def miniapp_overview(db, uid: int) -> dict:
         "min_balance": get_min_balance(db), "cycle": cycle_text(db),
         "can_provision": enabled and not blocker, "blocker": blocker,
         "services": services, "history": history,
+        "emoji": get_payg_emoji(db),
     }
