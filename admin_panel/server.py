@@ -5198,6 +5198,7 @@ class PaygSettingsBody(BaseModel):
     alert3_value: Optional[int] = None
     alert3_text: Optional[str] = None
     payg_name: Optional[str] = None
+    payg_emoji: Optional[str] = None
     retention_days: Optional[int] = None
 
 
@@ -5332,6 +5333,9 @@ def api_payg_overview(admin=Depends(require_permission("catalog")), _mt=Depends(
         "alert3_text": db.get_setting(payg.PAYG_CUT_TEXT_KEY, "") or "",
         "payg_name": (db.get_setting(payg.PAYG_NAME_KEY, "") or "").strip(),
         "retention_days": payg.get_retention_days(db),
+        "payg_emoji": (db.get_setting(payg.PAYG_EMOJI_KEY, "") or "").strip(),
+        "payg_emoji_default": payg.PAYG_EMOJI_DEFAULT,
+        "payg_emoji_max": payg.PAYG_EMOJI_MAX,
         "payg_name_default": payg._DEFAULT_NAME,
         "payg_name_max": payg.PAYG_NAME_MAX,
         "delivery_text": db.get_setting(payg.PAYG_DELIVERY_TEXT_KEY, "") or "",
@@ -5400,6 +5404,12 @@ def api_payg_settings(body: PaygSettingsBody, admin=Depends(require_permission("
         db.set_setting(payg.PAYG_NAME_KEY, name)
         payg._name_state["at"] = 0.0
         changes.append("payg_name")
+    if body.payg_emoji is not None:
+        emoji = "".join(body.payg_emoji.split())
+        if len(emoji) > payg.PAYG_EMOJI_MAX:
+            raise HTTPException(400, tr(f"ایموجی نمی‌تواند بیشتر از {payg.PAYG_EMOJI_MAX} نویسه باشد."))
+        db.set_setting(payg.PAYG_EMOJI_KEY, emoji)
+        changes.append("payg_emoji")
     for n in (1, 2, 3):
         b_mode, b_value, b_text = (getattr(body, f"alert{n}_mode"), getattr(body, f"alert{n}_value"), getattr(body, f"alert{n}_text"))
         mode_key, value_key, text_key = payg._ALERT_KEYS[n][:3]
@@ -9949,7 +9959,8 @@ class DspPanelsBody(BaseModel):
 
 
 class DspSettingsBody(BaseModel):
-    values: Dict[str, Any]
+    values: Dict[str, Any] = {}
+    reset: List[str] = []  # کلیدهایی که باید به ارث‌بری از ساب مرکزی برگردند
 
 
 class DspSSLBody(BaseModel):
@@ -10041,7 +10052,8 @@ def api_dsp_settings_get(profile_id: int, admin=Depends(require_permission("sett
     prof = ds.get_profile(db, profile_id)
     if not prof:
         raise HTTPException(404, "ساب پیدا نشد.")
-    return {"settings": ds.all_settings(db, prof), "own_keys": sorted((prof["settings"] or {}).keys())}
+    return {"settings": ds.all_settings(db, prof), "central": ds.all_settings(db),
+            "own_keys": sorted(k for k in (prof["settings"] or {}) if k in ds.PROFILE_SETTING_KEYS)}
 
 
 @app.put("/api/dsub-profiles/{profile_id}/settings")
@@ -10051,7 +10063,7 @@ def api_dsp_settings_put(profile_id: int, body: DspSettingsBody, admin=Depends(r
     prof = ds.get_profile(db, profile_id)
     if not prof:
         raise HTTPException(404, "ساب پیدا نشد.")
-    own = dict(prof["settings"] or {})
+    clean: Dict[str, str] = {}
     for key, value in body.values.items():
         if key not in ds.PROFILE_SETTING_KEYS:
             continue
@@ -10064,9 +10076,12 @@ def api_dsp_settings_put(profile_id: int, body: DspSettingsBody, admin=Depends(r
             raise HTTPException(400, "رنگ نامعتبر است؛ کد HEX شش‌رقمی مثل #6366F1 لازم است.")
         if key != "dsub_custom_template" and len(value) > 420000:
             raise HTTPException(400, "مقدار بیش از حد بزرگ است.")
-        own[key] = value
+        clean[key] = value
+    own = ds.merge_profile_settings(prof["settings"], clean, body.reset)
     db.dsp_set_settings(profile_id, own)
-    db.log_admin_action(admin["id"], "dsub_profile_settings", f"تنظیمات ساب «{prof['name']}» ذخیره شد", "setting", f"dsub:{profile_id}")
+    db.log_admin_action(admin["id"], "dsub_profile_settings",
+                        f"تنظیمات ساب «{prof['name']}» ذخیره شد ({len(clean)} تغییر، {len(body.reset)} بازگشت به مرکزی)",
+                        "setting", f"dsub:{profile_id}")
     return {"ok": True}
 
 

@@ -8,7 +8,7 @@
 """
 
 import asyncio
-from config_delivery import build_qr_bytes, build_summary_text, get_post_delivery_media, get_post_delivery_text, prepare_delivery, strip_html
+from config_delivery import qr_bytes_with_fallback, build_summary_text, get_post_delivery_media, get_post_delivery_text, prepare_delivery, strip_html
 from admin_panel.telegram_notify import send_message as tg_send, send_photo as tg_send_photo, copy_message as tg_copy_message, send_document_bytes as tg_send_doc, send_sticker as tg_send_sticker
 import delivery_extras
 from config import BOT_TOKEN
@@ -131,12 +131,15 @@ async def deliver_config_to_user_web(
 
         sent = False
         try:
-            qr_bytes = build_qr_bytes(link, db=db)
-            sent = await tg_send_photo(bot_token, user_tg_id, qr_bytes, "config_qr.png", caption, parse_mode="HTML")
+            qr_bytes = await qr_bytes_with_fallback(link, db)
+            if qr_bytes:
+                sent = await tg_send_photo(bot_token, user_tg_id, qr_bytes, "config_qr.png", caption, parse_mode="HTML")
+                if not sent:
+                    # کپشن قالب (HTML نامعتبر/بلند) نباید QR را از بین ببرد: عکس بدون کپشن، متن جدا
+                    await tg_send_photo(bot_token, user_tg_id, qr_bytes, "config_qr.png")
         except Exception:
             sent = False
         if not sent:
-            # اگر ساخت/ارسال QR به هر دلیلی ناموفق بود، حداقل متن اطلاعات برای کاربر ارسال شود‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
             await _send_html(caption)
 
         for extra in extras:
