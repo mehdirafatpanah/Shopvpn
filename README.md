@@ -461,6 +461,41 @@ The `admin_panel/` package provides a standalone web administration panel indepe
 - 📝 Web-admin audit logs
 - 🌐 Persian/English UI with automatic RTL/LTR
 
+### 📸 Screenshots
+
+The panel in English mode (sample data):
+
+<table>
+<tr>
+<td width="50%"><img src="https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn-assets/main/screenshots/01-dashboard.png" alt="Dashboard — revenue, orders, health and server resources"><br><sub><b>Dashboard — revenue, orders, health and server resources</b></sub></td>
+<td width="50%"><img src="https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn-assets/main/screenshots/02-orders.png" alt="Orders — approval queue and order history"><br><sub><b>Orders — approval queue and order history</b></sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn-assets/main/screenshots/03-users.png" alt="Users — search, balances and purchase stats"><br><sub><b>Users — search, balances and purchase stats</b></sub></td>
+<td width="50%"><img src="https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn-assets/main/screenshots/04-products.png" alt="Products & config bank — stock and pricing"><br><sub><b>Products & config bank — stock and pricing</b></sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn-assets/main/screenshots/05-vpn-panels.png" alt="VPN panels — multi-panel status and management"><br><sub><b>VPN panels — multi-panel status and management</b></sub></td>
+<td width="50%"><img src="https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn-assets/main/screenshots/06-discount-codes.png" alt="Discount codes — limits, usage and expiry"><br><sub><b>Discount codes — limits, usage and expiry</b></sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn-assets/main/screenshots/07-tickets.png" alt="Support tickets — priority, category and status"><br><sub><b>Support tickets — priority, category and status</b></sub></td>
+<td width="50%"><img src="https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn-assets/main/screenshots/08-resellers.png" alt="Reseller management — bot-owning resellers"><br><sub><b>Reseller management — bot-owning resellers</b></sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn-assets/main/screenshots/09-analytics.png" alt="Advanced analytics — trend, gateways and funnel"><br><sub><b>Advanced analytics — trend, gateways and funnel</b></sub></td>
+<td width="50%"><img src="https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn-assets/main/screenshots/10-user-detail.png" alt="User management — wallet, quotas, invoices and actions"><br><sub><b>User management — wallet, quotas, invoices and actions</b></sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn-assets/main/screenshots/11-product-edit.png" alt="Product editor — price, discounts and delivery text"><br><sub><b>Product editor — price, discounts and delivery text</b></sub></td>
+<td width="50%"><img src="https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn-assets/main/screenshots/12-bot-buttons.png" alt="Bot button layout studio — live preview and editor"><br><sub><b>Bot button layout studio — live preview and editor</b></sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn-assets/main/screenshots/13-settings.png" alt="Settings & branding — menu and content"><br><sub><b>Settings & branding — menu and content</b></sub></td>
+<td width="50%"><img src="https://raw.githubusercontent.com/mehdirafatpanah/Shopvpn-assets/main/screenshots/14-settings-payments.png" alt="Payments & finance — exchange rate and card-to-card"><br><sub><b>Payments & finance — exchange rate and card-to-card</b></sub></td>
+</tr>
+</table>
+
 ### Quick Setup
 
 **Automatic:** use the relevant `manage.sh` option for the web panel.
