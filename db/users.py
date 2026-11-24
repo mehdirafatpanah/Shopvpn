@@ -101,6 +101,15 @@ class UsersMixin:
         with self._get_conn() as conn:
             return conn.execute("SELECT * FROM users WHERE telegram_id=?", (tg_id,)).fetchone()
 
+    def claim_signup_report(self, tg_id: int) -> bool:
+        """اتمی: فقط اولین فراخوانی برای هر کاربر True برمی‌گرداند (ارسال کارت ثبت‌نام به گروه گزارش)."""
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "UPDATE users SET signup_reported=1 WHERE telegram_id=? AND COALESCE(signup_reported,0)=0",
+                (tg_id,),
+            )
+            return cur.rowcount == 1
+
 
     def set_user_blocked(self, tg_id: int, blocked: bool):
         with self._get_conn() as conn:

@@ -1825,6 +1825,15 @@ class DatabaseBase:
             if "duplicate column name" not in str(exc).lower():
                 raise
 
+        # پرچم «کارت ثبت‌نام به تاپیک گزارش ارسال شده». کاربران فعلی روی ۱ گذاشته
+        # می‌شوند تا کارت ثبت‌نام قدیمی‌ها دوباره ارسال نشود؛ فقط کاربران تازه (۰).
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN signup_reported INTEGER DEFAULT 0")
+            conn.execute("UPDATE users SET signup_reported=1")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
+
 # هم‌گام‌سازی محدودیت کاربر محصولات با Capability واقعی پنل‌ها.
         # این مرحله بعد از commit شدن schema اجرا می‌شود تا lock بازگشتی روی _get_conn نداشته باشیم.
         try:
