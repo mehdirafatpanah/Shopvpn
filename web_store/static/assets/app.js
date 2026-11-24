@@ -695,7 +695,7 @@
     if (!cats.length) { box.appendChild(alertBox(t("plans_empty"), true)); return; }
     var active = "all";
     var sort = ["value", "low", "high"].indexOf(S.custom && S.custom.sort) > -1 ? S.custom.sort : "value";
-    var chips = h("div", { class: "chips", role: "tablist" });
+    var chips = h("div", { class: "chip-rows" });
     var controls = h("div", { class: "catalog-controls" });
     var count = h("span", { class: "catalog-count" });
     var sortWrap = h("label", { class: "sort-control" }, h("span", { text: t("sort_label") }));
@@ -717,17 +717,53 @@
       draw();
     };
     window.addEventListener("sv:netmap-filter", window.__svNetmapFilter);
+    var byId = {}, kids = {};
+    cats.forEach(function (cat) {
+      byId[cat.id] = cat;
+      var pid = cat.parent_id || 0;
+      (kids[pid] = kids[pid] || []).push(cat);
+    });
+    cats.forEach(function (cat) { if (cat.parent_id && !byId[cat.parent_id]) { cat.parent_id = 0; (kids[0] = kids[0] || []).push(cat); } });
+    function chainOf(id) {
+      var out = [], cur = byId[id], n = 0;
+      while (cur && n++ < 20) { out.unshift(cur.id); cur = byId[cur.parent_id]; }
+      return out;
+    }
+    function inBranch(cat, root) {
+      var cur = cat, n = 0;
+      while (cur && n++ < 20) { if (cur.id === root) return true; cur = byId[cur.parent_id]; }
+      return false;
+    }
+    function chipRow(list) {
+      var row = h("div", { class: "chips", role: "tablist" });
+      list.forEach(function (x) {
+        row.appendChild(h("button", {
+          class: "chip", type: "button", role: "tab", "aria-selected": String(!!x.on), text: x.label,
+          onclick: function () { active = x.id; draw(); }
+        }));
+      });
+      return row;
+    }
+    function label(cat) { return cat.name + " (" + fmt(cat.total) + ")"; }
     function draw() {
       chips.textContent = "";
-      [{ id: "all", name: t("all") }].concat(cats).forEach(function (cat) {
-        chips.appendChild(h("button", {
-          class: "chip", type: "button", role: "tab", "aria-selected": String(active === cat.id), text: cat.name,
-          onclick: function () { active = cat.id; draw(); }
-        }));
+      var chain = active === "all" ? [] : chainOf(active);
+      var roots = [{ id: "all", label: t("all"), on: active === "all" }];
+      (kids[0] || []).forEach(function (cat) { roots.push({ id: cat.id, label: label(cat), on: chain[0] === cat.id }); });
+      chips.appendChild(chipRow(roots));
+      chain.forEach(function (cid, i) {
+        var sub = kids[cid];
+        if (!sub || !sub.length) return;
+        var parent = byId[cid];
+        var row = [{ id: cid, label: (lang === "fa" ? "همه‌ی " : "All ") + parent.name, on: active === cid }];
+        sub.forEach(function (cat) { row.push({ id: cat.id, label: label(cat), on: chain[i + 1] === cat.id }); });
+        var r = chipRow(row);
+        r.classList.add("sub");
+        chips.appendChild(r);
       });
       var items = [];
       cats.forEach(function (cat) {
-        if (active !== "all" && active !== cat.id) return;
+        if (active !== "all" && !inBranch(cat, active)) return;
         (cat.products || []).forEach(function (p) { items.push(p); });
       });
       items.sort(function (a, b) {
