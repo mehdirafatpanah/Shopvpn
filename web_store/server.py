@@ -2454,6 +2454,44 @@ def _user_label_html(db: Database, user_id: int) -> str:
     return f"{name} (@{uname})\n🆔 آیدی عددی: {user_id}"
 
 
+def _order_panel_line(db: Database, order, product=None, plain: bool = False) -> str:
+    """خطوط «🖥 پنل: ...» و «🌐 نود: ...» برای گزارش تاپیک خرید؛ بدون مورد مشخص: رشته‌ی خالی."""
+    panel_ids, node_ids = [], []
+
+    def add(bucket, value):
+        try:
+            value = int(value or 0)
+        except (TypeError, ValueError):
+            return
+        if value and value not in bucket:
+            bucket.append(value)
+
+    def clean(value):
+        return str(value) if plain else html_lib.escape(str(value))
+
+    try:
+        if order["is_custom_config"]:
+            add(panel_ids, order["custom_panel_server_id"])
+        elif product is not None:
+            add(panel_ids, product["provision_server_id"])
+            add(node_ids, product["provision_ssh_node_id"])
+            extra = db.get_product_extra_targets(product["id"])
+            for pid in extra.get("panels", []):
+                add(panel_ids, pid)
+            for nid in extra.get("ssh", []):
+                add(node_ids, nid)
+        panels = [clean(r["name"]) for r in (db.get_panel_server(i) for i in panel_ids) if r and r["name"]]
+        nodes = [clean(r["name"]) for r in (db.get_ssh_node(i) for i in node_ids) if r and r.get("name")]
+    except Exception:
+        return ""
+    out = ""
+    if panels:
+        out += "🖥 پنل: " + "، ".join(panels) + "\n"
+    if nodes:
+        out += "🌐 نود: " + "، ".join(nodes) + "\n"
+    return out
+
+
 async def report_order_completed(tenant, db: Database, order_id: int, via: str = "wallet") -> None:
     """گزارش خرید/تمدید تکمیل‌شده در مینی‌اپ به تاپیک گروه گزارش (یا پیام خصوصی مدیران)."""
     try:
@@ -2465,11 +2503,13 @@ async def report_order_completed(tenant, db: Database, order_id: int, via: str =
         elif order["is_custom_config"]:
             topic, title = "purchase", "🛒 خرید کانفیگ شخصی (مینی‌اپ)"
             product_line = f"🛠 {html_lib.escape(str(order['custom_username'] or ''))} ({order['custom_volume_gb']} گیگ)\n"
+            product_line += _order_panel_line(db, order)
         else:
             topic, title = "purchase", "🛒 خرید (مینی‌اپ)"
             product = db.get_product(order["product_id"])
             qty = order["quantity"] or 1
             product_line = f"📦 محصول: {html_lib.escape(product['name'] if product else '---')}" + (f" × {qty}" if qty > 1 else "") + "\n"
+            product_line += _order_panel_line(db, order, product)
         text = (
             f"{title} - سفارش #{order_id}\n"
             f"👤 کاربر: {_user_label_html(db, order['user_id'])}\n"
@@ -5034,10 +5074,10 @@ async def api_order_receipt(
     user = db.get_user(tg_id)
     qty = order["quantity"] or 1
     if order["is_custom_config"]:
-        product_line = f"🛠 کانفیگ شخصی «{order['custom_username']}» ({order['custom_volume_gb']} گیگ)\n"
+        product_line = f"🛠 کانفیگ شخصی «{order['custom_username']}» ({order['custom_volume_gb']} گیگ)\n" + _order_panel_line(db, order, plain=True)
     else:
         product = db.get_product(order["product_id"])
-        product_line = f"📦 محصول: {product['name'] if product else '---'}" + (f" × {qty}\n" if qty > 1 else "\n")
+        product_line = f"📦 محصول: {product['name'] if product else '---'}" + (f" × {qty}\n" if qty > 1 else "\n") + _order_panel_line(db, order, product, plain=True)
     caption = (
         f"🧾 سفارش #{order_id}\n"
         f"👤 کاربر: {(user['first_name'] if user else '') or ''} (@{(user['username'] if user else '') or '---'})\n"

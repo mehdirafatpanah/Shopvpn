@@ -87,10 +87,12 @@ def _web_brand_settings(db: Database) -> dict:
 
 
 def _web_catalog_payload(db: Database) -> list:
-    categories = []
     paths = db.get_category_path_names()
     hide_soldout = wcustom.hide_soldout(lambda k, d="": db.get_setting(k, d))
-    for c in db.get_categories(active_only=True):
+    rows = list(db.get_categories(active_only=True))
+    ids = {int(c["id"]) for c in rows}
+    entries = {}
+    for c in rows:
         products = []
         for p in db.get_products(c["id"], active_only=True):
             in_stock = bool(p["is_auto_provision"]) or db.count_available_configs(p["id"]) > 0
@@ -106,10 +108,32 @@ def _web_catalog_payload(db: Database) -> list:
                 "volume_gb": p.get("auto_provision_volume_gb") if hasattr(p, "get") else p["auto_provision_volume_gb"],
                 "in_stock": in_stock,
             })
-        if products:
-            categories.append({"id": c["id"], "name": paths.get(c["id"], c["name"]),
-                               "description": c["description"] if "description" in c.keys() else "", "products": products})
-    return categories
+        pid = int(c["parent_id"] or 0)
+        entries[int(c["id"])] = {
+            "id": c["id"],
+            "parent_id": pid if pid in ids else 0,
+            "name": c["name"],
+            "path": paths.get(c["id"], c["name"]),
+            "description": c["description"] if "description" in c.keys() else "",
+            "products": products,
+            "total": len(products),
+        }
+    for cid, e in entries.items():
+        seen, cur = {cid}, e["parent_id"]
+        while cur and cur in entries and cur not in seen:
+            seen.add(cur)
+            entries[cur]["total"] += len(e["products"])
+            cur = entries[cur]["parent_id"]
+    out = []
+    for c in rows:
+        e = entries[int(c["id"])]
+        if e["total"] > 0:
+            out.append(e)
+    visible = {e["id"] for e in out}
+    for e in out:
+        if e["parent_id"] not in visible:
+            e["parent_id"] = 0
+    return out
 
 
 @router.get("/api/web/brand-logo")
