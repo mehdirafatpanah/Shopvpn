@@ -2659,7 +2659,7 @@ async function renderStore() {
       try {
         const paygInfo = await api("/api/payg/info");
         if (paygInfo.enabled) {
-          paygRow = `<div class="list-row" id="payg-entry-row"><div class="list-row-main"><div class="list-row-ic">💳</div><div class="list-row-text"><span class="list-row-title">پرداخت به‌ازای مصرف</span><span class="list-row-sub">بدون حجم و زمان ثابت؛ فقط مصرف واقعی از کیف پول کسر می‌شود</span></div></div><span class="list-row-chev">‹</span></div>`;
+          paygRow = `<div class="list-row" id="payg-entry-row"><div class="list-row-main"><div class="list-row-ic">${escHtml(paygInfo.emoji || "💳")}</div><div class="list-row-text"><span class="list-row-title">پرداخت به‌ازای مصرف</span><span class="list-row-sub">بدون حجم و زمان ثابت؛ فقط مصرف واقعی از کیف پول کسر می‌شود</span></div></div><span class="list-row-chev">‹</span></div>`;
         }
       } catch (e) {}
       try {
@@ -2997,7 +2997,7 @@ async function renderPaygScreen() {
       </div>` : "";
     content.innerHTML = `
       <button class="btn outline small" id="payg-back-btn" style="width:auto;margin-bottom:12px">→ بازگشت به فروشگاه</button>
-      <div class="eyebrow">💳 پرداخت به‌ازای مصرف</div>
+      <div class="eyebrow">${escHtml(info.emoji || "💳")} پرداخت به‌ازای مصرف</div>
       <div class="card">
         ${info.free ? `<div class="hint-text" style="margin-bottom:8px">🎁 حساب شما مدیریتی است؛ بدون کسر از کیف پول و بدون سقف حجم.</div>` : ""}
         <div class="stat-row"><span>موجودی کیف پول</span><b>${fmt(info.balance)} تومان</b></div>
