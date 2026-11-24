@@ -17,6 +17,20 @@ def _server_for(db, cc):
     return db.get_panel_server(int(sid)) if sid else None
 
 
+def _effective_server(server, cc):
+    """مقصد (اینباند/گروه/interface) انتخاب‌شده‌ی محصول را که هنگام ساخت روی خود سرویس snapshot شده
+    روی ردیف سرور اعمال می‌کند. بدون این، همگام‌سازی قالب، به‌جای مقصد محصول، «همه‌ی» مقصدهای قالب
+    سرور را روی کاربر می‌نویسد (علت ارسال همه‌ی اینباندهای W-UI). NULL یعنی محصول قدیمی و قالب سرور."""
+    try:
+        raw = cc["panel_target_config"]
+    except (KeyError, IndexError, TypeError):
+        return server
+    if not raw:
+        return server
+    from product_targets import apply_target_config
+    return apply_target_config(server, raw)
+
+
 async def heal_config(db, cc) -> bool:
     """یک سرویس بدون کانفیگ را با قالب فعلی پنل هم‌گام می‌کند؛ True یعنی تغییری اعمال شد."""
     cid = int(cc["id"])
@@ -28,7 +42,7 @@ async def heal_config(db, cc) -> bool:
         server = await asyncio.to_thread(_server_for, db, cc)
         if not server:
             return False
-        provider = get_provider(server)
+        provider = get_provider(_effective_server(server, cc))
         if not getattr(provider, "supports_template_resync", False):
             return False
         changed = await provider.resync_user_template(cc["username"])
@@ -45,18 +59,18 @@ async def resync_server(db, server_id: int) -> dict:
     def _rows():
         with db._get_conn() as conn:
             return conn.execute(
-                "SELECT id,username FROM custom_configs WHERE panel_server_id=? "
+                "SELECT id,username,panel_target_config FROM custom_configs WHERE panel_server_id=? "
                 "AND COALESCE(status,'active') NOT IN ('deleted','cancelled')", (int(server_id),)).fetchall()
     rows = await asyncio.to_thread(_rows)
     server = await asyncio.to_thread(db.get_panel_server, int(server_id))
     result = {"total": len(rows), "changed": 0, "failed": 0}
     if not server:
         return result
-    provider = get_provider(server)
-    if not getattr(provider, "supports_template_resync", False):
+    if not getattr(get_provider(server), "supports_template_resync", False):
         return result
     for row in rows:
         try:
+            provider = get_provider(_effective_server(server, row))
             if await provider.resync_user_template(row["username"]):
                 result["changed"] += 1
         except Exception:
