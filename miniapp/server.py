@@ -4332,11 +4332,31 @@ async def _complete_generic_gateway_payment(db: Database, tenant: "Tenant", invo
         return
 
     if order["is_custom_config"]:
-        await _notify(
-            order["user_id"],
-            "✅ پرداخت شما تایید شد!\nبرای دریافت کانفیگ شخصی، به بات برگرد و روی دکمه‌ی "
-            "«🔄 بررسی وضعیت پرداخت» زیر همان پیام فاکتور بزن.",
-        )
+        # قبلاً فقط یک پیام «دکمه‌ی بررسی وضعیت را بزن» فرستاده می‌شد، ولی آن دکمه در
+        # کارت‌به‌کارت خودکار فقط وضعیت فاکتور را نشان می‌دهد و چیزی تحویل نمی‌داد؛
+        # در نتیجه کاربر هیچ کانفیگی نمی‌گرفت. حالا مثل بقیه‌ی درگاه‌ها همین‌جا ساخته و تحویل می‌شود.
+        import payment_delivery
+        _bot = Bot(token=tenant.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        try:
+            result_text = await payment_delivery.finalize_paid_order(db, _bot, order_id)
+        except Exception:
+            logging.exception("خطای غیرمنتظره در تحویل کانفیگ شخصی سفارش #%s (کارت‌به‌کارت خودکار/درگاه سفارشی)", order_id)
+            result_text = None
+        finally:
+            try:
+                await _bot.session.close()
+            except Exception:
+                pass
+        fresh = db.get_order(order_id)
+        if fresh and fresh["status"] == "pending":
+            # تحویل انجام نشد (مثلاً خطای پنل): به ادمین خبر بده و به کاربر هم بگو.
+            for admin_id in db.list_admins():
+                await _notify(
+                    admin_id,
+                    f"⚠️ سفارش کانفیگ شخصی #{order_id} پرداخت شد ولی تحویل خودکار ناموفق بود"
+                    f"{(': ' + result_text) if result_text else ''}\nلطفاً دستی رسیدگی کنید.",
+                )
+            await _notify(order["user_id"], "✅ پرداخت شما تایید شد. تحویل کانفیگ کمی طول کشید؛ ادمین به‌زودی رسیدگی می‌کند.")
         return
 
     product = db.get_product(order["product_id"])
