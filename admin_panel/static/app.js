@@ -9862,6 +9862,7 @@ async function paygSettingsHtml() {
         <label class="field"><span>حداکثر سرویس PayG برای هر کاربر</span><input class="input" type="number" min="1" max="100" dir="ltr" id="payg-max" value="${Number(d.max_services)}"></label>
         <label class="field"><span>حداقل موجودی کیف پول برای ساخت سرویس مصرفی جدید (تومان، ۰ = فقط موجودی مثبت)</span><input class="input" type="number" min="0" dir="ltr" id="payg-min-balance" value="${Number(d.min_balance || 0)}"></label>
         <b>نام اشتراک</b><div class="card-sub">نامی که به‌جای «Pay As You Go» در دکمه، متن‌های ربات و نام سرویس‌های ساخته‌شده به کاربر نشان داده می‌شود. خالی = نام پیش‌فرض.</div>
+        <label class="field"><span>ایموجی دکمه‌ی پرداخت به‌ازای مصرف</span><input class="input" type="text" id="payg-emoji" maxlength="${Number(d.payg_emoji_max)}" placeholder="${esc(d.payg_emoji_default)}" value="${esc(d.payg_emoji || '')}"><span class="card-sub">روی دکمه‌ی منوی ربات و مینی‌اپ نمایش داده می‌شود. خالی = ${esc(d.payg_emoji_default)}</span></label>
         <label class="field"><span>نام اشتراک پرداخت به‌ازای مصرف</span><input class="input" type="text" id="payg-name" maxlength="${Number(d.payg_name_max)}" placeholder="${esc(d.payg_name_default)}" value="${esc(d.payg_name || '')}"></label>
         <b>هشدار اول مصرف اعتبار</b><div class="card-sub">وقتی مصرف کاربر از اعتبار کیف پولش (از آخرین شارژ) به این حد رسید یا از آن گذشت، ربات پیام هشدار اول را می‌فرستد. مقدار ۰ = خاموش.</div>
         <label class="field"><span>نوع آستانه</span><select class="input" id="payg-alert1-mode"><option value="percent" ${d.alert1_mode === 'percent' ? 'selected' : ''}>درصد اعتبار مصرف‌شده</option><option value="toman" ${d.alert1_mode === 'toman' ? 'selected' : ''}>مبلغ مصرف‌شده (تومان)</option></select></label>
@@ -9933,6 +9934,7 @@ function paygBindSettings() {
         max_services: parseInt($('#payg-max', root).value, 10),
         min_balance: parseInt($('#payg-min-balance', root).value, 10) || 0,
         payg_name: $('#payg-name', root).value,
+        payg_emoji: $('#payg-emoji', root).value,
         retention_days: parseInt($('#payg-retention', root).value, 10) || 0,
         alert1_mode: $('#payg-alert1-mode', root).value,
         alert1_value: parseInt($('#payg-alert1-value', root).value, 10) || 0,
@@ -14880,19 +14882,65 @@ async function bindDsubProfiles(root) {
   const customModal = async p => {
     let r;
     try { r = await apiGet(`/dsub-profiles/${p.id}/settings`); } catch (e) { handleErr(e); return; }
+    const central = r.central || {};
     openModal('🎨 شخصی‌سازی ساب «' + esc(p.name) + '»', `
-      <p class="card-sub">این تنظیمات فقط برای همین ساب ذخیره می‌شود. مقادیری که هنوز ذخیره نکرده‌ای از ساب مرکزی گرفته می‌شود؛ بعد از «ذخیره» همه‌ی مقادیر این فرم مستقل می‌شوند.</p>
+      <p class="card-sub">هر فیلد یا «از ساب مرکزی» است (با تغییر مرکزی، این ساب هم عوض می‌شود) یا «اختصاصی» (فقط برای همین ساب). فیلدی که ویرایش کنی اختصاصی می‌شود؛ با «↩ مرکزی» دوباره از ساب مرکزی ارث می‌برد.</p>
       ${subPageSettingsHtml(r.settings, { profileId: p.id })}
       <button class="btn" id="dsp-set-save" style="margin-top:10px">ذخیره‌ی تنظیمات این ساب</button>`, (body, close) => {
       bindSettingsGroupEvents(body); bindSubPageColorPickers(body); bindSubscriptionLivePreview(body);
+      const els = () => $$('[data-key]', body).filter(el => el.dataset.key.startsWith('dsub_') && (el.classList.contains('switch') || el.dataset.type));
+      const readVal = el => el.classList.contains('switch') ? (el.dataset.on === '1' ? '1' : '0') : String(el.value ?? '');
+      const own = new Set(r.own_keys || []), reset = new Set(), initial = {};
+      els().forEach(el => { initial[el.dataset.key] = readVal(el); });
+      const badges = {};
+      const paint = key => {
+        const b = badges[key]; if (!b) return;
+        const isOwn = own.has(key);
+        b.label.textContent = isOwn ? '✏️ اختصاصی' : '🔗 از ساب مرکزی';
+        b.label.style.color = isOwn ? '#FBBF24' : '#34D399';
+        b.btn.style.display = isOwn ? '' : 'none';
+      };
+      const touch = key => { own.add(key); reset.delete(key); paint(key); };
+      els().forEach(el => {
+        const key = el.dataset.key;
+        if (badges[key]) return;
+        const host = el.closest('.field') || el.parentElement;
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:8px;align-items:center;font-size:11px;margin-top:2px';
+        row.innerHTML = '<span></span><button type="button" class="btn btn-ghost btn-sm" style="padding:0 6px">↩ مرکزی</button>';
+        host.appendChild(row);
+        badges[key] = { label: row.firstChild, btn: row.lastChild };
+        const mark = () => { if (readVal(el) !== initial[key]) touch(key); };
+        el.addEventListener('input', mark); el.addEventListener('change', mark);
+        if (el.classList.contains('switch')) el.addEventListener('click', () => setTimeout(mark, 0));
+        row.lastChild.onclick = () => {
+          const cv = central[key] == null ? '' : String(central[key]);
+          if (el.classList.contains('switch')) el.dataset.on = cv === '1' ? '1' : '0';
+          else {
+            el.value = cv;
+            const nat = $(`input[data-color-for="${key}"]`, body); if (nat) { const h = normalizeHex(cv); if (h) nat.value = h.toLowerCase(); }
+          }
+          initial[key] = readVal(el);
+          own.delete(key); reset.add(key); paint(key);
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        paint(key);
+      });
       $('#dsp-set-save', body).onclick = async () => {
         const values = {};
-        $$('[data-key][data-type]:not(.switch)', body).forEach(el => { if (el.dataset.key.startsWith('dsub_')) values[el.dataset.key] = el.value; });
-        $$('.switch[data-key]', body).forEach(sw => { if (sw.dataset.key.startsWith('dsub_')) values[sw.dataset.key] = sw.dataset.on === '1' ? '1' : '0'; });
+        els().forEach(el => {
+          const key = el.dataset.key;
+          if (readVal(el) !== initial[key]) own.add(key);
+          if (own.has(key) && !reset.has(key)) values[key] = readVal(el);
+        });
         for (const k of ['dsub_accent_color', 'dsub_secondary_color']) { if (k in values) { const h = normalizeHex(values[k]); if (!h) { toast('رنگ نامعتبر است؛ مثل #6366F1 بنویس.', true); return; } values[k] = h; } }
         try {
-          await apiPut(`/dsub-profiles/${p.id}/settings`, { values });
+          await apiPut(`/dsub-profiles/${p.id}/settings`, { values, reset: [...reset] });
           toast('تنظیمات ساب ذخیره شد.');
+          els().forEach(el => { initial[el.dataset.key] = readVal(el); });
+          reset.clear();
+          Object.keys(badges).forEach(paint);
           const fr = $('#sub-page-preview-frame', body); if (fr) { try { fr.contentWindow.location.reload(); } catch (e) {} }
         } catch (e) { handleErr(e); }
       };
