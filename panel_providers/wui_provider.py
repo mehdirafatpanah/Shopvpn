@@ -312,9 +312,13 @@ class WUIProvider(BasePanelProvider):
         return int(client.get("onlineNow") or 0) > 0
 
     supports_template_resync = True
+    # PATCH روی interfaceIds در W-UI مجموعه را «جایگزین» میکند: اضافه‌شده credential میگیرد و حذف‌شده credential‌هایش پاک میشود.
+    # پس همگام‌سازی فقط وقتی امن است که مقصد انتخاب‌شده‌ی همین سرویس (panel_target_config) ثبت شده باشد؛ وگرنه با قالب کل سرور
+    # interface های انتخاب‌نشده اضافه و interface های درست (مثلاً OpenVPN) حذف میشدند.
+    resync_needs_snapshot = True
 
     async def resync_user_template(self, username: str) -> bool:
-        """interface های مشتری را با قالب فعلی سرور در ربات یکی میکند."""
+        """interface های مشتری را با مقصد ثبت‌شده‌ی سرویس (همان _interface_ids) یکی میکند."""
         target = sorted(self._interface_ids())
         async with self._session() as session:
             client = await self._full(session, (await self._find(session, username))["id"])
