@@ -15164,7 +15164,6 @@ function subPageSettingsHtml(s, opts = {}) {
         <input type="file" class="sub-tpl-upload-input" accept=".html,.htm,text/html" hidden>
       </div>
     </div>
-    </div>
   `;
 }
 
