@@ -375,7 +375,9 @@ def require_owner(auth=Depends(get_verified_user)):
 # کاربر نتواند صرفاً با استفاده از مینی‌اپ این محدودیت را دور بزند.
 async def _is_channel_member_http(bot_token: str, channel: str, tg_id: int) -> bool:
     """مثل force_join.is_channel_member ولی بدون وابستگی به شیء Bot آیوگرم
-    (چون این پروسه‌ی fastapi جدا از پروسه‌ی بات است)؛ fail-open در صورت خطا."""
+    (چون این پروسه‌ی fastapi جدا از پروسه‌ی بات است)؛ خطای پیکربندی/شبکه = fail-open،
+    ولی «user not found» = عضو نیست و restricted با is_member=false هم عضو حساب نمی‌شود."""
+    from force_join_channels import membership_from_status, is_not_member_error
     if not bot_token:
         return True
     url = f"https://api.telegram.org/bot{bot_token}/getChatMember"
@@ -390,9 +392,9 @@ async def _is_channel_member_http(bot_token: str, channel: str, tg_id: int) -> b
         logging.getLogger("miniapp.forcejoin").exception("بررسی عضویت کانال ناموفق بود.")
         return True
     if not data.get("ok"):
-        return True
-    status = (data.get("result") or {}).get("status")
-    return status not in ("left", "kicked")
+        return False if is_not_member_error(data.get("description")) else True
+    result = data.get("result") or {}
+    return membership_from_status(result.get("status"), result.get("is_member"))
 
 
 def _force_join_payload(missing: list) -> dict:
