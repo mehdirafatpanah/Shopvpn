@@ -17,7 +17,7 @@ import asyncio
 import logging
 
 from aiogram import BaseMiddleware
-from force_join_channels import parse_channels, join_link
+from force_join_channels import parse_channels, join_link, membership_from_status, is_not_member_error
 from aiogram.types import TelegramObject, Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 logger = logging.getLogger(__name__)
@@ -57,13 +57,29 @@ def join_text(count: int) -> str:
 
 
 async def is_channel_member(bot, channel: str, user_id: int) -> bool:
-    """اگر بات دسترسی نداشته باشد یا خطایی رخ دهد، True برمی‌گرداند (fail-open)."""
-    try:
-        member = await bot.get_chat_member(channel, user_id)
-        return member.status not in ("left", "kicked")
-    except Exception as e:
-        logger.warning("بررسی عضویت کانال %s برای کاربر %s ناموفق بود: %s", channel, user_id, e)
-        return True
+    """عضویت کاربر در کانال.
+
+    - restricted با is_member=false عضو حساب نمی‌شود؛ left/kicked هم عضو نیستند.
+    - «user not found» و مشابه = عضو نیست (قبلاً با fail-open از چک رد می‌شد).
+    - خطای پیکربندی (بات ادمین نیست/آیدی غلط) یا خطای موقت شبکه/فلود: یک بار تلاش مجدد، بعد fail-open.
+    """
+    last_error = None
+    for attempt in range(2):
+        try:
+            member = await bot.get_chat_member(channel, user_id)
+            return membership_from_status(getattr(member, "status", None), getattr(member, "is_member", None))
+        except Exception as e:
+            if is_not_member_error(e):
+                return False
+            last_error = e
+            retry_after = getattr(e, "retry_after", None)
+            transient = retry_after is not None or e.__class__.__name__ in ("TelegramNetworkError", "TelegramServerError")
+            if attempt == 0 and transient:
+                await asyncio.sleep(min(float(retry_after or 1), 3.0))
+                continue
+            break
+    logger.warning("بررسی عضویت کانال %s برای کاربر %s ناموفق بود: %s", channel, user_id, last_error)
+    return True
 
 
 async def missing_channels(bot, channels, user_id: int) -> list:

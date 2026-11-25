@@ -36,6 +36,28 @@ def _random_username(prefix: str = "r") -> str:
     return prefix + "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
 
 
+def _product_target(server, product):
+    """مقصد (interface/اینباند/گروه) انتخاب‌شده‌ی محصول را اگر به همین پنل مربوط باشد برمی‌گرداند؛ وگرنه None (= قالب سرور)."""
+    import json
+    try:
+        raw = product["provision_target_config"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    try:
+        cfg = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
+    except ValueError:
+        return None
+    if not isinstance(cfg, dict) or "field" not in cfg:
+        return None
+    sid = cfg.get("panel_server_id")
+    try:
+        if sid is not None and int(sid) != int(server["id"]):
+            return None
+    except (KeyError, TypeError, ValueError):
+        return None
+    return cfg
+
+
 async def provision_auto_config(
     local_db: Database, product, quantity: int = 1,
     user_id: int = None, order_id: int = None, source: str = "direct_product",
@@ -115,7 +137,10 @@ async def provision_auto_config(
     if not server or not server["is_active"]:
         raise ProvisionError("برای این محصول هیچ پنل فعالی برای ساخت کانفیگ نمایندگی پیدا نشد.")
 
-    provider = get_provider(server)
+    # قبلاً مقصد انتخاب‌شده‌ی محصول اینجا اعمال نمیشد و کاربر روی «همه‌ی» مقصدهای قالب سرور ساخته میشد.
+    from product_targets import apply_target_config
+    target_cfg = _product_target(server, product)
+    provider = get_provider(apply_target_config(server, target_cfg) if target_cfg else server)
     order = local_db.get_order(order_id) if order_id is not None else None
     extra_kwargs = provider_kwargs(provider, order_user_limit(order, product))
     built = []
@@ -213,6 +238,7 @@ async def provision_auto_config(
                         user_id, local_panel_id, item["username"], item["volume_gb"], item["duration_days"],
                         item["subscription_url"], order_id=order_id, source=source,
                         product_id=product_id_for_config, user_limit=item.get("user_limit"),
+                        panel_target_config=(dict(target_cfg, panel_server_id=int(local_panel_id)) if target_cfg else None),
                     )
                 except Exception:
                     # این دیگر یک شکست ساختاری قابل‌پیش‌بینی (مثل FK قبلی) نیست -

@@ -21,10 +21,11 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.parse
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 GB = 1024 ** 3
 
@@ -1365,6 +1366,66 @@ def pick_template(settings: Dict[str, str]) -> Optional[str]:
     if not text.strip() or validate_custom_template(text):
         return None
     return text
+
+
+class TemplateUploadBuffer:
+    """جمع‌کردن قالب HTMLی که تکه‌تکه آپلود می‌شود؛ حافظه‌ی هر آپلود با CUSTOM_TEMPLATE_MAX محدود است."""
+
+    MAX_PARTS = 256
+    MAX_PENDING = 16
+    TTL = 900
+
+    def __init__(self, clock=time.monotonic):
+        self._clock = clock
+        self._items: Dict[Tuple[str, str], dict] = {}
+        self._lock = threading.Lock()
+
+    def _gc(self, now: float) -> None:
+        for k in [k for k, v in self._items.items() if now - v["ts"] > self.TTL]:
+            self._items.pop(k, None)
+
+    def add(self, owner: str, upload_id: str, index: int, total: int, data: bytes) -> Tuple[bool, Optional[str], Optional[str]]:
+        """(کامل شد؟، متن قالب، پیام خطا). بعد از کامل‌شدن، تکرار آخرین تکه همان نتیجه را برمی‌گرداند."""
+        if total < 1 or total > self.MAX_PARTS or index < 0 or index >= total:
+            return False, None, "شماره‌ی تکه نامعتبر است."
+        now = self._clock()
+        key = (str(owner), upload_id)
+        with self._lock:
+            self._gc(now)
+            st = self._items.get(key)
+            if st is None:
+                if len(self._items) >= self.MAX_PENDING:
+                    return False, None, "آپلودهای ناتمام زیاد است؛ چند دقیقه بعد دوباره تلاش کن."
+                st = {"total": total, "parts": {}, "ts": now, "text": None}
+                self._items[key] = st
+            st["ts"] = now
+            if st["text"] is not None:
+                return True, st["text"], None
+            if st["total"] != total:
+                self._items.pop(key, None)
+                return False, None, "آپلود نامعتبر است؛ دوباره شروع کن."
+            st["parts"][index] = bytes(data)
+            if sum(len(v) for v in st["parts"].values()) > CUSTOM_TEMPLATE_MAX:
+                self._items.pop(key, None)
+                return False, None, "حجم قالب بیش از حد مجاز است (حداکثر ۲ مگابایت)."
+            if len(st["parts"]) < total:
+                return False, None, None
+            raw = b"".join(st["parts"][i] for i in range(total))
+            try:
+                text = raw.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                self._items.pop(key, None)
+                return False, None, "فایل باید با کدگذاری UTF-8 ذخیره شده باشد."
+            err = validate_custom_template(text)
+            if err:
+                self._items.pop(key, None)
+                return False, None, err
+            st["parts"] = {}
+            st["text"] = text
+            return True, text, None
+
+
+TEMPLATE_UPLOADS = TemplateUploadBuffer()
 
 
 def render_page_html(template: str, data: dict, title: str, nonce: str) -> str:

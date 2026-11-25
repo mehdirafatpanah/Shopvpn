@@ -111,3 +111,27 @@ class ProductTargetKeptTests(unittest.TestCase):
         cc = {"id": 22, "panel_server_id": 1, "username": "u", "panel_target_config": None}
         asyncio.run(panel_resync.heal_config(self.db, cc))
         self.assertEqual(json.loads(self.seen[0]), [1, 2, 3, 4])
+
+
+class WuiSnapshotGuardTests(unittest.TestCase):
+    """رگرسیون: resync در W-UI مجموعه‌ی interface ها را جایگزین میکند؛ بدون مقصد ثبت‌شده‌ی سرویس نباید اجرا شود
+    (وگرنه interface های انتخاب‌نشده اضافه و مثلاً OpenVPN انتخاب‌شده حذف میشد)."""
+
+    class WuiLike(FakeProvider):
+        resync_needs_snapshot = True
+
+    def setUp(self):
+        panel_resync._last_heal.clear()
+        self.provider = self.WuiLike(True)
+        panel_resync.get_provider = lambda server: self.provider
+
+    def test_skipped_without_snapshot(self):
+        cc = {"id": 21, "panel_server_id": 1, "username": "u", "panel_target_config": None}
+        self.assertFalse(asyncio.run(panel_resync.heal_config(FakeDb(), cc)))
+        self.assertEqual(self.provider.calls, [])
+
+    def test_runs_with_snapshot(self):
+        cc = {"id": 22, "panel_server_id": 1, "username": "u",
+              "panel_target_config": '{"field": "group_ids", "value": [3], "panel_server_id": 1}'}
+        self.assertTrue(asyncio.run(panel_resync.heal_config(FakeDb(), cc)))
+        self.assertEqual(self.provider.calls, ["u"])

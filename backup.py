@@ -17,6 +17,11 @@ import sqlite3
 import asyncio
 import logging
 import zipfile
+import hashlib
+import json
+import socket
+import shutil
+import tempfile
 from datetime import datetime
 from typing import Optional
 
@@ -63,90 +68,8 @@ def create_backup(db_path: str, backup_dir: str, keep: int = 14) -> Optional[str
 #‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 
 
-def create_full_backup(main_db, main_db_path: str, output_dir: str, keep: int = 5) -> Optional[str]:
-    """یک بکاپ «کامل» می‌سازد: دیتابیس بات اصلی + دیتابیس تک‌تک نماینده‌ها
-    (چه سطح یک/کامل و چه سطح دو/ساده، فعال یا غیرفعال) را همه با هم در یک
-    فایل zip واحد بسته‌بندی می‌کند.
-
-    فقط برای بات اصلی معنا دارد (چون فقط دیتابیس بات اصلی جدول reseller_bots
-    و مسیر دیتابیس نماینده‌ها را می‌شناسد). هدف این است که وقتی کل سرویس به یک
-    سرور دیگر منتقل می‌شود، یک فایل تنها کافی باشد و اطلاعات نماینده‌ها جا
-    نماند (که با بکاپ معمولی که فقط دیتابیس بات اصلی را می‌گیرد، ممکن است.)
-
-    خروجی: مسیر فایل zip ساخته‌شده، یا None اگر حتی دیتابیس اصلی هم پیدا نشد.
-    """
-    if not os.path.exists(main_db_path):
-        return None
-
-    from config import resolve_db_path  # اینجا import می‌شود تا import چرخه‌ای پیش نیاید
-
-    os.makedirs(output_dir, exist_ok=True)
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    zip_path = os.path.join(output_dir, f"full_backup_{timestamp}.zip")
-
-    # از هر دیتابیس (اصلی و هر نماینده) با SQLite Backup API یک نسخه‌ی امن و
-    # سازگار می‌گیریم (نه کپی خام فایل) تا اگر همان لحظه در حال نوشتن باشد خراب نشود.
-    tmp_dir = os.path.join(output_dir, f"_tmp_full_{timestamp}")
-    os.makedirs(tmp_dir, exist_ok=True)
-    manifest_lines = [
-        "بکاپ کامل - شامل بات اصلی + همه‌ی بات‌های نمایندگی (سطح ۱ و سطح ۲)",
-        f"تاریخ: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        "",
-    ]
-    try:
-        main_copy = os.path.join(tmp_dir, "main_bot.db")
-        _sqlite_safe_copy(main_db_path, main_copy)
-        manifest_lines.append(f"main_bot.db  <-  {main_db_path}")
-
-        resellers = main_db.list_reseller_bots(active_only=False)
-        for row in resellers:
-            reseller_db_path = resolve_db_path(row["db_path"])
-            active = "فعال" if row["is_active"] else "غیرفعال"
-            safe_name = f"reseller_{row['id']}.db"
-            if os.path.exists(reseller_db_path):
-                try:
-                    _sqlite_safe_copy(reseller_db_path, os.path.join(tmp_dir, safe_name))
-                    manifest_lines.append(
-                        f"{safe_name}  <-  {reseller_db_path}  "
-                        f"(owner_id={row['owner_telegram_id']}, {active})"
-                    )
-                except Exception:
-                    logger.exception("بکاپ‌گرفتن از دیتابیس نماینده %s ناموفق بود.", reseller_db_path)
-                    manifest_lines.append(f"{safe_name}  <-  {reseller_db_path}  [ناموفق - رد شد]")
-            else:
-                manifest_lines.append(f"[فایل پیدا نشد - رد شد]  <-  {reseller_db_path}  (owner_id={row['owner_telegram_id']})")
-
-        manifest_path = os.path.join(tmp_dir, "manifest.txt")
-        with open(manifest_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(manifest_lines))
-
-        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for name in os.listdir(tmp_dir):
-                zf.write(os.path.join(tmp_dir, name), arcname=name)
-    finally:
-        for name in os.listdir(tmp_dir):
-            try:
-                os.remove(os.path.join(tmp_dir, name))
-            except OSError:
-                pass
-        try:
-            os.rmdir(tmp_dir)
-        except OSError:
-            pass
-
-    pattern = os.path.join(output_dir, "full_backup_*.zip")
-    existing = sorted(glob.glob(pattern))
-    for old_file in existing[:-keep]:
-        try:
-            os.remove(old_file)
-        except OSError:
-            pass
-
-    return zip_path
-
-
 def _sqlite_safe_copy(src_path: str, dst_path: str) -> None:
-    """یک کپی امن از یک فایل sqlite با Backup API می‌سازد (نه کپی خام فایل)."""
+    """Create a transactionally consistent SQLite snapshot."""
     src = sqlite3.connect(src_path)
     try:
         dst = sqlite3.connect(dst_path)
@@ -158,149 +81,306 @@ def _sqlite_safe_copy(src_path: str, dst_path: str) -> None:
         src.close()
 
 
-def restore_full_backup(main_db, main_db_path: str, zip_path: str) -> dict:
-    """یک فایل zip ساخته‌شده توسط `create_full_backup` را باز می‌کند:
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
-    ۱) اول دیتابیس بات اصلی (main_bot.db داخل zip) را جایگزین دیتابیس فعلی
-       می‌کند - از طریق خود `main_db.replace_file()` (همان مسیر امن/قفل‌دار
-       بازیابی معمولی، تا اتصال persistent درست بسته و بازسازی شود).
-    ۲) بعد، چون جدول reseller_bots حالا از روی همان دیتابیسِ تازه‌بازیابی‌شده
-       خوانده می‌شود، فایل هر `reseller_<id>.db` (یا قالب قدیمی `reseller_<id>_level<N>.db`) داخل zip را با شناسه‌ی
-       داخل نامش به یک ردیف واقعی از reseller_bots وصل می‌کند و مستقیماً در
-       مسیر دیتابیس همان نماینده (`resolve_db_path`) جایگزین می‌کند.
 
-    توجه: این تابع فقط فایل‌ها را جایگزین می‌کند و کاری به روشن/خاموش‌کردن
-    پروسه‌ی بات‌های نمایندگی در حال اجرا ندارد - آن بخش (متوقف‌کردن قبل از
-    جایگزینی و اجازه‌دادن به reconcile برای روشن‌کردن دوباره) باید قبل/بعد
-    از این تابع، در کد async بالادستی (هندلر بات) انجام شود.
-
-    خروجی: دیکشنری وضعیت شامل:
-      - main_restored: bool
-      - main_pre_restore_path: مسیر نسخه‌ی پیش از بازیابی دیتابیس اصلی
-      - resellers_restored: [{"id", "bot_username", "db_path"}, ...]
-      - resellers_skipped: [{"file", "reason"}, ...]
-    """
-    from config import RESELLER_DBS_DIR, resolve_reseller_db_path
-
-    result = {
-        "main_restored": False,
-        "main_pre_restore_path": None,
-        "resellers_restored": [],
-        "resellers_skipped": [],
-    }
-
-    tmp_dir = zip_path + "_extract"
-    if os.path.exists(tmp_dir):
-        import shutil as _shutil
-        _shutil.rmtree(tmp_dir, ignore_errors=True)
-    os.makedirs(tmp_dir, exist_ok=True)
-
+def _validate_sqlite_integrity(path: str) -> None:
+    if not is_valid_sqlite_db(path):
+        raise ValueError(f"فایل دیتابیس معتبر نیست: {os.path.basename(path)}")
+    conn = sqlite3.connect(path)
     try:
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(tmp_dir)
-
-        main_extracted = os.path.join(tmp_dir, "main_bot.db")
-        if not os.path.exists(main_extracted) or not is_valid_sqlite_db(main_extracted):
-            raise ValueError("فایل main_bot.db داخل zip پیدا نشد یا دیتابیس sqlite معتبری نیست.")
-
-        # ۱) بازیابی دیتابیس اصلی (همان مسیر امن replace_file خود کلاس Database)
-        result["main_pre_restore_path"] = main_db.replace_file(main_extracted)
-        result["main_restored"] = True
-
-        # ۲) حالا reseller_bots را از روی دیتابیس *تازه* بخوان‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
-        os.makedirs(RESELLER_DBS_DIR, exist_ok=True)
-        resellers_by_id = {row["id"]: row for row in main_db.list_reseller_bots(active_only=False)}
-        # مسیرهای absolute از سرور مبدأ را به مسیر استاندارد نصب جدید منتقل کن.
-        for reseller_id, row in resellers_by_id.items():
-            old_path = row["db_path"]
-            target_path = os.path.join(RESELLER_DBS_DIR, os.path.basename(os.path.normpath(old_path or f"reseller_{reseller_id}.db")))
-            if not target_path.endswith(".db"):
-                target_path += ".db"
-            main_db.set_reseller_db_path(reseller_id, target_path)
-            # دیکشنری row را برای استفاده‌ی پایین با مسیر استاندارد به‌روزرسانی کن.
-            resellers_by_id[reseller_id] = dict(row)
-            resellers_by_id[reseller_id]["db_path"] = target_path
-
-        for name in sorted(os.listdir(tmp_dir)):
-            if not (name.startswith("reseller_") and name.endswith(".db")):
-                continue
-            # قالب نام: reseller_<id>.db یا (بکاپ‌های قدیمی) reseller_<id>_level<N>.db
-            try:
-                middle = name[len("reseller_"):-len(".db")]
-                id_part = middle.split("_level")[0]
-                reseller_id = int(id_part)
-            except (ValueError, IndexError):
-                result["resellers_skipped"].append({"file": name, "reason": "نام فایل نامعتبر است."})
-                continue
-
-            row = resellers_by_id.get(reseller_id)
-            if row is None:
-                result["resellers_skipped"].append(
-                    {"file": name, "reason": f"نماینده‌ای با id={reseller_id} در دیتابیس اصلیِ بازیابی‌شده پیدا نشد."}
-                )
-                continue
-
-            extracted_path = os.path.join(tmp_dir, name)
-            if not is_valid_sqlite_db(extracted_path):
-                result["resellers_skipped"].append({"file": name, "reason": "دیتابیس sqlite معتبر نیست."})
-                continue
-
-            target_path = row["db_path"]
-            try:
-                _raw_replace_db_file(extracted_path, target_path)
-                result["resellers_restored"].append({
-                    "id": reseller_id, "bot_username": row["bot_username"], "db_path": target_path,
-                })
-            except Exception:
-                logger.exception("جایگزینی دیتابیس نماینده id=%s (%s) ناموفق بود.", reseller_id, target_path)
-                result["resellers_skipped"].append({"file": name, "reason": "خطا هنگام جایگزینی فایل."})
-        # Databases absent from the archive remain explicitly reported; do not
-        # silently initialize an empty tenant database later.
-        restored_ids = {item["id"] for item in result["resellers_restored"]}
-        for reseller_id, row in resellers_by_id.items():
-            if reseller_id not in restored_ids and not any(
-                item.get("file", "") == f"reseller_{reseller_id}.db"
-                or item.get("file", "") == f"reseller_{reseller_id}_level"
-                or item.get("file", "").startswith(f"reseller_{reseller_id}_level")
-                for item in result["resellers_skipped"]
-            ):
-                result["resellers_skipped"].append({
-                    "file": f"reseller_{reseller_id}.db",
-                    "reason": "فایل دیتابیس این نماینده داخل بکاپ نبود؛ مسیر محلی ثبت شد ولی دیتابیس ایجاد/بازسازی نشد.",
-                })
+        result = conn.execute("PRAGMA quick_check").fetchone()
+        if not result or str(result[0]).lower() != "ok":
+            raise ValueError(f"سلامت دیتابیس تایید نشد: {os.path.basename(path)}")
     finally:
-        import shutil as _shutil
-        _shutil.rmtree(tmp_dir, ignore_errors=True)
+        conn.close()
 
+
+def _machine_fingerprint() -> str:
+    """Stable, non-reversible machine identifier used only to detect server changes."""
+    for candidate in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+        try:
+            with open(candidate, "r", encoding="utf-8") as stream:
+                value = stream.read().strip()
+            if value:
+                return hashlib.sha256(value.encode("utf-8")).hexdigest()
+        except OSError:
+            pass
+    return hashlib.sha256(socket.gethostname().encode("utf-8")).hexdigest()
+
+
+def _migration_environment_snapshot() -> dict:
+    """Only public endpoints are included; credentials and tokens are never exported."""
+    keys = ("MINIAPP_URL", "API_BASE_URL", "DEDICATED_SUB_URL", "ADMIN_PANEL_URL", "WEBHOOK_BASE_URL")
+    return {key: os.getenv(key, "").strip() for key in keys}
+
+
+def create_full_backup(main_db, main_db_path: str, output_dir: str, keep: int = 5) -> Optional[str]:
+    """Create a portable, verifiable archive of the main DB and every reseller DB.
+
+    Missing/invalid reseller databases are recorded as incomplete rather than being
+    silently presented as a fully restorable archive. The archive carries relative
+    identities and hashes, never source absolute paths or secrets.
+    """
+    if not os.path.isfile(main_db_path):
+        return None
+    from config import resolve_db_path
+
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    zip_path = os.path.join(output_dir, f"full_backup_{timestamp}.zip")
+    tmp_dir = tempfile.mkdtemp(prefix="_tmp_full_", dir=output_dir)
+    entries = []
+    errors = []
+    try:
+        main_copy = os.path.join(tmp_dir, "main_bot.db")
+        _sqlite_safe_copy(main_db_path, main_copy)
+        _validate_sqlite_integrity(main_copy)
+        entries.append({"kind": "main", "file": "main_bot.db", "sha256": _sha256_file(main_copy),
+                        "size": os.path.getsize(main_copy)})
+
+        for row in main_db.list_reseller_bots(active_only=False):
+            rid = int(row["id"])
+            raw_path = row["db_path"]
+            reseller_path = resolve_db_path(raw_path) if raw_path else ""
+            filename = f"reseller_{rid}.db"
+            if not reseller_path or not os.path.isfile(reseller_path):
+                errors.append({"reseller_id": rid, "reason": "database_missing"})
+                continue
+            try:
+                copy_path = os.path.join(tmp_dir, filename)
+                _sqlite_safe_copy(reseller_path, copy_path)
+                _validate_sqlite_integrity(copy_path)
+                entries.append({"kind": "reseller", "reseller_id": rid, "file": filename,
+                                "bot_username": row["bot_username"] or "", "active": bool(row["is_active"]),
+                                "sha256": _sha256_file(copy_path), "size": os.path.getsize(copy_path)})
+            except Exception as exc:
+                logger.exception("Full backup failed for reseller id=%s", rid)
+                errors.append({"reseller_id": rid, "reason": type(exc).__name__})
+
+        manifest = {
+            "format": "shopvpn-full-backup", "format_version": 2,
+            "created_at_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "source_host": socket.gethostname(),
+            "source_machine_fingerprint": _machine_fingerprint(),
+            "source_project": "ShopVPN",
+            "environment": _migration_environment_snapshot(),
+            "complete": not errors,
+            "entries": entries,
+            "errors": errors,
+            "notes": ["Secrets, bot tokens and .env are intentionally excluded.",
+                      "On a new server, configure public domains and server-specific settings again."],
+        }
+        with open(os.path.join(tmp_dir, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+        with open(os.path.join(tmp_dir, "manifest.txt"), "w", encoding="utf-8") as f:
+            f.write("ShopVPN full migration backup\n")
+            f.write(f"Created: {manifest['created_at_utc']}\n")
+            f.write(f"Complete: {'yes' if manifest['complete'] else 'NO - missing reseller databases'}\n")
+            f.write(f"Reseller databases included: {sum(e['kind']=='reseller' for e in entries)}\n")
+            if errors:
+                f.write("\nMissing/failed reseller databases:\n")
+                for item in errors:
+                    f.write(f"- reseller {item['reseller_id']}: {item['reason']}\n")
+        temp_zip = zip_path + ".tmp"
+        with zipfile.ZipFile(temp_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+            for name in sorted(os.listdir(tmp_dir)):
+                zf.write(os.path.join(tmp_dir, name), arcname=name)
+        os.replace(temp_zip, zip_path)
+    except Exception:
+        try:
+            if os.path.exists(zip_path + ".tmp"):
+                os.remove(zip_path + ".tmp")
+        except OSError:
+            pass
+        raise
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    existing = sorted(glob.glob(os.path.join(output_dir, "full_backup_*.zip")))
+    for old_file in existing[:-max(1, int(keep))]:
+        try:
+            os.remove(old_file)
+        except OSError:
+            pass
+    return zip_path
+
+
+def _safe_read_full_archive(zip_path: str, extract_dir: str) -> dict:
+    """Preflight and extract only flat, expected database files (no zip-slip)."""
+    max_total = 10 * 1024 * 1024 * 1024
+    max_files = 10000
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        infos = zf.infolist()
+        if len(infos) > max_files:
+            raise ValueError("تعداد فایل‌های آرشیو غیرمجاز است.")
+        total = sum(i.file_size for i in infos)
+        if total > max_total:
+            raise ValueError("حجم بازشده‌ی آرشیو بیش از حد مجاز است.")
+        allowed = {"main_bot.db", "manifest.json", "manifest.txt"}
+        for info in infos:
+            name = info.filename
+            if name not in allowed and not (name.startswith("reseller_") and name.endswith(".db")
+                                             and name[9:-3].replace("_level", "").replace("_", "").isdigit()):
+                raise ValueError(f"فایل غیرمنتظره در بکاپ: {name}")
+            if "/" in name or "\\" in name or name.startswith("."):
+                raise ValueError("مسیر نامعتبر داخل فایل بکاپ وجود دارد.")
+        if "main_bot.db" not in zf.namelist():
+            raise ValueError("فایل main_bot.db داخل بکاپ پیدا نشد.")
+        os.makedirs(extract_dir, exist_ok=True)
+        for name in zf.namelist():
+            if name.endswith("/"):
+                continue
+            target = os.path.join(extract_dir, name)
+            with zf.open(name) as src, open(target, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+    main_path = os.path.join(extract_dir, "main_bot.db")
+    _validate_sqlite_integrity(main_path)
+    manifest_path = os.path.join(extract_dir, "manifest.json")
+    manifest = {}
+    if os.path.isfile(manifest_path):
+        with open(manifest_path, encoding="utf-8") as f:
+            manifest = json.load(f)
+        if manifest.get("format") not in (None, "shopvpn-full-backup"):
+            raise ValueError("فرمت manifest این بکاپ شناخته‌شده نیست.")
+        for item in manifest.get("entries", []):
+            name = item.get("file")
+            allowed_manifest_files = {"main_bot.db"} | {
+                entry for entry in os.listdir(extract_dir)
+                if entry.startswith("reseller_") and entry.endswith(".db")
+            }
+            if name in allowed_manifest_files and os.path.isfile(os.path.join(extract_dir, name)):
+                actual = _sha256_file(os.path.join(extract_dir, name))
+                if item.get("sha256") and actual != item["sha256"]:
+                    raise ValueError(f"تطبیق هش فایل {name} ناموفق بود؛ فایل آسیب دیده است.")
+    return manifest
+
+
+def restore_full_backup(main_db, main_db_path: str, zip_path: str) -> dict:
+    """Restore main + reseller databases and relocate their paths to this install.
+
+    All archive contents are validated before the first live database is touched.
+    Current files are snapshotted first; each replacement is atomic on its target
+    filesystem. Legacy archives without manifest.json remain supported.
+    """
+    from config import RESELLER_DBS_DIR
+    result = {"main_restored": False, "main_pre_restore_path": None,
+              "resellers_restored": [], "resellers_skipped": [],
+              "manifest": {}, "source_host": None, "complete": True}
+    tmp_dir = tempfile.mkdtemp(prefix="restore_full_")
+    try:
+        manifest = _safe_read_full_archive(zip_path, tmp_dir)
+        result["manifest"] = manifest
+        result["source_host"] = manifest.get("source_host")
+        result["complete"] = bool(manifest.get("complete", True))
+        main_path = os.path.join(tmp_dir, "main_bot.db")
+        reseller_files = {}
+        for name in os.listdir(tmp_dir):
+            if name.startswith("reseller_") and name.endswith(".db"):
+                try:
+                    rid = int(name[len("reseller_"):-len(".db")].split("_level")[0])
+                except ValueError:
+                    result["resellers_skipped"].append({"file": name, "reason": "نام فایل نامعتبر است."})
+                    continue
+                _validate_sqlite_integrity(os.path.join(tmp_dir, name))
+                reseller_files.setdefault(rid, os.path.join(tmp_dir, name))
+
+        # Snapshot all current reseller DBs before replacing the main database.
+        old_rows = list(main_db.list_reseller_bots(active_only=False))
+        old_snapshots = {}
+        for row in old_rows:
+            path = row["db_path"]
+            if path:
+                from config import resolve_db_path
+                resolved = resolve_db_path(path)
+                if os.path.isfile(resolved):
+                    snap = os.path.join(tmp_dir, f"pre_reseller_{int(row['id'])}.db")
+                    _sqlite_safe_copy(resolved, snap)
+                    old_snapshots[int(row["id"])] = (resolved, snap)
+
+        result["main_pre_restore_path"] = main_db.replace_file(main_path)
+        result["main_restored"] = True
+        os.makedirs(RESELLER_DBS_DIR, exist_ok=True)
+        restored_ids = set()
+        for row in main_db.list_reseller_bots(active_only=False):
+            rid = int(row["id"])
+            target = os.path.join(RESELLER_DBS_DIR, f"reseller_{rid}.db")
+            main_db.set_reseller_db_path(rid, target)
+            source = reseller_files.get(rid)
+            if not source:
+                result["resellers_skipped"].append({"file": f"reseller_{rid}.db",
+                    "reason": "دیتابیس این نماینده داخل آرشیو نبود؛ دیتابیس خالی ساخته نشد."})
+                continue
+            _raw_replace_db_file(source, target)
+            restored_ids.add(rid)
+            result["resellers_restored"].append({"id": rid,
+                "bot_username": row["bot_username"], "db_path": target})
+        # Files from the archive that have no matching reseller row are not attached
+        # to a different tenant; they are reported rather than silently misassigned.
+        known_ids = {int(r["id"]) for r in main_db.list_reseller_bots(active_only=False)}
+        for rid in sorted(set(reseller_files) - known_ids):
+            result["resellers_skipped"].append({"file": f"reseller_{rid}.db",
+                "reason": "نماینده متناظر در دیتابیس اصلی بازیابی‌شده وجود ندارد."})
+        try:
+            from server_migration import create_pending_marker
+            result["server_changed"] = create_pending_marker(manifest) if manifest else False
+        except Exception:
+            logger.exception("Could not create pending server-migration marker")
+            result["server_changed"] = False
+    except Exception:
+        # Restore the main DB and reseller DBs to their pre-operation snapshots
+        # where possible, so a failed multi-DB restore does not leave a half-state.
+        try:
+            pre_main = result.get("main_pre_restore_path")
+            if pre_main and os.path.isfile(pre_main):
+                main_db.replace_file(pre_main)
+        except Exception:
+            logger.exception("Rollback of main database after failed full restore failed")
+        for rid, (target, snap) in locals().get("old_snapshots", {}).items():
+            try:
+                _raw_replace_db_file(snap, target)
+            except Exception:
+                logger.exception("Rollback of reseller database id=%s failed", rid)
+        raise
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
     return result
 
-
 def _raw_replace_db_file(src_path: str, target_path: str) -> str:
-    """فایل دیتابیس در `target_path` را با `src_path` جایگزین می‌کند (برای
-    نماینده‌ای که بات‌اش پروسه‌ی جدا دارد و اتصال persistent‌اش از اینجا در
-    دسترس نیست). قبلش یک نسخه‌ی «پیش از بازیابی» می‌گیرد و فایل‌های WAL/SHM
-    قدیمی را پاک می‌کند تا داده‌ی commit‌نشده‌ی قدیمی با فایل جدید قاطی نشود.
-
-    نکته‌ی امنیتی: قبل از صدازدن این تابع باید مطمئن شد که هیچ پروسه‌ای
-    (بات نماینده‌ی در حال اجرا) هم‌زمان به `target_path` وصل نیست - وگرنه
-    همان باگ قدیمی «اتصال به فایل نیمه‌نوشته» ممکن است تکرار شود.
-    """
-    os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
-    backup_dir = os.path.join(os.path.dirname(os.path.abspath(target_path)), "backups")
+    """Safely replace a reseller DB after its bot process has been stopped."""
+    _validate_sqlite_integrity(src_path)
+    target_path = os.path.abspath(target_path)
+    target_dir = os.path.dirname(target_path)
+    os.makedirs(target_dir, exist_ok=True)
+    backup_dir = os.path.join(target_dir, "backups")
     os.makedirs(backup_dir, exist_ok=True)
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
     pre_restore_path = os.path.join(backup_dir, f"pre_restore_{timestamp}.db")
-
-    if os.path.exists(target_path):
+    if os.path.isfile(target_path):
         _sqlite_safe_copy(target_path, pre_restore_path)
-
-    for suffix in ("-wal", "-shm"):
-        stale = target_path + suffix
-        if os.path.exists(stale):
-            os.remove(stale)
-
-    import shutil as _shutil
-    _shutil.copyfile(src_path, target_path)
+    fd, staged_path = tempfile.mkstemp(prefix=".shopvpn_restore_", suffix=".db", dir=target_dir)
+    os.close(fd)
+    try:
+        shutil.copyfile(src_path, staged_path)
+        _validate_sqlite_integrity(staged_path)
+        with open(staged_path, "rb") as stream:
+            os.fsync(stream.fileno())
+        for suffix in ("-wal", "-shm"):
+            stale = target_path + suffix
+            if os.path.exists(stale):
+                os.remove(stale)
+        os.replace(staged_path, target_path)
+    finally:
+        try:
+            if os.path.exists(staged_path):
+                os.remove(staged_path)
+        except OSError:
+            pass
     return pre_restore_path
 
 

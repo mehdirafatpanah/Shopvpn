@@ -31,6 +31,17 @@ def _effective_server(server, cc):
     return apply_target_config(server, raw)
 
 
+def _snapshot_ok(provider, cc) -> bool:
+    """پنل‌هایی که resync آن‌ها مجموعه‌ی مقصد را جایگزین میکند (W-UI) فقط برای سرویسی که مقصدش هنگام ساخت ثبت شده همگام میشوند.
+    سرویس بدون snapshot (قدیمی/ساخته‌شده از مسیر بدون محصول) دست‌نخورده میماند، نه اینکه با قالب کل سرور بازنویسی شود."""
+    if not getattr(provider, "resync_needs_snapshot", False):
+        return True
+    try:
+        return bool(cc["panel_target_config"])
+    except (KeyError, IndexError, TypeError):
+        return False
+
+
 async def heal_config(db, cc) -> bool:
     """یک سرویس بدون کانفیگ را با قالب فعلی پنل هم‌گام می‌کند؛ True یعنی تغییری اعمال شد."""
     cid = int(cc["id"])
@@ -44,6 +55,8 @@ async def heal_config(db, cc) -> bool:
             return False
         provider = get_provider(_effective_server(server, cc))
         if not getattr(provider, "supports_template_resync", False):
+            return False
+        if not _snapshot_ok(provider, cc):
             return False
         changed = await provider.resync_user_template(cc["username"])
         if changed:
@@ -71,6 +84,8 @@ async def resync_server(db, server_id: int) -> dict:
     for row in rows:
         try:
             provider = get_provider(_effective_server(server, row))
+            if not _snapshot_ok(provider, row):
+                continue
             if await provider.resync_user_template(row["username"]):
                 result["changed"] += 1
         except Exception:

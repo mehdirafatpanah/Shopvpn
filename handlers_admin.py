@@ -17615,13 +17615,19 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
             db.log_admin_action, call.from_user.id, "backup_full_create",
             "دریافت بکاپ کامل (بات اصلی + همه‌ی نماینده‌ها) از طریق بات",
         ))
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                manifest = json.loads(zf.read("manifest.json")) if "manifest.json" in zf.namelist() else {}
+        except Exception:
+            manifest = {}
+        missing_count = len(manifest.get("errors", []))
         caption = (
-            "🗂 بکاپ کامل\n"
-            "شامل: دیتابیس بات اصلی + دیتابیس تک‌تک نماینده‌ها\n"
-            f"📦 حجم: {file_size_mb:.1f} مگابایت\n\n"
-            "برای انتقال به سرور جدید: همین فایل zip را روی سرور جدید باز کن؛ "
-            "«main_bot.db» همان دیتابیس بات اصلی است و فایل‌های «reseller_*.db» "
-            "باید در مسیر دیتابیس همان نماینده جایگزین شوند (طبق manifest.txt داخل zip)."
+            "🗂 بکاپ کامل قابل‌انتقال\n"
+            "شامل دیتابیس بات اصلی و دیتابیس نمایندگی‌ها\n"
+            f"📦 حجم: {file_size_mb:.1f} مگابایت\n"
+            f"👥 دیتابیس‌های نمایندگی: {sum(1 for item in manifest.get('entries', []) if item.get('kind') == 'reseller')}\n"
+            + (f"⚠️ دیتابیس ناقص/غایب: {missing_count} — گزارش داخل manifest.json\n" if missing_count else "✅ همه دیتابیس‌های ثبت‌شده بررسی و بسته‌بندی شدند.\n")
+            + "برای انتقال، فایل را در بازیابی کامل سرور مقصد وارد کن؛ دامنه‌ها در مقصد دوباره تنظیم می‌شوند."
         )
         if file_size_mb > 49:
             await call.message.answer(
@@ -17716,31 +17722,20 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
 
         await safe_edit(call, db.get_text('handlers_admin.auto_7607b181', '⏳ در حال بازیابی کامل...'))
 
-        # قبل از جایگزینی فایل هر نماینده، اگر بات همان نماینده همین الان در حال
-        # اجراست باید متوقفش کنیم - وگرنه اتصال زنده‌اش ممکن است وسط جایگزینی
-        # فایل نیمه‌نوشته را باز نگه دارد (همان باگی که در replace_file توضیح
-        # داده شده). چون این کار قبل از دانستن لیست نماینده‌ها (که داخل خود
-        # zip است) ممکن نیست، ابتدا zip را باز و لیست را می‌خوانیم، هر بات
-        # مرتبط را متوقف می‌کنیم، بعد فایل‌ها را جایگزین می‌کنیم؛ حلقه‌ی
-        # reconcile هر بات متوقف‌شده‌ای که هنوز فعال باشد را ظرف چند ثانیه
-        # خودش دوباره روشن می‌کند.
+        # کل tenantهای نمایندگی باید قبل از restore متوقف شوند؛ دیتابیس اصلی
+        # داخل zip ممکن است فهرست نمایندگی‌ها، توکن‌ها یا وضعیت فعال‌بودن را
+        # عوض کند. توقف صرفاً بر اساس IDهای موجود در zip کافی نیست و می‌تواند
+        # یک بات قدیمی را با دیتابیس در حال جایگزینی رها کند.
         stopped_tokens = []
         try:
-            with zipfile.ZipFile(tmp_path, "r") as zf:
-                names = zf.namelist()
-            reseller_ids = []
-            for n in names:
-                if n.startswith("reseller_") and n.endswith(".db"):
-                    try:
-                        reseller_ids.append(int(n[len("reseller_"):-len(".db")].split("_level")[0]))
-                    except (ValueError, IndexError):
-                        pass
+            current_resellers = await asyncio.to_thread(db.list_reseller_bots, active_only=False)
             if bot_manager is not None:
-                for rid in reseller_ids:
-                    row = await asyncio.to_thread(db.get_reseller_bot, rid)
-                    if row and bot_manager.is_running(row["bot_token"]):
-                        await bot_manager.stop_bot(row["bot_token"])
-                        stopped_tokens.append(row["bot_token"])
+                for row in current_resellers:
+                    token = row["bot_token"]
+                    if token and bot_manager.is_running(token):
+                        stopped = await bot_manager.stop_bot(token)
+                        if stopped:
+                            stopped_tokens.append(token)
 
             result = await asyncio.to_thread(restore_full_backup, db, db.db_path, tmp_path)
         except Exception as e:
@@ -17760,6 +17755,8 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 pass
 
         lines = ["✅ دیتابیس بات اصلی بازیابی شد."]
+        if not result.get("complete", True):
+            lines.append("⚠️ هشدار: بکاپ مبدا کامل نبوده و بعضی دیتابیس‌های نمایندگی در زمان تهیه بکاپ وجود نداشته‌اند.")
         if result["resellers_restored"]:
             lines.append(f"✅ {len(result['resellers_restored'])} دیتابیس نماینده بازیابی شد:")
             for r in result["resellers_restored"]:
@@ -17770,8 +17767,14 @@ def create_admin_router(db, is_main_bot: bool = True, bot_manager=None) -> Route
                 lines.append(f"  • {s['file']}: {s['reason']}")
         if stopped_tokens:
             lines.append(
-                f"\nℹ️ {len(stopped_tokens)} بات نماینده برای جایگزینی دیتابیس موقتاً متوقف شد و ظرف چند "
-                "ثانیه‌ی آینده خودش دوباره روشن می‌شود."
+                f"\nℹ️ {len(stopped_tokens)} بات نمایندگی متوقف شد؛ حلقه‌ی هماهنگ‌سازی آن‌ها را "
+                "بر اساس دیتابیس بازیابی‌شده دوباره راه‌اندازی می‌کند."
+            )
+        if result.get("server_changed"):
+            lines.append(
+                "\n🌐 انتقال به سرور جدید تشخیص داده شد. برای تنظیم دامنه‌ها و آدرس‌های جدید، "
+                "روی سرور مقصد دستور `python server_migration.py --pending` را اجرا کن. "
+                "توکن‌ها و کلیدهای محرمانه عمداً از بکاپ منتقل نمی‌شوند."
             )
         await safe_edit(call, "\n".join(lines))
         await call.answer()

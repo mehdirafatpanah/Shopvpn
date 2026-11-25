@@ -296,6 +296,39 @@ class CoreTests(unittest.TestCase):
 
 # ---------------------------------------------------------------------------
 
+    def test_template_upload_buffer_chunks(self):
+        tpl = ("<html><body><script>const D=__DATA__;</script>" + "سلام" * 200000 + "</body></html>").encode("utf-8")
+        self.assertGreater(len(tpl), 1024 * 1024)
+        self.assertLessEqual(len(tpl), ds.CUSTOM_TEMPLATE_MAX)
+        buf = ds.TemplateUploadBuffer()
+        size = 192 * 1024
+        parts = [tpl[i:i + size] for i in range(0, len(tpl), size)]
+        for i, part in enumerate(parts[:-1]):
+            self.assertEqual(buf.add("1:0", "up-load-0001", i, len(parts), part), (False, None, None))
+        done, text, err = buf.add("1:0", "up-load-0001", len(parts) - 1, len(parts), parts[-1])
+        self.assertTrue(done)
+        self.assertIsNone(err)
+        self.assertEqual(text.encode("utf-8"), tpl)
+        again = buf.add("1:0", "up-load-0001", len(parts) - 1, len(parts), parts[-1])
+        self.assertEqual(again[:2], (True, text))
+
+    def test_template_upload_buffer_rejects(self):
+        buf = ds.TemplateUploadBuffer()
+        self.assertIsNotNone(buf.add("1:0", "up-load-0002", 0, 1, b"<html></html>")[2])
+        self.assertIsNotNone(buf.add("1:0", "up-load-0003", 0, 1, b"\xff\xfe__DATA__")[2])
+        self.assertIsNotNone(buf.add("1:0", "up-load-0004", 5, 2, b"x")[2])
+        big = b"a" * (ds.CUSTOM_TEMPLATE_MAX // 2 + 10)
+        self.assertEqual(buf.add("1:0", "up-load-0005", 0, 2, big)[2], None)
+        self.assertIn("۲ مگابایت", buf.add("1:0", "up-load-0005", 1, 2, big)[2])
+
+    def test_template_upload_buffer_expires(self):
+        now = [0.0]
+        buf = ds.TemplateUploadBuffer(clock=lambda: now[0])
+        buf.add("1:0", "up-load-0006", 0, 2, b"a")
+        now[0] = ds.TemplateUploadBuffer.TTL + 1
+        buf.add("1:0", "up-load-0007", 0, 2, b"a")
+        self.assertEqual(list(buf._items), [("1:0", "up-load-0007")])
+
     def test_custom_template_helpers(self):
         tpl = '<html><head><title>__TITLE__</title></head><body data-t="__THEME__"><script>const D=__DATA__;</script></body></html>'
         self.assertIsNone(ds.validate_custom_template(""))

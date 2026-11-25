@@ -44,6 +44,32 @@ async def _translation_health_loop(db):
 
 async def main():
     logger.info("حالت دریافت آپدیت: %s", BOT_MODE)
+    migration_marker = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".shopvpn_migration_pending.json")
+    if os.path.isfile(migration_marker):
+        try:
+            import json
+            with open(migration_marker, encoding="utf-8") as stream:
+                migration_state = json.load(stream)
+            if migration_state.get("status") == "pending_domain_configuration":
+                from aiogram import Bot
+                notice_bot = Bot(token=BOT_TOKEN)
+                try:
+                    await notice_bot.send_message(
+                        OWNER_ID,
+                        "🌐 انتقال ShopVPN به سرور جدید تشخیص داده شد.\n"
+                        "برای واردکردن دامنه‌ها و آدرس‌های جدید و ذخیره در .env، روی سرور اجرا کن:\n"
+                        "`python server_migration.py --pending`\n"
+                        "بعد از تکمیل، سرویس‌های ShopVPN را restart کن. کلیدها و توکن‌های محرمانه باید "
+                        "روی سرور مقصد جداگانه تنظیم شوند.",
+                        parse_mode="Markdown",
+                    )
+                finally:
+                    await notice_bot.session.close()
+                migration_state["status"] = "notified"
+                with open(migration_marker, "w", encoding="utf-8") as stream:
+                    json.dump(migration_state, stream, ensure_ascii=False, indent=2)
+        except Exception:
+            logger.exception("Could not notify owner about pending server migration setup")
     manager = BotManager()
 
     # Automatic translation maintenance: enabled dynamic languages are synced
