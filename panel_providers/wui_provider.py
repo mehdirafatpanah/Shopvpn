@@ -214,6 +214,27 @@ class WUIProvider(BasePanelProvider):
             created = await self._api(session, "POST", "clients", "ساخت کاربر", json=body)
             if not isinstance(created, dict) or not created.get("id"):
                 raise PanelError("پاسخ نامعتبر از پنل در ساخت کاربر.")
+            # W-UI's subscription ZIP is built from the client's actual accounts,
+            # not from ShopVPN's product settings. Verify the set returned by the
+            # panel and repair it immediately if the panel/template applied a
+            # different (for example, first sample client's) interface set.
+            expected_ids = sorted(set(int(i) for i in interface_ids))
+            try:
+                actual_client = await self._full(session, created["id"])
+                if self._account_interfaces(actual_client) != expected_ids:
+                    await self._api(
+                        session, "PATCH", f"clients/{created['id']}", "اعمال interfaceهای محصول",
+                        json={"interfaceIds": expected_ids},
+                    )
+                    actual_client = await self._full(session, created["id"])
+                    if self._account_interfaces(actual_client) != expected_ids:
+                        raise PanelError("W-UI interfaceهای انتخاب‌شده‌ی محصول را روی کاربر اعمال نکرد؛ ساخت سرویس متوقف شد تا لینک اشتباه تحویل نشود.")
+            except Exception:
+                try:
+                    await self._api(session, "DELETE", f"clients/{created['id']}", "پاکسازی کاربر با interface نادرست")
+                except Exception:
+                    pass
+                raise
             try:
                 link = await self._link(session, created["id"])
             except PanelError:
