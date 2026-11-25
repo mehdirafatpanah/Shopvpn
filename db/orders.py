@@ -469,6 +469,47 @@ class OrdersMixin:
             return cur.rowcount > 0
 
 
+    def create_admin_grant_order(self, user_tg_id: int, product_id: int, quantity: int = 1) -> int:
+        """سفارش رایگان «اختصاص محصول توسط ادمین»؛ از ابتدا processing است تا در لیست سفارش‌های در انتظار نیاید."""
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO orders (user_id, product_id, status, base_price, wallet_used, discount_amount, "
+                "final_price, quantity, updated_at) VALUES (?, ?, 'processing', 0, 0, 0, 0, ?, ?)",
+                (user_tg_id, product_id, quantity, datetime.utcnow().isoformat()),
+            )
+            return cur.lastrowid
+
+
+    def finish_admin_grant_order(self, order_id: int, config_ids=None) -> bool:
+        """تایید سفارش اختصاصی ادمین بدون امتیاز خرید؛ config_ids فقط برای محصولات بانک کانفیگ است."""
+        if isinstance(config_ids, int):
+            config_ids = [config_ids]
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "UPDATE orders SET status='approved', config_id=?, updated_at=? WHERE id=? AND status='processing'",
+                (config_ids[0] if config_ids else None, datetime.utcnow().isoformat(), order_id),
+            )
+            if cur.rowcount == 0:
+                return False
+            if config_ids:
+                conn.executemany("UPDATE configs SET order_id=? WHERE id=?", [(order_id, cid) for cid in config_ids])
+            return True
+
+
+    def discard_admin_grant_order(self, order_id: int) -> None:
+        """حذف سفارش اختصاصی ناموفق (هنوز processing) تا در تاریخچه‌ی کاربر اثری از آن نماند."""
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM orders WHERE id=? AND status='processing' AND final_price=0", (order_id,))
+
+
+    def get_user_approved_product_ids(self, user_tg_id: int) -> set:
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT product_id FROM orders WHERE user_id=? AND status='approved'", (user_tg_id,)
+            ).fetchall()
+        return {int(r["product_id"]) for r in rows}
+
+
     def fake_receipt_order(self, order_id: int):
         """رسید جعلی: سفارش pending را رد می‌کند، کانفیگ‌های متصل به همان سفارش را
         حذف می‌کند و کاربر را بلاک می‌کند. فقط همان سفارش هدف قرار می‌گیرد؛ سایر
