@@ -114,7 +114,11 @@ async def collect_vpn_files(db, link: str) -> list:
                             "content": str(item.get("profile") or "").encode("utf-8"),
                             "label": item.get("remark") or "WireGuard"})
         if server and server_type == "wui":
+            import panel_resync
             from panel_providers import get_provider
+            # فایل‌های تحویلی بات نیز باید از همان مقصد snapshot‌شده‌ی محصول استفاده کنند.
+            server = panel_resync._effective_server(server, cc)
+            await panel_resync.heal_config(db, cc)
             provider = get_provider(server)
             files = await provider.get_config_files(cc["username"])
             for f in files:
