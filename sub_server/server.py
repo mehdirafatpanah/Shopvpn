@@ -344,9 +344,7 @@ async def _wui_server(cc):
     except Exception:
         return None
     if server and str(server["panel_type"] or "").lower() == "wui":
-        # مقصد انتخاب‌شده‌ی همین سرویس را روی نمونه‌ی سرور اعمال کن؛
-        # استفاده از قالب عمومی پنل باعث می‌شود تمام Interfaceها در خروجی دیده شوند.
-        return panel_resync._effective_server(server, cc)
+        return server
     return None
 
 
@@ -361,9 +359,15 @@ async def _wui_bundle(cc, ttl: float = _WUI_TTL) -> Optional[dict]:
     if server is None:
         return None
     cid = int(cc["id"])
-    # Snapshot مقصد بخشی از هویت کش است؛ تغییر مقصد نباید خروجی قدیمی را برگرداند.
-    target_snapshot = str(cc["panel_target_config"] or "")
-    key = (cid, str(cc["username"]), target_snapshot)
+    # مقصدهای انتخاب‌شده‌ی محصول باید در تمام مسیرهای اشتراک نیز اعمال شوند.
+    # در غیر این صورت W-UI با مجموعه‌ی interfaceهای قالب/کاربر نمونه‌ی پنل
+    # کار می‌کند و ZIP تمام حساب‌های آن مجموعه را برمی‌گرداند.
+    try:
+        effective_server = panel_resync._effective_server(server, cc)
+    except Exception:
+        effective_server = server
+    target_snapshot = cc["panel_target_config"] if "panel_target_config" in cc.keys() else None
+    key = (cid, str(cc["username"]), str(target_snapshot or ""))
     hit = _wui_cache.get(key)
     now = time.monotonic()
     if hit and now - hit[0] < ttl:
@@ -377,15 +381,23 @@ async def _wui_bundle(cc, ttl: float = _WUI_TTL) -> Optional[dict]:
             return list(hit[1].get("vpn") or []) if hit else []
 
     try:
-        # قبل از خواندن فایل‌ها، Interfaceهای Client را با مقصد ثبت‌شده‌ی محصول
-        # همگام کن. این کار برای لینک خام W-UI هم پایین‌تر انجام می‌شود.
-        await panel_resync.heal_config(db, cc)
-        provider = get_provider(server)
+        provider = get_provider(effective_server)
+        # W-UI's /clients/{id}/configs endpoint intentionally returns every
+        # account currently attached to that client. Reconcile the client to
+        # the product snapshot first, otherwise the first/sample user's panel
+        # template can leak additional interfaces into the subscription ZIP.
+        # Legacy services without a saved product snapshot remain untouched.
+        if (getattr(provider, "resync_needs_snapshot", False)
+                and panel_resync._snapshot_ok(provider, cc)):
+            await provider.resync_user_template(cc["username"])
         files, info, vpn = await asyncio.gather(
             provider.get_config_files(cc["username"]), provider.get_sub_info(cc["username"]), _logins(provider))
     except Exception as exc:
         log.warning("wui bundle failed cc=%s: %s", cid, type(exc).__name__)
-        if hit and now - hit[0] < STALE_MAX_AGE:
+        # A stale bundle is unsafe when this service has a product snapshot:
+        # it may contain interfaces that the product did not purchase.
+        has_product_snapshot = bool(target_snapshot)
+        if hit and now - hit[0] < STALE_MAX_AGE and not has_product_snapshot:
             return hit[1]
         return {"wg": [], "ovpn": [], "vpn": [], "info": {}, "live": False}
     wg, ovpn = [], []
@@ -552,12 +564,6 @@ async def sub_endpoint(request: Request) -> Response:
     settings = await asyncio.to_thread(ds.all_settings, db, prof)
     enabled = ds.is_enabled(db, prof)
     query = _query(request)
-
-    # لینک خام خود W-UI در حالت عبور مستقیم هم باید فقط Interfaceهای همین محصول
-    # را برگرداند؛ در غیر این صورت مسیر خام، فیلتر صفحه/ساب اختصاصی را دور می‌زند.
-    wui_server = await _wui_server(cc)
-    if wui_server is not None:
-        await panel_resync.heal_config(db, cc)
     ua = request.headers.get("user-agent", "")
     try:
         ttl = max(0, min(600, int(settings["dsub_cache_ttl"] or 30)))
