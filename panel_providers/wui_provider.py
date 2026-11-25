@@ -5,6 +5,7 @@ import re
 import time
 import zipfile
 from datetime import datetime, timezone
+from urllib.parse import urljoin, urlsplit
 
 import aiohttp
 
@@ -151,8 +152,16 @@ class WUIProvider(BasePanelProvider):
     async def _link(self, session, client_id) -> str:
         data = await self._api(session, "GET", f"clients/{client_id}/subscription", "دریافت لینک اشتراک")
         link = data.get("link") if isinstance(data, dict) else ""
-        if not link:
+        if not isinstance(link, str) or not link.strip():
             raise PanelError("لینک اشتراک از W-UI دریافت نشد؛ سرویس Subscription را در پنل فعال کن.")
+        link = link.strip()
+        # بعضی نسخه‌های W-UI لینک نسبی (مثلاً /sub/TOKEN) برمی‌گردانند؛
+        # ذخیره‌ی همان مقدار باعث می‌شود سرویس ساب هنگام GET با URL نامعتبر مواجه شود.
+        if link.startswith(("/", "?")):
+            link = urljoin(self._base().rstrip("/") + "/", link)
+        parts = urlsplit(link)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise PanelError("W-UI لینک اشتراک معتبری برنگرداند (آدرس باید http/https کامل باشد).")
         return link
 
     @staticmethod
