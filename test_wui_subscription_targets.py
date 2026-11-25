@@ -84,6 +84,71 @@ class WUISubscriptionTargetTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(call[0] == "PATCH" and call[2] == {"interfaceIds": [22]} for call in provider.calls))
         self.assertEqual(result.subscription_url, "https://wui.invalid/sub/token")
 
+    def _fake_provider(self, **over):
+        provider = type("FakeWUIProvider", (), {})()
+        provider.resync_needs_snapshot = False
+        provider.get_config_files = AsyncMock(return_value=[])
+        provider.get_sub_info = AsyncMock(return_value={"upload": 1, "download": 2, "total": 0, "expire": 0})
+        provider.get_login_profiles = AsyncMock(return_value=[])
+        provider.resync_user_template = AsyncMock(return_value=False)
+        for key, value in over.items():
+            setattr(provider, key, value)
+        return provider
+
+    async def _bundle(self, provider, cc=None):
+        cc = cc or {"id": 55, "username": "u55"}
+        with patch.object(sub_server, "_wui_server", new=AsyncMock(return_value={"id": 5, "panel_type": "wui"})), \
+             patch.object(sub_server.panel_resync, "_effective_server", side_effect=lambda s, c: s), \
+             patch.object(sub_server, "get_provider", return_value=provider):
+            return await sub_server._wui_bundle(cc, ttl=0)
+
+    async def test_configs_failure_does_not_blank_usage_info(self):
+        provider = self._fake_provider(get_config_files=AsyncMock(side_effect=RuntimeError("zip bad")))
+        result = await self._bundle(provider)
+        self.assertTrue(result["live"])
+        self.assertEqual(result["info"]["download"], 2)
+        self.assertEqual(result["wg"], [])
+
+    async def test_resync_failure_keeps_info_but_hides_unverified_files(self):
+        provider = self._fake_provider(
+            resync_needs_snapshot=True,
+            resync_user_template=AsyncMock(side_effect=RuntimeError("patch rejected")),
+            get_config_files=AsyncMock(return_value=[{"kind": "wireguard", "filename": "a.conf", "text": "x"}]))
+        cc = {"id": 56, "username": "u56", "panel_target_config": '{"field":"group_ids","value":[1]}'}
+        result = await self._bundle(provider, cc)
+        self.assertTrue(result["live"])
+        self.assertEqual(result["wg"], [])
+        provider.get_config_files.assert_not_awaited()
+
+    async def test_all_parts_failing_returns_not_live(self):
+        provider = self._fake_provider(
+            get_sub_info=AsyncMock(side_effect=RuntimeError("x")),
+            get_config_files=AsyncMock(side_effect=RuntimeError("x")),
+            get_login_profiles=AsyncMock(side_effect=RuntimeError("x")))
+        result = await self._bundle(provider, {"id": 57, "username": "u57"})
+        self.assertFalse(result["live"])
+
+    async def test_empty_configs_response_is_not_an_error(self):
+        class Resp:
+            def __init__(self, status, body): self.status, self._b = status, body
+            async def read(self): return self._b
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+
+        class Sess:
+            def __init__(self, status, body): self.r = Resp(status, body)
+            def request(self, *a, **k): return self.r
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+
+        for status, body in ((200, b""), (204, b""), (404, b"not found")):
+            class P(WUIProvider):
+                def __init__(self):
+                    super().__init__({"api_url": "https://w.invalid", "api_password": "t", "group_ids": "[1]"})
+                def _session(self): return Sess(status, body)
+                async def _find(self, session, username): return {"id": 1}
+            self.assertEqual(await P().get_config_files("u"), [], (status, body))
+
 
 if __name__ == "__main__":
     unittest.main()
