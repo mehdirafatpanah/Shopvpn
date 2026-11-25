@@ -371,6 +371,10 @@ class WUIProvider(BasePanelProvider):
                     status = resp.status
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 raise PanelError(f"خطا در اتصال به پنل: {exc or 'timeout'}") from exc
+        # کاربری که فقط ورودی نام‌کاربری/رمز دارد (OpenConnect/L2TP/...) فایل کانفیگ ندارد؛ پاسخ خالی/204/404 یعنی «بدون فایل»
+        # و نباید کل صفحه‌ی ساب را خراب کند.
+        if status in (204, 404) or (status < 400 and not raw):
+            return []
         if status >= 400:
             raise http_error("دریافت فایل‌های کانفیگ", status, raw[:300].decode("utf-8", errors="replace"))
         if len(raw) > _ZIP_MAX_BYTES:
