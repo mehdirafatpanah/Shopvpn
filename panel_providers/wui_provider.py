@@ -18,7 +18,7 @@ _STATUS = {"active": "active", "disabled": "disabled", "expired": "expired", "ex
 _FRACTION = re.compile(r"\.(\d+)")
 _AWG_MARK = re.compile(r"^\s*Jc\s*=", re.M)
 _ZIP_MAX_BYTES = 4 * 1024 * 1024
-_ZIP_MAX_FILES = 60
+_ZIP_MAX_FILES = 200
 
 
 def _iso(epoch: float) -> str:
@@ -385,12 +385,17 @@ class WUIProvider(BasePanelProvider):
             raise PanelError("پاسخ W-UI زیپ معتبر نبود.") from exc
         files = []
         with archive:
-            for info in sorted(archive.infolist(), key=lambda i: i.filename)[:_ZIP_MAX_FILES]:
+            for info in sorted(archive.infolist(), key=lambda i: i.filename)[:_ZIP_MAX_FILES * 2]:
                 if info.is_dir() or info.file_size > _ZIP_MAX_BYTES:
                     continue
                 name = re.sub(r"[^A-Za-z0-9_.-]", "_", info.filename.rsplit("/", 1)[-1]) or "config"
                 text = archive.read(info).decode("utf-8", errors="replace")
-                files.append({"filename": name, "text": text, "kind": classify_profile(name, text)})
+                kind = classify_profile(name, text)
+                if kind == "other":
+                    continue
+                files.append({"filename": name, "text": text, "kind": kind})
+                if len(files) >= _ZIP_MAX_FILES:
+                    break
         return files
 
     async def get_login_profiles(self, username: str) -> list:
