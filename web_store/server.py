@@ -1,8722 +1,1115 @@
 # -*- coding: utf-8 -*-
-#‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
 """
-بک‌اند مینی‌اپ - چندمستأجر (Multi-tenant)
+سرور «ساب اختصاصی» ShopVPN.
 
-یک سرور واحد، هم برای بات اصلی و هم برای همه‌ی بات‌های نمایندگی.
-شناسه‌ی نماینده از طریق کوئری‌پارامتر ?b=<reseller_id> در URL مینی‌اپ مشخص
-می‌شود (که هنگام ساخت دکمه‌ی مینی‌اپ در keyboards.py به‌صورت خودکار اضافه می‌شود).
-اگر ?b وجود نداشته باشد یا خالی/۰ باشد، یعنی بات اصلی.
+اجرا (manage.sh این را به‌صورت سرویس systemd می‌سازد):
+    uvicorn sub_server.server:app --host 127.0.0.1 --port 8004
 
-هر درخواست بر اساس همین شناسه، دیتابیس و توکن بات درست را resolve می‌کند؛
-یعنی هر نماینده کاملاً مستقل و ایزوله (دیتابیس خودش) از مینی‌اپ استفاده می‌کند.
+مسیرها:
+    GET /s/{token}              اپ VPN → ساب (با هدرها/کانفیگ نمایشی/خط اول)؛ مرورگر → صفحه‌ی وب
+    GET /s/{token}/qr.png       کیوآر لینک ساب (یا ?i=N برای کانفیگ شماره‌ی N)
+    GET /s/{token}/ovpn/{n}     دانلود فایل OpenVPN شماره‌ی n (.ovpn) برای سرویس‌های دارای OpenVPN
+    GET /s/{token}/wg/{n}       دانلود فایل WireGuard شماره‌ی n (.conf) برای سرویس‌های دارای WireGuard
+    GET /sub/smart/{token}      اشتراک هوشمند (ادغام چند سرویس/پنل در یک لینک)
+    GET /healthz                سلامت سرویس
 
-اجرا (جدا از پروسه‌ی اصلی بات): uvicorn miniapp.server:app --host 127.0.0.1 --port 8001
-سپس nginx مسیر / را به این پورت proxy می‌کند.
+همه‌ی تنظیمات (روشن/خاموش، ظاهر صفحه، هدرها، برنامه‌ها و...) از داخل ادمین بات در جدول settings
+ذخیره می‌شوند و همین‌جا با کش کوتاه (۸ ثانیه) خوانده می‌شوند، پس نیازی به ری‌استارت نیست.
+
+وقتی قابلیت «خاموش» باشد، لینک‌هایی که قبلاً به کاربران داده شده کار می‌کنند ولی سرور فقط
+پاسخ پنل را بدون هیچ تغییری عبور می‌دهد (بدون صفحه‌ی وب و بدون دستکاری) تا کسی قطع نشود.
 """
 
-import sys
-import os
-import json
-import hmac
-import hashlib
-import random
-import re
-import secrets
-import base64
-import html as html_lib
 import asyncio
-import time
-import tempfile
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-import aiohttp
-import bot_profile
-import account_naming
-from i18n import tr, api_message, set_language, reset_language, normalize_language, is_language_enabled
-from db_text_policy import render_stored_setting
-from price_display import compare_price_for
-from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Form, Depends, Query, Request
-from fastapi.staticfiles import StaticFiles
-
-
-class NoCacheStaticFiles(StaticFiles):
-    """StaticFiles که به مرورگر می‌گه هر بار فایل رو revalidate کنه (ETag/
-    Last-Modified) و بدون سوال‌کردن از سرور کش نکنه. جواب سرور معمولاً با
-    304 برمی‌گرده، پس ترافیک زیاد نمی‌شه، ولی هیچ نسخه‌ی قدیمی هم کش نمی‌مونه
-    (مهم برای WebView تلگرام که کش‌کردنش خیلی تهاجمی‌تره)."""
-
-    def file_response(self, *args, **kwargs):
-        response = super().file_response(*args, **kwargs)
-        response.headers["Cache-Control"] = "no-cache"
-        return response
-from fastapi.responses import HTMLResponse, Response, FileResponse
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-
+import json
 import logging
-logger = logging.getLogger("miniapp")
-from types import SimpleNamespace
-import sqlite3
-import ipaddress
+import os
+import secrets
+import time
+from collections import deque
+from contextlib import asynccontextmanager
+from io import BytesIO
+from typing import Dict, List, Optional, Tuple
 
-logging.basicConfig(level=logging.INFO)
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
+from starlette.routing import Route
 
-from config import BOT_TOKEN, DB_PATH, OWNER_ID, resolve_db_path, RESELLER_DBS_DIR, MINIAPP_URL, API_BASE_URL, PLISIO_API_KEY
-import plisio_client
-import exchange_rate
-import crypto_payment
-import custom_gateway_payment
-import abangateway_client
-import abangateway_payment
-import blupal_client
-import blupal_payment
-import noapay_client
-import noapay_payment
-import extra_gateway_clients
-import extra_gateway_payment
-import extra_gateway_registry
-import payment_engine
-import web_auth
-import phone_gate
-import ai_support
-import buy_guide
-import receipt_ai_check
-import report_router
-from md_utils import escape_md
-import dedicated_sub
-import card_to_card_payment
-from asset_versioning import static_version, ApiNoStoreMiddleware
-from database import Database, MENU_BUTTON_META, DEFAULT_MENU_ORDER, PAYMENT_METHOD_META
-from db.tickets import normalize_priority as ticket_priority
-from service_alerts import send_service_alert_sync
-from admin_panel.config_delivery_web import deliver_config_to_user_web
-from miniapp.auth import validate_init_data
-from sub_info import fetch_sub_info
-from aiogram import Bot
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
-from backup import create_backup, restore_backup, is_valid_sqlite_db
-from jalali import to_jalali_str
-from stock_alerts import check_and_notify_low_stock
-import leak_index
-from panel_providers import (
-    get_provider, PanelError, PanelUsernameTakenError, PROVIDERS,
-    SUB_BASE_URL_PANEL_TYPES, INBOUND_SELECT_PANEL_TYPES, parse_xui_inbound_ids, connect_needs_template, panel_server_is_ready,
-    SINGLE_INBOUND_PANEL_TYPES, TOKEN_ONLY_PANEL_TYPES, NO_SETUP_PANEL_TYPES,
-)
-from reseller_auto_provision import provision_auto_config, provision_test_config, is_volume_credit_bot, ProvisionError
-from test_config_provision import provision_test_plan, format_plan_amount, ProvisionError as TestPlanProvisionError
-from direct_panel_provision import provision_direct, ProvisionError as DirectProvisionError
-from renewal_engine import execute_renewal, RenewalError
-import renewal_rules
-from user_limit import price_for_users as _ul_price_for_users, renewal_users as _ul_renewal_users
-from panel_capabilities import all_panels_support, normalize_user_limit, USER_LIMIT
-from service_refund import (
-    quote_service_refund, refund_quote_text, wallet_refund_amount, grant_service_refund_credit, refund_result_text,
-)
-from admin_panel.telegram_notify import send_message as _tg_notify, fetch_telegram_file as _tg_fetch_file
+import dedicated_sub as ds
+import panel_resync
+from panel_providers import get_provider
+from panel_providers.base import build_connector
+from config import DB_PATH, OWNER_ID
+from database import Database
 
-app = FastAPI(title="V2Ray Shop Mini App API")
+log = logging.getLogger("sub_server")
 
-# Backend i18n: every API request gets a language context from the frontend header.
-# The frontend sends X-Language based on its persisted sv-lang setting.
-@app.middleware("http")
-async def _web_security_headers(request: Request, call_next):
-    response = await call_next(request)
-    # Defense-in-depth headers.
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-    if request.url.scheme == "https":
-        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-    return response
+db = Database(DB_PATH)
 
+PAGE_TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sub_page.html")
+PAGE_UA = "v2rayNG/1.8.29"          # برای گرفتن فرمت لینک‌های تکی که صفحه‌ی وب نشان می‌دهد
+MAX_BODY = 5 * 1024 * 1024
+STALE_MAX_AGE = 3600                # اگر پنل قطع بود، تا یک ساعت آخرین پاسخ سالم داده می‌شود
+VERIFY_TLS = os.getenv("DEDICATED_SUB_VERIFY_TLS", "1") != "0"
 
-@app.middleware("http")
-async def _i18n_request_language(request: Request, call_next):
-    language = normalize_language(request.headers.get("x-language") or request.headers.get("accept-language"))
-    token = set_language(language)
-    try:
-        response = await call_next(request)
-        response.headers["Content-Language"] = language
-        return response
-    finally:
-        reset_language(token)
-
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-app.add_middleware(ApiNoStoreMiddleware)
-from starlette.middleware.gzip import GZipMiddleware
-app.add_middleware(GZipMiddleware, minimum_size=1024)
-
-STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
-
-# تم‌های قابل انتخاب برای مینی‌اپ (هر تننت/نماینده جدا انتخاب می‌کند)
-from home_tiles import MINIAPP_THEMES  # منبع واحد با پنل وب ادمین
-MAX_HEADER_IMAGE_BYTES = 2 * 1024 * 1024  # 2 مگابایت
-
-# دیتابیس بات اصلی - هم برای سرویس‌دهی مستقیم به بات اصلی، هم برای پیدا کردن
-# دیتابیس/توکن بات‌های نمایندگی از روی جدول reseller_bots استفاده می‌شود.
-
-main_db = Database(DB_PATH)
-
-def _runtime_miniapp_url() -> str:
-    try:
-        return (main_db.get_setting("miniapp_public_url", "") or MINIAPP_URL or "").strip().rstrip("/")
-    except Exception:
-        return (MINIAPP_URL or "").strip().rstrip("/")
-
-def _runtime_api_base_url() -> str:
-    configured = _runtime_miniapp_url()
-    if configured:
-        from urllib.parse import urlparse
-        parsed = urlparse(configured)
-        if parsed.scheme and parsed.netloc:
-            return f"{parsed.scheme}://{parsed.netloc}"
-    return (API_BASE_URL or "").strip().rstrip("/")
-
-try:
-    # اگر این پروسه (uvicorn مینی‌اپ) قبل از بات اصلی اجرا شده و فایل دیتابیس
-    # هنوز جدول ندارد، این‌جا هم می‌سازیمش تا هیچ درخواستی با خطای ۵۰۰ مواجه نشود.
-    main_db.init_db(owner_id=OWNER_ID)
-except Exception:
-    logging.getLogger("miniapp.tenant").exception("مقداردهی اولیه دیتابیس اصلی ناموفق بود.")
-
-_bot_username_cache: dict[str, str] = {}  # bot_token -> username
+_session = None  # aiohttp.ClientSession (در lifespan ساخته می‌شود)
 
 
 # ---------------------------------------------------------------------------
-# تشخیص مستأجر (بات اصلی یا یک نماینده‌ی مشخص)
+# محدودکننده‌ی نرخ (حافظه‌ای، به‌ازای IP)
 # ---------------------------------------------------------------------------
+class RateLimiter:
+    def __init__(self):
+        self._hits: Dict[str, deque] = {}
 
-@dataclass
-class Tenant:
-    db: Database
-    bot_token: str
-    tenant_id: str  # "" برای بات اصلی، در غیر این صورت id عددی نماینده به‌صورت رشته
-
-
-_tenant_logger = logging.getLogger("miniapp.tenant")
-
-
-def get_tenant(b: str = Query("", description="شناسه یا اسلاگ لینک نماینده؛ خالی یعنی بات اصلی")) -> Tenant:
-    b = (b or "").strip()
-    if not b or b == "0":
-        return Tenant(db=main_db, bot_token=BOT_TOKEN, tenant_id="")
-
-    try:
-        if b.isdigit():
-            row = main_db.get_reseller_bot(int(b))
-        else:
-            row = main_db.get_reseller_bot_by_slug(b)
-    except sqlite3.OperationalError:
-        _tenant_logger.exception(
-            "خطای دیتابیس اصلی هنگام خواندن reseller_bots (b=%s). db_path=%s - احتمالاً جدول‌ها هنوز ساخته نشده‌اند.",
-            b, DB_PATH,
-        )
-        raise HTTPException(status_code=503, detail=tr("سرور موقتاً در دسترس نیست، دوباره تلاش کنید."))
-
-    if not row or not row["is_active"]:
-        _tenant_logger.warning(
-            "تننت b=%s پیدا نشد یا غیرفعال است. row=%s", b, dict(row) if row else None
-        )
-        raise HTTPException(status_code=404, detail=tr("این فروشگاه در دسترس نیست."))
-
-    if "miniapp_enabled" in row.keys() and not row["miniapp_enabled"]:
-        _tenant_logger.warning("تننت b=%s: مینی‌اپ برای این نماینده فعال نیست.", b)
-        raise HTTPException(status_code=404, detail=tr("مینی‌اپ برای این نماینده فعال نیست."))
-
-    resolved_path = resolve_db_path(row["db_path"])
-    if not os.path.exists(resolved_path):
-        _tenant_logger.error(
-            "تننت b=%s معتبر است ولی فایل دیتابیسش پیدا نشد. stored_path=%s resolved_path=%s",
-            b, row["db_path"], resolved_path,
-        )
-        raise HTTPException(status_code=503, detail=tr("دیتابیس این فروشگاه در دسترس نیست."))
-
-    tenant_db = Database(resolved_path)
-    try:
-        tenant_db.get_all_settings()
-    except sqlite3.OperationalError:
-        _tenant_logger.exception(
-            "تننت b=%s: خواندن settings از %s ناموفق بود (جدول‌ها ساخته نشده؟).", b, resolved_path
-        )
-        raise HTTPException(status_code=503, detail=tr("دیتابیس این فروشگاه هنوز آماده نیست."))
-
-    _tenant_logger.info(
-        "تننت b=%s resolve شد -> bot_username=%s token=...%s db_path=%s",
-        b, row["bot_username"], row["bot_token"][-6:], resolved_path,
-    )
-    return Tenant(db=tenant_db, bot_token=row["bot_token"], tenant_id=b)
-
-
-def get_reseller_backend(tg_id: int, db: Database, tenant: Tenant):
-    """برای tenant نمایندگی، منبع اعتبار/پنل را از دیتابیس اصلی بگیر و
-    داده‌های کاربر/سرویس را در دیتابیس محلی همان tenant نگه دار."""
-    if not tenant.tenant_id:
-        return db, None
-    try:
-        row = main_db.get_reseller_bot_by_slug(tenant.tenant_id)
-        if not row and str(tenant.tenant_id).isdigit():
-            row = main_db.get_reseller_bot(int(tenant.tenant_id))
-    except Exception:
-        row = None
-    return main_db, (row["owner_telegram_id"] if row else None)
-
-def get_verified_user(
-    x_init_data: Optional[str] = Header(None),
-    tenant: Tenant = Depends(get_tenant),
-    x_web_token: Optional[str] = Header(None),
-):
-    """initData را با توکن همان مستأجر تایید می‌کند. خروجی: (tg_id, db, tenant)
-
-    نکته: کاربر را همین‌جا هم در جدول users ثبت/به‌روز می‌کنیم (نه فقط داخل
-    هندلر /start بات)، چون کاربر می‌تواند مستقیماً وارد مینی‌اپ شود بدون آن‌که
-    قبلاً /start را در بات زده باشد. بدون این کار، پیام‌های چت زنده/تیکت چنین
-    کاربری در دیتابیس ثبت می‌شد ولی چون ردیفی در users نداشت، سمت ادمین
-    (هم مینی‌اپ و هم پنل وب) با خطای «کاربر یافت نشد» مواجه می‌شد."""
-    # ورود از سایت وب (فقط بات اصلی): نشست ساخته‌شده با تأیید در تلگرام، به‌جای initData.
-    if not x_init_data and x_web_token:
-        if tenant.tenant_id:
-            raise HTTPException(status_code=403, detail=tr("ورود از طریق سایت فقط برای بات اصلی فعال است."))
-        web_tg_id = web_auth.session_user(tenant.db, x_web_token)
-        if not web_tg_id:
-            raise HTTPException(status_code=401, detail=tr("نشست ورود منقضی شده است. دوباره وارد شوید."))
-        return web_tg_id, tenant.db, tenant
-    result = validate_init_data(x_init_data, tenant.bot_token)
-    if not result or "user" not in result:
-        raise HTTPException(status_code=401, detail=tr("initData نامعتبر است."))
-    tg_user = result["user"]
-    user_language = tenant.db.get_user_language(tg_user["id"])
-    catalog = tenant.db.translation_catalog(user_language) if user_language not in {"fa", "en"} else None
-    set_language(user_language, catalog)
-    try:
-        tenant.db.add_or_update_user(tg_user["id"], tg_user.get("username"), tg_user.get("first_name"))
-    except Exception:
-        logging.getLogger("miniapp.auth").exception("ثبت/به‌روزرسانی کاربر %s ناموفق بود.", tg_user.get("id"))
-    return tg_user["id"], tenant.db, tenant
-
-
-def require_admin(auth=Depends(get_verified_user)):
-    """مثل get_verified_user، ولی فقط اگر کاربر ادمین همان مستأجر باشد اجازه می‌دهد.
-    همچنین حضور آنلاین ادمین را ثبت می‌کند (برای مسیریابی چت زنده به اولین ادمین آنلاین)."""
-    tg_id, db, tenant = auth
-    if not db.is_admin(tg_id):
-        raise HTTPException(status_code=403, detail=tr("دسترسی ادمین لازم است."))
-    db.touch_admin_presence(tg_id)
-    return auth
-
-
-def require_full_admin(auth=Depends(get_verified_user)):
-    """مثل require_admin، ولی نقش «پشتیبان» را رد می‌کند؛ مالک، مدیر کامل یا ادمین میانی."""
-    tg_id, db, tenant = auth
-    if not db.is_full_admin(tg_id):
-        raise HTTPException(status_code=403, detail=tr("این بخش فقط برای مدیران کامل در دسترس است."))
-    db.touch_admin_presence(tg_id)
-    return auth
-
-
-def require_senior_admin(auth=Depends(get_verified_user)):
-    """مثل require_full_admin، ولی نقش «ادمین میانی» را هم رد می‌کند؛ فقط مالک یا مدیر کامل
-    (برای بخش‌های حساس: آمار فروش، چیدمان منو، تنظیمات کمپین‌ها/تخفیف، لاگ ادمین، نمایندگی‌ها)."""
-    tg_id, db, tenant = auth
-    if not db.is_senior_admin(tg_id):
-        raise HTTPException(status_code=403, detail=tr("این بخش فقط برای مالک و مدیر کامل در دسترس است."))
-    return auth
-
-
-def require_full_access_admin(auth=Depends(get_verified_user)):
-    """مثل require_senior_admin، ولی علاوه بر آن بات‌های نمایندگی (محدود) را هم رد می‌کند؛
-    اتصال پنل VPN و ساخت کانفیگ دستی فقط برای بات اصلی و نمایندگی سطح کامل مجاز است."""
-    tg_id, db, tenant = auth
-    if not db.is_senior_admin(tg_id):
-        raise HTTPException(status_code=403, detail=tr("این بخش فقط برای مالک و مدیر کامل در دسترس است."))
-    if not db.is_full_access_bot(not bool(tenant.tenant_id)):
-        raise HTTPException(status_code=403, detail=tr("⛔️ اتصال پنل VPN و ساخت کانفیگ دستی فقط برای بات اصلی یا نمایندگی کامل در دسترس است."))
-    return auth
-
-
-def require_bank_admin(auth=Depends(require_full_access_admin)):
-    """بانک کانفیگ برای نمایندگی VIP (اعتبار حجمی) وجود ندارد."""
-    _, db, tenant = auth
-    if is_volume_credit_bot(db, not bool(tenant.tenant_id)):
-        raise HTTPException(status_code=403, detail=tr("نمایندگی VIP بانک کانفیگ ندارد."))
-    return auth
-
-
-def require_main_admin(auth=Depends(get_verified_user)):
-    """مدیریت بات‌های نمایندگی: فقط مالک یا مدیر کامل بات اصلی (نه ادمین میانی/پشتیبان،
-    نه بات‌های نمایندگی)."""
-    tg_id, db, tenant = auth
-    if tenant.tenant_id:
-        raise HTTPException(status_code=403, detail=tr("این بخش فقط در بات اصلی در دسترس است."))
-    if not db.is_senior_admin(tg_id):
-        raise HTTPException(status_code=403, detail=tr("این بخش فقط برای مالک و مدیر کامل در دسترس است."))
-    return auth
-
-
-def require_owner(auth=Depends(get_verified_user)):
-    """فقط مالک اصلی همان مستأجر (بات اصلی یا همان نماینده)؛ برای عملیات حساس
-    مثل بازیابی کامل دیتابیس."""
-    tg_id, db, tenant = auth
-    if not db.is_owner(tg_id):
-        raise HTTPException(status_code=403, detail=tr("این بخش فقط برای مالک بات در دسترس است."))
-    return auth
-
-
-# ---------------------------------------------------------------------------
-# عضویت اجباری در کانال - هماهنگ با force_join.py که در ربات اصلی اجرا می‌شود.
-# در ربات این چک قبل از هر هندلر (میدل‌ور) اجرا می‌شود؛ این‌جا هم باید همان
-# منطق قبل از هر اکشن نوشتنی (خرید/تاپ‌آپ/کانفیگ تست/گردونه) اجرا شود تا
-# کاربر نتواند صرفاً با استفاده از مینی‌اپ این محدودیت را دور بزند.
-async def _is_channel_member_http(bot_token: str, channel: str, tg_id: int) -> bool:
-    """مثل force_join.is_channel_member ولی بدون وابستگی به شیء Bot آیوگرم
-    (چون این پروسه‌ی fastapi جدا از پروسه‌ی بات است)؛ خطای پیکربندی/شبکه = fail-open،
-    ولی «user not found» = عضو نیست و restricted با is_member=false هم عضو حساب نمی‌شود."""
-    from force_join_channels import membership_from_status, is_not_member_error
-    if not bot_token:
+    def allow(self, key: str, limit: int, window: float = 60.0) -> bool:
+        now = time.monotonic()
+        q = self._hits.setdefault(key, deque())
+        while q and now - q[0] > window:
+            q.popleft()
+        if len(q) >= limit:
+            return False
+        q.append(now)
+        if len(self._hits) > 20000:
+            self._hits = {k: v for k, v in self._hits.items() if v and now - v[-1] <= window}
         return True
-    url = f"https://api.telegram.org/bot{bot_token}/getChatMember"
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                url, params={"chat_id": channel, "user_id": tg_id},
-                timeout=aiohttp.ClientTimeout(total=8),
-            ) as resp:
-                data = await resp.json()
-    except Exception:
-        logging.getLogger("miniapp.forcejoin").exception("بررسی عضویت کانال ناموفق بود.")
-        return True
-    if not data.get("ok"):
-        return False if is_not_member_error(data.get("description")) else True
-    result = data.get("result") or {}
-    return membership_from_status(result.get("status"), result.get("is_member"))
 
 
-def _force_join_payload(missing: list) -> dict:
-    """جزئیات کانال‌هایی که کاربر هنوز عضو نیست (کلیدهای channel/join_link برای کلاینت‌های قدیمی)."""
-    from force_join_channels import join_link
-    items = [{"channel": c, "join_link": join_link(c)} for c in missing]
-    first = items[0] if items else {"channel": "", "join_link": None}
-    return {"channels": items, "channel": first["channel"], "join_link": first["join_link"]}
+limiter = RateLimiter()
+RATE_OK = 90        # درخواست معتبر در دقیقه برای هر IP
+RATE_MISS = 12      # توکن نامعتبر در دقیقه برای هر IP (جلوگیری از حدس زدن توکن)
 
 
-async def _missing_force_join_channels(tenant: "Tenant", tg_id: int, channels: list) -> list:
-    results = await asyncio.gather(*(_is_channel_member_http(tenant.bot_token, c, tg_id) for c in channels))
-    return [c for c, ok in zip(channels, results) if not ok]
+def client_ip(request: Request) -> str:
+    host = request.client.host if request.client else ""
+    if host in ("127.0.0.1", "::1"):  # پشت nginx
+        fwd = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        return fwd or request.headers.get("x-real-ip", "") or host
+    return host
 
 
-async def _force_join_check(tg_id: int, db: Database, tenant: "Tenant"):
-    """اگر عضویت لازم باشد و کاربر عضو نباشد، خطای ۴۰۳ با جزئیات کانال‌ها می‌دهد."""
-    settings = db.get_force_join_settings()
-    if not settings.get("enabled") or not settings.get("channels"):
-        return
-    if db.is_admin(tg_id):
-        return
-    missing = await _missing_force_join_channels(tenant, tg_id, settings["channels"])
-    if not missing:
-        return
-    raise HTTPException(
-        status_code=403,
-        detail={
-            "code": "force_join",
-            "message": tr("برای ادامه، ابتدا باید در کانال‌های زیر عضو شوید.") if len(missing) > 1
-                       else tr("برای ادامه، ابتدا باید در کانال زیر عضو شوید."),
-            **_force_join_payload(missing),
-        },
-    )
+# ---------------------------------------------------------------------------
+# دریافت ساب از پنل (با کش کوتاه، هم‌زمانی یکتا و پاسخ قدیمی در زمان قطعی)
+# ---------------------------------------------------------------------------
+class Upstream:
+    __slots__ = ("status", "headers", "body", "fresh", "stale")
+
+    def __init__(self, status, headers, body, fresh=True, stale=False):
+        self.status, self.headers, self.body, self.fresh, self.stale = status, headers, body, fresh, stale
 
 
-async def require_joined(auth=Depends(get_verified_user)):
-    """چک عضویت اجباری + قوانین قبل از اکشن‌های حساس مینی‌اپ.
+async def _http_get(url: str, ua: str) -> Tuple[int, Dict[str, str], bytes]:
+    async with _session.get(url, headers={"User-Agent": ua[:200] or PAGE_UA, "Accept": "*/*"}) as resp:
+        body = await resp.content.read(MAX_BODY + 1)
+        if len(body) > MAX_BODY:
+            raise ValueError("upstream response too large")
+        return resp.status, {k.lower(): v for k, v in resp.headers.items()}, body
 
-    خریدار وب که ایمیلش را تأیید کرده، حساب تلگرام/عضویت کانال ندارد؛ برای او
-    فقط بررسی قوانین اعمال می‌شود. کاربران تلگرام و مینی‌اپ همچنان چک کامل دارند.
+
+async def _config_http_get(cc, url: str, ua: str) -> Tuple[int, Dict[str, str], bytes]:
+    """دریافت ساب با تنظیمات اتصال همان پنل؛ مخصوصاً SOCKS و گواهی‌های W-UI.
+
+    Providerهای پنل برای API از SOCKS و SSL غیرسخت‌گیرانه استفاده می‌کنند، اما
+    fetch عمومی ساب قبلاً این تنظیمات را نادیده می‌گرفت و مستقیم با SSL سخت‌گیرانه وصل می‌شد.
+    این اختلاف باعث می‌شد API پنل در دسترس باشد ولی لینک اختصاصی 502 بدهد.
     """
-    tg_id, db, tenant = auth
-    if not (not tenant.tenant_id and web_auth.is_email_account(db, tg_id)):
-        await _force_join_check(tg_id, db, tenant)
-    if not db.is_admin(tg_id):
-        terms = db.get_terms_settings()
-        if terms["enabled"] and not db.is_terms_accepted(tg_id):
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "code": "terms_required",
-                    "message": tr("ابتدا باید قوانین و مقررات را تأیید کنید."),
-                    "text": terms["text"],
-                },
-            )
-    if (
-        not db.is_admin(tg_id)
-        and not (not tenant.tenant_id and web_auth.is_email_account(db, tg_id))
-        and phone_gate.is_enabled(db)
-        and not phone_gate.user_ok(db, tg_id)
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "code": "phone_required",
-                "message": tr("برای خرید باید شماره موبایل خود را تایید کنید."),
-                "allowed": phone_gate.describe_allowed(db),
-            },
-        )
-    return auth
-
-
-@app.get("/api/phone/status")
-async def api_phone_status(auth=Depends(get_verified_user)):
-    tg_id, db, tenant = auth
-    required = (
-        phone_gate.is_enabled(db)
-        and not db.is_admin(tg_id)
-        and not (not tenant.tenant_id and web_auth.is_email_account(db, tg_id))
-    )
-    return {
-        "required": required,
-        "ok": (not required) or phone_gate.user_ok(db, tg_id),
-        "allowed": phone_gate.describe_allowed(db),
-    }
-
-
-@app.post("/api/phone/request")
-async def api_phone_request(auth=Depends(get_verified_user)):
-    """دکمه‌ی اشتراک‌گذاری شماره (request_contact) را در چت بات برای کاربر می‌فرستد."""
-    tg_id, db, tenant = auth
-    payload = {
-        "chat_id": tg_id,
-        "text": phone_gate.prompt_text(db),
-        "reply_markup": {
-            "keyboard": [[{"text": tr("📱 اشتراک‌گذاری شماره موبایل"), "request_contact": True}]],
-            "resize_keyboard": True,
-            "one_time_keyboard": True,
-        },
-    }
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-            json=payload, timeout=aiohttp.ClientTimeout(total=10),
-        ) as resp:
-            if resp.status != 200:
-                raise HTTPException(status_code=502, detail=tr("ارسال پیام به چت بات ناموفق بود؛ ابتدا بات را استارت کنید."))
-    return {"ok": True}
-
-
-@app.get("/api/terms")
-async def api_terms(auth=Depends(get_verified_user)):
-    """وضعیت قوانین برای ورود به مینی‌اپ؛ تنظیمات فقط از دیتابیس بات اصلی
-    و منوی ادمین بات انجام می‌شود."""
-    tg_id, db, tenant = auth
-    if tenant.tenant_id:
-        return {"enabled": False, "required": False, "accepted": True, "text": ""}
-    settings = db.get_terms_settings()
-    accepted = db.is_terms_accepted(tg_id) if settings["enabled"] else True
-    return {
-        "enabled": settings["enabled"],
-        "required": settings["enabled"] and not db.is_admin(tg_id),
-        "accepted": accepted,
-        "text": settings["text"],
-    }
-
-
-@app.post("/api/terms/accept")
-async def api_terms_accept(auth=Depends(get_verified_user)):
-    tg_id, db, tenant = auth
-    if tenant.tenant_id:
-        return {"ok": True, "accepted": True}
-    settings = db.get_terms_settings()
-    if not settings["enabled"] or db.is_admin(tg_id):
-        return {"ok": True, "accepted": True}
-    db.set_terms_accepted(tg_id)
-    return {"ok": True, "accepted": True}
-
-
-
-
-@app.get("/api/force-join-status")
-async def api_force_join_status(auth=Depends(get_verified_user)):
-    """فرانت قبل از نمایش دکمه‌های خرید، این را چک می‌کند تا در صورت لزوم
-    بنر عضویت در کانال را نشان دهد (هم‌تراز با رفتار ربات اصلی)."""
-    tg_id, db, tenant = auth
-    settings = db.get_force_join_settings()
-    if not settings.get("enabled") or not settings.get("channels") or db.is_admin(tg_id):
-        return {"required": False, "member": True}
-    missing = await _missing_force_join_channels(tenant, tg_id, settings["channels"])
-    return {"required": True, "member": not missing, **_force_join_payload(missing or settings["channels"])}
-
-
-async def get_bot_username(tenant: Tenant) -> str:
-    """یوزرنیم همان بات (برای ساخت لینک دعوت زیرمجموعه‌گیری) را می‌گیرد و کش می‌کند."""
-    cached = _bot_username_cache.get(tenant.bot_token)
-    if cached:
-        return cached
+    server = None
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"https://api.telegram.org/bot{tenant.bot_token}/getMe") as resp:
-                data = await resp.json()
-                if data.get("ok"):
-                    _bot_username_cache[tenant.bot_token] = data["result"]["username"]
+        server = await asyncio.to_thread(panel_resync._server_for, db, cc)
     except Exception:
-        pass
-    return _bot_username_cache.get(tenant.bot_token, "")
+        server = None
+    if not server or str(server["panel_type"] or "").lower() != "wui":
+        return await _http_get(url, ua)
+    # فقط W-UI: همان سیاست SSL و SOCKS مورد استفاده‌ی WUIProvider
+    connector = build_connector(server, ssl=False)
+    import aiohttp
+    timeout = aiohttp.ClientTimeout(total=20)
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        async with session.get(url, headers={"User-Agent": (ua or PAGE_UA)[:200], "Accept": "*/*"},
+                              allow_redirects=True, max_redirects=5) as resp:
+            body = await resp.content.read(MAX_BODY + 1)
+            if len(body) > MAX_BODY:
+                raise ValueError("upstream response too large")
+            return resp.status, {k.lower(): v for k, v in resp.headers.items()}, body
 
 
-# ---------------------------------------------------------------------------
-# فایل‌های استاتیک
-# ---------------------------------------------------------------------------
-
-def get_asset_version() -> str:
-    """نسخه‌ی خودکار برای cache-busting، بر اساس هش محتوای فایل‌های استاتیک."""
-    return static_version(STATIC_DIR)
+def _config_fetcher(cc):
+    return lambda url, ua: _config_http_get(cc, url, ua)
 
 
-@app.get("/api/app-version")
-def app_version():
-    return {"v": get_asset_version()}
+class UpstreamCache:
+    def __init__(self, max_items: int = 1500):
+        self._data: Dict[tuple, tuple] = {}
+        self._locks: Dict[tuple, asyncio.Lock] = {}
+        self._max = max_items
 
+    @staticmethod
+    def _ua_key(ua: str) -> str:
+        return (ua or "").split("/")[0].strip().lower()[:40]
 
-def _render_index(tenant: Tenant, lang: str = "fa"):
-    """Render the public web-store shell for the requested language."""
-    with open(os.path.join(STATIC_DIR, "index.html"), encoding="utf-8") as f:
-        page = f.read()
-
-    version = get_asset_version()
-    base_url = os.getenv("SHOPVPN_SEO_SITE_URL", "").strip().rstrip("/")
-    if not base_url:
-        configured = (os.getenv("SHOPVPN_WEB_STORE_URL", "") or os.getenv("WEB_STORE_URL", "")).strip().rstrip("/")
-        base_url = configured
-    canonical = (base_url + ("/en/" if lang == "en" else "/")) if base_url else ("/en/" if lang == "en" else "/")
-
-    store_name = render_stored_setting("store_name", tenant.db.get_setting("store_name", "⚡ SHOP VPN"))
-    title = f"{store_name} — " + ("Online VPN Store" if lang == "en" else "فروشگاه آنلاین VPN")
-    description = ("Buy VPN services securely and receive your subscription link instantly."
-                   if lang == "en" else "خرید امن سرویس VPN و دریافت فوری لینک اشتراک.")
-    replacements = {
-        "{{LANG}}": lang,
-        "{{DIR}}": "ltr" if lang == "en" else "rtl",
-        "{{VERSION}}": version,
-        "{{ASSET_VERSION}}": version,
-        "{{TITLE}}": html_lib.escape(title, quote=True),
-        "{{DESC}}": html_lib.escape(description, quote=True),
-        "{{CANON}}": html_lib.escape(canonical, quote=True),
-        "{{ALT_FA}}": html_lib.escape((base_url + "/") if base_url else "/", quote=True),
-        "{{ALT_EN}}": html_lib.escape((base_url + "/en/") if base_url else "/en/", quote=True),
-        "{{OG_IMAGE}}": html_lib.escape((base_url + "/assets/og-image.png") if base_url else "/assets/og-image.png", quote=True),
-        "{{FAVICON}}": "/favicon.ico",
-        "{{SCENE_STYLES}}": "",
-        "{{SCENE_SCRIPTS}}": "",
-        "{{SCENE_MODE}}": "off",
-        "{{SCENE_MOBILE}}": "off",
-        "{{SCENE_LITE}}": "on",
-    }
-    for token, value in replacements.items():
-        page = page.replace(token, value)
-
-    # Keep tenant-specific mini-app branding substitutions supported by older templates.
-    page = page.replace("{{STORE_NAME}}", html_lib.escape(store_name, quote=True))
-    banner_text = render_stored_setting("miniapp_banner_text", tenant.db.get_setting("miniapp_banner_text", "اتصال امن و پایدار برقرار است"))
-    page = page.replace("{{BANNER_TEXT}}", html_lib.escape(banner_text, quote=True))
-    theme = tenant.db.get_setting("miniapp_theme", "clean-light")
-    if theme not in MINIAPP_THEMES:
-        theme = "clean-light"
-    page = page.replace("{{THEME}}", theme)
-    header_image = tenant.db.get_setting("header_image_data", "")
-    page = page.replace("{{HEADER_LOGO_CLASS}}", "has-logo" if header_image else "")
-    page = page.replace("{{HEADER_LOGO_HTML}}", f'<img class="brand-logo" src="{html_lib.escape(header_image, quote=True)}" alt="" />' if header_image else "")
-    return HTMLResponse(page, headers={"Cache-Control": "no-store"})
-
-
-@app.get("/", response_class=HTMLResponse)
-def serve_index(tenant: Tenant = Depends(get_tenant)):
-    return _render_index(tenant, "fa")
-
-
-@app.get("/en/", response_class=HTMLResponse)
-@app.get("/en/index.html", response_class=HTMLResponse)
-def serve_index_en(tenant: Tenant = Depends(get_tenant)):
-    return _render_index(tenant, "en")
-
-
-# ---------------------------------------------------------------------------
-# همگام‌سازی زبان Bot ↔ Mini App
-# ---------------------------------------------------------------------------
-
-@app.post("/api/language")
-def api_language(payload: Dict[str, Any], auth=Depends(get_verified_user)):
-    tg_id, db, tenant = auth
-    from i18n import normalize_language
-    language = normalize_language(payload.get("language"))
-    if not is_language_enabled(db, language):
-        raise HTTPException(400, tr("زبان در حال حاضر فعال نیست."))
-    db.set_user_language(tg_id, language)
-    return {"language": language, "telegram_id": tg_id}
-
-@app.get("/api/languages")
-def api_languages(auth=Depends(get_verified_user)):
-    _tg_id, db, _tenant = auth
-    return [{"code": r["code"], "name": r["name"], "native_name": r["native_name"], "flag": r["flag"], "rtl": bool(r["rtl"])} for r in db.list_languages(enabled_only=True)]
-
-@app.get("/api/i18n/catalog")
-def api_i18n_catalog(language: str = Query("en"), auth=Depends(get_verified_user)):
-    _tg_id, db, _tenant = auth
-    code = normalize_language(language)
-    if not is_language_enabled(db, code):
-        raise HTTPException(400, tr("زبان در حال حاضر فعال نیست."))
-    return {"language": code, "catalog": db.translation_catalog(code) if code != "fa" else {}}
-
-@app.post("/api/i18n/translate-batch")
-def api_i18n_translate_batch(payload: Dict[str, Any], auth=Depends(get_verified_user)):
-    from translation_engine import translate_many
-    tg_id, db, tenant = auth
-    language = normalize_language(payload.get("language"))
-    if not is_language_enabled(db, language):
-        raise HTTPException(400, tr("این زبان در حال حاضر فعال نیست."))
-    texts = [str(x) for x in (payload.get("texts") or [])][:50]
-    if not texts:
-        return {"language": language, "catalog": {}, "verbatim": []}
-    if language == "fa":
-        return {"language": language, "catalog": {x: x for x in texts}, "verbatim": []}
-    if language == "en":
-        from translation_engine import translate_many_to_english, runtime_limiter
-        if not runtime_limiter.allow((db.db_path, tg_id)):
-            raise HTTPException(429, tr("درخواست‌های ترجمه بیش از حد مجاز است؛ کمی بعد دوباره تلاش کنید."))
-        catalog = db.translation_catalog("en")
-        missing = [x for x in texts if x not in catalog]
-        if missing:
+    async def get(self, url: str, ua: str, ttl: float, force: bool = False,
+                  fetcher=None) -> Upstream:
+        fetcher = fetcher or _http_get
+        key = (url, self._ua_key(ua))
+        now = time.monotonic()
+        ent = self._data.get(key)
+        if ent and not force and now - ent[0] < ttl:
+            return Upstream(*ent[1], fresh=False)
+        lock = self._locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            ent = self._data.get(key)
+            if ent and not force and time.monotonic() - ent[0] < ttl:
+                return Upstream(*ent[1], fresh=False)
             try:
-                generated = translate_many_to_english(missing, cached=catalog, db=db)
+                status, headers, body = await fetcher(url, ua)
             except Exception as exc:
-                raise HTTPException(503, tr("ترجمه این زبان در دسترس نیست؛ لطفاً کمی بعد دوباره تلاش کنید.")) from exc
-            catalog.update(generated)
-            db.upsert_translations("en", generated, source="machine-runtime")
-        return {"language": "en", "catalog": {x: catalog.get(x, x) for x in texts}, "verbatim": []}
-    from translation_engine import split_translatable, runtime_limiter
-    texts, verbatim = split_translatable(texts)
-    catalog = db.translation_catalog(language)
-    missing = [x for x in texts if x not in catalog]
-    if missing:
-        if not runtime_limiter.allow((db.db_path, tg_id)):
-            raise HTTPException(429, tr("درخواست‌های ترجمه بیش از حد مجاز است؛ کمی بعد دوباره تلاش کنید."))
-        try:
-            generated = translate_many(missing, language, cached=catalog, db=db)
-        except Exception as exc:
-            raise HTTPException(503, tr("ترجمه این زبان در دسترس نیست؛ لطفاً کمی بعد دوباره تلاش کنید.")) from exc
-        unresolved = [x for x in missing if not generated.get(x)]
-        if unresolved:
-            raise HTTPException(503, tr("ترجمه این زبان کامل نیست؛ لطفاً کمی بعد دوباره تلاش کنید."))
-        catalog.update(generated)
-        db.upsert_translations(language, {x: catalog[x] for x in missing}, source="machine-runtime")
-    unresolved = [x for x in texts if not catalog.get(x)]
-    if unresolved:
-        raise HTTPException(503, tr("ترجمه این زبان کامل نیست؛ لطفاً کمی بعد دوباره تلاش کنید."))
-    return {"language": language, "catalog": {x: catalog[x] for x in texts}, "verbatim": verbatim}
-
-
-# ---------------------------------------------------------------------------
-# حساب کاربری
-# ---------------------------------------------------------------------------
-
-@app.get("/source", include_in_schema=False)
-def source_redirect():
-    """LICENSE section 6: public link to the source code of the running version."""
-    import source_offer
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(source_offer.source_url(), status_code=302)
-
-
-@app.get("/api/me")
-def api_me(auth=Depends(get_verified_user)):
-    tg_id, db, tenant = auth
-    user = db.get_user(tg_id)
-    if not user:
-        raise HTTPException(status_code=404, detail=tr("کاربر یافت نشد. ابتدا /start را در بات بزنید."))
-    wallet = db.get_wallet_credit(tg_id)
-    referral = db.get_referral_stats(tg_id)
-    orders = db.get_user_orders(tg_id)
-    reseller_owner = False
-    reseller = None
-    if tenant.tenant_id and not db.is_unrestricted_full():
-        try:
-            rb = main_db.get_reseller_bot_by_slug(tenant.tenant_id)
-            if not rb and str(tenant.tenant_id).isdigit():
-                rb = main_db.get_reseller_bot(int(tenant.tenant_id))
-            if rb:
-                owner_id = int(rb["owner_telegram_id"])
-                reseller_owner = tg_id == owner_id
-                if reseller_owner:
-                    tier_code = main_db.get_agent_tier(owner_id) or "gold"
-                    tier = main_db.get_reseller_tier(tier_code)
-                    supply = main_db.get_reseller_supply(owner_id)
-                    local_configs = db.get_custom_configs_for_user(owner_id)
-                    sales = {"configs": len(local_configs), "volume_gb": sum(int(x["volume_gb"] or 0) for x in local_configs)}
-                    rev = db.get_bot_revenue_summary()
-                    reseller = {
-                        "tier_code": tier_code,
-                        "title": tier["title"] if tier else ("VIP" if tier_code == "vip" else "طلایی"),
-                        "icon": tier["icon"] if tier else ("💎" if tier_code == "vip" else "🥇"),
-                        "model": tier["model"] if tier else supply["model"],
-                        "credit_gb": int(main_db.get_reseller_credit(owner_id) or 0),
-                        "revenue_toman": int(rev.get("revenue_toman", 0) or 0),
-                        "paid_orders": int(rev.get("paid_orders", 0) or 0),
-                        "configs_created": int(sales.get("configs", 0) or 0),
-                        "volume_sold_gb": int(sales.get("volume_gb", 0) or 0),
-                    }
-        except Exception:
-            logging.getLogger("miniapp.reseller").exception("خواندن پروفایل نمایندگی ناموفق بود.")
-    terms = db.get_terms_settings()
-    terms_required = bool(terms["enabled"] and not tenant.tenant_id and not db.is_admin(tg_id))
-    terms_accepted = bool(not terms["enabled"] or db.is_admin(tg_id) or db.is_terms_accepted(tg_id))
-    return {
-        "telegram_id": tg_id,
-        "language": db.get_user_language(tg_id),
-        "first_name": user["first_name"],
-        "username": user["username"] if "username" in user.keys() else None,
-        "joined_at": user["joined_at"] if "joined_at" in user.keys() else None,
-        "wallet_credit": wallet,
-        "terms_required": terms_required,
-        "terms_accepted": terms_accepted,
-        "referral_count": referral["count"],
-        "orders_count": len(orders),
-        "is_admin": db.is_admin(tg_id),
-        "admin_role": db.get_admin_role(tg_id),
-        "is_reseller_owner": reseller_owner,
-        "reseller": reseller,
-    }
-
-
-@app.get("/api/reseller/overview")
-def api_reseller_overview(auth=Depends(get_verified_user)):
-    tg_id, db, tenant = auth
-    if not tenant.tenant_id:
-        raise HTTPException(404, tr("این بخش فقط برای پنل نمایندگی است."))
-    try:
-        rb = main_db.get_reseller_bot_by_slug(tenant.tenant_id)
-        if not rb and str(tenant.tenant_id).isdigit():
-            rb = main_db.get_reseller_bot(int(tenant.tenant_id))
-        if not rb or int(rb["owner_telegram_id"]) != tg_id:
-            raise HTTPException(403, tr("این داشبورد فقط برای مالک نمایندگی است."))
-        tier_code = main_db.get_agent_tier(tg_id) or "gold"
-        tier = main_db.get_reseller_tier(tier_code)
-        supply = main_db.get_reseller_supply(tg_id)
-        inventory = main_db.get_reseller_product_inventory(tg_id)
-        credit_log = main_db.get_reseller_credit_log(tg_id, 8)
-        local_configs = db.get_custom_configs_for_user(tg_id)
-        sales = {"configs": len(local_configs), "volume_gb": sum(int(x["volume_gb"] or 0) for x in local_configs)}
-        revenue = db.get_bot_revenue_summary()
-        return {
-            "tier": {"code": tier_code, "title": tier["title"] if tier else ("VIP" if tier_code == "vip" else "طلایی"),
-                     "icon": tier["icon"] if tier else ("💎" if tier_code == "vip" else "🥇"),
-                     "model": tier["model"] if tier else supply["model"]},
-            "supply": {"model": supply["model"], "credit_gb": int(main_db.get_reseller_credit(tg_id) or 0),
-                       "fixed_product_id": supply["product_id"]},
-            "inventory": [{"product_id": int(x["product_id"]), "qty": int(x["qty_remaining"] or 0), "name": x["name"]} for x in inventory if int(x["qty_remaining"] or 0) > 0],
-            "sales": {"revenue_toman": int(revenue.get("revenue_toman", 0) or 0), "paid_orders": int(revenue.get("paid_orders", 0) or 0),
-                      "configs_created": int(sales.get("configs", 0) or 0), "volume_sold_gb": int(sales.get("volume_gb", 0) or 0)},
-            "credit_log": [dict(x) for x in credit_log],
-        }
-    except HTTPException:
-        raise
-    except Exception:
-        logging.getLogger("miniapp.reseller").exception("داشبورد نمایندگی ناموفق بود.")
-        raise HTTPException(500, tr("اطلاعات داشبورد نمایندگی موقتاً در دسترس نیست."))
-
-@app.get("/api/orders")
-def api_orders(auth=Depends(get_verified_user)):
-    tg_id, db, _ = auth
-    orders = db.get_user_orders(tg_id)
-    # محصولات is_auto_provision به‌جای بانک کانفیگ، مستقیماً یک ردیف در
-    # custom_configs می‌سازند (تا حجم/انقضا قابل پیگیری باشد)؛ سفارششان هیچ‌وقت
-    # configs مرتبط ندارد. بدون این استثنا، همان خرید هم این‌جا (ناقص، بدون
-    # لینک/انقضا) و هم در /api/custom-configs (کامل) نمایش داده می‌شد.
-    custom_order_ids = {cc["order_id"] for cc in db.get_custom_configs_for_user(tg_id) if cc["order_id"]}
-    result = []
-    for o in orders:
-        if o["is_renewal"]:
-            # سفارش «تمدید سرویس» فقط رکورد داخلی پرداخت است (product_id=0
-            # سنتینل، بدون کانفیگ مال خودش)؛ نتیجه‌ی تمدید همین حالا روی سرویس
-            # هدف اعمال شده، پس اینجا به‌عنوان یک سفارش جدا و ناقص («نامشخص»)
-            # نشان داده نمی‌شود.
-            continue
-        if o["status"] == "approved" and not o["is_custom_config"] and o["id"] in custom_order_ids:
-            continue
-        if o["is_custom_config"]:
-            result.append({
-                "id": o["id"],
-                "product_name": f"کانفیگ شخصی «{o['custom_username']}» ({o['custom_volume_gb']} گیگ)",
-                "quantity": 1,
-                "status": o["status"],
-                "final_price": o["final_price"],
-                "expires_at": None,
-                "link": None,
-                "links": [],
-                "is_custom_config": True,
-            })
-            continue
-        product = db.get_product(o["product_id"])
-        cfg = db.get_config_by_id(o["config_id"]) if o["config_id"] else None
-        configs = db.get_order_configs(o["id"]) if o["status"] == "approved" else []
-        items = configs if configs else ([cfg] if cfg else [])
-        # کانفیگ‌هایی که ادمین غیرفعال کرده، لینک‌شان به کاربر نمایش داده نمی‌شود
-        # (خودِ ردیف/سفارش همچنان دیده می‌شود تا کاربر گیج نشود که سفارشش کجا رفت).
-        cfg_disabled = bool(cfg["is_disabled"]) if cfg and "is_disabled" in cfg.keys() else False
-        links = [(None if (("is_disabled" in c.keys()) and c["is_disabled"]) else c["link"]) for c in items]
-        config_ids = [c["id"] for c in items]
-        result.append({
-            "id": o["id"],
-            "product_name": product["name"] if product else "نامشخص",
-            "quantity": o["quantity"] or 1,
-            "status": o["status"],
-            "final_price": o["final_price"],
-            "expires_at": cfg["expires_at"] if cfg else None,
-            "link": (None if cfg_disabled else (cfg["link"] if cfg else None)),
-            "links": links,
-            "config_ids": config_ids,
-            "is_disabled": cfg_disabled or (bool(items) and all(
-                ("is_disabled" in c.keys()) and c["is_disabled"] for c in items
-            )),
-            "is_custom_config": False,
-        })
-    return result
-
-
-@app.delete("/api/orders/configs/{config_id}")
-def api_delete_order_config(config_id: int, auth=Depends(get_verified_user)):
-    """حذف کامل و برگشت‌ناپذیر یک کانفیگ محصول متعلق به خود کاربر. اگر با این
-    حذف، سفارش دیگر هیچ کانفیگی نداشته باشد، آن سفارش هم از لیست کاربر مخفی
-    می‌شود (این حذف در بات اصلی هم همزمان اعمال می‌شود چون هر دو از یک
-    دیتابیس می‌خوانند)."""
-    tg_id, db, _ = auth
-    removed = db.delete_owned_config(config_id, tg_id)
-    if not removed:
-        raise HTTPException(status_code=404, detail=tr("کانفیگ یافت نشد یا متعلق به شما نیست."))
-    return {"status": "ok"}
-
-
-@app.get("/api/wallet/transactions")
-def api_wallet_transactions(limit: int = Query(30, ge=1, le=100), auth=Depends(get_verified_user)):
-    """لاگ تغییرات موجودی کیف پول خود کاربر با موجودی قبل و بعد از هر تراکنش."""
-    tg_id, db, _ = auth
-    return db.get_wallet_transaction_entries(tg_id, limit)
-
-
-@app.get("/api/custom-configs")
-def api_custom_configs(auth=Depends(get_verified_user)):
-    """کانفیگ‌های ساخته‌شده مستقیم روی پنل VPN (خرید شخصی/کانفیگ تست پنلی).
-    کانفیگ‌های تست هم اینجا برمی‌گردند (is_test=True) تا در «سرویس‌های من» دیده
-    شوند، ولی فرانت باید برایشان اکشن‌های سرویس خریداری‌شده (تمدید و مشابه) را
-    نمایش ندهد."""
-    tg_id, db, _ = auth
-    configs = db.get_custom_configs_for_user(tg_id)
-    return [
-        {
-            "id": c["id"],
-            "username": c["username"],
-            "display_name": c["display_name"] or c["username"],
-            "volume_gb": c["volume_gb"],
-            "duration_days": c["duration_days"],
-            "subscription_url": dedicated_sub.display_link(db, c["id"], c["subscription_url"]),
-            "created_at": c["created_at"],
-            "expires_at": c["expires_at"],
-            "start_on_first_use": (c["start_on_first_use"] if "start_on_first_use" in c.keys() else 0) == 1,
-            "is_test": c["source"] == "test",
-            "enabled": (c["enabled"] if "enabled" in c.keys() else 1) == 1,
-            "auto_renew": (c["auto_renew"] if "auto_renew" in c.keys() else 0) == 1,
-        }
-        for c in configs
-    ]
-
-
-@app.delete("/api/custom-configs/{custom_config_id}")
-async def api_delete_custom_config(custom_config_id: int, auth=Depends(get_verified_user)):
-    """حذف کامل و برگشت‌ناپذیر یک کانفیگ شخصی متعلق به خود کاربر؛ قبل از حذف از
-    دیتابیس، تلاش می‌شود کاربر از روی پنل VPN هم حذف شود (best-effort - در
-    صورت خطا در ارتباط با پنل، رکورد همچنان از لیست کاربر حذف می‌شود)."""
-    tg_id, db, tenant = auth
-    rows = db.get_custom_configs_for_user(tg_id)
-    cc_row = next((c for c in rows if c["id"] == custom_config_id), None)
-    if not cc_row:
-        raise HTTPException(status_code=404, detail=tr("کانفیگ یافت نشد یا متعلق به شما نیست."))
-    quote = await quote_service_refund(db, cc_row, tg_id, main_db)
-    panel_deleted = False
-    if cc_row["panel_server_id"]:
-        server = db.get_panel_server(cc_row["panel_server_id"])
-        if server:
-            try:
-                provider = get_provider(server)
-                panel_deleted = bool(await provider.delete_user(cc_row["username"]))
-            except Exception:
-                logging.getLogger("miniapp").exception(
-                    "حذف کاربر «%s» از پنل سرور #%s ناموفق بود؛ در هر صورت از لیست کاربر حذف می‌شود.",
-                    cc_row["username"], cc_row["panel_server_id"],
-                )
-    from multi_target import delete_linked_panel_users
-    await delete_linked_panel_users(db, custom_config_id)
-    removed = db.delete_owned_custom_config(custom_config_id, tg_id, wallet_refund_amount(quote, panel_deleted))
-    refunded = 0
-    if removed:
-        refunded = wallet_refund_amount(quote, panel_deleted) or await grant_service_refund_credit(
-            main_db, tg_id, quote, panel_deleted, cc_row["username"],
-        )
-    if refunded > 0:
-        await report_router.notify_raw(tenant.bot_token, db, "refund", report_router.build_refund_event(
-            tg_id, cc_row["username"], quote, refunded, "مینی‌اپ"))
-    return {"status": "ok", "refund_text": refund_result_text(quote, refunded)}
-
-
-@app.get("/api/custom-configs/{custom_config_id}/delete-quote")
-async def api_custom_config_delete_quote(custom_config_id: int, auth=Depends(get_verified_user)):
-    """مبلغ پرداختی و مبلغ برگشتی احتمالی قبل از حذف کامل سرویس شخصی."""
-    tg_id, db, _ = auth
-    cc_row = next((c for c in db.get_custom_configs_for_user(tg_id) if c["id"] == custom_config_id), None)
-    if not cc_row:
-        raise HTTPException(status_code=404, detail=tr("کانفیگ یافت نشد یا متعلق به شما نیست."))
-    quote = await quote_service_refund(db, cc_row, tg_id, main_db)
-    return {**quote, "text": refund_quote_text(quote)}
-
-
-# ---------------------------------------------------------------------------
-# مدیریت سرویس (فعال/غیرفعال، تغییر نام، تمدید خودکار، انتقال، تاریخچه،
-# قطع دسترسی) - معادل دکمه‌های صفحه‌ی جزئیات سرویس در ربات اصلی
-# (handlers_user.py، بخش svc_toggle/svc_rename/svc_autorenew/svc_transfer/
-# svc_hist/svc_cut) تا این اکشن‌ها از مینی‌اپ هم در دسترس باشند و هر دو
-# رابط از همان توابع دیتابیس/پروایدر استفاده کنند.
-# ---------------------------------------------------------------------------
-
-def _require_svc_feature(db: Database, setting_key: str):
-    if db.get_setting(setting_key, "1") != "1":
-        raise HTTPException(status_code=403, detail=tr("این قابلیت غیرفعال است."))
-
-
-def _owned_custom_config_or_404(db: Database, custom_config_id: int, tg_id: int):
-    cc = db.get_custom_config_owned(custom_config_id, tg_id)
-    if not cc:
-        raise HTTPException(status_code=404, detail=tr("کانفیگ یافت نشد یا متعلق به شما نیست."))
-    if cc["source"] == "test":
-        raise HTTPException(status_code=403, detail=tr("این قابلیت برای کانفیگ تست در دسترس نیست."))
-    return cc
-
-
-class SvcRenameBody(BaseModel):
-    new_name: str
-
-
-class SvcAutoRenewBody(BaseModel):
-    enabled: bool
-
-
-class SvcTransferBody(BaseModel):
-    target_telegram_id: int
-
-
-@app.post("/api/custom-configs/{custom_config_id}/toggle")
-async def api_custom_config_toggle(custom_config_id: int, auth=Depends(get_verified_user)):
-    tg_id, db, _ = auth
-    _require_svc_feature(db, "svc_show_toggle")
-    cc = _owned_custom_config_or_404(db, custom_config_id, tg_id)
-    new_enabled = not ((cc["enabled"] if "enabled" in cc.keys() else 1) == 1)
-    server = db.get_panel_server(cc["panel_server_id"]) if cc["panel_server_id"] else None
-    if not server or not server["is_active"]:
-        raise HTTPException(status_code=409, detail=tr("سرور پنل مربوط به این سرویس یافت نشد یا غیرفعال است."))
-    try:
-        provider = get_provider(server)
-        await provider.set_enabled(cc["username"], new_enabled)
-    except PanelError as e:
-        raise HTTPException(status_code=502, detail=tr(f"ناموفق بود: {e}"))
-    db.set_custom_config_enabled(cc["id"], tg_id, new_enabled)
-    db.add_custom_config_history(cc["id"], "toggle", "فعال شد" if new_enabled else "غیرفعال شد")
-    return {"status": "ok", "enabled": new_enabled}
-
-
-@app.post("/api/custom-configs/{custom_config_id}/rename")
-async def api_custom_config_rename(custom_config_id: int, body: SvcRenameBody, auth=Depends(get_verified_user)):
-    tg_id, db, _ = auth
-    _require_svc_feature(db, "svc_show_rename")
-    cc = _owned_custom_config_or_404(db, custom_config_id, tg_id)
-    prefix = db.get_custom_config_prefix()
-    current_label = cc["display_name"] or cc["username"]
-    suffix = (body.new_name or "").strip()
-    if not re.fullmatch(r"[A-Za-z0-9_]{3,20}", suffix):
-        raise HTTPException(status_code=400, detail=tr("نامعتبر است. فقط حروف انگلیسی، عدد و آندرلاین، بین ۳ تا ۲۰ کاراکتر."))
-    new_label = f"{prefix}-{suffix}" if (prefix and current_label.startswith(prefix + "-")) else suffix
-    if new_label == current_label:
-        raise HTTPException(status_code=400, detail=tr("این نام همان نام فعلی است."))
-    if db.is_custom_username_taken(new_label):
-        raise HTTPException(status_code=409, detail=tr("این نام قبلاً استفاده شده. نام دیگری انتخاب کنید."))
-    server = db.get_panel_server(cc["panel_server_id"]) if cc["panel_server_id"] else None
-    panel_username = None
-    note = "فقط نام نمایشی داخل بات تغییر کرد؛ لینک/کانفیگ فعلی روی پنل بدون تغییر کار می‌کند."
-    if server and server["is_active"]:
-        try:
-            provider = get_provider(server)
-            await provider.rename_user(cc["username"], new_label)
-            panel_username = new_label
-            note = "روی خودِ پنل هم اعمال شد."
-        except PanelError:
-            pass
-    db.rename_custom_config(cc["id"], tg_id, new_label, panel_username)
-    db.add_custom_config_history(cc["id"], "rename", f"{current_label} ← {new_label} ({note})")
-    return {"status": "ok", "display_name": new_label, "note": note}
-
-
-@app.post("/api/custom-configs/{custom_config_id}/auto-renew")
-def api_custom_config_auto_renew(custom_config_id: int, body: SvcAutoRenewBody, auth=Depends(get_verified_user)):
-    tg_id, db, _ = auth
-    _require_svc_feature(db, "svc_show_auto_renew")
-    cc = _owned_custom_config_or_404(db, custom_config_id, tg_id)
-    if (cc["duration_days"] or 0) <= 0:
-        raise HTTPException(status_code=400, detail=tr("این کانفیگ نامحدود است و نیازی به تمدید خودکار ندارد."))
-    db.set_custom_config_auto_renew(cc["id"], tg_id, body.enabled)
-    db.add_custom_config_history(cc["id"], "auto_renew_toggle", "فعال شد" if body.enabled else "غیرفعال شد")
-    return {"status": "ok", "auto_renew": body.enabled}
-
-
-@app.post("/api/custom-configs/{custom_config_id}/transfer")
-async def api_custom_config_transfer(custom_config_id: int, body: SvcTransferBody, auth=Depends(get_verified_user)):
-    tg_id, db, tenant = auth
-    _require_svc_feature(db, "svc_show_transfer")
-    cc = _owned_custom_config_or_404(db, custom_config_id, tg_id)
-    target_id = body.target_telegram_id
-    if target_id == tg_id:
-        raise HTTPException(status_code=400, detail=tr("این کانفیگ همین الان مال شماست."))
-    target_user = db.get_user(target_id)
-    if not target_user:
-        raise HTTPException(status_code=404, detail=tr("این کاربر بات را استارت نکرده یا آی‌دی نادرست است."))
-    ok = db.transfer_custom_config(cc["id"], tg_id, target_id)
-    if not ok:
-        raise HTTPException(status_code=409, detail=tr("انتقال ناموفق بود."))
-    db.add_custom_config_history(cc["id"], "transfer", f"از {tg_id} به {target_id}")
-    label = cc["display_name"] or cc["username"]
-    try:
-        async with aiohttp.ClientSession() as session:
-            await session.post(
-                f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                json={
-                    "chat_id": target_id,
-                    "text": f"📦 یک کانفیگ («{label}») از طرف کاربر دیگری به حساب شما منتقل شد.\n"
-                             "برای مشاهده، حساب کاربری ← سرویس‌ها و سفارش‌های من را ببینید.",
-                },
-            )
-    except Exception:
-        pass
-    return {"status": "ok"}
-
-
-@app.get("/api/custom-configs/{custom_config_id}/history")
-def api_custom_config_history(custom_config_id: int, auth=Depends(get_verified_user)):
-    tg_id, db, _ = auth
-    _require_svc_feature(db, "svc_show_history")
-    cc = db.get_custom_config_owned(custom_config_id, tg_id)
-    if not cc:
-        raise HTTPException(status_code=404, detail=tr("کانفیگ یافت نشد یا متعلق به شما نیست."))
-    rows = db.get_custom_config_history(cc["id"])
-    return [
-        {"event_type": r["event_type"], "detail": r["detail"], "created_at": r["created_at"]}
-        for r in rows
-    ]
-
-
-@app.post("/api/custom-configs/{custom_config_id}/cut-access")
-async def api_custom_config_cut_access(custom_config_id: int, auth=Depends(get_verified_user)):
-    tg_id, db, _ = auth
-    _require_svc_feature(db, "svc_show_cut_access")
-    cc = _owned_custom_config_or_404(db, custom_config_id, tg_id)
-    server = db.get_panel_server(cc["panel_server_id"]) if cc["panel_server_id"] else None
-    if not server or not server["is_active"]:
-        raise HTTPException(status_code=409, detail=tr("سرور پنل مربوط به این سرویس یافت نشد یا غیرفعال است."))
-    try:
-        provider = get_provider(server)
-        result = await provider.revoke_credentials(cc["username"])
-    except PanelError as e:
-        raise HTTPException(status_code=502, detail=tr(f"قطع دسترسی ناموفق بود: {e}"))
-    if result.subscription_url:
-        db.update_custom_config_subscription_url(cc["id"], result.subscription_url)
-    leak_index.schedule_refresh(db, cc["id"])
-    db.add_custom_config_history(cc["id"], "cut_access", "دسترسی قطع و لینک جدید صادر شد")
-    return {"status": "ok", "subscription_url": dedicated_sub.display_link(db, cc["id"], result.subscription_url)}
-
-
-# «تمدید کامل سرویس» - معادل svc_renew:full / svc_renew_pick در ربات اصلی؛ فقط
-# پلن‌هایی که روی همان پنل VPN این سرویس ساخته شده‌اند پیشنهاد می‌شوند (نه
-# پلن‌هایی با همان حجم اولیه، چون بعد از هر تمدید حجم/زمان سرویس تغییر
-# می‌کند ولی پنل آن ثابت می‌ماند - همان دلیلی که در خود بات هم اصلاح شد).
-def _early_renewal_discount_percent(db, cc) -> int:
-    """درصد تخفیف تمدید کامل زودهنگام برای این سرویس - فقط اگر ادمین فعال
-    کرده باشد و تا انقضای واقعی سرویس حداکثر N روزِ تنظیم‌شده مانده باشد؛
-    عیناً هم‌تراز با منطق cb_service_renew_pick در handlers_user.py."""
-    settings = db.get_early_full_renewal_discount_settings()
-    if not settings["enabled"]:
-        return 0
-    expires_at_raw = cc["expires_at"] if "expires_at" in cc.keys() else None
-    if not expires_at_raw:
-        return 0
-    try:
-        exp_dt = datetime.fromisoformat(str(expires_at_raw).replace("Z", "+00:00"))
-        if exp_dt.tzinfo is None:
-            exp_dt = exp_dt.replace(tzinfo=timezone.utc)
-        days_left = (exp_dt - datetime.now(timezone.utc)).total_seconds() / 86400
-    except (ValueError, TypeError):
-        return 0
-    if 0 <= days_left <= settings["days_before"]:
-        return settings["percent"]
-    return 0
-
-
-@app.get("/api/custom-configs/{custom_config_id}/renewal-full-plans")
-def api_custom_config_renewal_full_plans(custom_config_id: int, auth=Depends(get_verified_user)):
-    tg_id, db, _ = auth
-    _require_svc_feature(db, "svc_show_renew_full")
-    cc = _owned_custom_config_or_404(db, custom_config_id, tg_id)
-    all_products = [p for p in db.get_all_products() if p["is_auto_provision"] and p["is_active"]]
-    products = [p for p in all_products if p["provision_server_id"] == cc["panel_server_id"]]
-    # قوانین «تمدید کامل» هر محصول (خاموش‌بودن تمدید / فقط-هم‌نوع)
-    products = renewal_rules.filter_products(products, cc)
-    discount_percent = _early_renewal_discount_percent(db, cc)
-    result = []
-    for p in products:
-        users = _ul_renewal_users(db, p, cc)
-        price = _ul_price_for_users(p, users) if users else p["price"]
-        final_price = round(price * (100 - discount_percent) / 100) if discount_percent else price
-        result.append({
-            "id": p["id"], "name": p["name"], "price": final_price, "users": users or None,
-            "original_price": price if discount_percent else None,
-            "discount_percent": discount_percent or None,
-            "volume_gb": p["auto_provision_volume_gb"], "duration_days": p["duration_days"],
-            "renew_reset": not renewal_rules.product_rules(p)["renew_carry_volume"]
-                           and not renewal_rules.product_rules(p)["renew_carry_time"],
-            "carry_volume": bool(renewal_rules.product_rules(p)["renew_carry_volume"]),
-            "carry_time": bool(renewal_rules.product_rules(p)["renew_carry_time"]),
-        })
-    return result
-
-
-class RenewFullBody(BaseModel):
-    product_id: int
-
-
-@app.post("/api/custom-configs/{custom_config_id}/renew-full")
-async def api_custom_config_renew_full(custom_config_id: int, body: RenewFullBody, auth=Depends(get_verified_user)):
-    tg_id, db, tenant = auth
-    _require_svc_feature(db, "svc_show_renew_full")
-    cc = _owned_custom_config_or_404(db, custom_config_id, tg_id)
-    product = db.get_product(body.product_id)
-    if not product or not product["is_auto_provision"] or not product["is_active"]:
-        raise HTTPException(status_code=400, detail=tr("این پلن یافت نشد."))
-    if product["provision_server_id"] != cc["panel_server_id"]:
-        raise HTTPException(status_code=400, detail=tr("این پلن روی پنل این سرویس تعریف نشده است."))
-    if not renewal_rules.is_renewable_for(product, cc):
-        raise HTTPException(status_code=400, detail=tr("این پلن برای تمدید کامل این سرویس مجاز نیست."))
-    carry_volume, carry_time = renewal_rules.order_flags(product)
-
-    user_row = db.get_user(tg_id)
-    if user_row and user_row["is_blocked"]:
-        raise HTTPException(status_code=403, detail=tr("حساب شما مسدود شده است."))
-
-    add_volume = product["auto_provision_volume_gb"]
-    add_days = product["duration_days"]
-    users = _ul_renewal_users(db, product, cc)
-    price = _ul_price_for_users(product, users) if users else product["price"]
-    discount_percent = _early_renewal_discount_percent(db, cc)
-    if discount_percent:
-        price = round(price * (100 - discount_percent) / 100)
-
-    plan = db.plan_wallet_spend(tg_id, price)
-    if plan["blocked"]:
-        raise HTTPException(status_code=400, detail=plan["message"])
-    wallet_used = plan["wallet_used"]
-    if wallet_used > 0:
-        wallet_used = db.deduct_wallet_credit(tg_id, wallet_used)
-
-    order_id = db.create_renewal_order(
-        tg_id, "custom", cc["id"], "full", add_volume, add_days, price, wallet_used,
-        user_limit=users or None, carry_volume=carry_volume, carry_time=carry_time,
-    )
-    order = db.get_order(order_id)
-
-    try:
-        if order["final_price"] <= 0:
-            try:
-                result_text = await execute_renewal(db, order)
-            except RenewalError as e:
-                db.reject_order(order_id)
-                raise HTTPException(status_code=409, detail=str(e))
-            db.approve_renewal_order(order_id)
-            await report_order_completed(tenant, db, order_id, "wallet")
-            return {"status": "approved", "order_id": order_id, "message": result_text}
-
-        return {
-            "status": "pending_payment", "order_id": order_id, "final_price": order["final_price"],
-            **_card_info(db, tg_id),
-            **_payment_flags(db, order["final_price"], None, tenant=tenant, user_id=tg_id),
-        }
-    except HTTPException:
-        raise
-    except Exception:
-        logging.getLogger("miniapp").exception(
-            "خطای غیرمنتظره در تمدید کامل سرویس (سفارش #%s) برای کاربر %s؛ سفارش رد و مبلغ کیف پول (در صورت وجود) بازگردانده شد.",
-            order_id, tg_id,
-        )
-        db.reject_order(order_id)
-        raise HTTPException(status_code=500, detail=tr("خطای غیرمنتظره‌ای رخ داد. مبلغ کسرشده (در صورت وجود) به کیف پول شما بازگردانده شد."))
-
-
-# ---------------------------------------------------------------------------
-# ساخت کانفیگ شخصی (اتصال مستقیم به پنل VPN) - معادل CustomConfigFlow ربات؛
-# قبلاً این‌جا فقط GET/DELETE بود (کاربر فقط می‌توانست کانفیگ‌های ساخته‌شده در
-# ربات را ببیند/حذف کند). این endpoint ساخت واقعی کانفیگ جدید را هم اضافه
-# می‌کند تا کاربر برای این کار مجبور به رفتن سراغ ربات نباشد.
-# همچنین «پنل نمایندگی اعتباری» (ساخت رایگان از استخر گیگ نماینده) را هم
-# اگر کاربر reseller باشد پشتیبانی می‌کند (use_credit=True).
-# ---------------------------------------------------------------------------
-
-@app.get("/api/custom-config/info")
-def api_custom_config_info(auth=Depends(get_verified_user)):
-    tg_id, db, tenant = auth
-    settings = db.get_custom_config_settings()
-    tiers = db.get_pricing_tiers()
-    server = db.get_panel_server_for_usage("custom_config")
-    reseller_db, reseller_owner_id = get_reseller_backend(tg_id, db, tenant)
-    is_reseller = reseller_db.is_reseller(tg_id)
-    reseller_credit = reseller_db.get_reseller_credit(tg_id) if is_reseller else 0
-    reseller_server = reseller_db.get_reseller_panel(tg_id) if is_reseller else None
-    return {
-        "enabled": settings["enabled"] and bool(server) and bool(tiers)
-        and bool(db.is_full_access_bot(not bool(tenant.tenant_id))),
-        "min_gb": settings["min_gb"], "max_gb": settings["max_gb"],
-        "duration_days": settings["duration_days"],
-        "tiers": [
-            {"from_gb": t["from_gb"], "to_gb": t["to_gb"], "price_per_gb": t["price_per_gb"]}
-            for t in tiers
-        ],
-        "wallet_credit": db.get_wallet_credit(tg_id),
-        "is_reseller": is_reseller,
-        "reseller_credit_gb": reseller_credit,
-        "reseller_available": is_reseller and reseller_credit > 0 and bool(reseller_server),
-        "crypto_enabled": db.get_setting("crypto_payment_enabled", "0") == "1"
-        and bool(_resolve_plisio_key(db)) and bool(_runtime_api_base_url()) and db.payment_gate_passed(tg_id, "crypto"),
-        "abangateway_enabled": db.get_setting("abangateway_payment_enabled", "0") == "1"
-        and bool(_resolve_abangateway_key(db)) and bool(_runtime_api_base_url()) and db.payment_gate_passed(tg_id, "abangateway"),
-        "blupal_enabled": blupal_payment.blupal_payment_available(db) and db.payment_gate_passed(tg_id, "blupal"),
-        "noapay_enabled": noapay_payment.noapay_payment_available(db) and db.payment_gate_passed(tg_id, "noapay"),
-        "card_to_card_enabled": db.get_setting("card_to_card_enabled", "1") == "1" and db.card_gate_passed(tg_id),
-        **_card_info(db, tg_id),
-    }
-
-
-class CustomConfigPurchase(BaseModel):
-    username: str
-    volume_gb: int
-    use_credit: bool = False  # True یعنی از اعتبار گیگ نمایندگی (رایگان) ساخته شود
-
-
-def _valid_custom_username(username: str) -> bool:
-    return bool(re.fullmatch(r"[A-Za-z0-9_]{3,20}", username or ""))
-
-
-@app.post("/api/custom-configs")
-async def api_create_custom_config(body: CustomConfigPurchase, auth=Depends(require_joined)):
-    tg_id, db, tenant = auth
-    username = (body.username or "").strip()
-    if not _valid_custom_username(username):
-        raise HTTPException(status_code=400, detail=tr("نام کاربری نامعتبر است. فقط حروف انگلیسی، عدد و آندرلاین، بین ۳ تا ۲۰ کاراکتر."))
-    if db.is_custom_username_taken(username):
-        raise HTTPException(status_code=400, detail=tr("این نام کاربری قبلاً استفاده شده است."))
-
-    # --- مسیر نمایندگی اعتباری: رایگان از استخر حجم خودِ نماینده ---
-    if body.use_credit:
-        reseller_db, _ = get_reseller_backend(tg_id, db, tenant)
-        if not reseller_db.is_reseller(tg_id):
-            raise HTTPException(status_code=403, detail=tr("شما نماینده نیستید."))
-        credit = reseller_db.get_reseller_credit(tg_id)
-        if body.volume_gb <= 0 or body.volume_gb > credit:
-            raise HTTPException(status_code=400, detail=tr(f"اعتبار شما کافی نیست. اعتبار باقی‌مانده: {credit:,} گیگ."))
-        server = reseller_db.get_reseller_panel(tg_id)
-        if not server or not server["is_active"]:
-            raise HTTPException(status_code=400, detail=tr("سرور نمایندگی در دسترس نیست."))
-        duration_days = db.get_custom_config_settings()["duration_days"]
-        try:
-            provider = get_provider(server)
-            result = await provider.create_user(username, body.volume_gb, duration_days)
-        except PanelUsernameTakenError:
-            raise HTTPException(status_code=409, detail=tr("این نام کاربری روی پنل تکراری است."))
-        except PanelError as e:
-            raise HTTPException(status_code=502, detail=tr(f"خطا در ساخت کانفیگ: {e}"))
-        # نکته (باگ قبلی): اینجا قبلاً از adjust_reseller_credit با دلتای منفی
-        # استفاده می‌شد که فقط یک UPDATE بدون قید انجام می‌دهد (همیشه "موفق"
-        # است، حتی وقتی اعتبار کافی نباشد). چون بین چک بالا (credit) و همین
-        # لحظه یک تماس شبکه‌ای کند به پنل VPN فاصله افتاده (await
-        # provider.create_user)، دو درخواست هم‌زمان از همین نماینده (مثلاً دو
-        # تب یا دو کلیک سریع) هر دو می‌توانستند از چک بالا رد شوند، هر دو یک
-        # اکانت واقعی روی پنل بسازند و هر دو بدون هیچ قفلی اعتبار را کم کنند -
-        # نتیجه: reseller_credit_gb منفی می‌شد و نماینده ظرفیت واقعی رایگان
-        # بیشتر از اعتبار خریداری‌شده‌اش می‌گرفت. الان درست مثل ResellerFlow در
-        # بات (handlers_user.py) و reseller_auto_provision.py، کسر با
-        # consume_reseller_credit در یک کوئری اتمیک (UPDATE ... WHERE
-        # reseller_credit_gb >= ?) انجام می‌شود؛ اگر هم‌زمان توسط یک ساخت
-        # دیگر مصرف شده باشد، اینجا واقعاً رد می‌شود و اکانت تازه‌ساخته روی
-        # پنل هم پاک می‌شود تا یتیم نماند.
-        credit_ok = reseller_db.consume_reseller_credit(
-            tg_id, body.volume_gb, reason=f"ساخت کانفیگ «{result.username}» (مینی‌اپ)"
-        )
-        if not credit_ok:
-            try:
-                await provider.delete_user(result.username)
-            except Exception:
-                pass
-            raise HTTPException(
-                status_code=409,
-                detail=tr("اعتبار شما هم‌زمان توسط یک ساخت دیگر مصرف شد. دوباره امتحان کن."),
-            )
-
-        # نکته (باگ قبلی): قبلاً اینجا try/except نبود؛ اگر add_custom_config
-        # به هر دلیلی (مثلاً قفل موقت دیتابیس) شکست می‌خورد، اعتبار قبلاً کسر
-        # شده بود و اکانت واقعی روی پنل هم ساخته شده بود، ولی هیچ رکوردی در
-        # custom_configs ثبت نمی‌شد - یعنی سرویس یتیم و برای همیشه گم‌شده
-        # (نه در «سرویس‌های من»، نه قابل بازگشت). الان در صورت شکست، هم اعتبار
-        # برگردانده می‌شود هم اکانت پنل پاک می‌شود.
-        try:
-            local_panel_id = await asyncio.to_thread(db.get_or_create_mirror_panel_server, server) if tenant.tenant_id else server["id"]
-            db.add_custom_config(
-                tg_id, local_panel_id, result.username, body.volume_gb, duration_days,
-                result.subscription_url, source="reseller",
-            )
-        except Exception:
-            logging.getLogger("miniapp").exception(
-                "ثبت کانفیگ نمایندگی (مینی‌اپ) برای کاربر %s ناموفق بود؛ اعتبار بازگردانده و اکانت پنل پاک شد.",
-                tg_id,
-            )
-            reseller_db.adjust_reseller_credit(
-                tg_id, body.volume_gb, reason="بازگشت اعتبار به‌دلیل خطای ثبت کانفیگ (مینی‌اپ)"
-            )
-            try:
-                await provider.delete_user(result.username)
-            except Exception:
-                pass
-            raise HTTPException(
-                status_code=500,
-                detail=tr("خطایی در ثبت کانفیگ رخ داد؛ اعتبار شما بازگردانده شد. دوباره تلاش کن."),
-            )
-        return {
-            "status": "approved", "link": dedicated_sub.dedicated_link_for_upstream(db, result.subscription_url),
-            "reseller_credit_left": reseller_db.get_reseller_credit(tg_id),
-        }
-
-    # --- مسیر خرید عادی (پرداخت از کیف‌پول/کارت/کریپتو) ---
-    settings = db.get_custom_config_settings()
-    if not settings["enabled"] or not db.is_full_access_bot(not bool(tenant.tenant_id)):
-        raise HTTPException(status_code=400, detail=tr("این بخش در حال حاضر غیرفعال است."))
-    if body.volume_gb < settings["min_gb"] or body.volume_gb > settings["max_gb"]:
-        raise HTTPException(status_code=400, detail=tr(f"حجم باید بین {settings['min_gb']} تا {settings['max_gb']} گیگابایت باشد."))
-    price = db.calc_custom_config_price(body.volume_gb)
-    server = db.get_panel_server_for_usage("custom_config")
-    if not server or not server["is_active"]:
-        raise HTTPException(status_code=400, detail=tr("در حال حاضر سروری برای ساخت کانفیگ شخصی فعال نیست."))
-    try:
-        import payg
-        cost_quote = payg.custom_plan_cost(db, int(server["id"]), int(body.volume_gb), int(settings["duration_days"]), 1, "*")
-        if cost_quote is not None:
-            price = int(cost_quote)
-    except Exception:
-        logging.getLogger("miniapp").exception("محاسبه تعرفه پنل برای کانفیگ شخصی ناموفق بود")
-    if price <= 0:
-        raise HTTPException(status_code=400, detail=tr("قیمت‌گذاری این بخش هنوز تنظیم نشده است."))
-    if not db.panel_has_capacity(server["id"], 1):
-        cap = db.get_panel_capacity_info(server["id"])
-        raise HTTPException(status_code=409, detail=tr(f"ظرفیت پنل تکمیل است ({cap['active_services']}/{cap['max_services']} سرویس فعال)."))
-    if account_naming.is_active(server):
-        username = account_naming.build_username(db, server, tg_id, username)
-        for _ in range(5):
-            if not db.is_custom_username_taken(username):
-                break
-            username = account_naming.build_username(db, server, tg_id, "") if account_naming.needs_counter(server) else account_naming.collision_variant(username)
-
-    user_row = db.get_user(tg_id)
-    if user_row and user_row["is_blocked"]:
-        raise HTTPException(status_code=403, detail=tr("حساب شما مسدود شده است."))
-
-    tier_info = db.get_tier_price_info(tg_id, price, 1)
-    price = tier_info["total_after"]
-    allowed_methods = db.get_effective_custom_config_payment_methods()
-    wallet_allowed = allowed_methods is None or "wallet" in allowed_methods
-    plan = db.plan_wallet_spend(tg_id, price, wallet_allowed)
-    if plan["blocked"]:
-        raise HTTPException(status_code=400, detail=plan["message"])
-    wallet_used = plan["wallet_used"]
-    if wallet_used > 0:
-        wallet_used = db.deduct_wallet_credit(tg_id, wallet_used)
-
-    order_id = db.create_custom_config_order(
-        tg_id, body.volume_gb, username, server["id"], base_price=price, wallet_used=wallet_used,
-        tier_discount_amount=tier_info["amount"],
-    )
-    order = db.get_order(order_id)
-
-    try:
-        if order["final_price"] <= 0:
-            try:
-                if not db.panel_has_capacity(server["id"], 1):
-                    raise RuntimeError("ظرفیت پنل در همین لحظه تکمیل شد.")
-                provider = get_provider(server)
-                result = await provider.create_user(username, body.volume_gb, settings["duration_days"])
-            except Exception as e:
-                # reject_order خودش order["wallet_used"] را برمی‌گرداند؛ برگرداندن
-                # دستی اضافه‌ی قبلی حذف شد چون باعث بازگشت دوبرابری اعتبار می‌شد.
-                db.reject_order(order_id)
-                raise HTTPException(status_code=502, detail=tr(f"خطا در ساخت کانفیگ روی پنل: {e}"))
-            db.approve_custom_config_order(order_id)
-            await report_order_completed(tenant, db, order_id, "wallet")
-            db.add_custom_config(
-                tg_id, server["id"], result.username, body.volume_gb, settings["duration_days"],
-                result.subscription_url, order_id=order_id, source="custom_config",
-            )
-            try:
-                db.reward_referrer_if_first_purchase(tg_id, price)
-            except Exception:
-                pass
-            return {"status": "approved", "order_id": order_id, "link": dedicated_sub.dedicated_link_for_upstream(db, result.subscription_url)}
-
-        if not db.has_any_payable_method(order["final_price"], allowed_methods):
-            db.reject_order(order_id)
-            raise HTTPException(
-                status_code=400,
-                detail=tr("در حال حاضر هیچ روش پرداخت فعالی برای این مبلغ در دسترس نیست."),
-            )
-        return {
-            "status": "pending_payment", "order_id": order_id, "final_price": order["final_price"],
-            **_card_info(db, tg_id),
-            **_payment_flags(db, order["final_price"], None, order=order, tenant=tenant, user_id=tg_id),
-        }
-    except HTTPException:
-        raise
-    except Exception:
-        # هر خطای غیرمنتظره‌ی دیگری (نه فقط خطای پنل که بالا مدیریت شده) نباید
-        # باعث بشه مبلغ کسرشده از کیف پول برای همیشه گیر بیفته؛ reject_order
-        # فقط روی سفارش‌های هنوز pending اثر می‌کند، پس فراخوانی آن این‌جا امن است.
-        logging.getLogger("miniapp").exception(
-            "خطای غیرمنتظره در ساخت کانفیگ شخصی (سفارش #%s) برای کاربر %s؛ سفارش رد و مبلغ کیف پول (در صورت وجود) بازگردانده شد.",
-            order_id, tg_id,
-        )
-        db.reject_order(order_id)
-        raise HTTPException(status_code=500, detail=tr("خطای غیرمنتظره‌ای رخ داد. مبلغ کسرشده (در صورت وجود) به کیف پول شما بازگردانده شد."))
-
-
-
-def _category_photo_file_id(db, cat_id) -> Optional[str]:
-    """file_id عکس دسته/زیردسته (همان عکسی که از ربات یا پنل وب ثبت شده)؛ بدون عکس: None."""
-    try:
-        for it in db.get_category_description_media(int(cat_id)):
-            if it.get("type") == "photo" and it.get("file_id"):
-                return it["file_id"]
-    except Exception:
-        logging.getLogger("miniapp.catalog").exception("خواندن عکس دسته %s ناموفق بود.", cat_id)
-    return None
-
-
-@app.get("/api/catalog/categories/{cat_id}/image")
-async def api_catalog_category_image(cat_id: int, auth=Depends(get_verified_user)):
-    """عکس دسته/زیردسته برای نمایش در قاب فروشگاه مینی‌اپ (فقط دسته‌های فعال)."""
-    _, db, tenant = auth
-    cat = await asyncio.to_thread(db.get_category, cat_id)
-    if not cat or not cat["is_active"]:
-        raise HTTPException(status_code=404, detail=tr("دسته‌بندی یافت نشد."))
-    file_id = await asyncio.to_thread(_category_photo_file_id, db, cat_id)
-    if not file_id:
-        raise HTTPException(status_code=404, detail=tr("برای این دسته‌بندی عکسی ثبت نشده است."))
-    result = await _tg_fetch_file(tenant.bot_token, file_id)
-    if not result:
-        raise HTTPException(status_code=502, detail=tr("دریافت تصویر از تلگرام ناموفق بود."))
-    content, content_type = result
-    return Response(content=content, media_type=content_type, headers={"Cache-Control": "private, max-age=3600"})
-
-
-@app.get("/api/catalog")
-def api_catalog(auth=Depends(get_verified_user)):
-    tg_id, db, _ = auth
-    categories = db.get_categories(active_only=True)
-    result = []
-    for c in categories:
-        products = db.get_products(c["id"], active_only=True)
-        result.append({
-            "id": c["id"],
-            "parent_id": c["parent_id"],
-            "name": c["name"],
-            "description": c["description"] if "description" in c.keys() else "",
-            "button_color": c["button_color"] if "button_color" in c.keys() else None,
-            "has_image": _category_photo_file_id(db, c["id"]) is not None,
-            "products": [
-                {
-                    "id": p["id"],
-                    "name": p["name"],
-                    "price": p["price"],
-                    "original_price": compare_price_for(p) or None,
-                    "description": p["description"],
-                    "stock": None if p["is_auto_provision"] else db.count_available_configs(p["id"]),
-                    "is_auto_provision": bool(p["is_auto_provision"]),
-                }
-                for p in products
-            ],
-        })
-    return result
-
-
-# ---------------------------------------------------------------------------
-# کانفیگ تست
-# ---------------------------------------------------------------------------
-
-class TestConfigClaim(BaseModel):
-    plan_id: Optional[int] = None
-
-
-@app.get("/api/test-config")
-def api_test_config_status(auth=Depends(get_verified_user)):
-    tg_id, db, _ = auth
-    user = db.get_user(tg_id)
-    test_limit = db.get_effective_test_limit(tg_id)
-    used = bool(user and user["test_used"] >= test_limit)
-    link = None
-    if used:
-        row = db.get_test_custom_config_for_user(tg_id)
-        if row:
-            link = dedicated_sub.display_link(db, row["id"], row["subscription_url"])
-        else:
-            legacy = db.get_assigned_test_config(tg_id)
-            link = legacy["link"] if legacy else None
-
-    plans = db.get_test_config_plans(active_only=True)
-    return {
-        "enabled": db.get_setting("test_enabled", "1") == "1",
-        "used": used,
-        "available": db.count_available_test_configs(),
-        "link": link,
-        "plans": [
-            {
-                "id": p["id"],
-                "name": p["name"],
-                "volume_mb": p["volume_mb"],
-                "duration_hours": p["duration_hours"],
-                "amount_label": format_plan_amount(p),
-            }
-            for p in plans
-        ],
-    }
-
-
-_background_tasks = set()
-
-
-async def _report_test_claim(bot_token: str, db, tg_id: int, detail_html: str) -> None:
-    bot = None
-    try:
-        if report_router.get_chat_id(db) is None:
-            return
-        row = db.get_user(tg_id)
-        bot = Bot(token=bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-        await report_router.notify_test_config(
-            bot, db, tg_id, (row["first_name"] if row else "") or "", row["username"] if row else None, detail_html,
-        )
-    except Exception:
-        logging.getLogger("miniapp").warning("اعلان کانفیگ تست ناموفق بود.", exc_info=True)
-    finally:
-        if bot is not None:
-            await bot.session.close()
-
-
-def _schedule_test_claim_report(tenant, db, tg_id: int, detail_html: str) -> None:
-    task = asyncio.create_task(_report_test_claim(tenant.bot_token, db, tg_id, detail_html))
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
-
-
-@app.post("/api/test-config/claim")
-async def api_test_config_claim(payload: TestConfigClaim, auth=Depends(require_joined)):
-    tg_id, db, tenant = auth
-    if db.get_setting("test_enabled", "1") != "1":
-        raise HTTPException(status_code=400, detail=tr("در حال حاضر امکان دریافت کانفیگ تست غیرفعال است."))
-    user = db.get_user(tg_id)
-    if user and user["test_used"] >= db.get_effective_test_limit(tg_id):
-        raise HTTPException(status_code=400, detail=tr("شما قبلاً کانفیگ تست خود را دریافت کرده‌اید."))
-
-    is_full_access = db.is_full_access_bot(not bool(tenant.tenant_id))
-    plans = db.get_test_config_plans(active_only=True)
-    if plans:
-        plan = None
-        if payload.plan_id is not None:
-            plan = next((p for p in plans if p["id"] == payload.plan_id), None)
-            if not plan:
-                raise HTTPException(status_code=400, detail=tr("این پلن دیگر در دسترس نیست."))
-        elif len(plans) == 1:
-            plan = plans[0]
-        else:
-            raise HTTPException(status_code=400, detail=tr("لطفاً یک مدل کانفیگ تست انتخاب کنید."))
-
-        # رفع باگ ریس‌کاندیشن: قبلاً اینجا فقط چک بالای تابع (get_user) کاربر را
-        # از دوباره‌گرفتن تست منع می‌کرد و mark_test_used فقط *بعد* از ساخت
-        # واقعی کانفیگ روی پنل صدا زده می‌شد. چون این یک API عمومی است، یک
-        # کاربر می‌توانست چند ریکوئست POST همزمان به همین endpoint بفرستد (مثلاً
-        # با curl/اسکریپت) و همه از همان چک اولیه رد شوند - هرکدام واقعاً یک
-        # کانفیگ تست می‌ساخت (و در بات‌های نمایندگی، هرکدام از اعتبار حجمی
-        # نماینده کم می‌کرد). سهمیه حالا با یک UPDATE اتمیک *قبل* از تماس با
-        # پنل رزرو می‌شود؛ اگر ساخت کانفیگ شکست بخورد، سهمیه برمی‌گردد.
-        if not db.try_reserve_test_slot(tg_id, db.get_effective_test_limit(tg_id)):
-            raise HTTPException(status_code=400, detail=tr("شما قبلاً کانفیگ تست خود را دریافت کرده‌اید."))
-
-        use_credit = (not is_full_access) or (await asyncio.to_thread(is_volume_credit_bot, db, not bool(tenant.tenant_id)))
-        if not use_credit:
-            try:
-                result = await provision_test_plan(db, plan, user_id=tg_id)
-            except TestPlanProvisionError as e:
-                db.release_test_slot(tg_id)
-                raise HTTPException(status_code=409, detail=str(e))
-        else:
-            try:
-                result = await provision_test_config(db, plan, user_id=tg_id)
-            except ProvisionError as e:
-                db.release_test_slot(tg_id)
-                raise HTTPException(status_code=409, detail=str(e))
-        _schedule_test_claim_report(
-            tenant, db, tg_id,
-            f"📦 {html_lib.escape(plan['name'])} - {html_lib.escape(format_plan_amount(plan))}\n"
-            f"🔑 <code>{html_lib.escape(result.get('username') or '')}</code>",
-        )
-        return {"link": dedicated_sub.dedicated_link_for_upstream(db, result["subscription_url"])}
-
-    if not is_full_access:
-        raise HTTPException(status_code=400, detail=tr("در حال حاضر هیچ پلن کانفیگ تستی تعریف نشده است."))
-
-    # همین باگ برای مسیر قدیمی «بانک لینک دستی» هم صدق می‌کرد: قبلاً
-    # take_unused_test_config قبل از mark_test_used صدا زده می‌شد، پس چند‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
-    # ریکوئست همزمان می‌توانستند چند لینک از بانک بردارند. حالا سهمیه اول رزرو
-    # می‌شود؛ اگر لینکی برای برداشتن نبود، سهمیه بلافاصله برمی‌گردد.
-    if not db.try_reserve_test_slot(tg_id, db.get_effective_test_limit(tg_id)):
-        raise HTTPException(status_code=400, detail=tr("شما قبلاً کانفیگ تست خود را دریافت کرده‌اید."))
-    result = db.take_unused_test_config(tg_id)
-    if not result:
-        db.release_test_slot(tg_id)
-        raise HTTPException(status_code=400, detail=tr("متاسفانه موجودی کانفیگ تست تمام شده است."))
-    _schedule_test_claim_report(tenant, db, tg_id, "📦 از بانک لینک دستی")
-    return {"link": result["link"]}
-
-
-# ---------------------------------------------------------------------------
-# زیرمجموعه‌گیری
-# ---------------------------------------------------------------------------
-
-@app.get("/api/referral")
-async def api_referral(auth=Depends(get_verified_user)):
-    tg_id, db, tenant = auth
-    if db.get_setting("referral_button_enabled", "1") != "1":
-        return {"enabled": False}
-    commission_on = db.get_setting("referral_enabled", "1") == "1"
-    fc_on = db.get_setting("referral_free_config_enabled", "0") == "1"
-    ib_on = db.get_setting("referral_invite_bonus_enabled", "0") == "1"
-    if not (commission_on or fc_on or ib_on):
-        return {"enabled": False}
-    username = await get_bot_username(tenant)
-    ref_start = f"ref{tg_id}"
-    link = f"https://t.me/{username}?start={ref_start}" if username else None
-    stats = db.get_referral_stats(tg_id)
-    return {
-        "enabled": True,
-        "link": link,
-        "count": stats["count"],
-        "credit": stats["credit"],
-        "commission_enabled": commission_on,
-        "percent": db.get_setting("referral_percent", "10"),
-        "commission_max_count": int(db.get_setting("referral_commission_max_count", "0") or 0),
-        "free_config_enabled": fc_on,
-        "free_config_threshold": int(db.get_setting("referral_free_config_threshold", "10") or 0),
-        "invite_bonus_enabled": ib_on,
-        "invite_bonus_amount": int(db.get_setting("referral_invite_bonus_amount", "0") or 0),
-        "invite_bonus_max_count": int(db.get_setting("referral_invite_bonus_max_count", "0") or 0),
-    }
-
-
-@app.get("/api/season")
-async def api_season(auth=Depends(get_verified_user)):
-    tg_id, db, tenant = auth
-    import seasons as season_logic
-    badges = [
-        {"emoji": b["emoji"] or "🎖", "title": html_lib.escape(b["title"])}
-        for b in db.badge_list(tg_id)
-    ]
-    if not season_logic.enabled(db):
-        return {"enabled": False, "badges": badges}
-    season = db.season_get_active()
-    if not season:
-        return {"enabled": True, "active": False, "badges": badges}
-    standings = db.season_standings(season["id"], 10)
-    mine = db.season_user_stats(season["id"], tg_id)
-    return {
-        "enabled": True,
-        "active": True,
-        "title": html_lib.escape(season["title"]),
-        "ends_at": season_logic.fmt_local(season["ends_at"]),
-        "invite_points": season["invite_points"],
-        "purchase_points": season["purchase_points"],
-        "prizes": season_logic.prize_lines(season_logic.prizes_snapshot(db), db),
-        "mine": mine,
-        "top": [
-            {
-                "rank": index,
-                "name": season_logic.mask_name(row["first_name"], row["username"], row["user_id"]),
-                "score": row["score"],
-                "me": row["user_id"] == tg_id,
-            }
-            for index, row in enumerate(standings, start=1)
-        ],
-        "badges": badges,
-    }
-
-
-# ---------------------------------------------------------------------------
-# هشدار انقضا
-# ---------------------------------------------------------------------------
-
-def _compute_connect_status(settings: dict, info: dict, assigned_at_raw) -> Optional[dict]:
-    """وضعیت نمایشیِ اتصال/عدم‌اتصال برای کارت سرویس در میناپ - هم‌تراز با
-    منطق connect_alerts.py (تشخیص از روی مصرف زنده‌ی Subscription)، ولی صرفاً
-    برای نمایش است: نه پیامی ارسال می‌کند و نه چیزی در دیتابیس ثبت می‌کند.
-    اگر ادمین هیچ‌کدام از دو هشدار را فعال نکرده باشد یا اطلاعات مصرف در
-    دسترس نباشد، None برمی‌گردد (یعنی بجی‌ای نمایش داده نشود)."""
-    if not (settings["connect_enabled"] or settings["no_connect_enabled"]):
-        return None
-    if not info.get("ok"):
-        return None
-
-    used_bytes = (info.get("upload") or 0) + (info.get("download") or 0)
-    used_gb = used_bytes / (1024 ** 3)
-    connect_threshold_bytes = settings["connect_threshold_mb"] * (1024 ** 2)
-
-    if used_bytes >= connect_threshold_bytes:
-        return {"state": "connected", "used_gb": used_gb}
-
-    hours_passed = None
-    if assigned_at_raw:
-        try:
-            assigned_dt = datetime.fromisoformat(str(assigned_at_raw).replace("Z", "+00:00"))
-            if assigned_dt.tzinfo is None:
-                assigned_dt = assigned_dt.replace(tzinfo=timezone.utc)
-            hours_passed = (datetime.now(timezone.utc) - assigned_dt).total_seconds() / 3600
-        except (ValueError, TypeError):
-            hours_passed = None
-
-    if settings["no_connect_enabled"] and hours_passed is not None and hours_passed >= settings["no_connect_hours"]:
-        return {"state": "not_connected", "used_gb": used_gb}
-
-    return {"state": "pending", "used_gb": used_gb}
-
-
-@app.get("/api/sub-info")
-async def api_sub_info(link: str = Query(...), auth=Depends(get_verified_user)):
-    tg_id, db, _ = auth
-    link = dedicated_sub.upstream_for_link(db, link)
-    orders = db.get_user_orders(tg_id)
-    owns_link = False
-    assigned_at_raw = None
-    for o in orders:
-        configs = db.get_order_configs(o["id"]) if o["status"] == "approved" else []
-        if configs:
-            match = next((c for c in configs if c["link"] == link), None)
-            if match:
-                owns_link = True
-                assigned_at_raw = match["assigned_at"]
-                break
-        else:
-            cfg = db.get_config_by_id(o["config_id"]) if o["config_id"] else None
-            if cfg and cfg["link"] == link:
-                owns_link = True
-                assigned_at_raw = cfg["assigned_at"]
-                break
-    if not owns_link:
-        custom_configs = db.get_custom_configs_for_user(tg_id)
-        match = next((c for c in custom_configs if c["subscription_url"] == link), None)
-        if match:
-            owns_link = True
-            assigned_at_raw = match["created_at"]
-    if not owns_link:
-        raise HTTPException(status_code=403, detail="forbidden")
-
-    info = await fetch_sub_info(link)
-    connect_status = _compute_connect_status(db.get_connect_alert_settings(), info, assigned_at_raw)
-    if connect_status:
-        info = dict(info)
-        info["connect_status"] = connect_status
-    return info
-
-
-@app.get("/api/expiring")
-async def api_expiring(auth=Depends(get_verified_user)):
-    tg_id, db, _ = auth
-    rows = db.get_expiring_configs_for_user(tg_id)
-    if not rows:
-        return []
-
-    threshold_days = int(db.get_setting("renewal_reminder_days_before", "5") or 5)
-    infos = await asyncio.gather(*[fetch_sub_info(r["link"]) for r in rows])
-
-    result = []
-    for r, info in zip(rows, infos):
-        expires_at = r["expires_at"]
-        if info.get("ok") and info.get("expire"):
-            exp_dt = datetime.fromtimestamp(info["expire"], tz=timezone.utc)
-            real_days_left = (exp_dt - datetime.now(timezone.utc)).days
-            if real_days_left > threshold_days:
-                # طبق داده‌ی واقعی پنل هنوز واقعاً نزدیک انقضا نیست
-                continue
-            expires_at = exp_dt.isoformat()
-
-        product = db.get_product(r["product_id"]) if r["product_id"] else None
-        if product:
-            product_name = product["name"]
-        elif "custom_username" in r.keys() and r["custom_username"]:
-            product_name = f"🛠 کانفیگ شخصی «{r['custom_username']}»"
-        else:
-            product_name = "نامشخص"
-        result.append({
-            "product_name": product_name,
-            "expires_at": expires_at,
-            "link": r["link"],
-        })
-    return result
-
-
-# ---------------------------------------------------------------------------
-# دستیار پشتیبانی هوشمند
-# ---------------------------------------------------------------------------
-
-@app.get("/api/ai-support/messages")
-async def api_ai_support_messages(auth=Depends(require_joined)):
-    tg_id, db, _ = auth
-    rows = db.get_ai_conversation(tg_id, limit=60)
-    return [
-        {"id": row["id"], "sender": "user" if row["role"] == "user" else "ai",
-         "message": row["message"], "created_at": row["created_at"]}
-        for row in rows
-    ]
-
-
-class AISupportMessageCreate(BaseModel):
-    message: str
-
-
-async def _forward_miniapp_ai_transcript_to_admin(db, tenant: Tenant, user_id: int, reason: str):
-    history = await asyncio.to_thread(db.get_ai_conversation, user_id)
-    user = db.get_user(user_id)
-    lines = [
-        f"🤖 ارجاع از دستیار هوشمند (مینی‌اپ)\n"
-        f"👤 {(user['first_name'] if user else '') or ''} (@{(user['username'] if user else '') or '---'})\n"
-        f"🆔 {user_id}"
-    ]
-    if reason:
-        lines.append(f"📌 دلیل: {reason}")
-    if history:
-        lines.append("\n--- تاریخچه‌ی گفتگو با دستیار ---")
-        for row in history:
-            who = "👤 کاربر" if row["role"] == "user" else "🤖 دستیار"
-            lines.append(f"{who}: {row['message']}")
-    target_admin = await asyncio.to_thread(db.resolve_support_admin_for_message, user_id)
-    admin_ids = [target_admin] if target_admin else await asyncio.to_thread(db.list_admins)
-    reply_markup = {"inline_keyboard": [[{"text": "↩️ پاسخ", "callback_data": f"reply_user:{user_id}"}]]}
-    async with aiohttp.ClientSession() as session:
-        for admin_id in admin_ids:
-            try:
-                await session.post(
-                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                    json={
-                        "chat_id": admin_id,
-                        "text": "\n".join(lines),
-                        "parse_mode": "Markdown",
-                        "reply_markup": reply_markup,
-                    },
-                )
-            except Exception:
-                logging.getLogger("miniapp.ai_support").exception(
-                    "ارسال ارجاع AI کاربر %s به ادمین %s ناموفق بود.", user_id, admin_id
-                )
-
-
-@app.post("/api/ai-support/messages")
-async def api_ai_support_send(body: AISupportMessageCreate, auth=Depends(require_joined)):
-    tg_id, db, tenant = auth
-    text = (body.message or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail=tr("پیام نمی‌تواند خالی باشد."))
-    if len(text) > 2000:
-        raise HTTPException(status_code=400, detail=tr("پیام بیش از حد طولانی است."))
-
-    if db.get_setting("ai_support_enabled", "1") != "1" or not ai_support.is_configured(db):
-        raise HTTPException(status_code=503, detail=tr("دستیار هوشمند در حال حاضر فعال نیست."))
-
-    history = await asyncio.to_thread(db.get_ai_conversation, tg_id)
-    await asyncio.to_thread(db.add_ai_message, tg_id, "user", text)
-    try:
-        result = await ai_support.get_reply(db, tg_id, history, text)
-    except Exception:
-        logging.getLogger("miniapp.ai_support").exception("خطای AI برای کاربر %s.", tg_id)
-        result = {
-            "reply": "یه مشکلی پیش اومد؛ پیامت رو برای پشتیبانی انسانی می‌فرستم.",
-            "escalate": True,
-        }
-
-    reply = result.get("reply") or "متوجه شدم؛ لطفاً سوالت رو کمی دقیق‌تر بنویس."
-    await asyncio.to_thread(db.add_ai_message, tg_id, "model", reply)
-
-    if result.get("escalate"):
-        await _forward_miniapp_ai_transcript_to_admin(
-            db, tenant, tg_id, "دستیار هوشمند مکالمه را به پشتیبانی انسانی ارجاع داد."
-        )
-        await asyncio.to_thread(db.clear_ai_conversation, tg_id)
-
-    return {
-        "id": None,
-        "sender": "ai",
-        "message": reply,
-        "escalated": bool(result.get("escalate")),
-        "ui_action": result.get("ui_action"),
-    }
-
-
-# ---------------------------------------------------------------------------
-# راهنمای خرید هوشمند (هم‌تراز با دکمه‌ی «راهنمای خرید» در ربات)
-# ---------------------------------------------------------------------------
-
-_buy_guide_last_call: Dict[int, float] = {}
-
-
-@app.get("/api/buy-guide/config")
-async def api_buy_guide_config(auth=Depends(get_verified_user)):
-    _tg_id, db, _ = auth
-    enabled = await asyncio.to_thread(buy_guide.is_enabled, db)
-    return {
-        "enabled": bool(enabled),
-        "questions": [
-            {"key": q["key"], "q": q["q"], "options": [{"value": v, "label": label} for v, label in q["options"]]}
-            for q in buy_guide.get_questions(db)
-        ] if enabled else [],
-    }
-
-
-class BuyGuideChatBody(BaseModel):
-    answers: Dict[str, str] = {}
-    message: str = ""
-    start: bool = False
-
-
-@app.post("/api/buy-guide/chat")
-async def api_buy_guide_chat(body: BuyGuideChatBody, auth=Depends(require_joined)):
-    tg_id, db, tenant = auth
-    if not await asyncio.to_thread(buy_guide.is_enabled, db):
-        raise HTTPException(status_code=503, detail=tr("راهنمای خرید هوشمند در حال حاضر فعال نیست."))
-    answers = buy_guide.normalize_answers(body.answers, db)
-    text = (body.message or "").strip()
-    if body.start:
-        await asyncio.to_thread(db.clear_ai_conversation, tg_id)
-        text = buy_guide.first_message(answers, db)
-    if not text:
-        raise HTTPException(status_code=400, detail=tr("پیام نمی‌تواند خالی باشد."))
-    if len(text) > 2000:
-        raise HTTPException(status_code=400, detail=tr("پیام بیش از حد طولانی است."))
-    now = time.monotonic()
-    if now - _buy_guide_last_call.get(tg_id, 0.0) < 3.0:
-        raise HTTPException(status_code=429, detail=tr("لطفاً چند لحظه صبر کن و دوباره بفرست."))
-    _buy_guide_last_call[tg_id] = now
-    if len(_buy_guide_last_call) > 5000:
-        _buy_guide_last_call.clear()
-    try:
-        result = await buy_guide.get_reply(db, tg_id, answers, text)
-    except Exception:
-        logging.getLogger("miniapp.buy_guide").exception("خطای راهنمای خرید برای کاربر %s.", tg_id)
-        raise HTTPException(status_code=502, detail=tr("الان نتونستم پیشنهاد بدم؛ دوباره امتحان کن یا از لیست محصولات انتخاب کن."))
-    if result.get("escalate"):
-        await _forward_miniapp_ai_transcript_to_admin(
-            db, tenant, tg_id, "راهنمای خرید هوشمند مکالمه را به پشتیبانی انسانی ارجاع داد."
-        )
-        await asyncio.to_thread(db.clear_ai_conversation, tg_id)
-    ui_action = result.get("ui_action")
-    product_id = ui_action.get("product_id") if isinstance(ui_action, dict) and ui_action.get("type") == "show_product" else None
-    return {"message": result["reply"], "escalated": bool(result.get("escalate")), "product_id": product_id}
-
-
-# ---------------------------------------------------------------------------
-# چت پشتیبانی
-# ---------------------------------------------------------------------------
-
-@app.get("/api/support/messages")
-def api_support_messages(since_id: int = 0, auth=Depends(get_verified_user)):
-    tg_id, db, _ = auth
-    db.mark_support_read_by_user(tg_id)
-    rows = db.get_support_messages(tg_id, since_id=since_id)
-    return [
-        {"id": m["id"], "sender": m["sender"], "message": m["message"], "created_at": m["created_at"]}
-        for m in rows
-    ]
-
-
-class SupportMessageCreate(BaseModel):
-    message: str
-    service_kind: Optional[str] = None
-    service_id: Optional[int] = None
-    priority: Optional[str] = None  # low | medium | high (اختیاری؛ کاربر در چت زنده تعیین می‌کند)
-
-
-_SUPPORT_PRIORITY_FA = {"low": "🟢 کم", "medium": "🟡 متوسط", "high": "🔴 زیاد"}
-
-
-@app.get("/api/support/services")
-def api_support_services(auth=Depends(get_verified_user)):
-    """سرویس‌های خریداری‌شده‌ی کاربر برای اشاره‌ی اختیاری در چت زنده و تیکت."""
-    tg_id, db, _ = auth
-    return db.list_user_support_services(tg_id, 30)
-
-
-@app.get("/api/support/state")
-def api_support_state(auth=Depends(get_verified_user)):
-    tg_id, db, _ = auth
-    state = db.get_support_conversation_state(tg_id)
-    return {"status": state["status"], "ref_kind": state["ref_kind"], "ref_id": state["ref_id"],
-            "ref_label": state["ref_label"], "priority": state["priority"]}
-
-
-@app.post("/api/support/close")
-def api_support_close_mine(auth=Depends(get_verified_user)):
-    tg_id, db, _ = auth
-    db.set_support_status(tg_id, "closed")
-    return {"status": "closed"}
-
-
-@app.post("/api/support/reopen")
-def api_support_reopen_mine(auth=Depends(get_verified_user)):
-    tg_id, db, _ = auth
-    db.set_support_status(tg_id, "open")
-    return {"status": "open"}
-
-
-@app.post("/api/support/messages")
-async def api_support_send(body: SupportMessageCreate, auth=Depends(get_verified_user)):
-    tg_id, db, tenant = auth
-    text = (body.message or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail=tr("پیام نمی‌تواند خالی باشد."))
-    if len(text) > 2000:
-        raise HTTPException(status_code=400, detail=tr("پیام بیش از حد طولانی است."))
-
-    prev_state = db.get_support_conversation_state(tg_id)
-    was_closed = prev_state["status"] == "closed"
-    msg_id = db.add_support_message(tg_id, "user", text)  # پیام کاربر، چت بسته را خودکار باز می‌کند
-
-    # اولویتی که کاربر انتخاب کرده (اگر نفرستاده باشد، اولویت فعلی گفتگو حفظ می‌شود)
-    cur_priority = prev_state["priority"]
-    if body.priority:
-        cur_priority = ticket_priority(body.priority)
-        if cur_priority != prev_state["priority"]:
-            db.set_support_priority(tg_id, cur_priority)
-
-    # اشاره‌ی اختیاری به سرویس خریداری‌شده (فقط سرویسِ خودِ کاربر پذیرفته می‌شود)
-    ref_label = prev_state["ref_label"]
-    if body.service_kind and body.service_id is not None:
-        kind, ref_id, label = db.resolve_support_service_ref(tg_id, body.service_kind, body.service_id)
-        if kind:
-            db.set_support_reference(tg_id, kind, ref_id, label)
-            ref_label = label
-    elif was_closed:
-        db.set_support_reference(tg_id, None, None, None)
-        ref_label = ""
-
-    user = db.get_user(tg_id)
-    caption = (
-        f"📩 پیام جدید از کاربر (مینی‌اپ)\n"
-        f"👤 {(user['first_name'] if user else '') or ''} (@{(user['username'] if user else '') or '---'})\n"
-        f"🆔 `{tg_id}`\n"
-        + ("🔓 این گفتگو قبلاً بسته شده بود و دوباره باز شد.\n" if was_closed else "")
-        + (f"📦 سرویس: {escape_md(ref_label)}\n" if ref_label else "")
-        + (f"🚦 اولویت: {_SUPPORT_PRIORITY_FA[cur_priority]}\n" if cur_priority != "medium" else "")
-        + f"\n✉️ {text}"
-    )
-    reply_markup = {
-        "inline_keyboard": [[{"text": "↩️ پاسخ", "callback_data": f"reply_user:{tg_id}"}]]
-    }
-    # فقط به اولین ادمین/مالک آنلاین اطلاع بده تا مکالمه به او اختصاص یابد؛
-    # اگر هیچ‌کس آنلاین نبود، طبق روال قدیم به همه‌ی ادمین‌ها اطلاع بده.
-    # گزینه‌ی «ارسال پیام‌های پشتیبانی به چت خصوصی مدیر»: خاموش = فقط تاپیک گروه (با فالبک به چت خصوصی).
-    grp_rows = [
-        ("کاربر", report_router.user_link(tg_id, (user["first_name"] if user else "") or "", (user["username"] if user else "") or "")),
-    ]
-    if ref_label:
-        grp_rows.append(("سرویس", ref_label))
-    if cur_priority != "medium":
-        grp_rows.append(("اولویت", _SUPPORT_PRIORITY_FA[cur_priority]))
-    grp_rows.append(("متن", text[:300]))
-    grp_ok = await report_router.notify_live_chat_raw(tenant.bot_token, db, tg_id, report_router.format_event(
-        "پیام جدید از کاربر (چت مستقیم)", grp_rows, icon="📩", note=report_router.LIVE_CHAT_GROUP_NOTE))
-    target_admin = db.resolve_support_admin_for_message(tg_id)
-    admin_ids = [] if grp_ok else ([target_admin] if target_admin else db.list_admins())
-    async with aiohttp.ClientSession() as session:
-        for admin_id in admin_ids:
-            try:
-                await session.post(
-                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                    json={
-                        "chat_id": admin_id, "text": caption,
-                        "parse_mode": "Markdown", "reply_markup": reply_markup,
-                    },
-                )
-            except Exception:
-                pass
-
-    return {"id": msg_id, "sender": "user", "message": text}
-
-
-# ---------------------------------------------------------------------------
-# سیستم تیکت (جدا از چت مستقیم بالا)
-# ---------------------------------------------------------------------------
-
-class TicketCreate(BaseModel):
-    subject: str
-    message: str
-    department_id: Optional[int] = None
-    service_kind: Optional[str] = None
-    service_id: Optional[int] = None
-    priority: Optional[str] = None  # low | medium | high؛ نامعتبر/خالی = medium
-
-
-class TicketMessageCreate(BaseModel):
-    message: str
-
-
-def _ticket_to_dict(t):
-    return {
-        "id": t["id"], "subject": t["subject"], "status": t["status"],
-        "claimed_by": t["claimed_by"],
-        "created_at": t["created_at"], "updated_at": t["updated_at"],
-        "priority": (t["priority"] if "priority" in t.keys() else None) or "medium",
-        "ref_label": (t["ref_label"] if "ref_label" in t.keys() else None) or "",
-    }
-
-
-@app.get("/api/tickets/departments")
-def api_ticket_departments_public(auth=Depends(get_verified_user)):
-    """دسته‌بندی‌های فعال تیکت (قابل ویرایش از پنل وب) برای فرم ثبت تیکت."""
-    _, db, _ = auth
-    return [{"id": d["id"], "name": d["name"]} for d in db.list_ticket_departments(True)]
-
-
-@app.get("/api/tickets")
-def api_list_my_tickets(auth=Depends(get_verified_user)):
-    tg_id, db, _ = auth
-    return [_ticket_to_dict(t) for t in db.get_user_tickets(tg_id)]
-
-
-@app.post("/api/tickets")
-async def api_create_ticket(body: TicketCreate, auth=Depends(get_verified_user)):
-    tg_id, db, tenant = auth
-    subject = (body.subject or "").strip()
-    message = (body.message or "").strip()
-    if not subject or not message:
-        raise HTTPException(status_code=400, detail=tr("موضوع و متن پیام نمی‌تواند خالی باشد."))
-    if len(subject) > 150 or len(message) > 2000:
-        raise HTTPException(status_code=400, detail=tr("متن وارد شده بیش از حد طولانی است."))
-
-    department_id = None
-    if body.department_id is not None:
-        dep = db.get_ticket_department(body.department_id)
-        if not dep or not dep["is_active"]:
-            raise HTTPException(status_code=400, detail=tr("این دسته‌بندی در دسترس نیست."))
-        department_id = dep["id"]
-    ref_kind = ref_id = ref_label = None
-    if body.service_kind and body.service_id is not None:
-        ref_kind, ref_id, ref_label = db.resolve_support_service_ref(tg_id, body.service_kind, body.service_id)
-
-    priority = ticket_priority(body.priority)
-    ticket_id = db.create_ticket(tg_id, subject, message, department_id,
-                                 ref_kind=ref_kind, ref_id=ref_id, ref_label=ref_label, priority=priority)
-
-    user = db.get_user(tg_id)
-    caption = (
-        f"🎫 تیکت جدید #{ticket_id}\n"
-        f"👤 {(user['first_name'] if user else '') or ''} (@{(user['username'] if user else '') or '---'})\n"
-        f"🆔 `{tg_id}`\n"
-        + f"🚦 اولویت: {_SUPPORT_PRIORITY_FA[priority]}\n"
-        + (f"📦 سرویس: {escape_md(ref_label)}\n" if ref_label else "")
-        + f"\n📌 {subject}\n✉️ {message}"
-    )
-    # گروه تاپیک فعال: اعلان با دکمه‌های «مشاهده کامل» و «پاسخ» در تاپیک «تیکت‌ها» می‌نشیند و پیام خصوصی نمی‌رود.
-    grp_rows = [
-        ("شماره", report_router.code(f"#{ticket_id}")),
-        ("کاربر", report_router.user_link(tg_id, (user["first_name"] if user else "") or "", (user["username"] if user else "") or "")),
-        ("اولویت", _SUPPORT_PRIORITY_FA[priority]),
-    ]
-    if ref_label:
-        grp_rows.append(("سرویس", ref_label))
-    grp_rows += [("موضوع", subject), ("متن", message[:300])]
-    grp_ok = await report_router.notify_ticket_raw(tenant.bot_token, db, ticket_id, report_router.format_event(
-        "تیکت جدید", grp_rows, icon="🎫", note="↩️ برای پاسخ، از دکمه‌ی «پاسخ به تیکت» یا ریپلای روی همین پیام استفاده کنید."))
-    if not grp_ok:
-        admin_ids = db.list_admins()
-        async with aiohttp.ClientSession() as session:
-            for admin_id in admin_ids:
-                try:
-                    await session.post(
-                        f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                        json={"chat_id": admin_id, "text": caption, "parse_mode": "Markdown"},
-                    )
-                except Exception:
-                    pass
-
-    return _ticket_to_dict(db.get_ticket(ticket_id))
-
-
-@app.get("/api/tickets/{ticket_id}/messages")
-def api_get_my_ticket_messages(ticket_id: int, since_id: int = 0, auth=Depends(get_verified_user)):
-    tg_id, db, _ = auth
-    ticket = db.get_ticket(ticket_id)
-    if not ticket or ticket["user_id"] != tg_id:
-        raise HTTPException(status_code=404, detail=tr("تیکت یافت نشد."))
-    db.mark_ticket_read_by_user(ticket_id)
-    rows = db.get_ticket_messages(ticket_id, since_id=since_id)
-    return {
-        "ticket": _ticket_to_dict(ticket),
-        "messages": [
-            {"id": m["id"], "sender": m["sender"], "message": m["message"], "created_at": m["created_at"]}
-            for m in rows
-        ],
-    }
-
-
-@app.post("/api/tickets/{ticket_id}/messages")
-async def api_send_my_ticket_message(ticket_id: int, body: TicketMessageCreate, auth=Depends(get_verified_user)):
-    tg_id, db, tenant = auth
-    ticket = db.get_ticket(ticket_id)
-    if not ticket or ticket["user_id"] != tg_id:
-        raise HTTPException(status_code=404, detail=tr("تیکت یافت نشد."))
-    if ticket["status"] == "closed":
-        raise HTTPException(status_code=400, detail=tr("این تیکت بسته شده است."))
-    text = (body.message or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail=tr("پیام نمی‌تواند خالی باشد."))
-    if len(text) > 2000:
-        raise HTTPException(status_code=400, detail=tr("پیام بیش از حد طولانی است."))
-
-    msg_id = db.add_ticket_message(ticket_id, "user", text)
-
-    user = db.get_user(tg_id)
-    caption = (
-        f"🎫 پیام جدید در تیکت #{ticket_id} ({ticket['subject']})\n"
-        f"👤 {(user['first_name'] if user else '') or ''} (@{(user['username'] if user else '') or '---'})\n\n"
-        f"✉️ {text}"
-    )
-    grp_ok = await report_router.notify_ticket_raw(tenant.bot_token, db, ticket_id, report_router.format_event(
-        "پیام جدید در تیکت", [
-            ("شماره", report_router.code(f"#{ticket_id}")),
-            ("کاربر", report_router.user_link(tg_id, (user["first_name"] if user else "") or "", (user["username"] if user else "") or "")),
-            ("موضوع", ticket["subject"]),
-            ("متن", text[:300]),
-        ], icon="💬", note="↩️ برای پاسخ، از دکمه‌ی «پاسخ به تیکت» یا ریپلای روی همین پیام استفاده کنید."))
-    if not grp_ok:
-        admin_ids = db.list_admins()
-        async with aiohttp.ClientSession() as session:
-            for admin_id in admin_ids:
-                try:
-                    await session.post(
-                        f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                        json={"chat_id": admin_id, "text": caption, "parse_mode": "Markdown"},
-                    )
-                except Exception:
-                    pass
-
-    return {"id": msg_id, "sender": "user", "message": text}
-
-
-@app.post("/api/tickets/{ticket_id}/close")
-def api_close_my_ticket(ticket_id: int, auth=Depends(get_verified_user)):
-    tg_id, db, _ = auth
-    ticket = db.get_ticket(ticket_id)
-    if not ticket or ticket["user_id"] != tg_id:
-        raise HTTPException(status_code=404, detail=tr("تیکت یافت نشد."))
-    db.close_ticket(ticket_id)
-    return {"status": "ok"}
-
-
-@app.post("/api/tickets/{ticket_id}/reopen")
-async def api_reopen_my_ticket(ticket_id: int, auth=Depends(get_verified_user)):
-    """کاربر تیکتی را که بسته (خودش یا پشتیبانی) دوباره باز می‌کند."""
-    tg_id, db, tenant = auth
-    ticket = db.get_ticket(ticket_id)
-    if not ticket or ticket["user_id"] != tg_id:
-        raise HTTPException(status_code=404, detail=tr("تیکت یافت نشد."))
-    changed = db.reopen_ticket(ticket_id)
-    if changed:
-        user = db.get_user(tg_id)
-        caption = (
-            f"🔓 تیکت #{ticket_id} ({ticket['subject']}) توسط کاربر دوباره باز شد.\n"
-            f"👤 {(user['first_name'] if user else '') or ''} (@{(user['username'] if user else '') or '---'})"
-        )
-        grp_ok = await report_router.notify_ticket_raw(tenant.bot_token, db, ticket_id, report_router.format_event(
-            "تیکت دوباره باز شد", [
-                ("شماره", report_router.code(f"#{ticket_id}")),
-                ("کاربر", report_router.user_link(tg_id, (user["first_name"] if user else "") or "", (user["username"] if user else "") or "")),
-                ("موضوع", ticket["subject"]),
-            ], icon="🔓", note="↩️ برای پاسخ، از دکمه‌ی «پاسخ به تیکت» یا ریپلای روی همین پیام استفاده کنید."))
-        admin_ids = [ticket["claimed_by"]] if ticket["claimed_by"] else db.list_admins()
-        async with aiohttp.ClientSession() as session:
-            for admin_id in ([] if grp_ok else admin_ids):
-                try:
-                    await session.post(
-                        f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                        json={"chat_id": admin_id, "text": caption},
-                    )
-                except Exception:
-                    pass
-    return _ticket_to_dict(db.get_ticket(ticket_id))
-
-
-async def send_photo_to_admins(db: Database, bot_token: str, caption: str, reply_markup: str,
-                                photo_bytes: bytes, filename: str, content_type: str, topic_key: str = "purchase"):
-    """رسید را به تاپیک گروه گزارش و در غیاب آن برای همه‌ی ادمین‌های همین مستأجر ارسال می‌کند. (file_id, تعداد تحویل موفق، نتایج) را برمی‌گرداند."""
-    group_msg = await report_router.send_raw_photo_to_group(
-        bot_token, db, topic_key, caption, reply_markup, photo_bytes, filename, content_type
-    )
-    if group_msg:
-        return group_msg["photo"][-1]["file_id"], 1, [(group_msg["chat"]["id"], group_msg["message_id"])]
-    admin_ids = db.list_admins()
-    sent_file_id = None
-    delivered = 0
-    results = []
-    async with aiohttp.ClientSession() as session:
-        for admin_id in admin_ids:
-            form = aiohttp.FormData()
-            form.add_field("chat_id", str(admin_id))
-            form.add_field("caption", caption)
-            form.add_field("reply_markup", reply_markup)
-            form.add_field("photo", photo_bytes, filename=filename, content_type=content_type)
-            try:
-                async with session.post(
-                    f"https://api.telegram.org/bot{bot_token}/sendPhoto", data=form
-                ) as resp:
-                    data = await resp.json()
-                    if data.get("ok"):
-                        delivered += 1
-                        msg = data["result"]
-                        results.append((admin_id, msg["message_id"]))
-                        if not sent_file_id:
-                            sent_file_id = msg["photo"][-1]["file_id"]
-            except Exception:
-                pass
-    return sent_file_id, delivered, results
-
-
-class _UploadedReceiptMessage:
-    """شبه‌پیام تلگرام برای رسید آپلودشده از مینی‌اپ، تا چک‌های نام فایل/زمان همان منطق ربات را داشته باشند."""
-
-    def __init__(self, filename: str, content_type: str):
-        self.date = datetime.now(timezone.utc)
-        self.document = SimpleNamespace(file_name=filename, mime_type=content_type)
-
-
-async def _check_miniapp_receipt(db: Database, photo_bytes: bytes, filename: str, content_type: str,
-                                 ref_kind: str, ref_id: int, amount_toman: int, user_id: int = None) -> dict:
-    """همان بررسی ضدجعل رسید ربات (receipt_ai_check) را روی رسید آپلودشده در مینی‌اپ اجرا می‌کند."""
-    try:
-        _card = db.get_manual_card_for_user(user_id)
-        return await receipt_ai_check.check_receipt(
-            None, db,
-            file_id="", receipt_type="document", ref_kind=ref_kind, ref_id=ref_id,
-            amount_toman=amount_toman,
-            card_number=_card["card_number"], card_holder=_card["card_holder"],
-            message=_UploadedReceiptMessage(filename, content_type), image_bytes=photo_bytes,
-        )
-    except Exception:
-        logging.getLogger("miniapp").exception("receipt_ai_check برای %s #%s خطا داد.", ref_kind, ref_id)
-        return {"note": None, "available": False, "reject": False, "reject_reason": None}
-
-
-def _receipt_ai_caption_suffix(ai_result: dict) -> str:
-    if ai_result.get("note"):
-        return "\n\n" + ai_result["note"][:600]
-    if not ai_result.get("available"):
-        return "\n\n⚠️ بررسی خودکار هوش مصنوعی روی این رسید انجام نشد (سرویس در دسترس نبود)."
-    return ""
-
-
-_RECEIPT_AI_REJECTED_MSG = "❌ متاسفانه رسید ارسالی شما رد شد. در صورت اشتباه لطفاً با پشتیبانی در ارتباط باشید."
-
-
-_PAID_VIA_LABELS = {
-    "wallet": "کیف پول", "plisio": "کریپتو (Plisio)", "abangateway": "آبان گیت وی", "blupal": "بلوپال",
-    "noapay": "نوآپی", "custom": "درگاه سفارشی", "card_auto": "کارت به کارت خودکار",
-}
-
-
-def _user_label_html(db: Database, user_id: int) -> str:
-    row = db.get_user(user_id)
-    name = html_lib.escape((row["first_name"] if row else "") or "")
-    uname = html_lib.escape((row["username"] if row else "") or "---")
-    return f"{name} (@{uname})\n🆔 آیدی عددی: {user_id}"
-
-
-def _order_panel_line(db: Database, order, product=None, plain: bool = False) -> str:
-    """خطوط «🖥 پنل: ...» و «🌐 نود: ...» برای گزارش تاپیک خرید؛ بدون مورد مشخص: رشته‌ی خالی."""
-    panel_ids, node_ids = [], []
-
-    def add(bucket, value):
-        try:
-            value = int(value or 0)
-        except (TypeError, ValueError):
-            return
-        if value and value not in bucket:
-            bucket.append(value)
-
-    def clean(value):
-        return str(value) if plain else html_lib.escape(str(value))
-
-    try:
-        if order["is_custom_config"]:
-            add(panel_ids, order["custom_panel_server_id"])
-        elif product is not None:
-            add(panel_ids, product["provision_server_id"])
-            add(node_ids, product["provision_ssh_node_id"])
-            extra = db.get_product_extra_targets(product["id"])
-            for pid in extra.get("panels", []):
-                add(panel_ids, pid)
-            for nid in extra.get("ssh", []):
-                add(node_ids, nid)
-        panels = [clean(r["name"]) for r in (db.get_panel_server(i) for i in panel_ids) if r and r["name"]]
-        nodes = [clean(r["name"]) for r in (db.get_ssh_node(i) for i in node_ids) if r and r.get("name")]
-    except Exception:
-        return ""
-    out = ""
-    if panels:
-        out += "🖥 پنل: " + "، ".join(panels) + "\n"
-    if nodes:
-        out += "🌐 نود: " + "، ".join(nodes) + "\n"
-    return out
-
-
-async def report_order_completed(tenant, db: Database, order_id: int, via: str = "wallet") -> None:
-    """گزارش خرید/تمدید تکمیل‌شده در مینی‌اپ به تاپیک گروه گزارش (یا پیام خصوصی مدیران)."""
-    try:
-        order = db.get_order(order_id)
-        if not order:
-            return
-        if order["is_renewal"]:
-            topic, title, product_line = "renewal", "🔄 تمدید سرویس (مینی‌اپ)", ""
-        elif order["is_custom_config"]:
-            topic, title = "purchase", "🛒 خرید کانفیگ شخصی (مینی‌اپ)"
-            product_line = f"🛠 {html_lib.escape(str(order['custom_username'] or ''))} ({order['custom_volume_gb']} گیگ)\n"
-            product_line += _order_panel_line(db, order)
-        else:
-            topic, title = "purchase", "🛒 خرید (مینی‌اپ)"
-            product = db.get_product(order["product_id"])
-            qty = order["quantity"] or 1
-            product_line = f"📦 محصول: {html_lib.escape(product['name'] if product else '---')}" + (f" × {qty}" if qty > 1 else "") + "\n"
-            product_line += _order_panel_line(db, order, product)
-        text = (
-            f"{title} - سفارش #{order_id}\n"
-            f"👤 کاربر: {_user_label_html(db, order['user_id'])}\n"
-            f"{product_line}"
-            f"💳 روش پرداخت: {_PAID_VIA_LABELS.get(via, via)}\n"
-        )
-        if order["discount_amount"]:
-            text += f"🎟 تخفیف کد: {order['discount_amount']:,} تومان\n"
-        if order["wallet_used"]:
-            text += f"👛 از کیف پول: {order['wallet_used']:,} تومان\n"
-        text += f"💵 مبلغ نهایی: {order['final_price']:,} تومان"
-        await report_router.report_raw(tenant.bot_token, db, topic, text, senior_only=False, parse_mode="HTML")
-    except Exception:
-        logging.getLogger("miniapp").exception("گزارش سفارش #%s به گروه ناموفق بود.", order_id)
-
-
-async def report_topup_completed(tenant, db: Database, topup_id: int, via: str) -> None:
-    """گزارش شارژ موفق کیف پول در مینی‌اپ به تاپیک «مالی»."""
-    try:
-        topup = db.get_topup(topup_id)
-        if not topup:
-            return
-        text = (
-            f"👛 شارژ کیف پول (مینی‌اپ) - #{topup_id}\n"
-            f"👤 کاربر: {_user_label_html(db, topup['user_id'])}\n"
-            f"💳 روش پرداخت: {_PAID_VIA_LABELS.get(via, via)}\n"
-            f"💰 مبلغ: {topup['amount']:,} تومان\n"
-            f"✅ موجودی فعلی: {int(db.get_wallet_credit(topup['user_id']) or 0):,} تومان"
-        )
-        await report_router.report_raw(tenant.bot_token, db, "finance", text, senior_only=False, parse_mode="HTML")
-    except Exception:
-        logging.getLogger("miniapp").exception("گزارش شارژ #%s به گروه ناموفق بود.", topup_id)
-
-
-
-# ---------------------------------------------------------------------------
-# اِعمال محدودیت‌های روش پرداخت (حداقل مبلغ هر روش + محدودیت مجاز هر محصول)
-# ---------------------------------------------------------------------------
-# منبع حقیقت همان database.py است (product_allows_payment_method /
-# get_payment_method_min_amount) که از داخل ربات هم استفاده می‌شود؛ این توابع
-# فقط همان چک را این‌جا (مینی‌اپ) هم اعمال می‌کنند تا هرجا خرید انجام شود
-# (بات یا مینی‌اپ)، یک قانون یکسان حاکم باشد.
-
-def _quick_action_buttons(user_id: int) -> list:
-    return [
-        {"text": "👤 پروفایل", "callback_data": f"qa_profile:{user_id}"},
-        {"text": "🚫 بلاک", "callback_data": f"qa_block:{user_id}"},
-        {"text": "✉️ پیام", "callback_data": f"qa_msg:{user_id}"},
-    ]
-
-
-def _card_info(db: Database, user_id: int) -> dict:
-    """شماره کارت/نام صاحب کارت برای پاسخ‌های API؛ تا وقتی شرط نمایش شماره کارت برای کاربر برقرار
-    نشده، مقدار خالی برمی‌گرداند تا فرانت‌اند چیزی نشان ندهد."""
-    if not db.card_gate_passed(user_id):
-        return {"card_number": None, "card_holder": None}
-    card = db.get_manual_card_for_user(user_id)
-    return {"card_number": card["card_number"], "card_holder": card["card_holder"]}
-
-
-def _payment_method_error(db: Database, amount: int, method_key: str, product_id: int = None,
-                          order=None, custom_config: bool = False, wallet_topup: bool = False,
-                          user_id: int = None) -> Optional[str]:
-    """اگر روش پرداخت method_key برای این مبلغ/محصول مجاز نباشد، پیام خطا را
-    برمی‌گرداند؛ در غیر این صورت None (یعنی مجاز است). معادل _order_payment_method_error
-    در handlers_user.py ربات - به‌عنوان یک لایه‌ی دفاعی سمت سرور (علاوه بر فیلترشدن
-    گزینه‌ها در پاسخ API)."""
-    if user_id is not None and db.card_method_blocked_for_user(user_id, method_key):
-        return "این روش پرداخت هنوز برای حساب شما فعال نشده است."
-    is_custom_config = custom_config or (order is not None and bool(order["is_custom_config"]))
-    if wallet_topup:
-        if not db.wallet_topup_allows_payment_method(method_key):
-            return "این روش پرداخت برای شارژ کیف پول در حال حاضر مجاز نیست."
-    elif is_custom_config:
-        custom_product_id = order["custom_product_id"] if order is not None else None
-        if not db.custom_config_allows_payment_method(custom_product_id, method_key):
-            return "این روش پرداخت برای ساخت کانفیگ شخصی مجاز نیست."
-    elif product_id and not db.product_allows_payment_method(product_id, method_key):
-        return "این روش پرداخت برای این محصول مجاز نیست."
-    min_amt = db.get_payment_method_min_amount(method_key)
-    if min_amt and amount < min_amt:
-        return f"حداقل مبلغ قابل پرداخت با این روش {min_amt:,} تومان است."
-    return None
-
-
-def _require_payment_method_allowed(db: Database, amount: int, method_key: str, product_id: int = None,
-                                    order=None, wallet_topup: bool = False, user_id: int = None) -> None:
-    err = _payment_method_error(db, amount, method_key, product_id, order=order, wallet_topup=wallet_topup,
-                                user_id=user_id)
-    if err:
-        raise HTTPException(status_code=400, detail=err)
-
-
-def _extra_gateway_options(db: Database, tenant, ok) -> list:
-    """درگاه‌های افزوده‌شده (زرین‌پال، آقای پرداخت، ...) که برای این مبلغ/محصول قابل‌استفاده‌اند؛ فقط بات اصلی."""
-    if tenant is None or tenant.tenant_id:
-        return []
-    options = []
-    for key in extra_gateway_payment.available_keys(db, True):
-        if not ok(key):
-            continue
-        meta = extra_gateway_registry.GATEWAYS[key]
-        default_text = PAYMENT_METHOD_META[key]["default_text"]
-        options.append({
-            "key": key, "title": meta["title"], "icon": meta["icon"],
-            "text": db.get_setting(f"paymeth_{key}_text", default_text),
-        })
-    return options
-
-
-def _payment_flags(db: Database, amount: int, product_id: int = None, order=None, tenant=None,
-                   wallet_topup: bool = False, user_id: int = None) -> dict:
-    """فلگ‌های فعال/مجازبودن روش‌های پرداخت داخلی برای مبلغ/محصولِ سفارش جاری؛
-    هم تنظیم فعال/غیرفعال کلی و هم محدودیت محصول/حداقل‌مبلغ را لحاظ می‌کند تا
-    فرانت‌اند مینی‌اپ فقط دکمه‌های واقعاً قابل‌استفاده را نشان دهد."""
-    def _ok(method_key: str) -> bool:
-        return _payment_method_error(db, amount, method_key, product_id, order=order, wallet_topup=wallet_topup,
-                                     user_id=user_id) is None
-    return {
-        "card_to_card_enabled": db.get_setting("card_to_card_enabled", "1") == "1" and _ok("card"),
-        "crypto_enabled": db.get_setting("crypto_payment_enabled", "0") == "1"
-        and bool(_resolve_plisio_key(db)) and bool(_runtime_api_base_url()) and _ok("crypto"),
-        "abangateway_enabled": db.get_setting("abangateway_payment_enabled", "0") == "1"
-        and bool(_resolve_abangateway_key(db)) and bool(_runtime_api_base_url()) and _ok("abangateway"),
-        "blupal_enabled": blupal_payment.blupal_payment_available(db) and _ok("blupal"),
-        "noapay_enabled": noapay_payment.noapay_payment_available(db) and _ok("noapay"),
-        "card_to_card_auto_enabled": db.get_setting("card_to_card_auto_enabled", "0") == "1"
-        and bool(db.list_card_to_card_cards(only_active=True)) and _ok("card_auto"),
-        "extra_gateways": _extra_gateway_options(db, tenant, _ok),
-    }
-
-
-# ---------------------------------------------------------------------------
-# سفارش‌ها
-# ---------------------------------------------------------------------------
-
-class OrderCreate(BaseModel):
-    product_id: int
-    quantity: int = 1
-    discount_code: Optional[str] = None
-
-
-class TopupCreate(BaseModel):
-    amount: int
-
-
-@app.get("/api/tier-quote")
-def api_tier_quote(product_id: int, quantity: int = 1, auth=Depends(get_verified_user)):
-    tg_id, db, tenant = auth
-    product = db.get_product(product_id)
-    if not product or not product["is_active"]:
-        raise HTTPException(status_code=404, detail=tr("محصول یافت نشد."))
-    return db.get_tier_price_info(tg_id, product["price"], max(1, quantity))
-
-
-@app.post("/api/orders")
-async def api_create_order(body: OrderCreate, request: Request, auth=Depends(require_joined)):
-    tg_id, db, tenant = auth
-    web_token = request.headers.get("x-web-token")
-    if web_token and not tenant.tenant_id:
-        await asyncio.to_thread(_verify_web_turnstile, request)
-        if not await asyncio.to_thread(web_auth.enforce_rate_limit, db, "web-order-ip:" + _client_ip(request), 20, 3600):
-            raise HTTPException(status_code=429, detail=tr("تعداد تلاش‌های خرید از این شبکه زیاد است؛ بعداً دوباره تلاش کنید."))
-    user_row = db.get_user(tg_id)
-    if user_row and user_row["is_blocked"]:
-        raise HTTPException(status_code=403, detail=tr("حساب شما مسدود شده است."))
-    quantity = max(1, body.quantity)
-    product = db.get_product(body.product_id)
-    if not product or not product["is_active"]:
-        raise HTTPException(status_code=400, detail=tr("این محصول موجود نیست."))
-    if product["is_auto_provision"]:
-        pass  # سقفی برای تعداد نیست؛ کافی بودن اعتبار حجمی لحظه‌ی ساخت واقعی چک می‌شود
-    else:
-        stock = db.count_available_configs(body.product_id)
-        if stock <= 0:
-            raise HTTPException(status_code=400, detail=tr("این محصول موجود نیست."))
-        if quantity > stock:
-            raise HTTPException(status_code=400, detail=tr(f"موجودی کافی نیست. فقط {stock} عدد موجود است."))
-
-    tier_info = db.get_tier_price_info(tg_id, product["price"], quantity)
-    total_price = tier_info["total_after"]
-    discount_code_id = None
-    discount_amount = 0
-    if body.discount_code:
-        code_row = db.get_discount_code(body.discount_code)
-        invalid_reason = db.get_discount_invalid_reason(code_row, total_price, body.product_id, user_id=tg_id)
-        if invalid_reason:
-            raise HTTPException(status_code=400, detail=invalid_reason)
-        discount_amount = db.compute_discount_amount(code_row, total_price)
-        discount_code_id = code_row["id"]
-
-    price_after_code = max(total_price - discount_amount, 0)
-    allowed_methods = db.get_product_payment_methods(body.product_id)
-    wallet_allowed = allowed_methods is None or "wallet" in allowed_methods
-    plan = db.plan_wallet_spend(tg_id, price_after_code, wallet_allowed)
-    if plan["blocked"]:
-        raise HTTPException(status_code=400, detail=plan["message"])
-    wallet_used = plan["wallet_used"]
-
-    if discount_code_id and not db.claim_discount_use(discount_code_id, tg_id):
-        raise HTTPException(status_code=400, detail=tr("این کد تخفیف دیگر برای شما قابل استفاده نیست."))
-    if wallet_used > 0:
-        wallet_used = db.deduct_wallet_credit(tg_id, wallet_used)
-
-    order_id = db.create_order(
-        tg_id, body.product_id, base_price=total_price,
-        wallet_used=wallet_used, discount_code_id=discount_code_id, discount_amount=discount_amount,
-        quantity=quantity, tier_discount_amount=tier_info["amount"],
-    )
-    order = db.get_order(order_id)
-
-    try:
-        if order["final_price"] <= 0:
-            if product["is_auto_provision"]:
-                try:
-                    if product["provision_server_id"] or product["provision_ssh_node_id"]:
-                        prov_results = await provision_direct(db, product, quantity, user_id=tg_id, order_id=order_id)
-                    else:
-                        prov_results = await provision_auto_config(db, product, quantity, user_id=tg_id, order_id=order_id)
-                except (ProvisionError, DirectProvisionError) as e:
-                    db.reject_order(order_id)
-                    raise HTTPException(status_code=409, detail=str(e))
-                db.approve_order_auto(order_id)
-                await report_order_completed(tenant, db, order_id, "wallet")
-                db.reward_referrer_if_first_purchase(tg_id, order["final_price"] or total_price)
-                links = [dedicated_sub.dedicated_link_for_upstream(db, r["subscription_url"]) for r in prov_results]
-                return {
-                    "status": "approved", "order_id": order_id,
-                    "link": links[0], "links": links,
-                    "expires_at": None,
-                }
-
-            results = db.take_unused_configs(body.product_id, tg_id, quantity)
-            if not results:
-                db.reject_order(order_id)
-                raise HTTPException(status_code=409, detail=tr("موجودی هم‌زمان تمام شد؛ مبلغ بازگردانده شد."))
-            db.approve_order(order_id, [r["id"] for r in results])
-            await report_order_completed(tenant, db, order_id, "wallet")
-
-            async def _send_admin_msg(admin_id, text):
-                async with aiohttp.ClientSession() as session:
-                    await session.post(
-                        f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                        json={"chat_id": admin_id, "text": text},
-                    )
-
-            await check_and_notify_low_stock(_send_admin_msg, db, body.product_id, bot_token=tenant.bot_token)
-
-            db.reward_referrer_if_first_purchase(tg_id, order["final_price"] or total_price)
-            order = db.get_order(order_id)
-            configs = db.get_order_configs(order_id)
-            links = [c["link"] for c in configs] if configs else [db.get_config_by_id(order["config_id"])["link"]]
-            return {
-                "status": "approved", "order_id": order_id,
-                "link": links[0], "links": links,
-                "expires_at": configs[0]["expires_at"] if configs else None,
-            }
-
-        # مبلغی باقی مانده - کاربر باید مثل قبل از طریق بات رسید کارت‌به‌کارت بفرستد
-        flags = _payment_flags(db, order["final_price"], body.product_id, tenant=tenant, user_id=tg_id)
-        return {
-            "status": "pending_payment", "order_id": order_id, "final_price": order["final_price"],
-            "quantity": quantity,
-            **_card_info(db, tg_id),
-            **flags,
-        }
-    except HTTPException:
-        raise
-    except Exception:
-        # هر خطای غیرمنتظره‌ی دیگری نباید باعث بشه مبلغ کسرشده از کیف پول برای
-        # همیشه گیر بیفته؛ reject_order فقط روی سفارش‌های هنوز pending اثر
-        # می‌کند، پس فراخوانی آن این‌جا امن است.
-        logging.getLogger("miniapp").exception(
-            "خطای غیرمنتظره در ثبت سفارش #%s برای کاربر %s؛ سفارش رد و مبلغ کیف پول (در صورت وجود) بازگردانده شد.",
-            order_id, tg_id,
-        )
-        db.reject_order(order_id)
-        raise HTTPException(status_code=500, detail=tr("خطای غیرمنتظره‌ای رخ داد. مبلغ کسرشده (در صورت وجود) به کیف پول شما بازگردانده شد."))
-
-
-
-# ---------------------------------------------------------------------------
-# پرداخت کریپتو (Plisio)
-# ---------------------------------------------------------------------------
-
-def _resolve_plisio_key(db: Database) -> str:
-    return crypto_payment.resolve_plisio_key(db)
-
-
-async def _toman_to_usd(db: Database, amount_toman: int) -> float:
-    try:
-        return await crypto_payment.toman_to_usd(db, amount_toman)
-    except crypto_payment.CryptoPaymentError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-def _crypto_callback_url(tenant_id: str) -> str:
-    try:
-        return crypto_payment.callback_url(tenant_id)
-    except crypto_payment.CryptoPaymentError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-async def _create_crypto_invoice_for(
-    db: Database, tenant, tg_id: int, kind: str, ref_id: int, amount_toman: int,
-    order_name: str,
-):
-    try:
-        return await crypto_payment.create_invoice_for(
-            db, tenant.tenant_id, tg_id, kind, ref_id, amount_toman, order_name,
-        )
-    except crypto_payment.CryptoPaymentError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.post("/api/orders/{order_id}/crypto-invoice")
-async def api_order_crypto_invoice(order_id: int, auth=Depends(require_joined)):
-    tg_id, db, tenant = auth
-    order = db.get_order(order_id)
-    if not order or order["user_id"] != tg_id:
-        raise HTTPException(status_code=404, detail=tr("سفارش یافت نشد."))
-    if order["status"] != "pending":
-        raise HTTPException(status_code=400, detail=tr("این سفارش قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, order["final_price"], "crypto", order["product_id"], order=order, user_id=order["user_id"])
-    if order["is_custom_config"]:
-        order_label = f"کانفیگ شخصی #{order_id} - {order['custom_username']}"
-    else:
-        product = db.get_product(order["product_id"])
-        order_label = f"سفارش #{order_id} - {product['name'] if product else ''}"
-    result = await _create_crypto_invoice_for(
-        db, tenant, tg_id, "order", order_id, order["final_price"],
-        order_name=order_label,
-    )
-    return result
-
-
-class CryptoWalletInvoiceRequest(BaseModel):
-    topup_id: int
-
-
-@app.post("/api/wallet/crypto-invoice")
-async def api_wallet_crypto_invoice(body: CryptoWalletInvoiceRequest, auth=Depends(require_joined)):
-    tg_id, db, tenant = auth
-    topup = db.get_topup(body.topup_id)
-    if not topup or topup["user_id"] != tg_id:
-        raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
-    if topup["status"] != "pending":
-        raise HTTPException(status_code=400, detail=tr("این درخواست شارژ قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], "crypto", wallet_topup=True, user_id=topup["user_id"])
-    result = await _create_crypto_invoice_for(
-        db, tenant, tg_id, "wallet_topup", body.topup_id, topup["amount"],
-        order_name=f"شارژ کیف پول #{body.topup_id}",
-    )
-    result["topup_id"] = body.topup_id
-    return result
-
-
-# ---------------------------------------------------------------------------
-# پرداخت کارت‌به‌کارت خودکار (آبان گیت وی)
-# ---------------------------------------------------------------------------
-
-def _resolve_abangateway_key(db: Database) -> str:
-    return abangateway_payment.resolve_api_key(db)
-
-
-async def _create_abangateway_invoice_for(
-    db: Database, tenant, tg_id: int, kind: str, ref_id: int, amount_toman: int,
-    order_name: str,
-):
-    try:
-        return await abangateway_payment.create_invoice_for(
-            db, tenant.tenant_id, tg_id, kind, ref_id, amount_toman, order_name,
-        )
-    except abangateway_payment.AbanGatewayPaymentError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.post("/api/orders/{order_id}/abangateway-invoice")
-async def api_order_abangateway_invoice(order_id: int, auth=Depends(require_joined)):
-    tg_id, db, tenant = auth
-    order = db.get_order(order_id)
-    if not order or order["user_id"] != tg_id:
-        raise HTTPException(status_code=404, detail=tr("سفارش یافت نشد."))
-    if order["status"] != "pending":
-        raise HTTPException(status_code=400, detail=tr("این سفارش قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, order["final_price"], "abangateway", order["product_id"], order=order, user_id=order["user_id"])
-    if order["is_custom_config"]:
-        order_label = f"کانفیگ شخصی #{order_id} - {order['custom_username']}"
-    else:
-        product = db.get_product(order["product_id"])
-        order_label = f"سفارش #{order_id} - {product['name'] if product else ''}"
-    result = await _create_abangateway_invoice_for(
-        db, tenant, tg_id, "order", order_id, order["final_price"],
-        order_name=order_label,
-    )
-    return result
-
-
-class AbanGatewayWalletInvoiceRequest(BaseModel):
-    topup_id: int
-
-
-@app.post("/api/wallet/abangateway-invoice")
-async def api_wallet_abangateway_invoice(body: AbanGatewayWalletInvoiceRequest, auth=Depends(require_joined)):
-    tg_id, db, tenant = auth
-    topup = db.get_topup(body.topup_id)
-    if not topup or topup["user_id"] != tg_id:
-        raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
-    if topup["status"] != "pending":
-        raise HTTPException(status_code=400, detail=tr("این درخواست شارژ قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], "abangateway", wallet_topup=True, user_id=topup["user_id"])
-    result = await _create_abangateway_invoice_for(
-        db, tenant, tg_id, "wallet_topup", body.topup_id, topup["amount"],
-        order_name=f"شارژ کیف پول #{body.topup_id}",
-    )
-    result["topup_id"] = body.topup_id
-    return result
-
-
-@app.post("/api/webhooks/abangateway")
-async def api_abangateway_webhook(request: Request, tenant: Tenant = Depends(get_tenant)):
-    """
-    اگر «کلید مخفی وب‌هوک» تنظیم شده باشد، امضای X-Signature الزامی است. هندلر به هیچ
-    فیلدی از بدنه اعتماد نمی‌کند؛ وضعیت واقعی با کلید API از خود آبان گیت وی استعلام و
-    verify می‌شود (abangateway_payment.try_verify_and_finalize).
-    """
-    raw_body = await request.body()
-    webhook_secret = tenant.db.get_setting("abangateway_webhook_secret", "")
-    if webhook_secret and not abangateway_payment.verify_webhook_signature(
-        raw_body, request.headers.get("X-Signature", ""), webhook_secret
-    ):
-        raise HTTPException(status_code=401, detail=tr("امضای وب‌هوک نامعتبر است."))
-
-    try:
-        body = json.loads(raw_body)
-    except Exception:
-        try:
-            form = await request.form()
-            body = dict(form)
-        except Exception:
-            body = {}
-
-    invoice_id = abangateway_payment.extract_invoice_id_from_webhook(body or {})
-    if not invoice_id:
-        # اگر شناسه در بدنه پیدا نشد، شاید در کوئری‌استرینگ آمده باشد
-        invoice_id = request.query_params.get("invoice_id")
-    if not invoice_id:
-        raise HTTPException(status_code=400, detail=tr("شناسه‌ی فاکتور در وب‌هوک پیدا نشد."))
-
-    db = tenant.db
-    invoice = db.get_abangateway_invoice_by_invoice_id(invoice_id)
-    if not invoice:
-        db.log_webhook_event(gateway="abangateway", txn_id=invoice_id, verified=False,
-                              status="ignored", error="فاکتور در دیتابیس پیدا نشد.",
-                              raw_body=json.dumps(body, ensure_ascii=False))
-        return {"status": "ignored"}
-
-    result = await abangateway_payment.try_verify_and_finalize(db, invoice)
-    db.log_webhook_event(gateway="abangateway", txn_id=invoice_id, verified=(result == "verified_now"),
-                          status=result, raw_body=json.dumps(body, ensure_ascii=False))
-    if result != "verified_now":
-        # already_delivered / not_paid_yet / expired / cancelled / error:...
-        return {"status": result}
-
-    if invoice["kind"] == "reseller_request":
-        await _complete_reseller_gateway_payment(db, tenant, invoice)
-        return {"status": "ok"}
-
-    if invoice["kind"] == "wallet_topup":
-        db.approve_topup(invoice["ref_id"])
-        await report_topup_completed(tenant, db, invoice["ref_id"], "abangateway")
-        try:
-            async with aiohttp.ClientSession() as session:
-                await session.post(
-                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                    json={
-                        "chat_id": invoice["user_id"],
-                        "text": f"✅ پرداخت تایید شد و {invoice['amount_toman']:,} تومان به کیف پول شما اضافه شد.",
-                    },
-                )
-        except Exception:
-            pass
-        return {"status": "ok"}
-
-    # invoice["kind"] == "order"
-    order_id = invoice["ref_id"]
-    order = db.get_order(order_id)
-    if not order or order["status"] != "pending":
-        return {"status": "ok"}
-
-    if order["is_renewal"]:
-        if not db.claim_order(order_id):
-            return {"status": "ok"}
-        try:
-            result_text = await execute_renewal(db, order)
-        except RenewalError as e:
-            db.release_order_claim(order_id)
-            for admin_id in db.list_admins():
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        await session.post(
-                            f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                            json={"chat_id": admin_id, "text": f"⚠️ سفارش تمدید #{order_id} با آبان گیت وی پرداخت شد ولی تمدید ناموفق بود: {e}\nلطفاً دستی رسیدگی کنید."},
-                        )
-                except Exception:
-                    pass
-            return {"status": "ok"}
-        except Exception:
-            logging.exception("خطای غیرمنتظره در execute_renewal برای سفارش تمدید #%s (وب‌هوک آبان گیت وی)", order_id)
-            db.release_order_claim(order_id)
-            for admin_id in db.list_admins():
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        await session.post(
-                            f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                            json={"chat_id": admin_id, "text": f"⚠️ سفارش تمدید #{order_id} با آبان گیت وی پرداخت شد ولی یک خطای غیرمنتظره در تمدید رخ داد.\nلطفاً لاگ سرور و دستی رسیدگی کنید."},
-                        )
-                except Exception:
-                    pass
-            return {"status": "ok"}
-        db.approve_renewal_order(order_id)
-        await report_order_completed(tenant, db, order_id, "abangateway")
-        try:
-            async with aiohttp.ClientSession() as session:
-                await session.post(
-                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                    json={"chat_id": order["user_id"], "text": result_text},
-                )
-        except Exception:
-            pass
-        return {"status": "ok"}
-
-    if order["is_custom_config"]:
-        # ساخت کانفیگ شخصی نیازمند panel provider است که در این سرور مستقل هم در
-        # دسترس است؛ برای سادگی و یکسان بودن با مسیر «بررسی دستی» در بات، همان
-        # منطق مشترک abangateway_payment.finalize_paid_order استفاده می‌شود، اما
-        # چون این سرور به آبجکت aiogram Bot دسترسی ندارد، فقط سفارش را به کاربر
-        # اطلاع می‌دهیم که از داخل بات دکمه‌ی «بررسی وضعیت پرداخت» را بزند.
-        try:
-            async with aiohttp.ClientSession() as session:
-                await session.post(
-                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                    json={
-                        "chat_id": order["user_id"],
-                        "text": "✅ پرداخت شما تایید شد!\nبرای دریافت کانفیگ شخصی، به بات برگرد و روی دکمه‌ی "
-                                "«🔄 بررسی وضعیت پرداخت» زیر همان پیام فاکتور بزن.",
-                    },
-                )
-        except Exception:
-            pass
-        return {"status": "ok"}
-
-    product = db.get_product(order["product_id"])
-    if product and product["is_auto_provision"]:
-        if not db.claim_order(order_id):
-            return {"status": "ok"}
-        quantity = order["quantity"] or 1
-        try:
-            if product["provision_server_id"] or product["provision_ssh_node_id"]:
-                prov_results = await provision_direct(db, product, quantity, user_id=order["user_id"], order_id=order_id)
-            else:
-                prov_results = await provision_auto_config(db, product, quantity, user_id=order["user_id"], order_id=order_id)
-        except (ProvisionError, DirectProvisionError) as e:
-            db.release_order_claim(order_id)
-            admin_ids = db.list_admins()
-            async with aiohttp.ClientSession() as session:
-                for admin_id in admin_ids:
-                    try:
-                        await session.post(
-                            f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                            json={
-                                "chat_id": admin_id,
-                                "text": f"⚠️ سفارش #{order_id} با آبان گیت وی پرداخت شد ولی ساخت خودکار کانفیگ ناموفق بود: {e}\nلطفاً دستی رسیدگی کنید.",
-                            },
-                        )
-                    except Exception:
-                        pass
-            return {"status": "ok"}
-
-        db.approve_order_auto(order_id)
-        await report_order_completed(tenant, db, order_id, "abangateway")
-        db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or product["price"])
-        try:
-            async with aiohttp.ClientSession() as session:
-                await session.post(
-                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                    json={
-                        "chat_id": order["user_id"],
-                        "text": f"✅ پرداخت تایید شد!\n📦 محصول: {product['name']}",
-                    },
-                )
-        except Exception:
-            pass
-        asyncio.create_task(deliver_config_to_user_web(
-            order["user_id"], product["name"], [r["subscription_url"] for r in prov_results],
-            final_price=order["final_price"], order_id=order_id, db=db, bot_token=tenant.bot_token,
-        ))
-        return {"status": "ok"}
-
-    if not db.claim_order(order_id):
-        return {"status": "ok"}
-    quantity = order["quantity"] or 1
-    results = db.take_unused_configs(order["product_id"], order["user_id"], quantity)
-    if results:
-        db.approve_order(order_id, [r["id"] for r in results])
-        await report_order_completed(tenant, db, order_id, "abangateway")
-        db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or (product["price"] if product else 0))
-        try:
-            async with aiohttp.ClientSession() as session:
-                await session.post(
-                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                    json={
-                        "chat_id": order["user_id"],
-                        "text": f"✅ پرداخت تایید شد!\n📦 محصول: {product['name'] if product else ''}",
-                    },
-                )
-        except Exception:
-            pass
-        asyncio.create_task(deliver_config_to_user_web(
-            order["user_id"], product["name"] if product else "", [r["link"] for r in results],
-            final_price=order["final_price"], order_id=order_id, db=db, bot_token=tenant.bot_token,
-        ))
-    else:
-        db.release_order_claim(order_id)
-        admin_ids = db.list_admins()
-        async with aiohttp.ClientSession() as session:
-            for admin_id in admin_ids:
-                try:
-                    await session.post(
-                        f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                        json={
-                            "chat_id": admin_id,
-                            "text": f"⚠️ سفارش #{order_id} با آبان گیت وی پرداخت شد ولی موجودی هم‌زمان تمام شده. لطفاً دستی رسیدگی کنید.",
-                        },
-                    )
-                except Exception:
-                    pass
-    return {"status": "ok"}
-
-
-# ---------------------------------------------------------------------------
-# پرداخت کارت‌به‌کارت خودکار (بلوپال)
-# ---------------------------------------------------------------------------
-
-def _resolve_blupal_key(db: Database) -> str:
-    return blupal_payment.resolve_api_key(db)
-
-
-async def _create_blupal_invoice_for(
-    db: Database, tenant, tg_id: int, kind: str, ref_id: int, amount_toman: int,
-    order_name: str,
-):
-    try:
-        return await blupal_payment.create_invoice_for(
-            db, tenant.tenant_id, tg_id, kind, ref_id, amount_toman, order_name,
-        )
-    except blupal_payment.BluPalPaymentError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.post("/api/orders/{order_id}/blupal-invoice")
-async def api_order_blupal_invoice(order_id: int, auth=Depends(require_joined)):
-    tg_id, db, tenant = auth
-    order = db.get_order(order_id)
-    if not order or order["user_id"] != tg_id:
-        raise HTTPException(status_code=404, detail=tr("سفارش یافت نشد."))
-    if order["status"] != "pending":
-        raise HTTPException(status_code=400, detail=tr("این سفارش قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, order["final_price"], "blupal", order["product_id"], order=order, user_id=order["user_id"])
-    if order["is_custom_config"]:
-        order_label = f"کانفیگ شخصی #{order_id} - {order['custom_username']}"
-    else:
-        product = db.get_product(order["product_id"])
-        order_label = f"سفارش #{order_id} - {product['name'] if product else ''}"
-    result = await _create_blupal_invoice_for(
-        db, tenant, tg_id, "order", order_id, order["final_price"],
-        order_name=order_label,
-    )
-    return result
-
-
-class BluPalWalletInvoiceRequest(BaseModel):
-    topup_id: int
-
-
-@app.post("/api/wallet/blupal-invoice")
-async def api_wallet_blupal_invoice(body: BluPalWalletInvoiceRequest, auth=Depends(require_joined)):
-    tg_id, db, tenant = auth
-    topup = db.get_topup(body.topup_id)
-    if not topup or topup["user_id"] != tg_id:
-        raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
-    if topup["status"] != "pending":
-        raise HTTPException(status_code=400, detail=tr("این درخواست شارژ قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], "blupal", wallet_topup=True, user_id=topup["user_id"])
-    result = await _create_blupal_invoice_for(
-        db, tenant, tg_id, "wallet_topup", body.topup_id, topup["amount"],
-        order_name=f"شارژ کیف پول #{body.topup_id}",
-    )
-    result["topup_id"] = body.topup_id
-    return result
-
-
-@app.post("/api/webhooks/blupal")
-async def api_blupal_webhook(request: Request, tenant: Tenant = Depends(get_tenant)):
-    """
-    توجه: طبق مستندات بلوپال، مکانیزم امضای وب‌هوک مشخص نشده است؛ به همین دلیل
-    این هندلر هم مثل بقیه‌ی درگاه‌های این پروژه به هیچ فیلدی از بدنه (مثل status)
-    اعتماد نمی‌کند؛ فقط از آن برای پیدا کردن invoice_id استفاده می‌شود و سپس با
-    کلید API خودمان (که در بدنه‌ی وب‌هوک قابل جعل نیست) وضعیت واقعی از سمت بلوپال
-    استعلام می‌شود. blupal_payment.try_verify_and_finalize منبع حقیقت است.
-    """
-    try:
-        body = await request.json()
-    except Exception:
-        try:
-            form = await request.form()
-            body = dict(form)
-        except Exception:
-            body = {}
-
-    invoice_id = blupal_payment.extract_invoice_id_from_webhook(body or {})
-    if not invoice_id:
-        # اگر شناسه در بدنه پیدا نشد، شاید در کوئری‌استرینگ آمده باشد
-        invoice_id = request.query_params.get("invoice_id")
-    if not invoice_id:
-        raise HTTPException(status_code=400, detail=tr("شناسه‌ی فاکتور در وب‌هوک پیدا نشد."))
-
-    db = tenant.db
-    invoice = db.get_blupal_invoice_by_invoice_id(invoice_id)
-    if not invoice:
-        db.log_webhook_event(gateway="blupal", txn_id=invoice_id, verified=False,
-                              status="ignored", error="فاکتور در دیتابیس پیدا نشد.",
-                              raw_body=json.dumps(body, ensure_ascii=False))
-        return {"status": "ignored"}
-
-    result = await blupal_payment.try_verify_and_finalize(db, invoice)
-    db.log_webhook_event(gateway="blupal", txn_id=invoice_id, verified=(result == "verified_now"),
-                          status=result, raw_body=json.dumps(body, ensure_ascii=False))
-    if result != "verified_now":
-        # already_delivered / not_paid_yet / expired / cancelled / error:...
-        return {"status": result}
-
-    if invoice["kind"] == "reseller_request":
-        await _complete_reseller_gateway_payment(db, tenant, invoice)
-        return {"status": "ok"}
-
-    if invoice["kind"] == "wallet_topup":
-        db.approve_topup(invoice["ref_id"])
-        await report_topup_completed(tenant, db, invoice["ref_id"], "blupal")
-        try:
-            async with aiohttp.ClientSession() as session:
-                await session.post(
-                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                    json={
-                        "chat_id": invoice["user_id"],
-                        "text": f"✅ پرداخت تایید شد و {invoice['amount_toman']:,} تومان به کیف پول شما اضافه شد.",
-                    },
-                )
-        except Exception:
-            pass
-        return {"status": "ok"}
-
-    # invoice["kind"] == "order"
-    order_id = invoice["ref_id"]
-    order = db.get_order(order_id)
-    if not order or order["status"] != "pending":
-        return {"status": "ok"}
-
-    if order["is_renewal"]:
-        if not db.claim_order(order_id):
-            return {"status": "ok"}
-        try:
-            result_text = await execute_renewal(db, order)
-        except RenewalError as e:
-            db.release_order_claim(order_id)
-            for admin_id in db.list_admins():
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        await session.post(
-                            f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                            json={"chat_id": admin_id, "text": f"⚠️ سفارش تمدید #{order_id} با بلوپال پرداخت شد ولی تمدید ناموفق بود: {e}\nلطفاً دستی رسیدگی کنید."},
-                        )
-                except Exception:
-                    pass
-            return {"status": "ok"}
-        except Exception:
-            logging.exception("خطای غیرمنتظره در execute_renewal برای سفارش تمدید #%s (وب‌هوک بلوپال)", order_id)
-            db.release_order_claim(order_id)
-            for admin_id in db.list_admins():
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        await session.post(
-                            f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                            json={"chat_id": admin_id, "text": f"⚠️ سفارش تمدید #{order_id} با بلوپال پرداخت شد ولی یک خطای غیرمنتظره در تمدید رخ داد.\nلطفاً لاگ سرور و دستی رسیدگی کنید."},
-                        )
-                except Exception:
-                    pass
-            return {"status": "ok"}
-        db.approve_renewal_order(order_id)
-        await report_order_completed(tenant, db, order_id, "blupal")
-        try:
-            async with aiohttp.ClientSession() as session:
-                await session.post(
-                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                    json={"chat_id": order["user_id"], "text": result_text},
-                )
-        except Exception:
-            pass
-        return {"status": "ok"}
-
-    if order["is_custom_config"]:
-        # ساخت کانفیگ شخصی نیازمند panel provider است که در این سرور مستقل هم در
-        # دسترس است؛ برای سادگی و یکسان بودن با مسیر «بررسی دستی» در بات، همان
-        # منطق مشترک blupal_payment.finalize_paid_order استفاده می‌شود، اما
-        # چون این سرور به آبجکت aiogram Bot دسترسی ندارد، فقط سفارش را به کاربر
-        # اطلاع می‌دهیم که از داخل بات دکمه‌ی «بررسی وضعیت پرداخت» را بزند.
-        try:
-            async with aiohttp.ClientSession() as session:
-                await session.post(
-                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                    json={
-                        "chat_id": order["user_id"],
-                        "text": "✅ پرداخت شما تایید شد!\nبرای دریافت کانفیگ شخصی، به بات برگرد و روی دکمه‌ی "
-                                "«🔄 بررسی وضعیت پرداخت» زیر همان پیام فاکتور بزن.",
-                    },
-                )
-        except Exception:
-            pass
-        return {"status": "ok"}
-
-    product = db.get_product(order["product_id"])
-    if product and product["is_auto_provision"]:
-        if not db.claim_order(order_id):
-            return {"status": "ok"}
-        quantity = order["quantity"] or 1
-        try:
-            if product["provision_server_id"] or product["provision_ssh_node_id"]:
-                prov_results = await provision_direct(db, product, quantity, user_id=order["user_id"], order_id=order_id)
-            else:
-                prov_results = await provision_auto_config(db, product, quantity, user_id=order["user_id"], order_id=order_id)
-        except (ProvisionError, DirectProvisionError) as e:
-            db.release_order_claim(order_id)
-            admin_ids = db.list_admins()
-            async with aiohttp.ClientSession() as session:
-                for admin_id in admin_ids:
-                    try:
-                        await session.post(
-                            f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                            json={
-                                "chat_id": admin_id,
-                                "text": f"⚠️ سفارش #{order_id} با بلوپال پرداخت شد ولی ساخت خودکار کانفیگ ناموفق بود: {e}\nلطفاً دستی رسیدگی کنید.",
-                            },
-                        )
-                    except Exception:
-                        pass
-            return {"status": "ok"}
-
-        db.approve_order_auto(order_id)
-        await report_order_completed(tenant, db, order_id, "blupal")
-        db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or product["price"])
-        try:
-            async with aiohttp.ClientSession() as session:
-                await session.post(
-                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                    json={
-                        "chat_id": order["user_id"],
-                        "text": f"✅ پرداخت تایید شد!\n📦 محصول: {product['name']}",
-                    },
-                )
-        except Exception:
-            pass
-        asyncio.create_task(deliver_config_to_user_web(
-            order["user_id"], product["name"], [r["subscription_url"] for r in prov_results],
-            final_price=order["final_price"], order_id=order_id, db=db, bot_token=tenant.bot_token,
-        ))
-        return {"status": "ok"}
-
-    if not db.claim_order(order_id):
-        return {"status": "ok"}
-    quantity = order["quantity"] or 1
-    results = db.take_unused_configs(order["product_id"], order["user_id"], quantity)
-    if results:
-        db.approve_order(order_id, [r["id"] for r in results])
-        await report_order_completed(tenant, db, order_id, "blupal")
-        db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or (product["price"] if product else 0))
-        try:
-            async with aiohttp.ClientSession() as session:
-                await session.post(
-                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                    json={
-                        "chat_id": order["user_id"],
-                        "text": f"✅ پرداخت تایید شد!\n📦 محصول: {product['name'] if product else ''}",
-                    },
-                )
-        except Exception:
-            pass
-        asyncio.create_task(deliver_config_to_user_web(
-            order["user_id"], product["name"] if product else "", [r["link"] for r in results],
-            final_price=order["final_price"], order_id=order_id, db=db, bot_token=tenant.bot_token,
-        ))
-    else:
-        db.release_order_claim(order_id)
-        admin_ids = db.list_admins()
-        async with aiohttp.ClientSession() as session:
-            for admin_id in admin_ids:
-                try:
-                    await session.post(
-                        f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                        json={
-                            "chat_id": admin_id,
-                            "text": f"⚠️ سفارش #{order_id} با بلوپال پرداخت شد ولی موجودی هم‌زمان تمام شده. لطفاً دستی رسیدگی کنید.",
-                        },
-                    )
-                except Exception:
-                    pass
-    return {"status": "ok"}
-
-
-# ---------------------------------------------------------------------------
-# پرداخت با خرید استارز تلگرام (NoapayBot)
-# ---------------------------------------------------------------------------
-
-async def _create_noapay_invoice_for(
-    db: Database, tenant, tg_id: int, kind: str, ref_id: int, amount_toman: int,
-    order_name: str,
-):
-    try:
-        return await noapay_payment.create_invoice_for(
-            db, tenant.tenant_id, tg_id, kind, ref_id, amount_toman, order_name,
-        )
-    except noapay_payment.NoapayPaymentError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.post("/api/orders/{order_id}/noapay-invoice")
-async def api_order_noapay_invoice(order_id: int, auth=Depends(require_joined)):
-    tg_id, db, tenant = auth
-    order = db.get_order(order_id)
-    if not order or order["user_id"] != tg_id:
-        raise HTTPException(status_code=404, detail=tr("سفارش یافت نشد."))
-    if order["status"] != "pending":
-        raise HTTPException(status_code=400, detail=tr("این سفارش قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, order["final_price"], "noapay", order["product_id"], order=order, user_id=order["user_id"])
-    if order["is_custom_config"]:
-        order_label = f"کانفیگ شخصی #{order_id} - {order['custom_username']}"
-    else:
-        product = db.get_product(order["product_id"])
-        order_label = f"سفارش #{order_id} - {product['name'] if product else ''}"
-    result = await _create_noapay_invoice_for(
-        db, tenant, tg_id, "order", order_id, order["final_price"],
-        order_name=order_label,
-    )
-    return result
-
-
-class NoapayWalletInvoiceRequest(BaseModel):
-    topup_id: int
-
-
-@app.post("/api/wallet/noapay-invoice")
-async def api_wallet_noapay_invoice(body: NoapayWalletInvoiceRequest, auth=Depends(require_joined)):
-    tg_id, db, tenant = auth
-    topup = db.get_topup(body.topup_id)
-    if not topup or topup["user_id"] != tg_id:
-        raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
-    if topup["status"] != "pending":
-        raise HTTPException(status_code=400, detail=tr("این درخواست شارژ قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], "noapay", wallet_topup=True, user_id=topup["user_id"])
-    result = await _create_noapay_invoice_for(
-        db, tenant, tg_id, "wallet_topup", body.topup_id, topup["amount"],
-        order_name=f"شارژ کیف پول #{body.topup_id}",
-    )
-    result["topup_id"] = body.topup_id
-    return result
-
-
-# ---------------------------------------------------------------------------
-# درگاه‌های افزوده‌شده: زرین‌پال، آقای پرداخت، تترا۹۸، کیوب‌پی، NowPayments، استارز داخلی
-# (فقط بات اصلی؛ بررسی و تحویل فاکتورها با extra_gateway_payment.poll_loop در بات انجام می‌شود)
-# ---------------------------------------------------------------------------
-
-def _require_extra_gateway(db: Database, tenant, gateway: str) -> None:
-    if (
-        gateway not in extra_gateway_registry.GATEWAYS
-        or tenant.tenant_id
-        or not extra_gateway_payment.is_available(db, gateway, True)
-    ):
-        raise HTTPException(status_code=400, detail=tr("این روش پرداخت در حال حاضر در دسترس نیست."))
-
-
-def _extra_order_label(db: Database, order) -> str:
-    keys = order.keys()
-    if "is_renewal" in keys and order["is_renewal"]:
-        return f"تمدید سرویس #{order['id']}"
-    if "is_custom_config" in keys and order["is_custom_config"]:
-        return f"کانفیگ شخصی #{order['id']} - {order['custom_username']}"
-    product = db.get_product(order["product_id"])
-    return f"سفارش #{order['id']} - {product['name'] if product else ''}"
-
-
-async def _stars_invoice_link(tenant, result: dict, label: str, amount_toman: int) -> str:
-    stars = int(result["payable_amount"])
-    payload = {
-        "title": "پرداخت با استارز تلگرام",
-        "description": f"{label} - {amount_toman:,} تومان معادل {stars} استارز"[:255],
-        "payload": extra_gateway_payment.stars_payload(result["invoice_id"]),
-        "provider_token": "",
-        "currency": "XTR",
-        "prices": [{"label": label[:60] or "پرداخت", "amount": stars}],
-    }
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"https://api.telegram.org/bot{tenant.bot_token}/createInvoiceLink", json=payload,
-                timeout=aiohttp.ClientTimeout(total=20),
-            ) as resp:
-                data = await resp.json()
-    except Exception:
-        raise HTTPException(status_code=502, detail=tr("ارتباط با تلگرام برقرار نشد. دوباره تلاش کن."))
-    if not data.get("ok"):
-        raise HTTPException(status_code=400, detail=f"{tr('ساخت فاکتور استارز ناموفق بود:')} {data.get('description', '')}")
-    return data["result"]
-
-
-async def _create_extra_gateway_invoice(
-    db: Database, tenant, tg_id: int, gateway: str, kind: str, ref_id: int, amount_toman: int, label: str,
-) -> dict:
-    try:
-        result = await extra_gateway_payment.create_invoice_for(
-            db, tenant.tenant_id, tg_id, gateway, kind, ref_id, amount_toman, label,
-        )
-    except extra_gateway_payment.ExtraGatewayError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    is_stars = gateway == "tgstars"
-    payment_url = await _stars_invoice_link(tenant, result, label, amount_toman) if is_stars else result["payment_url"]
-    meta = result["meta"] or {}
-    return {
-        "gateway": gateway, "invoice_id": result["invoice_id"], "payment_url": payment_url,
-        "is_stars": is_stars, "payable_amount": result["payable_amount"],
-        "exact_amount_toman": meta.get("pay_amount_toman") if gateway == "cubepay" else None,
-        "bot_url": meta.get("bot_url") if gateway == "tetra98" else None,
-    }
-
-
-@app.post("/api/orders/{order_id}/extra-invoice/{gateway}")
-async def api_order_extra_gateway_invoice(order_id: int, gateway: str, auth=Depends(require_joined)):
-    tg_id, db, tenant = auth
-    _require_extra_gateway(db, tenant, gateway)
-    order = db.get_order(order_id)
-    if not order or order["user_id"] != tg_id:
-        raise HTTPException(status_code=404, detail=tr("سفارش یافت نشد."))
-    if order["status"] != "pending":
-        raise HTTPException(status_code=400, detail=tr("این سفارش قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, order["final_price"], gateway, order["product_id"], order=order, user_id=order["user_id"])
-    return await _create_extra_gateway_invoice(
-        db, tenant, tg_id, gateway, "order", order_id, order["final_price"], _extra_order_label(db, order),
-    )
-
-
-@app.post("/api/wallet/extra-invoice/{gateway}")
-async def api_wallet_extra_gateway_invoice(gateway: str, body: NoapayWalletInvoiceRequest, auth=Depends(require_joined)):
-    tg_id, db, tenant = auth
-    _require_extra_gateway(db, tenant, gateway)
-    topup = db.get_topup(body.topup_id)
-    if not topup or topup["user_id"] != tg_id:
-        raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
-    if topup["status"] != "pending":
-        raise HTTPException(status_code=400, detail=tr("این درخواست شارژ قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], gateway, wallet_topup=True, user_id=topup["user_id"])
-    return await _create_extra_gateway_invoice(
-        db, tenant, tg_id, gateway, "wallet_topup", body.topup_id, topup["amount"], f"شارژ کیف پول #{body.topup_id}",
-    )
-
-
-@app.api_route("/api/pay-return/{gateway}", methods=["GET", "POST"], response_class=HTMLResponse)
-async def api_extra_gateway_return_page(gateway: str):
-    return HTMLResponse(
-        "<!doctype html><html lang=\"fa\" dir=\"rtl\"><head><meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-        "<title>وضعیت پرداخت</title>"
-        "<style>body{font-family:sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;"
-        "justify-content:center;min-height:100vh;margin:0;padding:16px;text-align:center}"
-        ".c{max-width:420px;background:#1e293b;border-radius:16px;padding:28px}</style></head>"
-        "<body><div class=\"c\"><h2>پرداخت شما ثبت شد</h2>"
-        "<p>پرداخت در حال بررسی است و به‌محض تایید، نتیجه داخل ربات برایتان ارسال می‌شود.</p>"
-        "<p>اگر چند دقیقه طول کشید، به ربات برگردید و روی «بررسی وضعیت پرداخت» بزنید.</p>"
-        "</div></body></html>",
-        headers={"Cache-Control": "no-store"},
-    )
-
-
-@app.post("/api/webhooks/nowpayments")
-async def api_nowpayments_ipn(request: Request, tenant: Tenant = Depends(get_tenant)):
-    db = tenant.db
-    try:
-        body = json.loads((await request.body()) or b"{}")
-    except ValueError:
-        raise HTTPException(status_code=400, detail="invalid json")
-    if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="invalid body")
-    secret = ((await asyncio.to_thread(db.get_setting, "nowpayments_ipn_secret", "")) or "").strip()
-    if secret and not extra_gateway_clients.nowpayments_verify_ipn_signature(
-        secret, body, request.headers.get("x-nowpayments-sig", "")
-    ):
-        raise HTTPException(status_code=401, detail="invalid signature")
-    order_number = str(body.get("order_id") or "")
-    payment_id = body.get("payment_id")
-    invoice = await asyncio.to_thread(db.get_extra_invoice_by_order_number, order_number) if order_number else None
-    if invoice and invoice["gateway"] == "nowpayments" and payment_id:
-        await asyncio.to_thread(
-            db.merge_extra_invoice_meta, invoice["id"],
-            {"payment_id": str(payment_id), "payment_status": str(body.get("payment_status") or "")},
-        )
-    return {"ok": True}
-
-
-@app.post("/api/webhooks/noapay")
-async def api_noapay_webhook(request: Request, tenant: Tenant = Depends(get_tenant)):
-    """
-    برخلاف آبان گیت وی، NoapayBot امضای وب‌هوک را با HMAC-SHA256 مستند کرده
-    (هدر X-Starbot-Signature). با این‌حال، طبق همان الگوی دفاعی abangateway،
-    حتی بعد از تایید امضا وضعیت واقعی با کلید API خودمان از GET /invoice/:token
-    استعلام می‌شود (noapay_payment.try_verify_and_finalize)، نه از بدنه‌ی وب‌هوک.
-    """
-    raw_body = await request.body()
-    try:
-        body = json.loads(raw_body or b"{}")
-    except Exception:
-        body = {}
-
-    db = tenant.db
-    signature = request.headers.get("X-Starbot-Signature", "")
-    secret = noapay_payment.resolve_webhook_secret(db)
-    if not secret or not noapay_payment.verify_webhook_signature(secret, raw_body, signature):
-        db.log_webhook_event(gateway="noapay", txn_id=body.get("invoice_token"), verified=False,
-                              status="invalid_signature", raw_body=raw_body.decode("utf-8", "ignore"))
-        raise HTTPException(status_code=403, detail=tr("امضای وب‌هوک نامعتبر است."))
-
-    invoice_token = noapay_payment.extract_invoice_token_from_webhook(body)
-    if not invoice_token:
-        raise HTTPException(status_code=400, detail=tr("شناسه‌ی فاکتور (invoice_token) در وب‌هوک پیدا نشد."))
-
-    invoice = db.get_noapay_invoice_by_token(invoice_token)
-    if not invoice:
-        db.log_webhook_event(gateway="noapay", txn_id=invoice_token, verified=False,
-                              status="ignored", error="فاکتور در دیتابیس پیدا نشد.",
-                              raw_body=raw_body.decode("utf-8", "ignore"))
-        return {"status": "ignored"}
-
-    result = await noapay_payment.try_verify_and_finalize(db, invoice)
-    db.log_webhook_event(gateway="noapay", txn_id=invoice_token, verified=(result == "verified_now"),
-                          status=result, raw_body=raw_body.decode("utf-8", "ignore"))
-    if result != "verified_now":
-        # already_delivered / not_paid_yet / expired / rejected / error:...
-        return {"status": result}
-
-    invoice = db.get_noapay_invoice_by_token(invoice_token)
-    await _complete_generic_gateway_payment(db, tenant, invoice)
-    return {"status": "ok"}
-
-
-# ---------------------------------------------------------------------------
-# درگاه‌های پرداخت سفارشی/پویا — ادمین از پنل هر API‌ای را (بدون کد) وصل می‌کند
-# ---------------------------------------------------------------------------
-
-def _load_gateway(db: Database, gateway_id: int = None, gateway_key: str = None):
-    row = db.get_custom_gateway(gateway_id) if gateway_id else db.get_custom_gateway_by_key(gateway_key)
-    if not row:
-        raise HTTPException(status_code=404, detail=tr("این درگاه پیدا نشد."))
-    try:
-        config = json.loads(row["config_json"])
-    except Exception:
-        config = {}
-    return row, config
-
-
-def _gateway_amount_ok(config: dict, invoice, paid_amount) -> bool:
-    """اگر amount_path تنظیم شده و مبلغ برگشتی از درگاه به‌اندازه‌ی کافی کمتر
-    از مبلغ واقعی فاکتور باشد => False (یعنی نباید تکمیل شود). اگر amount_path
-    خالی باشد یا مقدار قابل‌تشخیص نباشد => True (سازگار با درگاه‌هایی که مبلغ
-    را در پاسخ برنمی‌گردانند، تا اتصال هر نوع درگاهی همچنان ممکن بماند)."""
-    tolerance = config.get("amount_tolerance_percent")
-    try:
-        tolerance = float(tolerance) if tolerance is not None else 1.0
-    except (TypeError, ValueError):
-        tolerance = 1.0
-    return payment_engine.amounts_match(paid_amount, invoice["amount_toman"], tolerance)
-
-
-def _mask_gateway_row(row, config: dict) -> dict:
-    """برای پاسخ به ادمین: مقادیر محرمانه (credentials با secret=true) ماسک می‌شوند."""
-    creds = dict(config.get("credentials") or {})
-    masked_creds = {}
-    field_meta = {f.get("name"): f for f in (config.get("credential_fields") or [])}
-    for k, v in creds.items():
-        is_secret = field_meta.get(k, {}).get("secret", True)
-        if is_secret and v:
-            v = f"...{str(v)[-4:]}" if len(str(v)) > 4 else "•••"
-        masked_creds[k] = v
-    out_config = dict(config)
-    out_config["credentials"] = masked_creds
-    return {
-        "id": row["id"],
-        "key": row["gateway_key"],
-        "name": row["name"],
-        "enabled": bool(row["enabled"]),
-        "config": out_config,
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
-    }
-
-
-class CustomGatewayIn(BaseModel):
-    key: str
-    name: str
-    enabled: bool = False
-    config: dict
-
-
-# ---------------------------------------------------------------------------
-# مدیریت SSH: نودها، حساب‌ها و استخرهای سهمیه (منطق مشترک در ssh_service.py)
-# ---------------------------------------------------------------------------
-class SshNodeInstallIn(BaseModel):
-    name: str
-    host: str
-    ssh_port: int = 22
-    password: str
-
-
-class SshNodeRenameIn(BaseModel):
-    name: str
-
-
-class SshHostIn(BaseModel):
-    id: Optional[str] = None
-    protocol: str
-    remark: str = ""
-    address: str
-    port: Optional[int] = None
-    enabled: bool = True
-
-
-class SshNodeHostsIn(BaseModel):
-    hosts: List[SshHostIn] = []
-
-
-class SshPortRangeIn(BaseModel):
-    port_min: Optional[int] = None
-    port_max: Optional[int] = None
-
-
-class SshPoolIn(BaseModel):
-    user_id: int
-    limit_gb: float = 0
-    expires_at: Optional[str] = None
-    label: str = ""
-
-
-class SshAttachIn(BaseModel):
-    custom_config_id: int
-
-
-class SshAccountIn(BaseModel):
-    node_id: int
-    user_id: int
-    username: str
-    limit_gb: float = 0
-    days: int = 30
-    expires_at: Optional[str] = None
-    quota_pool_id: Optional[int] = None
-
-
-class SshAccountActionIn(BaseModel):
-    action: str
-    force: bool = False
-
-
-def _ssh_call(fn, *args, **kwargs):
-    import ssh_service
-    try:
-        return fn(*args, **kwargs)
-    except ssh_service.SSHServiceError as exc:
-        raise HTTPException(status_code=exc.status, detail=str(exc))
-
-
-async def _ssh_acall(coro_fn, *args, **kwargs):
-    import ssh_service
-    try:
-        return await coro_fn(*args, **kwargs)
-    except ssh_service.SSHServiceError as exc:
-        raise HTTPException(status_code=exc.status, detail=str(exc))
-
-
-@app.get("/api/admin/ssh/overview")
-def api_admin_ssh_overview(auth=Depends(require_full_access_admin)):
-    import ssh_service
-    _, db, _ = auth
-    return ssh_service.overview(db)
-
-
-@app.post("/api/admin/ssh/nodes/auto-install")
-def api_admin_ssh_auto_install(body: SshNodeInstallIn, auth=Depends(require_full_access_admin)):
-    import ssh_service
-    admin_id, db, _ = auth
-    job_id = _ssh_call(ssh_service.start_auto_install, db, name=body.name, host=body.host,
-                       ssh_port=body.ssh_port, password=body.password)
-    db.log_admin_action(admin_id, "ssh_node_auto_install", f"SSH node auto-install started: {body.name.strip()} ({body.host.strip()})", "ssh")
-    return {"ok": True, "job_id": job_id}
-
-
-@app.get("/api/admin/ssh/nodes/install-jobs/{job_id}")
-def api_admin_ssh_install_job(job_id: str, auth=Depends(require_full_access_admin)):
-    import ssh_service
-    job = ssh_service.get_install_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail=tr("کار نصب پیدا نشد."))
-    return job
-
-
-@app.delete("/api/admin/ssh/nodes/{node_id}")
-def api_admin_ssh_delete_node(node_id: int, force: bool = False, auth=Depends(require_full_access_admin)):
-    import ssh_service
-    admin_id, db, _ = auth
-    _ssh_call(ssh_service.delete_node, db, node_id, force=force)
-    db.log_admin_action(admin_id, "ssh_node_delete", f"SSH node #{node_id}", "ssh")
-    return {"ok": True}
-
-
-@app.post("/api/admin/ssh/nodes/{node_id}/rename")
-def api_admin_ssh_rename_node(node_id: int, body: SshNodeRenameIn, auth=Depends(require_full_access_admin)):
-    import ssh_service
-    admin_id, db, _ = auth
-    _ssh_call(ssh_service.rename_node, db, node_id, body.name)
-    db.log_admin_action(admin_id, "ssh_node_rename", f"SSH node #{node_id}: {body.name.strip()}", "ssh")
-    return {"ok": True}
-
-
-@app.get("/api/admin/ssh/nodes/{node_id}/hosts")
-def api_admin_ssh_node_hosts(node_id: int, auth=Depends(require_full_access_admin)):
-    import ssh_service
-    _, db, _ = auth
-    return _ssh_call(ssh_service.get_node_hosts, db, node_id)
-
-
-@app.put("/api/admin/ssh/nodes/{node_id}/hosts")
-def api_admin_ssh_node_set_hosts(node_id: int, body: SshNodeHostsIn, auth=Depends(require_full_access_admin)):
-    import ssh_service
-    admin_id, db, _ = auth
-    hosts = _ssh_call(ssh_service.set_node_hosts, db, node_id,
-                      [h.model_dump() if hasattr(h, "model_dump") else h.dict() for h in body.hosts])
-    db.log_admin_action(admin_id, "ssh_node_hosts", f"SSH node #{node_id}: {len(hosts)} host(s)", "ssh")
-    return {"ok": True, "hosts": hosts}
-
-
-@app.put("/api/admin/ssh/nodes/{node_id}/ssh-port-range")
-async def api_admin_ssh_node_set_port_range(node_id: int, body: SshPortRangeIn, auth=Depends(require_full_access_admin)):
-    import ssh_service
-    admin_id, db, _ = auth
-    r = await _ssh_acall(ssh_service.set_ssh_port_range, db, node_id, body.port_min, body.port_max)
-    db.log_admin_action(admin_id, "ssh_node_port_range", f"SSH node #{node_id}: {r['ssh_port_min']}-{r['ssh_port_max']}", "ssh")
-    return {"ok": True, **r}
-
-
-@app.post("/api/admin/ssh/nodes/{node_id}/test")
-async def api_admin_ssh_test_node(node_id: int, auth=Depends(require_full_access_admin)):
-    import ssh_service
-    admin_id, db, _ = auth
-    ok = await _ssh_acall(ssh_service.test_node, db, node_id)
-    db.log_admin_action(admin_id, "ssh_node_test", f"SSH node #{node_id}: {'ok' if ok else 'failed'}", "ssh")
-    return {"ok": bool(ok), "status": "active" if ok else "error"}
-
-
-@app.post("/api/admin/ssh/pools")
-def api_admin_ssh_create_pool(body: SshPoolIn, auth=Depends(require_full_access_admin)):
-    import ssh_service
-    admin_id, db, _ = auth
-    pool_id = _ssh_call(ssh_service.create_pool, db, body.user_id, body.limit_gb, body.expires_at, body.label)
-    db.log_admin_action(admin_id, "ssh_pool_create", f"Shared quota pool #{pool_id} for user {body.user_id}", "ssh")
-    return {"ok": True, "pool_id": pool_id}
-
-
-@app.post("/api/admin/ssh/pools/{pool_id}/attach-vpn")
-def api_admin_ssh_attach_vpn(pool_id: int, body: SshAttachIn, auth=Depends(require_full_access_admin)):
-    import ssh_service
-    admin_id, db, _ = auth
-    _ssh_call(ssh_service.attach_vpn, db, pool_id, body.custom_config_id)
-    db.log_admin_action(admin_id, "ssh_pool_attach_vpn", f"Pool #{pool_id} <- custom_config:{body.custom_config_id}", "ssh")
-    return {"ok": True}
-
-
-@app.post("/api/admin/ssh/accounts")
-async def api_admin_ssh_create_account(body: SshAccountIn, auth=Depends(require_full_access_admin)):
-    import ssh_service
-    from ssh_uri import build_ssh_uri
-    admin_id, db, _ = auth
-    r = await _ssh_acall(ssh_service.create_account, db, node_id=body.node_id, user_id=body.user_id,
-                         username=body.username, limit_gb=body.limit_gb, days=body.days,
-                         expires_at=body.expires_at, quota_pool_id=body.quota_pool_id)
-    db.log_admin_action(admin_id, "ssh_account_create", f"SSH account #{r['id']} for user {body.user_id}", "ssh")
-    try:
-        r["ssh_uri"] = build_ssh_uri(r["username"], r["password"], r["host"], int(r["port"]),
-                                     f"{r.get('node_name') or 'SSH'} {r['username']}")
-    except ValueError:
-        r["ssh_uri"] = ""
-    r["udpgw_port"] = 7300
-    r["client_setup_note"] = "در اپ، UDPGW port را روی 7300 تنظیم کنید."
-    return r
-
-
-@app.post("/api/admin/ssh/accounts/{account_id}/action")
-async def api_admin_ssh_account_action(account_id: str, body: SshAccountActionIn, auth=Depends(require_full_access_admin)):
-    import ssh_service
-    admin_id, db, _ = auth
-    status = await _ssh_acall(ssh_service.account_action, db, account_id, body.action, force=bool(body.force))
-    db.log_admin_action(admin_id, f"ssh_account_{body.action.strip().lower()}", f"SSH account {account_id}", "ssh")
-    return {"ok": True, "account_id": account_id, "status": status}
-
-
-@app.post("/api/admin/ssh/reconcile")
-async def api_admin_ssh_reconcile(auth=Depends(require_full_access_admin)):
-    import ssh_service
-    admin_id, db, _ = auth
-    results = await ssh_service.reconcile(db)
-    db.log_admin_action(admin_id, "ssh_quota_reconcile", f"Manual reconcile ({len(results)} pools)", "ssh")
-    return {"ok": True, "results": results}
-
-
-@app.get("/api/admin/gateways")
-def api_admin_list_gateways(auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    rows = db.list_custom_gateways()
-    out = []
-    for row in rows:
-        try:
-            config = json.loads(row["config_json"])
-        except Exception:
-            config = {}
-        out.append(_mask_gateway_row(row, config))
-    return out
-
-
-@app.get("/api/admin/gateways/{gateway_id}")
-def api_admin_get_gateway(gateway_id: int, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    row, config = _load_gateway(db, gateway_id=gateway_id)
-    return _mask_gateway_row(row, config)
-
-
-@app.post("/api/admin/gateways")
-def api_admin_create_gateway(body: CustomGatewayIn, auth=Depends(require_senior_admin)):
-    admin_id, db, _ = auth
-    key = "".join(ch for ch in body.key.strip().lower() if ch.isalnum() or ch in ("-", "_"))
-    if not key:
-        raise HTTPException(status_code=400, detail=tr("کلید درگاه نامعتبر است (فقط حروف/عدد انگلیسی، - و _)."))
-    if db.get_custom_gateway_by_key(key):
-        raise HTTPException(status_code=400, detail=tr("درگاهی با همین کلید قبلاً ثبت شده."))
-    gateway_id = db.create_custom_gateway(key, body.name.strip() or key, body.config, body.enabled)
-    db.log_admin_action(admin_id, "custom_gateway_create", f"درگاه سفارشی «{body.name}» ({key}) اضافه شد.")
-    row, config = _load_gateway(db, gateway_id=gateway_id)
-    return _mask_gateway_row(row, config)
-
-
-@app.put("/api/admin/gateways/{gateway_id}")
-def api_admin_update_gateway(gateway_id: int, body: CustomGatewayIn, auth=Depends(require_senior_admin)):
-    admin_id, db, _ = auth
-    row, existing_config = _load_gateway(db, gateway_id=gateway_id)
-
-    # مقادیر محرمانه‌ای که ادمین در فرم دست‌نخورده گذاشته (چون ماسک‌شده نمایش داده شده بودند)
-    # با «...abcd» شروع می‌شوند؛ این‌ها را با مقدار واقعی قبلی جایگزین می‌کن تا رمز از بین نرود.
-    new_creds = dict((body.config or {}).get("credentials") or {})
-    old_creds = dict(existing_config.get("credentials") or {})
-    for k, v in list(new_creds.items()):
-        if isinstance(v, str) and (v.startswith("...") or v == "•••") and k in old_creds:
-            new_creds[k] = old_creds[k]
-    body.config["credentials"] = new_creds
-
-    db.update_custom_gateway(gateway_id, name=body.name.strip() or row["name"],
-                              config=body.config, enabled=body.enabled)
-    db.log_admin_action(admin_id, "custom_gateway_update", f"درگاه سفارشی «{row['name']}» ویرایش شد.")
-    row, config = _load_gateway(db, gateway_id=gateway_id)
-    return _mask_gateway_row(row, config)
-
-
-@app.delete("/api/admin/gateways/{gateway_id}")
-def api_admin_delete_gateway(gateway_id: int, auth=Depends(require_senior_admin)):
-    admin_id, db, _ = auth
-    row, _ = _load_gateway(db, gateway_id=gateway_id)
-    db.delete_custom_gateway(gateway_id)
-    db.log_admin_action(admin_id, "custom_gateway_delete", f"درگاه سفارشی «{row['name']}» حذف شد.")
-    return {"status": "ok"}
-
-
-class CustomGatewayTestRequest(BaseModel):
-    amount_toman: int = 1000
-
-
-@app.post("/api/admin/gateways/{gateway_id}/test")
-async def api_admin_test_gateway(gateway_id: int, body: CustomGatewayTestRequest,
-                                  auth=Depends(require_senior_admin)):
-    """یک فاکتور واقعی آزمایشی (با مبلغ دلخواه، پیش‌فرض ۱۰۰۰ تومان) می‌سازد تا ادمین قبل از
-    فعال‌کردن درگاه برای کاربران، مطمئن شود URL/هدر/بدنه و مسیرهای پاسخ درست تنظیم شده‌اند.
-    توجه: چون این یک درخواست واقعی به API درگاه است، ممکن است یک فاکتور واقعی نزد آن درگاه بسازد."""
-    _, db, tenant = auth
-    row, config = _load_gateway(db, gateway_id=gateway_id)
-    try:
-        computed = await custom_gateway_payment.compute_send_amount(db, config, body.amount_toman)
-    except custom_gateway_payment.CustomGatewayPaymentError as e:
-        return {"success": False, "error": str(e)}
-    gw = payment_engine.GenericGateway(config)
-    our_ref = f"test-{gateway_id}-{int(datetime.now(timezone.utc).timestamp())}"
-    try:
-        result = await gw.create_invoice(
-            amount=computed["amount"], amount_toman=body.amount_toman,
-            order_id=our_ref, currency=computed["currency"], description="تست اتصال درگاه",
-            tenant_id=tenant.tenant_id or "main",
-            callback_url=f"{API_BASE_URL}/api/pay/custom/{row['gateway_key']}/return?b={tenant.tenant_id}&txn={our_ref}",
-            webhook_url=f"{API_BASE_URL}/api/webhooks/custom/{row['gateway_key']}?b={tenant.tenant_id}",
-        )
-    except payment_engine.PaymentEngineError as e:
-        return {"success": False, "error": str(e)}
-    return {
-        "success": True, "invoice_url": result.get("invoice_url"), "txn_id": result.get("txn_id"),
-        "sent_amount": computed["amount"], "sent_currency": computed["currency"],
-    }
-
-
-# ------------------------------- کارت‌به‌کارت با تایید خودکار (پیامک بانک) - ادمین -----
-# همان چیزی که در پنل وب مستقل هست، این‌جا هم برای مدیریت از داخل مینی‌اپ در دسترس است:
-# کارت‌ها (رفتار چرخشی بین کارت‌های فعال)، تنظیمات (فعال/مهلت/رقم یکتاساز/واحد مبلغ) و
-# اتصال وب‌هوک اپ اندروید BankSmsForwarder.
-
-class CardToCardCardIn(BaseModel):
-    card_number: str
-    holder_name: str = ""
-    bank_name: str = ""
-    sort_order: int = 0
-
-
-def _clean_c2c_card_number(raw: str) -> str:
-    number = re.sub(r"\D", "", raw or "")
-    if len(number) != 16:
-        raise HTTPException(status_code=400, detail=tr("شماره کارت باید ۱۶ رقم باشد."))
-    return number
-
-
-@app.get("/api/admin/card-to-card/cards")
-def api_admin_list_c2c_cards(auth=Depends(require_admin)):
-    _, db, _ = auth
-    return [dict(r) for r in db.list_card_to_card_cards()]
-#‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
-
-
-@app.post("/api/admin/card-to-card/cards")
-def api_admin_create_c2c_card(body: CardToCardCardIn, auth=Depends(require_admin)):
-    admin_id, db, _ = auth
-    number = _clean_c2c_card_number(body.card_number)
-    card_id = db.create_card_to_card_card(number, body.holder_name.strip(), body.bank_name.strip(), body.sort_order)
-    db.log_admin_action(admin_id, "card_to_card_card_create",
-                         f"کارت با ۴ رقم آخر {number[-4:]} اضافه شد (مینی‌اپ).")
-    return dict(db.get_card_to_card_card(card_id))
-
-
-@app.put("/api/admin/card-to-card/cards/{card_id}")
-def api_admin_update_c2c_card(card_id: int, body: CardToCardCardIn, auth=Depends(require_admin)):
-    admin_id, db, _ = auth
-    if not db.get_card_to_card_card(card_id):
-        raise HTTPException(status_code=404, detail=tr("این کارت پیدا نشد."))
-    number = _clean_c2c_card_number(body.card_number)
-    db.update_card_to_card_card(card_id, card_number=number, holder_name=body.holder_name.strip(),
-                                 bank_name=body.bank_name.strip(), sort_order=body.sort_order)
-    db.log_admin_action(admin_id, "card_to_card_card_update", f"کارت #{card_id} ویرایش شد (مینی‌اپ).")
-    return dict(db.get_card_to_card_card(card_id))
-
-
-@app.post("/api/admin/card-to-card/cards/{card_id}/toggle")
-def api_admin_toggle_c2c_card(card_id: int, auth=Depends(require_admin)):
-    _, db, _ = auth
-    if not db.get_card_to_card_card(card_id):
-        raise HTTPException(status_code=404, detail=tr("این کارت پیدا نشد."))
-    db.toggle_card_to_card_card(card_id)
-    return {"ok": True}
-
-
-@app.delete("/api/admin/card-to-card/cards/{card_id}")
-def api_admin_delete_c2c_card(card_id: int, auth=Depends(require_admin)):
-    admin_id, db, _ = auth
-    if not db.get_card_to_card_card(card_id):
-        raise HTTPException(status_code=404, detail=tr("این کارت پیدا نشد."))
-    db.delete_card_to_card_card(card_id)
-    db.log_admin_action(admin_id, "card_to_card_card_delete", f"کارت #{card_id} حذف شد (مینی‌اپ).")
-    return {"ok": True}
-
-
-@app.get("/api/admin/settings/card-to-card-auto")
-def api_admin_get_c2c_auto_settings(auth=Depends(require_admin)):
-    _, db, tenant = auth
-    token = db.get_setting("card_to_card_sms_webhook_token", "")
-    return {
-        "enabled": db.get_setting("card_to_card_auto_enabled", "0") == "1",
-        "timeout_minutes": int(db.get_setting("card_to_card_auto_timeout_minutes", "15") or 15),
-        "amount_digits": int(db.get_setting("card_to_card_auto_amount_digits", "3") or 3),
-        "amount_unit": db.get_setting("card_to_card_sms_amount_unit", "rial"),
-        "webhook_token_set": bool(token),
-        "webhook_url": (f"{API_BASE_URL}/api/webhooks/sms-forwarder?b={tenant.tenant_id}"
-                        if _runtime_api_base_url() else None),
-    }
-
-
-class CardToCardAutoSettingsIn(BaseModel):
-    enabled: bool
-    timeout_minutes: int
-    amount_digits: int
-    amount_unit: str
-
-
-@app.post("/api/admin/settings/card-to-card-auto")
-def api_admin_set_c2c_auto_settings(body: CardToCardAutoSettingsIn, auth=Depends(require_admin)):
-    admin_id, db, _ = auth
-    if body.amount_unit not in ("rial", "toman"):
-        raise HTTPException(status_code=400, detail=tr("واحد مبلغ باید rial یا toman باشد."))
-    if body.timeout_minutes < 1:
-        raise HTTPException(status_code=400, detail=tr("مهلت باید حداقل ۱ دقیقه باشد."))
-    if body.amount_digits < 1 or body.amount_digits > 5:
-        raise HTTPException(status_code=400, detail=tr("تعداد رقم یکتاساز باید بین ۱ تا ۵ باشد."))
-    db.set_setting("card_to_card_auto_enabled", "1" if body.enabled else "0")
-    db.set_setting("card_to_card_auto_timeout_minutes", str(body.timeout_minutes))
-    db.set_setting("card_to_card_auto_amount_digits", str(body.amount_digits))
-    db.set_setting("card_to_card_sms_amount_unit", body.amount_unit)
-    db.log_admin_action(admin_id, "card_to_card_auto_settings_update",
-                         "تنظیمات کارت‌به‌کارت خودکار به‌روزرسانی شد (مینی‌اپ).")
-    return {"ok": True}
-
-
-@app.post("/api/admin/card-to-card/regenerate-token")
-def api_admin_regen_c2c_token(auth=Depends(require_admin)):
-    admin_id, db, _ = auth
-    token = secrets.token_hex(24)
-    db.set_setting("card_to_card_sms_webhook_token", token)
-    db.log_admin_action(admin_id, "card_to_card_token_regen", "توکن وب‌هوک کارت‌به‌کارت بازتولید شد (مینی‌اپ).")
-    return {"webhook_token": token}
-
-
-@app.get("/api/admin/card-to-card/invoices")
-def api_admin_list_c2c_invoices(status: Optional[str] = None, auth=Depends(require_admin)):
-    _, db, _ = auth
-    return [dict(r) for r in db.list_card_to_card_invoices(status=status)]
-
-
-@app.get("/api/gateways")
-def api_list_public_gateways(auth=Depends(require_joined), amount: int = None, product_id: int = None,
-                             custom_config: bool = False, wallet_topup: bool = False):
-    """لیست درگاه‌های فعال، برای نمایش به‌عنوان یک روش پرداخت در مینی‌اپ.
-    اگر amount/product_id داده شود، همان محدودیت «حداقل مبلغ درگاه» و
-    «روش‌های مجاز این محصول» که در چک‌اوت اعمال می‌شود، این‌جا هم برای فیلترکردن
-    لیست (پیش از نمایش به کاربر) اعمال می‌شود - دقیقاً مثل payment_choice_kb ربات."""
-    tg_id, db, _ = auth
-    rows = db.list_custom_gateways(only_enabled=True)
-    out = []
-    for r in rows:
-        key = f"custom:{r['gateway_key']}"
-        if db.card_method_blocked_for_user(tg_id, key):
-            continue
-        if amount is not None or product_id is not None or custom_config or wallet_topup:
-            if _payment_method_error(db, amount if amount is not None else 0, key, product_id,
-                                     custom_config=custom_config, wallet_topup=wallet_topup,
-                                     user_id=tg_id) is not None:
-                continue
-        out.append({"key": r["gateway_key"], "name": r["name"]})
-    return out
-
-
-async def _complete_custom_gateway_payment(db: Database, tenant: "Tenant", invoice) -> None:
-    """بعد از تایید قطعی پرداخت یک درگاه سفارشی (چه از طریق webhook چه از طریق verify)،
-    سفارش/شارژ کیف پول را همان‌طور که برای Plisio/آبان‌گیت‌وی انجام می‌شود تکمیل و تحویل می‌دهد."""
-    if invoice["status"] == "completed":
-        return
-    db.update_custom_gateway_invoice_status(invoice["id"], "completed")
-    await _complete_generic_gateway_payment(db, tenant, invoice)
-
-
-async def _complete_reseller_gateway_payment(db: Database, tenant: "Tenant", invoice) -> bool:
-    """اثر پرداخت موفق هزینه نمایندگی را اعمال می‌کند. برای برنزی/نقره‌ای
-    فعال‌سازی کامل است؛ برای طلایی/VIP مرحله بعد دریافت Token بات است."""
-    request_id = int(invoice["ref_id"])
-    if not await asyncio.to_thread(db.complete_reseller_request_gateway_payment, request_id):
-        return False
-    req = await asyncio.to_thread(db.get_reseller_request, request_id)
-    if not req:
-        return False
-    tier = await asyncio.to_thread(db.get_reseller_tier, req["tier_code"]) if req["tier_code"] else None
-    label = f"{tier['icon']} {tier['title']}" if tier else "نمایندگی"
-    if req["status"] == "completed":
-        extra = ""
-        if tier and tier["model"] == "commission":
-            extra = f"\n📈 درصد کمیسیون: {req['commission_percent'] or tier['commission_min'] or 10}٪"
-        text = f"✅ پرداخت هزینه {label} تایید شد و نمایندگی شما فعال شد.{extra}"
-    else:
-        text = (f"✅ پرداخت هزینه {label} تایید شد!\n\n"
-                "حالا توکن بات نمایندگی خودتان را از @BotFather ارسال کنید تا فعال‌سازی ادامه پیدا کند:")
-    try:
-        async with aiohttp.ClientSession() as session:
-            payload = {"chat_id": req["user_id"], "text": text}
-            if req["status"] == "awaiting_bot_info":
-                payload["reply_markup"] = {"inline_keyboard": [[{"text": "🚀 ادامه فعال‌سازی نمایندگی", "callback_data": f"resreq_continue:{request_id}"}]]}
-            await session.post(
-                f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                json=payload,
-            )
-    except Exception:
-        pass
-    return True
-
-
-async def _complete_generic_gateway_payment(db: Database, tenant: "Tenant", invoice) -> None:
-    """اثر مشترکِ «پرداخت تایید شد» (تکمیل سفارش یا شارژ کیف‌پول) که همه‌ی
-    درگاه‌های خودکار (درگاه سفارشی، کارت‌به‌کارت خودکار و ...) بعد از این‌که
-    خودشان وضعیت invoice را در جدول مخصوص خودشان 'completed' کردند، صدا می‌زنند.
-    invoice فقط باید کلیدهای kind/ref_id/user_id/amount_toman را داشته باشد."""
-
-    async def _notify(chat_id: int, text: str):
-        try:
-            async with aiohttp.ClientSession() as session:
-                await session.post(
-                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                    json={"chat_id": chat_id, "text": text},
-                )
-        except Exception:
-            pass
-
-    if invoice["kind"] == "reseller_request":
-        await _complete_reseller_gateway_payment(db, tenant, invoice)
-        return {"status": "ok"}
-
-    if invoice["kind"] == "wallet_topup":
-        db.approve_topup(invoice["ref_id"])
-        await report_topup_completed(tenant, db, invoice["ref_id"], "custom")
-        await _notify(
-            invoice["user_id"],
-            f"✅ پرداخت تایید شد و {invoice['amount_toman']:,} تومان به کیف پول شما اضافه شد.",
-        )
-        return
-
-    order_id = invoice["ref_id"]
-    order = db.get_order(order_id)
-    if not order or order["status"] != "pending":
-        return
-
-    if order["is_renewal"]:
-        if not db.claim_order(order_id):
-            return
-        try:
-            result_text = await execute_renewal(db, order)
-        except RenewalError as e:
-            db.release_order_claim(order_id)
-            for admin_id in db.list_admins():
-                await _notify(
-                    admin_id,
-                    f"⚠️ سفارش تمدید #{order_id} با درگاه سفارشی پرداخت شد ولی تمدید ناموفق بود: {e}\nلطفاً دستی رسیدگی کنید.",
-                )
-            return
-        except Exception:
-            logging.exception("خطای غیرمنتظره در execute_renewal برای سفارش تمدید #%s (درگاه سفارشی/کارت خودکار/نوآپی)", order_id)
-            db.release_order_claim(order_id)
-            for admin_id in db.list_admins():
-                await _notify(
-                    admin_id,
-                    f"⚠️ سفارش تمدید #{order_id} پرداخت شد ولی یک خطای غیرمنتظره در تمدید رخ داد.\nلطفاً لاگ سرور و دستی رسیدگی کنید.",
-                )
-            return
-        db.approve_renewal_order(order_id)
-        await report_order_completed(tenant, db, order_id, "custom")
-        await _notify(order["user_id"], result_text)
-        return
-
-    if order["is_custom_config"]:
-        # قبلاً فقط یک پیام «دکمه‌ی بررسی وضعیت را بزن» فرستاده می‌شد، ولی آن دکمه در
-        # کارت‌به‌کارت خودکار فقط وضعیت فاکتور را نشان می‌دهد و چیزی تحویل نمی‌داد؛
-        # در نتیجه کاربر هیچ کانفیگی نمی‌گرفت. حالا مثل بقیه‌ی درگاه‌ها همین‌جا ساخته و تحویل می‌شود.
-        import payment_delivery
-        _bot = Bot(token=tenant.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-        try:
-            result_text = await payment_delivery.finalize_paid_order(db, _bot, order_id)
-        except Exception:
-            logging.exception("خطای غیرمنتظره در تحویل کانفیگ شخصی سفارش #%s (کارت‌به‌کارت خودکار/درگاه سفارشی)", order_id)
-            result_text = None
-        finally:
-            try:
-                await _bot.session.close()
-            except Exception:
-                pass
-        fresh = db.get_order(order_id)
-        if fresh and fresh["status"] == "pending":
-            # تحویل انجام نشد (مثلاً خطای پنل): به ادمین خبر بده و به کاربر هم بگو.
-            for admin_id in db.list_admins():
-                await _notify(
-                    admin_id,
-                    f"⚠️ سفارش کانفیگ شخصی #{order_id} پرداخت شد ولی تحویل خودکار ناموفق بود"
-                    f"{(': ' + result_text) if result_text else ''}\nلطفاً دستی رسیدگی کنید.",
-                )
-            await _notify(order["user_id"], "✅ پرداخت شما تایید شد. تحویل کانفیگ کمی طول کشید؛ ادمین به‌زودی رسیدگی می‌کند.")
-        return
-
-    product = db.get_product(order["product_id"])
-    quantity = order["quantity"] or 1
-    if product and product["is_auto_provision"]:
-        if not db.claim_order(order_id):
-            return
-        try:
-            if product["provision_server_id"] or product["provision_ssh_node_id"]:
-                prov_results = await provision_direct(db, product, quantity, user_id=order["user_id"], order_id=order_id)
-            else:
-                prov_results = await provision_auto_config(db, product, quantity, user_id=order["user_id"], order_id=order_id)
-        except (ProvisionError, DirectProvisionError) as e:
-            db.release_order_claim(order_id)
-            for admin_id in db.list_admins():
-                await _notify(
-                    admin_id,
-                    f"⚠️ سفارش #{order_id} با درگاه سفارشی پرداخت شد ولی ساخت خودکار کانفیگ ناموفق بود: {e}\n"
-                    f"لطفاً دستی رسیدگی کنید.",
-                )
-            return
-        db.approve_order_auto(order_id)
-        await report_order_completed(tenant, db, order_id, "custom")
-        db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or product["price"])
-        await _notify(order["user_id"], f"✅ پرداخت تایید شد!\n📦 محصول: {product['name']}")
-        asyncio.create_task(deliver_config_to_user_web(
-            order["user_id"], product["name"], [r["subscription_url"] for r in prov_results],
-            final_price=order["final_price"], order_id=order_id, db=db, bot_token=tenant.bot_token,
-        ))
-        return
-
-    if not db.claim_order(order_id):
-        return
-    results = db.take_unused_configs(order["product_id"], order["user_id"], quantity)
-    if results:
-        db.approve_order(order_id, [r["id"] for r in results])
-        await report_order_completed(tenant, db, order_id, "custom")
-        db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or (product["price"] if product else 0))
-        await _notify(order["user_id"], f"✅ پرداخت تایید شد!\n📦 محصول: {product['name'] if product else ''}")
-        asyncio.create_task(deliver_config_to_user_web(
-            order["user_id"], product["name"] if product else "", [r["link"] for r in results],
-            final_price=order["final_price"], order_id=order_id, db=db, bot_token=tenant.bot_token,
-        ))
-        await check_and_notify_low_stock(_notify, db, order["product_id"], bot_token=tenant.bot_token)
-    else:
-        db.release_order_claim(order_id)
-        for admin_id in db.list_admins():
-            await _notify(
-                admin_id,
-                f"⚠️ سفارش #{order_id} با درگاه سفارشی پرداخت شد ولی موجودی هم‌زمان تمام شده. لطفاً دستی رسیدگی کنید.",
-            )
-
-
-async def _create_custom_gateway_invoice_for(db: Database, tenant: "Tenant", tg_id: int,
-                                              gateway_key: str, kind: str, ref_id: int,
-                                              amount_toman: int, order_name: str) -> dict:
-    row, config = _load_gateway(db, gateway_key=gateway_key)
-    if not row["enabled"]:
-        raise HTTPException(status_code=400, detail=tr("این درگاه فعال نیست."))
-    if not _runtime_api_base_url():
-        raise HTTPException(status_code=400, detail=tr("آدرس مینی‌اپ (MINIAPP_URL) روی سرور تنظیم نشده است."))
-
-    existing = db.get_pending_custom_gateway_invoice_for_ref(row["id"], kind, ref_id)
-    if existing:
-        return {"invoice_url": existing["invoice_url"], "txn_id": existing["txn_id"]}
-
-    tenant_slug = tenant.tenant_id or "main"
-    # نکته‌ی امنیتی: یک قطعه‌ی تصادفی به txn_id داخلی اضافه می‌شود تا وقتی
-    # webhook_auth یک درگاه روی "none" تنظیم شده، کاربر نتواند با حدس‌زدن txn
-    # خودش (که ref_id و زمان تقریبی ساختش را می‌داند) وب‌هوک را دستی صدا بزند.
-    our_ref = f"{kind}-{tenant_slug}-{ref_id}-{int(datetime.now(timezone.utc).timestamp())}-{secrets.token_hex(6)}"
-    # برخی درگاه‌ها (مثل TonPays) سقف طول کاراکتر برای order_id دارند (مثلاً حداکثر
-    # ۲۰ کاراکتر). ردیابی واقعی از طریق gateway_ref/our_ref داخلی انجام می‌شود، پس
-    # اینجا هم - مثل custom_gateway_payment.create_invoice_for در بات اصلی - یک
-    # نسخه‌ی کوتاه‌شده فقط برای ارسال به درگاه می‌سازیم.
-    short_order_id = f"{ref_id}-{int(datetime.now(timezone.utc).timestamp())}"[:20]
-    try:
-        computed = await custom_gateway_payment.compute_send_amount(db, config, amount_toman)
-    except custom_gateway_payment.CustomGatewayPaymentError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    gw = payment_engine.GenericGateway(config)
-    try:
-        result = await gw.create_invoice(
-            amount=computed["amount"], amount_toman=amount_toman, order_id=short_order_id,
-            currency=computed["currency"], description=order_name, tenant_id=tenant_slug,
-            callback_url=f"{API_BASE_URL}/api/pay/custom/{gateway_key}/return?b={tenant.tenant_id}&txn={our_ref}",
-            webhook_url=f"{API_BASE_URL}/api/webhooks/custom/{gateway_key}?b={tenant.tenant_id}",
-        )
-    except payment_engine.PaymentEngineError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    invoice_id = db.create_custom_gateway_invoice(
-        row["id"], our_ref, kind, ref_id, tg_id, amount_toman, invoice_url=result.get("invoice_url"),
-    )
-    if result.get("txn_id") and result.get("txn_id") != our_ref:
-        db.set_custom_gateway_invoice_gateway_ref(invoice_id, result.get("txn_id"))
-    return {"invoice_url": result.get("invoice_url"), "txn_id": our_ref}
-
-
-@app.post("/api/orders/{order_id}/custom-invoice/{gateway_key}")
-async def api_order_custom_gateway_invoice(order_id: int, gateway_key: str, auth=Depends(require_joined)):
-    tg_id, db, tenant = auth
-    order = db.get_order(order_id)
-    if not order or order["user_id"] != tg_id:
-        raise HTTPException(status_code=404, detail=tr("سفارش یافت نشد."))
-    if order["status"] != "pending":
-        raise HTTPException(status_code=400, detail=tr("این سفارش قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, order["final_price"], f"custom:{gateway_key}", order["product_id"], order=order, user_id=order["user_id"])
-    if order["is_custom_config"]:
-        order_label = f"کانفیگ شخصی #{order_id} - {order['custom_username']}"
-    else:
-        product = db.get_product(order["product_id"])
-        order_label = f"سفارش #{order_id} - {product['name'] if product else ''}"
-    return await _create_custom_gateway_invoice_for(
-        db, tenant, tg_id, gateway_key, "order", order_id, order["final_price"], order_label,
-    )
-
-
-class CustomGatewayWalletInvoiceRequest(BaseModel):
-    topup_id: int
-
-
-@app.post("/api/wallet/custom-invoice/{gateway_key}")
-async def api_wallet_custom_gateway_invoice(gateway_key: str, body: CustomGatewayWalletInvoiceRequest,
-                                             auth=Depends(require_joined)):
-    tg_id, db, tenant = auth
-    topup = db.get_topup(body.topup_id)
-    if not topup or topup["user_id"] != tg_id:
-        raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
-    if topup["status"] != "pending":
-        raise HTTPException(status_code=400, detail=tr("این درخواست شارژ قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], f"custom:{gateway_key}", wallet_topup=True, user_id=topup["user_id"])
-    result = await _create_custom_gateway_invoice_for(
-        db, tenant, tg_id, gateway_key, "wallet_topup", body.topup_id, topup["amount"],
-        order_name=f"شارژ کیف پول #{body.topup_id}",
-    )
-    result["topup_id"] = body.topup_id
-    return result
-
-
-@app.post("/api/webhooks/custom/{gateway_key}")
-async def api_custom_gateway_webhook(gateway_key: str, request: Request, tenant: Tenant = Depends(get_tenant)):
-    db = tenant.db
-    row, config = _load_gateway(db, gateway_key=gateway_key)
-    gw = payment_engine.GenericGateway(config)
-
-    raw_body = await request.body()
-    try:
-        body = json.loads(raw_body) if raw_body else {}
-    except Exception:
-        try:
-            form = await request.form()
-            body = dict(form)
-        except Exception:
-            body = {}
-    query = dict(request.query_params)
-    headers = dict(request.headers)
-
-    gw_log_name = f"custom:{gateway_key}"
-    if not gw.check_webhook_auth(headers, query, raw_body):
-        db.log_webhook_event(gateway=gw_log_name, verified=False, status=None,
-                              error="احراز هویت وب‌هوک نامعتبر است.",
-                              raw_body=json.dumps(body, ensure_ascii=False))
-        raise HTTPException(status_code=401, detail=tr("احراز هویت وب‌هوک نامعتبر است."))
-
-    parsed = gw.parse_webhook(body, query)
-    ref_val = parsed.get("txn_id")
-    invoice = None
-    if ref_val:
-        invoice = db.get_custom_gateway_invoice_by_txn(row["id"], ref_val)
-        if not invoice:
-            invoice = db.get_custom_gateway_invoice_by_gateway_ref(row["id"], ref_val)
-    if not invoice and query.get("txn"):
-        invoice = db.get_custom_gateway_invoice_by_txn(row["id"], query.get("txn"))
-    if not invoice:
-        db.log_webhook_event(gateway=gw_log_name, txn_id=ref_val, verified=True, status="ignored",
-                              error="فاکتور پیدا نشد.", raw_body=json.dumps(body, ensure_ascii=False))
-        return {"status": "ignored"}
-
-    db.log_webhook_event(gateway=gw_log_name, txn_id=ref_val, verified=True,
-                          status=str(parsed.get("success")), raw_body=json.dumps(body, ensure_ascii=False))
-
-    if parsed.get("success") is False:
-        db.update_custom_gateway_invoice_status(invoice["id"], "failed")
-        return {"status": "ok"}
-    if parsed.get("success") is None:
-        # نگاشت success_values تنظیم نشده؛ فقط وضعیت خام را ثبت کن، تصمیم نهایی
-        # را با endpoint استعلام (verify) یا برگشت کاربر بگیر.
-        db.update_custom_gateway_invoice_status(invoice["id"], "pending")
-        return {"status": "ok"}
-
-    if not _gateway_amount_ok(config, invoice, parsed.get("amount")):
-        db.log_webhook_event(gateway=gw_log_name, txn_id=ref_val, verified=True, status="amount_mismatch",
-                              error=f"مبلغ پرداختی ({parsed.get('amount')}) با مبلغ فاکتور "
-                                    f"({invoice['amount_toman']}) هم‌خوانی ندارد.",
-                              raw_body=json.dumps(body, ensure_ascii=False))
-        db.update_custom_gateway_invoice_status(invoice["id"], "failed")
-        for admin_id in db.list_admins():
-            try:
-                async with aiohttp.ClientSession() as session:
-                    await session.post(
-                        f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                        json={"chat_id": admin_id,
-                              "text": f"⚠️ درگاه «{row['name']}»: مبلغ پرداختی وب‌هوک با مبلغ فاکتور "
-                                      f"#{invoice['id']} هم‌خوانی نداشت و سفارش تکمیل نشد. لطفاً بررسی کنید."},
-                    )
-            except Exception:
-                pass
-        return {"status": "ok"}
-
-    await _complete_custom_gateway_payment(db, tenant, invoice)
-    return {"status": "ok"}
-
-
-# ---------------------------------------------------------------------------
-# کارت‌به‌کارت با تایید خودکار (پیامک بانک از اپ BankSmsForwarder)
-# ---------------------------------------------------------------------------
-
-def _create_card_to_card_invoice_for(db: Database, kind: str, ref_id: int, user_id: int,
-                                      amount_toman: int) -> dict:
-    try:
-        return card_to_card_payment.create_invoice(db, kind, ref_id, user_id, amount_toman)
-    except card_to_card_payment.CardToCardError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.post("/api/orders/{order_id}/card-auto-invoice")
-async def api_order_card_auto_invoice(order_id: int, auth=Depends(require_joined)):
-    tg_id, db, tenant = auth
-    order = db.get_order(order_id)
-    if not order or order["user_id"] != tg_id:
-        raise HTTPException(status_code=404, detail=tr("سفارش یافت نشد."))
-    if order["status"] != "pending":
-        raise HTTPException(status_code=400, detail=tr("این سفارش قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, order["final_price"], "card_auto", order["product_id"], order=order, user_id=tg_id)
-    return _create_card_to_card_invoice_for(db, "order", order_id, tg_id, order["final_price"])
-
-
-class CardAutoWalletInvoiceRequest(BaseModel):
-    topup_id: int
-
-
-@app.post("/api/wallet/card-auto-invoice")
-async def api_wallet_card_auto_invoice(body: CardAutoWalletInvoiceRequest, auth=Depends(require_joined)):
-    tg_id, db, tenant = auth
-    topup = db.get_topup(body.topup_id)
-    if not topup or topup["user_id"] != tg_id:
-        raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
-    if topup["status"] != "pending":
-        raise HTTPException(status_code=400, detail=tr("این درخواست شارژ قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], "card_auto", wallet_topup=True, user_id=tg_id)
-    result = _create_card_to_card_invoice_for(db, "wallet_topup", body.topup_id, tg_id, topup["amount"])
-    result["topup_id"] = body.topup_id
-    return result
-
-
-@app.get("/api/card-auto-invoice/{invoice_id}/status")
-def api_card_auto_invoice_status(invoice_id: int, auth=Depends(get_verified_user)):
-    tg_id, db, tenant = auth
-    invoice = db.get_card_to_card_invoice(invoice_id)
-    if not invoice or invoice["user_id"] != tg_id:
-        raise HTTPException(status_code=404, detail=tr("فاکتور یافت نشد."))
-    db.expire_stale_card_to_card_invoices()
-    invoice = db.get_card_to_card_invoice(invoice_id)
-    return {"status": invoice["status"], "amount_toman": invoice["amount_toman"]}
-
-
-@app.post("/api/webhooks/sms-forwarder")
-async def api_sms_forwarder_webhook(request: Request, tenant: Tenant = Depends(get_tenant),
-                                     x_webhook_token: str = Header(None)):
-    """اندپوینتی که اپ اندروید BankSmsForwarder بعد از رسیدن هر پیامک بانکِ
-    منطبق با یکی از قالب‌ها، با متد POST و هدر X-Webhook-Token صدا می‌زند."""
-    db = tenant.db
-    raw_body = await request.body()
-    try:
-        body = json.loads(raw_body) if raw_body else {}
-    except Exception:
-        body = {}
-
-    expected_token = db.get_setting("card_to_card_sms_webhook_token", "")
-    if not expected_token or not x_webhook_token or not hmac.compare_digest(x_webhook_token, expected_token):
-        db.log_webhook_event(gateway="card_to_card_sms", verified=False,
-                              error="توکن وب‌هوک نامعتبر یا خالی است.",
-                              raw_body=json.dumps(body, ensure_ascii=False))
-        raise HTTPException(status_code=401, detail=tr("توکن نامعتبر است."))
-
-    raw_amount = body.get("matched_amount")
-    amount_toman = None
-    parsed_amount = card_to_card_payment.normalize_amount(raw_amount)
-    if parsed_amount is not None:
-        unit = db.get_setting("card_to_card_sms_amount_unit", "rial")
-        amount_toman = card_to_card_payment.rial_to_toman(parsed_amount, unit)
-
-    if amount_toman is None:
-        db.log_webhook_event(gateway="card_to_card_sms", verified=True, status="no_amount",
-                              raw_body=json.dumps(body, ensure_ascii=False))
-        return {"status": "ignored"}
-
-    invoice = card_to_card_payment.match_and_complete(
-        db, amount_toman, sender=body.get("sender"), body=body.get("body"),
-        device_id=body.get("device_id"),
-    )
-    if not invoice:
-        db.log_webhook_event(gateway="card_to_card_sms", verified=True, status="no_match",
-                              raw_body=json.dumps(body, ensure_ascii=False))
-        return {"status": "ignored"}
-
-    db.log_webhook_event(gateway="card_to_card_sms", txn_id=str(invoice["id"]), verified=True,
-                          status="matched", raw_body=json.dumps(body, ensure_ascii=False))
-    await _complete_generic_gateway_payment(db, tenant, invoice)
-    return {"status": "ok"}
-
-
-@app.get("/api/pay/custom/{gateway_key}/return")
-async def api_custom_gateway_return(gateway_key: str, request: Request, txn: str = "",
-                                     tenant: Tenant = Depends(get_tenant)):
-    """کاربر پس از پرداخت، مرورگرش به این آدرس برمی‌گردد (برای درگاه‌هایی که بر پایه‌ی
-    verify API کار می‌کنند، نه webhook). یک صفحه‌ی HTML ساده نمایش می‌دهد و کاربر را
-    به مینی‌اپ برمی‌گرداند."""
-    db = tenant.db
-    row, config = _load_gateway(db, gateway_key=gateway_key)
-    invoice = db.get_custom_gateway_invoice_by_txn(row["id"], txn) if txn else None
-    if not invoice:
-        return HTMLResponse("<h3>فاکتور پیدا نشد.</h3>", status_code=404)
-
-    gw = payment_engine.GenericGateway(config)
-    query = dict(request.query_params)
-    success_text = "پرداخت شما تایید شد ✅"
-    ok = False
-    try:
-        if config.get("verify_enabled"):
-            try:
-                computed = await custom_gateway_payment.compute_send_amount(db, config, invoice["amount_toman"])
-                verify_amount = computed["amount"]
-            except custom_gateway_payment.CustomGatewayPaymentError:
-                # اگه الان (مثلاً نبود موقت نرخ دلار) قابل‌محاسبه نبود، مثل قبل از amount_toman استفاده کن
-                verify_amount = invoice["amount_toman"]
-            result = await gw.verify(
-                amount=verify_amount, amount_toman=invoice["amount_toman"],
-                order_id=invoice["txn_id"], gateway_ref=invoice["gateway_ref"] or "",
-                query=query, tenant_id=tenant.tenant_id or "main",
-            )
-            ok = bool(result.get("success"))
-            if ok and not _gateway_amount_ok(config, invoice, result.get("amount")):
-                ok = False
-                success_text = "مبلغ پرداختی با مبلغ فاکتور هم‌خوانی ندارد ❌ (اگر مبلغ از حساب شما کسر شده، با پشتیبانی تماس بگیرید)"
-                for admin_id in db.list_admins():
-                    try:
-                        async with aiohttp.ClientSession() as session:
-                            await session.post(
-                                f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                                json={"chat_id": admin_id,
-                                      "text": f"⚠️ درگاه «{row['name']}»: مبلغ پرداختی استعلام‌شده با مبلغ فاکتور "
-                                              f"#{invoice['id']} هم‌خوانی نداشت و سفارش تکمیل نشد. لطفاً بررسی کنید."},
-                            )
-                    except Exception:
-                        pass
-        else:
-            # بدون verify_request: صرفاً به وب‌هوکی که قبلاً رسیده (اگر رسیده) تکیه می‌کنیم
-            ok = invoice["status"] == "completed"
-    except payment_engine.PaymentEngineError as e:
-        ok = False
-        success_text = f"خطا در استعلام پرداخت: {e}"
-
-    if ok:
-        await _complete_custom_gateway_payment(db, tenant, invoice)
-    else:
-        db.update_custom_gateway_invoice_status(invoice["id"], "failed")
-        if success_text == "پرداخت شما تایید شد ✅":
-            success_text = "پرداخت تایید نشد ❌ (اگر مبلغ از حساب شما کسر شده، با پشتیبانی تماس بگیرید)"
-
-    return HTMLResponse(
-        f"<html dir='rtl'><body style='font-family:sans-serif;text-align:center;padding:40px'>"
-        f"<h2>{success_text}</h2>"
-        f"<p>این صفحه را می‌توانید ببندید و به بات برگردید.</p>"
-        f"</body></html>"
-    )
-
-
-@app.post("/api/webhooks/plisio")
-async def api_plisio_webhook(request: Request, tenant: Tenant = Depends(get_tenant)):
-    try:
-        body = await request.json()
-    except Exception:
-        form = await request.form()
-        body = dict(form)
-
-    body_txn_id = body.get("txn_id")
-    body_status = body.get("status")
-
-    if not plisio_client.verify_callback(_resolve_plisio_key(tenant.db), body):
-        tenant.db.log_webhook_event(
-            gateway="plisio", txn_id=body_txn_id, verified=False, status=body_status,
-            error="امضای کال‌بک نامعتبر است (verify_hash mismatch).",
-            raw_body=json.dumps(body, ensure_ascii=False),
-        )
-        raise HTTPException(status_code=401, detail=tr("امضای کال‌بک نامعتبر است."))
-
-    txn_id = body.get("txn_id")
-    status = body.get("status")
-    currency = body.get("currency")
-    if not txn_id or not status:
-        tenant.db.log_webhook_event(
-            gateway="plisio", txn_id=txn_id, verified=True, status=status,
-            error="داده‌ی کال‌بک ناقص است (txn_id/status خالی).",
-            raw_body=json.dumps(body, ensure_ascii=False),
-        )
-        raise HTTPException(status_code=400, detail=tr("داده‌ی کال‌بک ناقص است."))
-
-    db = tenant.db
-    db.log_webhook_event(gateway="plisio", txn_id=txn_id, verified=True, status=status,
-                          raw_body=json.dumps(body, ensure_ascii=False))
-    invoice = db.get_crypto_invoice_by_txn(txn_id)
-    if not invoice:
-        return {"status": "ignored"}
-
-    if invoice["status"] == "completed":
-        return {"status": "already_completed"}
-
-    if status in ("new", "pending", "pending internal"):
-        db.update_crypto_invoice_status(txn_id, "pending", currency=currency)
-        return {"status": "ok"}
-
-    if status not in ("completed",):
-        db.update_crypto_invoice_status(txn_id, status, currency=currency)
-        return {"status": "ok"}
-
-    # status == completed
-    db.update_crypto_invoice_status(txn_id, "completed", currency=currency)
-
-    if invoice["kind"] == "reseller_request":
-        await _complete_reseller_gateway_payment(db, tenant, invoice)
-        return {"status": "ok"}
-
-    if invoice["kind"] == "wallet_topup":
-        db.approve_topup(invoice["ref_id"])
-        await report_topup_completed(tenant, db, invoice["ref_id"], "plisio")
-        try:
-            async with aiohttp.ClientSession() as session:
-                await session.post(
-                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                    json={
-                        "chat_id": invoice["user_id"],
-                        "text": f"✅ پرداخت کریپتو تایید شد و {invoice['amount_toman']:,} تومان به کیف پول شما اضافه شد.",
-                    },
-                )
-        except Exception:
-            pass
-
-    elif invoice["kind"] == "order":
-        order_id = invoice["ref_id"]
-        order = db.get_order(order_id)
-        if order and order["status"] == "pending":
-            if order["is_renewal"]:
-                if not db.claim_order(order_id):
-                    return {"status": "ok"}
-                try:
-                    result_text = await execute_renewal(db, order)
-                except RenewalError as e:
-                    db.release_order_claim(order_id)
-                    admin_ids = db.list_admins()
-                    async with aiohttp.ClientSession() as session:
-                        for admin_id in admin_ids:
-                            try:
-                                await session.post(
-                                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                                    json={"chat_id": admin_id, "text": f"⚠️ سفارش تمدید #{order_id} با کریپتو پرداخت شد ولی تمدید ناموفق بود: {e}\nلطفاً دستی رسیدگی کنید."},
-                                )
-                            except Exception:
-                                pass
-                    return {"status": "ok"}
-                except Exception:
-                    logging.exception("خطای غیرمنتظره در execute_renewal برای سفارش تمدید #%s (وب‌هوک کریپتو/پلیزیو)", order_id)
-                    db.release_order_claim(order_id)
-                    admin_ids = db.list_admins()
-                    async with aiohttp.ClientSession() as session:
-                        for admin_id in admin_ids:
-                            try:
-                                await session.post(
-                                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                                    json={"chat_id": admin_id, "text": f"⚠️ سفارش تمدید #{order_id} با کریپتو پرداخت شد ولی یک خطای غیرمنتظره در تمدید رخ داد.\nلطفاً لاگ سرور و دستی رسیدگی کنید."},
-                                )
-                            except Exception:
-                                pass
-                    return {"status": "ok"}
-                db.approve_renewal_order(order_id)
-                await report_order_completed(tenant, db, order_id, "plisio")
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        await session.post(
-                            f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                            json={"chat_id": order["user_id"], "text": result_text},
-                        )
-                except Exception:
-                    pass
-                return {"status": "ok"}
-
-            product = db.get_product(order["product_id"])
-
-            if product and product["is_auto_provision"]:
-                if not db.claim_order(order_id):
-                    return {"status": "ok"}
-                quantity = order["quantity"] or 1
-                try:
-                    if product["provision_server_id"] or product["provision_ssh_node_id"]:
-                        prov_results = await provision_direct(db, product, quantity, user_id=order["user_id"], order_id=order_id)
-                    else:
-                        prov_results = await provision_auto_config(db, product, quantity, user_id=order["user_id"], order_id=order_id)
-                except (ProvisionError, DirectProvisionError) as e:
-                    db.release_order_claim(order_id)
-                    admin_ids = db.list_admins()
-                    async with aiohttp.ClientSession() as session:
-                        for admin_id in admin_ids:
-                            try:
-                                await session.post(
-                                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                                    json={
-                                        "chat_id": admin_id,
-                                        "text": f"⚠️ سفارش #{order_id} با کریپتو پرداخت شد ولی ساخت خودکار کانفیگ ناموفق بود: {e}\nلطفاً دستی رسیدگی کنید.",
-                                    },
-                                )
-                            except Exception:
-                                pass
-                    return {"status": "ok"}
-
-                db.approve_order_auto(order_id)
-                await report_order_completed(tenant, db, order_id, "plisio")
-                db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or product["price"])
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        await session.post(
-                            f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                            json={
-                                "chat_id": order["user_id"],
-                                "text": f"✅ پرداخت کریپتو تایید شد!\n📦 محصول: {product['name']}",
-                            },
-                        )
-                except Exception:
-                    pass
-                asyncio.create_task(deliver_config_to_user_web(
-                    order["user_id"], product["name"], [r["subscription_url"] for r in prov_results],
-                    final_price=order["final_price"], order_id=order_id, db=db, bot_token=tenant.bot_token,
-                ))
-                return {"status": "ok"}
-
-            if not db.claim_order(order_id):
-                return {"status": "ok"}
-            quantity = order["quantity"] or 1
-            results = db.take_unused_configs(order["product_id"], order["user_id"], quantity)
-            if results:
-                db.approve_order(order_id, [r["id"] for r in results])
-                await report_order_completed(tenant, db, order_id, "plisio")
-                db.reward_referrer_if_first_purchase(order["user_id"], order["final_price"] or (product["price"] if product else 0))
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        await session.post(
-                            f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                            json={
-                                "chat_id": order["user_id"],
-                                "text": f"✅ پرداخت کریپتو تایید شد!\n📦 محصول: {product['name'] if product else ''}",
-                            },
-                        )
-                except Exception:
-                    pass
-                asyncio.create_task(deliver_config_to_user_web(
-                    order["user_id"], product["name"] if product else "", [r["link"] for r in results],
-                    final_price=order["final_price"], order_id=order_id, db=db, bot_token=tenant.bot_token,
-                ))
-            else:
-                db.release_order_claim(order_id)
-                # موجودی هم‌زمان تمام شده - به ادمین اطلاع بده تا دستی رسیدگی کند
-                admin_ids = db.list_admins()
-                async with aiohttp.ClientSession() as session:
-                    for admin_id in admin_ids:
-                        try:
-                            await session.post(
-                                f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                                json={
-                                    "chat_id": admin_id,
-                                    "text": f"⚠️ سفارش #{order_id} با کریپتو پرداخت شد ولی موجودی محصول تمام شده! لطفاً دستی رسیدگی کنید.",
-                                },
-                            )
-                        except Exception:
-                            pass
-
-    return {"status": "ok"}
-
-
-# ---------------------------------------------------------------------------
-# گردونه‌ی شانس
-# ---------------------------------------------------------------------------‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
-
-@app.get("/api/wheel")
-def api_wheel_status(auth=Depends(get_verified_user)):
-    tg_id, db, _ = auth
-    settings = db.get_wheel_settings()
-    can_spin, remaining_hours = db.can_spin_wheel(tg_id)
-    return {
-        "enabled": settings["enabled"], "can_spin": can_spin,
-        "remaining_hours": round(remaining_hours, 1) if remaining_hours else 0,
-        "prizes": settings["prizes"],
-    }
-
-
-@app.post("/api/wheel/spin")
-async def api_wheel_spin(auth=Depends(require_joined)):
-    tg_id, db, tenant = auth
-    settings = db.get_wheel_settings()
-    if not settings["enabled"]:
-        raise HTTPException(status_code=400, detail=tr("گردونه غیرفعال است."))
-    can_spin, remaining_hours = db.can_spin_wheel(tg_id)
-    if not can_spin:
-        raise HTTPException(status_code=429, detail=tr(f"حدود {int(remaining_hours)+1} ساعت دیگر دوباره امتحان کن."))
-
-    db.record_wheel_spin(tg_id)
-    is_full_access = db.is_full_access_bot(not bool(tenant.tenant_id))
-    prize = db.pick_wheel_prize(is_full_access)
-    user_row = db.get_user(tg_id)
-    name = (user_row["first_name"] if user_row else "") or ""
-    username = user_row["username"] if user_row else None
-
-    if prize is not None and prize["kind"] == "config":
-        plan = {
-            "id": prize["id"], "name": prize["title"], "name_prefix": prize["name_prefix"] or "gift",
-            "panel_server_id": prize["panel_server_id"], "volume_mb": prize["volume_mb"],
-            "duration_hours": prize["duration_hours"],
-        }
-        try:
-            result = await provision_test_plan(db, plan, user_id=tg_id, source="wheel", track_product=False)
-        except TestPlanProvisionError as e:
-            db.release_wheel_spin(tg_id)
-            raise HTTPException(status_code=409, detail=str(e))
-        amount = format_plan_amount(plan)
-        await report_router.notify_prize_raw(
-            tenant.bot_token, db, "برنده‌ی گردونه شانس (کانفیگ)", tg_id, name, username,
-            f"📦 {prize['title']} - {amount}\n🔑 {result.get('username') or ''}",
-        )
-        return {
-            "won": True, "kind": "config", "title": prize["title"],
-            "amount_label": amount, "link": dedicated_sub.dedicated_link_for_upstream(db, result["subscription_url"]),
-        }
-    if prize is not None and prize["discount_percent"]:
-        percent = int(prize["discount_percent"])
-        code, expires_at = db.generate_wheel_prize_code(tg_id, percent)
-        await report_router.notify_prize_raw(
-            tenant.bot_token, db, "برنده‌ی گردونه شانس (کد تخفیف)", tg_id, name, username,
-            f"🎟 کد تخفیف {percent}٪ - {code}",
-        )
-        return {"won": True, "kind": "discount", "percent": percent, "code": code, "expires_at": expires_at}
-    return {"won": False}
-
-
-# ---------------------------------------------------------------------------
-# کیف پول
-# ---------------------------------------------------------------------------
-
-@app.post("/api/wallet/topup-request")
-def api_topup_request(body: TopupCreate, auth=Depends(require_joined)):
-    tg_id, db, tenant = auth
-    user_row = db.get_user(tg_id)
-    if user_row and user_row["is_blocked"]:
-        raise HTTPException(status_code=403, detail=tr("حساب شما مسدود شده است."))
-    min_topup = int(db.get_setting("min_amount_wallet_topup", "1000") or "1000")
-    if body.amount < min_topup:
-        raise HTTPException(status_code=400, detail=tr(f"حداقل مبلغ {min_topup:,} تومان است."))
-    max_balance = int(db.get_setting("max_wallet_balance", "0") or "0")
-    if max_balance > 0:
-        current_balance = db.get_wallet_credit(tg_id)
-        if current_balance + body.amount > max_balance:
-            remaining = max(max_balance - current_balance, 0)
-            raise HTTPException(
-                status_code=400,
-                detail=tr(f"با این شارژ موجودی از سقف مجاز ({max_balance:,} تومان) بیشتر می‌شود. حداکثر مبلغ قابل شارژ: {remaining:,} تومان."),
-            )
-    topup_id = db.create_topup(tg_id, body.amount)
-    return {
-        "topup_id": topup_id,
-        **_card_info(db, tg_id),
-        "note": tr("مبلغ را واریز کرده و عکس رسید را همینجا ارسال کنید."),
-        **_payment_flags(db, body.amount, None, tenant=tenant, wallet_topup=True, user_id=tg_id),
-    }
-
-
-@app.post("/api/wallet/topup-receipt")
-async def api_topup_receipt(
-    topup_id: int = Form(...),
-    photo: UploadFile = File(...),
-    x_init_data: Optional[str] = Header(None),
-    x_web_token: Optional[str] = Header(None),
-    tenant: Tenant = Depends(get_tenant),
-):
-    tg_id, db, tenant = get_verified_user(x_init_data, tenant, x_web_token)
-    topup = db.get_topup(topup_id)
-    if not topup or topup["user_id"] != tg_id:
-        raise HTTPException(status_code=404, detail=tr("درخواست شارژ یافت نشد."))
-    if topup["status"] != "pending":
-        raise HTTPException(status_code=400, detail=tr("این درخواست قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, topup["amount"], "card", wallet_topup=True, user_id=tg_id)
-    if not photo.content_type or not photo.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail=tr("فقط عکس رسید پذیرفته می‌شود."))
-
-    photo_bytes = await photo.read()
-    if len(photo_bytes) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail=tr("حجم عکس بیش از حد مجاز است."))
-
-    user = db.get_user(tg_id)
-    caption = (
-        f"👛 درخواست شارژ کیف پول #{topup_id}\n"
-        f"👤 کاربر: {(user['first_name'] if user else '') or ''} (@{(user['username'] if user else '') or '---'})\n"
-        f"🆔 آیدی عددی: {tg_id}\n"
-        f"💰 مبلغ: {topup['amount']:,} تومان"
-    )
-    reply_markup = json.dumps({
-        "inline_keyboard": [[
-            {"text": "✅ تایید و شارژ کیف پول", "callback_data": f"topup_approve:{topup_id}"},
-            {"text": "❌ رد کردن", "callback_data": f"topup_reject:{topup_id}"},
-        ], _quick_action_buttons(tg_id)]
-    })
-
-    admin_ids = db.list_admins()
-    if not admin_ids:
-        raise HTTPException(status_code=500, detail=tr("هیچ ادمینی برای بررسی رسید ثبت نشده است."))
-
-    ai_result = await _check_miniapp_receipt(
-        db, photo_bytes, photo.filename or "receipt.jpg", photo.content_type, "topup", topup_id, topup["amount"],
-        user_id=topup["user_id"],
-    )
-    db.set_topup_receipt_ai_note(topup_id, ai_result["note"])
-    if ai_result.get("reject") and db.reject_topup(topup_id, "ai_auto"):
-        db.log_admin_action(
-            0, "topup_ai_auto_reject",
-            f"شارژ #{topup_id} | کاربر {tg_id} | مبلغ: {topup['amount']:,} | دلیل: {ai_result.get('reject_reason') or ''}",
-        )
-        await report_router.notify_raw(tenant.bot_token, db, "fraud", report_router.build_fraud_event(
-            "topup_ai", topup_id, tg_id, ai_result.get("reject_reason") or "", topup["amount"], "مینی‌اپ"))
-        await send_photo_to_admins(
-            db, tenant.bot_token,
-            caption + "\n\n🚫 این رسید توسط بررسی هوشمند بسیار مشکوک تشخیص داده شد و به‌صورت خودکار رد شد.\n"
-            + (ai_result.get("reject_reason") or "")[:500],
-            json.dumps({"inline_keyboard": [_quick_action_buttons(tg_id)]}),
-            photo_bytes, photo.filename or "receipt.jpg", photo.content_type, "finance",
-        )
-        raise HTTPException(status_code=400, detail=tr(_RECEIPT_AI_REJECTED_MSG))
-    caption += _receipt_ai_caption_suffix(ai_result)
-
-    sent_file_id, delivered, results = await send_photo_to_admins(
-        db, tenant.bot_token, caption, reply_markup, photo_bytes, photo.filename or "receipt.jpg", photo.content_type, "finance"
-    )
-    if delivered == 0:
-        raise HTTPException(status_code=502, detail=tr("ارسال رسید به ادمین ناموفق بود. دوباره تلاش کنید."))
-
-    for admin_id, message_id in results:
-        db.set_topup_admin_message(topup_id, admin_id, message_id)
-    if sent_file_id:
-        db.set_topup_receipt(topup_id, sent_file_id)
-
-    return {"status": "sent"}
-
-
-@app.post("/api/orders/{order_id}/receipt")
-async def api_order_receipt(
-    order_id: int,
-    photo: UploadFile = File(...),
-    x_init_data: Optional[str] = Header(None),
-    x_web_token: Optional[str] = Header(None),
-    tenant: Tenant = Depends(get_tenant),
-):
-    tg_id, db, tenant = get_verified_user(x_init_data, tenant, x_web_token)
-    order = db.get_order(order_id)
-    if not order or order["user_id"] != tg_id:
-        raise HTTPException(status_code=404, detail=tr("سفارش یافت نشد."))
-    if order["status"] != "pending":
-        raise HTTPException(status_code=400, detail=tr("این سفارش قبلاً بررسی شده است."))
-    _require_payment_method_allowed(db, order["final_price"], "card", order["product_id"], order=order, user_id=tg_id)
-    if not photo.content_type or not photo.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail=tr("فقط عکس رسید پذیرفته می‌شود."))
-
-    photo_bytes = await photo.read()
-    if len(photo_bytes) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail=tr("حجم عکس بیش از حد مجاز است."))
-
-    user = db.get_user(tg_id)
-    qty = order["quantity"] or 1
-    if order["is_custom_config"]:
-        product_line = f"🛠 کانفیگ شخصی «{order['custom_username']}» ({order['custom_volume_gb']} گیگ)\n" + _order_panel_line(db, order, plain=True)
-    else:
-        product = db.get_product(order["product_id"])
-        product_line = f"📦 محصول: {product['name'] if product else '---'}" + (f" × {qty}\n" if qty > 1 else "\n") + _order_panel_line(db, order, product, plain=True)
-    caption = (
-        f"🧾 سفارش #{order_id}\n"
-        f"👤 کاربر: {(user['first_name'] if user else '') or ''} (@{(user['username'] if user else '') or '---'})\n"
-        f"🆔 آیدی عددی: {tg_id}\n"
-        f"📱 شماره: {(user['phone_number'] if user else None) or 'ثبت نشده'}\n"
-        f"👛 موجودی کیف پول: {int((user['referral_credit'] if user else 0) or 0):,} تومان\n"
-        f"{product_line}"
-        f"💰 قیمت پایه: {order['base_price']:,} تومان\n"
-    )
-    if order["discount_amount"]:
-        caption += f"🎟 تخفیف کد: {order['discount_amount']:,} تومان\n"
-    if order["wallet_used"]:
-        caption += f"👛 استفاده از کیف پول: {order['wallet_used']:,} تومان\n"
-    caption += f"💵 مبلغ قابل پرداخت: {order['final_price']:,} تومان"
-
-    reply_markup = json.dumps({
-        "inline_keyboard": [
-            [
-                {"text": "✅ تایید و ارسال کانفیگ", "callback_data": f"order_approve:{order_id}"},
-                {"text": "❌ رد کردن", "callback_data": f"order_reject:{order_id}"},
-            ],
-            [
-                {"text": "🚫 فیش فیک + بلاک کاربر", "callback_data": f"order_fake_receipt:{order_id}"},
-            ],
-            _quick_action_buttons(tg_id),
-        ]
-    })
-
-    admin_ids = db.list_admins()
-    if not admin_ids:
-        raise HTTPException(status_code=500, detail=tr("هیچ ادمینی برای بررسی رسید ثبت نشده است."))
-
-    ai_result = await _check_miniapp_receipt(
-        db, photo_bytes, photo.filename or "receipt.jpg", photo.content_type, "order", order_id, order["final_price"],
-        user_id=order["user_id"],
-    )
-    db.set_order_receipt_ai_note(order_id, ai_result["note"])
-    if ai_result.get("reject") and db.reject_order(order_id, "ai_auto"):
-        db.log_admin_action(
-            0, "order_ai_auto_reject",
-            f"سفارش #{order_id} | کاربر {tg_id} | دلیل: {ai_result.get('reject_reason') or ''}",
-        )
-        await report_router.notify_raw(tenant.bot_token, db, "fraud", report_router.build_fraud_event(
-            "order_ai", order_id, tg_id, ai_result.get("reject_reason") or "", order["final_price"], "مینی‌اپ"))
-        await send_photo_to_admins(
-            db, tenant.bot_token,
-            caption + "\n\n🚫 این رسید توسط بررسی هوشمند بسیار مشکوک تشخیص داده شد و به‌صورت خودکار رد شد.\n"
-            + (ai_result.get("reject_reason") or "")[:500],
-            json.dumps({"inline_keyboard": [_quick_action_buttons(tg_id)]}),
-            photo_bytes, photo.filename or "receipt.jpg", photo.content_type, "purchase",
-        )
-        raise HTTPException(status_code=400, detail=tr(_RECEIPT_AI_REJECTED_MSG))
-    caption += _receipt_ai_caption_suffix(ai_result)
-
-    sent_file_id, delivered, results = await send_photo_to_admins(
-        db, tenant.bot_token, caption, reply_markup, photo_bytes, photo.filename or "receipt.jpg", photo.content_type, "purchase"
-    )
-    if delivered == 0:
-        raise HTTPException(status_code=502, detail=tr("ارسال رسید به ادمین ناموفق بود. دوباره تلاش کنید."))
-
-    for admin_id, message_id in results:
-        db.set_order_admin_message(order_id, admin_id, message_id)
-    if sent_file_id:
-        db.set_order_receipt(order_id, sent_file_id)
-
-    return {"status": "sent"}
-
-
-# ---------------------------------------------------------------------------
-# مدیریت (فقط ادمین) - چیدمان دکمه‌های منوی اصلی
-# ---------------------------------------------------------------------------
-
-class MenuButtonUpdate(BaseModel):
-    key: str
-    text: Optional[str] = None
-    style: Optional[str] = None
-    enabled: Optional[bool] = None
-
-
-class MenuLayoutUpdate(BaseModel):
-    order: list[str]
-    buttons: list[MenuButtonUpdate]
-    # کلیدهایی که باید قبل‌شان یک ردیف جدید در منو شروع شود؛ اگر ارسال نشود
-    # (None) یعنی فرانت‌اند هنوز چیدمان آزاد را ویرایش نکرده و تنظیم قبلی
-    # (تعداد ستون ثابت یا چیدمان سفارشی قبلی) دست‌نخورده باقی می‌ماند.
-    row_breaks: Optional[list[str]] = None
-
-
-@app.get("/api/admin/check")
-def api_admin_check(auth=Depends(get_verified_user)):
-    tg_id, db, _ = auth
-    is_admin = db.is_admin(tg_id)
-    if is_admin:
-        # این اندپوینت هنگام باز شدن پنل ادمین و به‌صورت دوره‌ای (heartbeat) از
-        # سمت مینی‌اپ صدا زده می‌شود؛ همین‌جا حضور آنلاین ادمین را هم ثبت می‌کنیم.
-        db.touch_admin_presence(tg_id)
-    return {"is_admin": is_admin, "admin_role": db.get_admin_role(tg_id)}
-
-
-@app.get("/api/admin/menu")
-def api_admin_get_menu(auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    settings = db.get_all_settings()
-    order = db.get_menu_order()
-    row_breaks = db.get_menu_row_breaks()
-    break_set = set(row_breaks) if row_breaks is not None else None
-    result = []
-    for key in order:
-        meta = MENU_BUTTON_META.get(key)
-        if not meta:
-            continue
-        item = {
-            "key": key,
-            "label": meta["label"],
-            "admin_only": meta["admin_only"],
-            "has_text": meta["has_text"],
-            "has_style": meta["has_style"],
-            "togglable": meta["toggle_key"] is not None,
-        }
-        if meta["has_text"]:
-            item["text"] = settings.get(key, "")
-        if meta["has_style"]:
-            item["style"] = settings.get(f"{key}_style", "")
-        if meta["toggle_key"]:
-            item["enabled"] = settings.get(meta["toggle_key"], "1") == "1"
-        # break_before یعنی این دکمه یک ردیف جدید شروع می‌کند (نه کنار دکمه‌ی
-        # قبلی). None یعنی هنوز چیدمان آزاد سفارشی نشده (حالت قدیمی ستون ثابت).
-        item["break_before"] = (key in break_set) if break_set is not None else None
-        result.append(item)
-    return result
-
-
-@app.post("/api/admin/menu")
-def api_admin_save_menu(body: MenuLayoutUpdate, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    for btn in body.buttons:
-        meta = MENU_BUTTON_META.get(btn.key)
-        if not meta:
-            continue
-        if meta["has_text"] and btn.text is not None and btn.text.strip():
-            db.set_setting(btn.key, btn.text.strip())
-        if meta["has_style"] and btn.style is not None:
-            style = btn.style if btn.style in ("primary", "success", "danger") else ""
-            db.set_setting(f"{btn.key}_style", style)
-        if meta["toggle_key"] and btn.enabled is not None:
-            db.set_setting(meta["toggle_key"], "1" if btn.enabled else "0")
-    db.set_menu_order(body.order)
-    if body.row_breaks is not None:
-        db.set_menu_row_breaks(body.row_breaks)
-    return {"status": "ok"}
-
-
-# ---------------------------------------------------------------------------
-# بنرهای کاروسل بالای صفحه‌ی خانه‌ی مینی‌اپ
-# ---------------------------------------------------------------------------
-
-# مقصدهای مجاز برای ضربه‌زدن روی یک بنر؛ باید دقیقاً با کلیدهای شیء `tabs`
-# در app.js (سوییچ تب‌های مینی‌اپ) یکی باشد.
-BANNER_NAV_TARGETS = {
-    "home", "store", "services", "profile", "wallet", "support", "referral", "test", "wheel", "admin",
-}
-
-
-class BannerItem(BaseModel):
-    id: Optional[str] = None
-    kind: Optional[str] = None  # None | "expiry" | "referral" (اسلایدهای خودکار)
-    icon: str = ""
-    title: str
-    sub: str = ""
-    cta: str = ""
-    nav: str
-    bg: str = ""
-    image: Optional[str] = ""
-    image_only: bool = False
-    enabled: bool = True
-
-
-class BannersUpdate(BaseModel):
-    banners: list[BannerItem]
-
-
-@app.get("/api/banners")
-def api_banners(auth=Depends(get_verified_user)):
-    """لیست بنرهای فعال کاروسل خانه (برای نمایش به همه‌ی کاربران)."""
-    _, db, _ = auth
-    banners = db.get_banners()
-    return [b for b in banners if b.get("enabled", True)]
-
-
-@app.get("/api/admin/banners")
-def api_admin_get_banners(auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    return db.get_banners()
-
-
-@app.post("/api/admin/banners/upload-image")
-async def api_admin_upload_banner_image(photo: UploadFile = File(...), auth=Depends(require_senior_admin)):
-    """آپلود عکس آماده برای یک بنر؛ به‌صورت data URI برمی‌گردد تا در فرم بنر
-    ذخیره و همراه بقیه‌ی بنرها با POST /api/admin/banners ثبت شود."""
-    if not photo.content_type or not photo.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail=tr("فقط فایل عکس پذیرفته می‌شود."))
-    photo_bytes = await photo.read()
-    if len(photo_bytes) > MAX_HEADER_IMAGE_BYTES:
-        raise HTTPException(status_code=400, detail=tr("حجم عکس نباید بیشتر از ۲ مگابایت باشد."))
-    data_uri = f"data:{photo.content_type};base64,{base64.b64encode(photo_bytes).decode('ascii')}"
-    return {"status": "ok", "image": data_uri}
-
-
-@app.post("/api/admin/banners")
-def api_admin_save_banners(body: BannersUpdate, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    if len(body.banners) > 50:
-        raise HTTPException(status_code=400, detail=tr("حداکثر ۵۰ بنر مجاز است."))
-    clean = []
-    for idx, b in enumerate(body.banners):
-        title = b.title.strip()
-        if not title:
-            raise HTTPException(status_code=400, detail=tr(f"عنوان بنر شماره {idx + 1} نمی‌تواند خالی باشد."))
-        if len(title) > 40:
-            raise HTTPException(status_code=400, detail=tr(f"عنوان بنر شماره {idx + 1} بیش از حد طولانی است."))
-        sub = b.sub.strip()
-        if len(sub) > 120:
-            raise HTTPException(status_code=400, detail=tr(f"توضیح بنر شماره {idx + 1} بیش از حد طولانی است."))
-        cta = b.cta.strip() or "مشاهده"
-        if len(cta) > 30:
-            raise HTTPException(status_code=400, detail=tr(f"متن دکمه‌ی بنر شماره {idx + 1} بیش از حد طولانی است."))
-        if b.nav not in BANNER_NAV_TARGETS:
-            raise HTTPException(status_code=400, detail=tr(f"مقصد بنر شماره {idx + 1} نامعتبر است."))
-        image = (b.image or "").strip()
-        if image and not image.startswith("data:image/"):
-            raise HTTPException(status_code=400, detail=tr(f"تصویر بنر شماره {idx + 1} نامعتبر است."))
-        if len(image) > 2_900_000:  # ~2MB فایل اصلی بعد از base64 حدوداً همین اندازه می‌شود
-            raise HTTPException(status_code=400, detail=tr(f"حجم تصویر بنر شماره {idx + 1} بیش از حد مجاز است."))
-        bg = b.bg.strip() or "linear-gradient(120deg, #0d1420, #142845 55%, #1c3f6e)"
-        kind = b.kind if b.kind in ("expiry", "referral") else None
-        clean.append({
-            "kind": kind,
-            "id": b.id or f"b_{secrets.token_hex(4)}",
-            "icon": (b.icon or "✨").strip()[:8],
-            "title": title,
-            "sub": sub,
-            "cta": cta,
-            "nav": b.nav,
-            "bg": bg,
-            "image": image,
-            "image_only": bool(b.image_only) and bool(image),
-            "enabled": bool(b.enabled),
-        })
-    db.set_banners(clean)
-    return {"status": "ok", "banners": db.get_banners()}
-
-
-# ---------------------------------------------------------------------------
-# آیکون دکمه‌های دسترسی سریع خانه + کلیدهای سفارشی بات در مینی‌اپ
-# ---------------------------------------------------------------------------
-
-from home_tiles import HOME_TILE_LABELS, MAX_HOME_ICON_BYTES  # منبع واحد با پنل وب ادمین
-_HOME_ICON_DATA_RE = re.compile(r"^data:image/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$")
-
-
-class HomeIconsUpdate(BaseModel):
-    icons: Dict[str, str]
-
-
-def _clean_home_icon(value: str, label: str) -> str:
-    v = (value or "").strip()
-    if not v:
-        return ""
-    if v.startswith("data:image/"):
-        if not _HOME_ICON_DATA_RE.match(v) or len(v) > int(MAX_HOME_ICON_BYTES * 1.4):
-            raise HTTPException(status_code=400, detail=tr("تصویر آیکون نامعتبر یا بیش از حد بزرگ است."))
-        return v
-    if len(v) > 16 or "<" in v or ">" in v:
-        raise HTTPException(status_code=400, detail=tr("آیکون باید یک ایموجی کوتاه یا یک تصویر باشد."))
-    return v
-
-
-def _home_icon_items(db, tenant) -> list:
-    icons = db.get_home_icons()
-    items = [{"key": k, "label": label, "icon": icons.get(k, "")} for k, label in HOME_TILE_LABELS.items()]
-    if not tenant.tenant_id:
-        for b in db.cm_list():
-            key = f"cm:{b['id']}"
-            items.append({"key": key, "label": b["title"], "icon": icons.get(key, ""), "custom": True})
-    return items
-
-
-@app.get("/api/home-config")
-def api_home_config(auth=Depends(get_verified_user)):
-    """آیکون‌های سفارشی دکمه‌های خانه و کلیدهای سفارشی فعال بات (فقط بات اصلی)."""
-    _, db, tenant = auth
-    buttons = []
-    if not tenant.tenant_id:
-        for b in db.cm_list(only_active=True):
-            if b["kind"] == "url" and not (b.get("url") or "").strip():
-                continue
-            if b["kind"] == "content" and not b.get("parts"):
-                continue
-            if not (b.get("title") or "").strip():
-                continue
-            buttons.append({"id": b["id"], "title": b["title"], "kind": b["kind"], "style": b.get("style") or ""})
-    import home_tiles
-    customized = bool((db.get_setting("menu_order", "") or "").strip())
-    order = home_tiles.tile_order(db.get_menu_order(), [b["id"] for b in buttons], customized)
-    rows = home_tiles.tile_rows(db.get_menu_order(), [b["id"] for b in buttons], db.get_menu_row_breaks())
-    return {"icons": db.get_home_icons(), "buttons": buttons, "order": order, "rows": rows}
-
-
-@app.post("/api/custom-buttons/{button_id}/click")
-async def api_custom_button_click(button_id: int, auth=Depends(require_joined)):
-    tg_id, db, tenant = auth
-    if tenant.tenant_id:
-        raise HTTPException(status_code=404, detail=tr("این گزینه دیگر در دسترس نیست."))
-    btn = await asyncio.to_thread(db.cm_get, button_id)
-    if not btn or not btn["is_active"]:
-        raise HTTPException(status_code=404, detail=tr("این گزینه دیگر در دسترس نیست."))
-    if btn["kind"] == "url":
-        url = (btn.get("url") or "").strip()
-        if not url:
-            raise HTTPException(status_code=404, detail=tr("این گزینه دیگر در دسترس نیست."))
-        await asyncio.to_thread(db.cm_add_click, button_id)
-        return {"status": "ok", "kind": "url", "url": url}
-    if not btn.get("parts"):
-        raise HTTPException(status_code=404, detail=tr("این گزینه دیگر در دسترس نیست."))
-    if web_auth.is_email_account(db, tg_id):
-        raise HTTPException(status_code=400, detail=tr("این گزینه فقط داخل تلگرام در دسترس است."))
-    import custom_menu_buttons
-    await asyncio.to_thread(db.cm_add_click, button_id)
-    bot = Bot(token=tenant.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    try:
-        sent = await custom_menu_buttons.send_parts(bot, tg_id, btn["parts"])
-    finally:
-        await bot.session.close()
-    if sent <= 0:
-        raise HTTPException(status_code=502, detail=tr("ارسال پیام ناموفق بود؛ ابتدا ربات را استارت کنید."))
-    return {"status": "ok", "kind": "content", "sent": sent}
-
-
-@app.get("/api/admin/home-icons")
-def api_admin_get_home_icons(auth=Depends(require_senior_admin)):
-    _, db, tenant = auth
-    return {"items": _home_icon_items(db, tenant)}
-
-
-@app.post("/api/admin/home-icons")
-def api_admin_save_home_icons(body: HomeIconsUpdate, auth=Depends(require_senior_admin)):
-    _, db, tenant = auth
-    items = {it["key"]: it for it in _home_icon_items(db, tenant)}
-    clean = {}
-    for key, value in body.icons.items():
-        item = items.get(key)
-        if item is None:
-            continue
-        icon = _clean_home_icon(value, item["label"])
-        if icon:
-            clean[key] = icon
-    db.set_home_icons(clean)
-    return {"status": "ok", "items": _home_icon_items(db, tenant)}
-
-
-@app.post("/api/admin/home-icons/upload")
-async def api_admin_upload_home_icon(photo: UploadFile = File(...), auth=Depends(require_senior_admin)):
-    if photo.content_type not in ("image/png", "image/jpeg", "image/webp", "image/gif"):
-        raise HTTPException(status_code=400, detail=tr("فقط فایل PNG، JPG، WEBP یا GIF پذیرفته می‌شود."))
-    data = await photo.read()
-    if len(data) > MAX_HOME_ICON_BYTES:
-        raise HTTPException(status_code=400, detail=tr("حجم آیکون نباید بیشتر از ۲۵۶ کیلوبایت باشد."))
-    return {"status": "ok", "image": f"data:{photo.content_type};base64,{base64.b64encode(data).decode('ascii')}"}
-
-
-# ---------------------------------------------------------------------------
-# مدیریت (فقط ادمین) - دسته‌بندی‌ها و محصولات
-# ---------------------------------------------------------------------------
-
-class CategoryCreate(BaseModel):
-    name: str
-    parent_id: Optional[int] = None
-    description: str = ""
-
-
-class CategoryUpdate(BaseModel):
-    name: Optional[str] = None
-    parent_id: Optional[int] = None
-    button_color: Optional[str] = None
-    description: Optional[str] = None
-
-
-class ProductCreate(BaseModel):
-    category_id: int
-    name: str
-    price: int
-    description: str = ""
-    duration_days: int = 30
-    is_auto_provision: bool = False
-    auto_provision_volume_gb: Optional[int] = None
-    provision_server_id: Optional[int] = None
-    provision_target_values: Optional[List[str]] = None
-    extra_panel_ids: Optional[List[int]] = None
-    extra_panel_target_values: Optional[Dict[str, List[str]]] = None
-    payment_methods: Optional[List[str]] = None
-    compare_price: Optional[int] = None  # قیمت قبل از تخفیف (نمایشی)
-    discount_days: Optional[int] = None
-    discount_max_uses: Optional[int] = None
-    base_users: int = 0
-    extra_user_price: int = 0
-    max_users: int = 0
-    renew_rules: Optional[dict] = None  # قوانین تمدید کامل (renewal_rules.py)
-    ai_description: str = ""  # توضیح برای راهنمای خرید هوشمند
-    product_kind: str = "config"  # config | panel_account
-    start_on_first_use: Optional[bool] = None  # True=از اولین اتصال، False=از لحظه خرید، None=طبق تنظیم پنل
-
-
-class ProductUpdate(BaseModel):
-    name: Optional[str] = None
-    price: Optional[int] = None
-    description: Optional[str] = None
-    duration_days: Optional[int] = None
-    source: Optional[str] = None
-    provision_server_id: Optional[int] = None
-    provision_target_values: Optional[List[str]] = None
-    auto_provision_volume_gb: Optional[int] = None
-    compare_price: Optional[int] = None  # 0 یعنی حذف تخفیف
-    discount_days: Optional[int] = None
-    discount_max_uses: Optional[int] = None
-    base_users: Optional[int] = None
-    extra_user_price: Optional[int] = None
-    max_users: Optional[int] = None
-    renew_rules: Optional[dict] = None
-    ai_description: Optional[str] = None
-    start_on_first_use: Optional[bool] = None
-
-
-_ONHOLD_PANEL_TYPES = {"marzban", "pasarguard", "rebecca", "marzneshin", "3xui", "threexui"}
-
-
-def _checked_product_first_use(db, value, server_id, multi=False, extra_panel_ids=None, ssh_node_id=None):
-    """None برای محصول بدون مقصد مستقیم (اثری ندارد)؛ وگرنه bool معتبر.
-    برای محصول چندپنلی/نودی همه‌ی پنل‌های VPN باید On-hold را پشتیبانی کنند (نودها محدودیتی ندارند)."""
-    if value is None or (not server_id and not ssh_node_id):
-        return None
-    if value:
-        for sid in ([server_id] if server_id else []) + [int(x) for x in (extra_panel_ids or [])]:
-            server = db.get_panel_server(int(sid))
-            if server and server["panel_type"] not in _ONHOLD_PANEL_TYPES:
-                raise HTTPException(status_code=400, detail=tr("این نوع پنل شروع زمان از اولین اتصال را پشتیبانی نمی‌کند."))
-    return bool(value)
-
-
-class ConfigsAdd(BaseModel):
-    links: list[str]
-
-
-@app.get("/api/admin/categories")
-def api_admin_list_categories(auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    cats = db.get_categories(active_only=False)
-    paths = db.get_category_path_names()
-    result = []
-    for c in cats:
-        products = db.get_products(c["id"], active_only=False)
-        result.append({
-            "id": c["id"], "name": paths.get(c["id"], c["name"]), "raw_name": c["name"], "is_active": bool(c["is_active"]),
-            "parent_id": c["parent_id"], "product_count": len(products),
-            "button_color": c["button_color"] if "button_color" in c.keys() else None,
-            "description": c["description"] if "description" in c.keys() else "",
-            "has_image": _category_photo_file_id(db, c["id"]) is not None,
-        })
-    return result
-
-
-@app.get("/api/admin/categories/{cat_id}/image")
-async def api_admin_category_image(cat_id: int, auth=Depends(require_senior_admin)):
-    _, db, tenant = auth
-    file_id = await asyncio.to_thread(_category_photo_file_id, db, cat_id)
-    if not file_id:
-        raise HTTPException(status_code=404, detail=tr("برای این دسته‌بندی عکسی ثبت نشده است."))
-    result = await _tg_fetch_file(tenant.bot_token, file_id)
-    if not result:
-        raise HTTPException(status_code=502, detail=tr("دریافت تصویر از تلگرام ناموفق بود."))
-    content, content_type = result
-    return Response(content=content, media_type=content_type, headers={"Cache-Control": "no-store"})
-
-
-@app.post("/api/admin/categories/{cat_id}/image")
-async def api_admin_set_category_image(cat_id: int, photo: UploadFile = File(...), auth=Depends(require_senior_admin)):
-    """ثبت عکس دسته/زیردسته؛ در همان description_media ذخیره می‌شود تا ربات و پنل وب هم همان را ببینند."""
-    import category_media
-    from admin_panel.telegram_notify import upload_photo_get_file_id as _tg_upload_photo
-    tg_id, db, tenant = auth
-    if not await asyncio.to_thread(db.get_category, cat_id):
-        raise HTTPException(status_code=404, detail=tr("دسته‌بندی یافت نشد."))
-    ctype = (photo.content_type or "").lower()
-    if ctype not in ("image/jpeg", "image/png", "image/webp"):
-        raise HTTPException(status_code=400, detail=tr("فقط تصویر JPG، PNG یا WEBP مجاز است."))
-    content = await photo.read()
-    if not content:
-        raise HTTPException(status_code=400, detail=tr("فایل انتخاب‌شده خالی است."))
-    if len(content) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail=tr("حجم تصویر نباید بیشتر از ۱۰ مگابایت باشد."))
-    file_id = await _tg_upload_photo(tenant.bot_token, tg_id, content,
-                                     filename=photo.filename or "category.jpg", content_type=ctype)
-    if not file_id:
-        raise HTTPException(status_code=502, detail=tr("آپلود تصویر در تلگرام ناموفق بود. ربات باید روشن باشد و شما آن را استارت کرده باشید."))
-    items = [it for it in await asyncio.to_thread(db.get_category_description_media, cat_id) if it["type"] != "photo"]
-    items = ([{"type": "photo", "file_id": file_id}] + items)[:category_media.MAX_ITEMS]
-    await asyncio.to_thread(db.set_category_description_media, cat_id, items)
-    return {"status": "ok"}
-
-
-@app.delete("/api/admin/categories/{cat_id}/image")
-async def api_admin_delete_category_image(cat_id: int, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    if not await asyncio.to_thread(db.get_category, cat_id):
-        raise HTTPException(status_code=404, detail=tr("دسته‌بندی یافت نشد."))
-    items = [it for it in await asyncio.to_thread(db.get_category_description_media, cat_id) if it["type"] != "photo"]
-    await asyncio.to_thread(db.set_category_description_media, cat_id, items)
-    return {"status": "ok"}
-
-
-@app.post("/api/admin/categories")
-def api_admin_create_category(body: CategoryCreate, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    if not body.name.strip():
-        raise HTTPException(status_code=400, detail=tr("نام دسته‌بندی نمی‌تواند خالی باشد."))
-    try:
-        cat_id = db.add_category(body.name.strip(), parent_id=getattr(body, "parent_id", None))
-        if (body.description or "").strip():
-            db.set_category_description(cat_id, body.description.strip())
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=tr(str(e)))
-    return {"id": cat_id}
-
-
-@app.patch("/api/admin/categories/{cat_id}")
-def api_admin_edit_category(cat_id: int, body: CategoryUpdate, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    if not db.get_category(cat_id):
-        raise HTTPException(status_code=404, detail=tr("دسته‌بندی یافت نشد."))
-    fields_set = getattr(body, "model_fields_set", None) or getattr(body, "__fields_set__", set())
-    try:
-        if body.name is not None:
-            if not body.name.strip():
-                raise HTTPException(status_code=400, detail=tr("نام دسته‌بندی نمی‌تواند خالی باشد."))
-            if "parent_id" in fields_set:
-                db.edit_category(cat_id, body.name.strip(), parent_id=body.parent_id)
-            else:
-                db.edit_category(cat_id, body.name.strip())
-        if "button_color" in fields_set:
-            db.set_category_button_color(cat_id, body.button_color)
-        if "description" in fields_set:
-            db.set_category_description(cat_id, body.description or "")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=tr(str(e)))
-    return {"status": "ok"}
-
-
-@app.post("/api/admin/categories/{cat_id}/toggle")
-def api_admin_toggle_category(cat_id: int, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    if not db.get_category(cat_id):
-        raise HTTPException(status_code=404, detail=tr("دسته‌بندی یافت نشد."))
-    db.toggle_category(cat_id)
-    return {"status": "ok"}
-
-
-@app.delete("/api/admin/categories/{cat_id}")
-def api_admin_delete_category(cat_id: int, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    if not db.get_category(cat_id):
-        raise HTTPException(status_code=404, detail=tr("دسته‌بندی یافت نشد."))
-    db.delete_category(cat_id)
-    return {"status": "ok"}
-
-
-class PanelServerCreate(BaseModel):
-    name: str
-    panel_type: str = "pasarguard"
-    api_url: str
-    api_username: str
-    api_password: str
-    template_username: Optional[str] = None
-
-
-class PanelServerUpdate(BaseModel):
-    name: Optional[str] = None
-    api_url: Optional[str] = None
-    api_username: Optional[str] = None
-    api_password: Optional[str] = None
-    max_services: Optional[int] = None
-
-
-class PanelServerSetTemplate(BaseModel):
-    template_username: str
-
-
-class PanelServerXuiConfig(BaseModel):
-    inbound_ids: Optional[List[int]] = None
-    sub_base_url: str
-
-
-class PricingTierCreate(BaseModel):
-    from_gb: int
-    to_gb: Optional[int] = None  # None یعنی تا بی‌نهایت
-    price_per_gb: int
-
-
-class CustomConfigSettingsUpdate(BaseModel):
-    enabled: Optional[bool] = None
-    min_gb: Optional[int] = None
-    max_gb: Optional[int] = None
-
-
-def _panel_server_public(s, db) -> dict:
-    is_sub_base_type = s["panel_type"] in SUB_BASE_URL_PANEL_TYPES
-    xui_inbound_ids = parse_xui_inbound_ids(s) if s["panel_type"] in INBOUND_SELECT_PANEL_TYPES else []
-    # اینباند/گروه دیگر در اتصال انتخاب نمی‌شود (در ساخت محصول انتخاب می‌شود)
-    if is_sub_base_type:
-        configured = bool(s["xui_sub_base_url"])
-    elif s["panel_type"] in NO_SETUP_PANEL_TYPES:
-        configured = True
-    elif connect_needs_template(s["panel_type"]):
-        configured = bool(s["group_ids"])
-    else:
-        configured = True
-    cap = None
-    try:
-        cap = db.get_panel_capacity_info(s["id"])
-    except Exception:
-        pass
-    return {
-        "id": s["id"], "name": s["name"], "panel_type": s["panel_type"],
-        "api_url": s["api_url"], "template_username": s["template_username"],
-        "has_template": bool(s["group_ids"] and s["proxy_settings"]),
-        "xui_inbound_ids": xui_inbound_ids, "xui_sub_base_url": s["xui_sub_base_url"],
-        "is_configured": configured,
-        "used_for_custom_config": bool(s["used_for_custom_config"]),
-        "used_for_test_config": bool(s["used_for_test_config"]),
-        "default_group": s["default_group"], "is_active": bool(s["is_active"]),
-        "max_services": cap['max_services'] if cap else None,
-        "active_services": cap['active_services'] if cap else 0,
-        "capacity_percent": cap['percent'] if cap else 0,
-    }
-
-
-@app.get("/api/admin/panel-servers")
-def api_admin_list_panel_servers(auth=Depends(require_full_access_admin)):
-    _, db, _ = auth
-    return [_panel_server_public(s, db) for s in db.get_panel_servers()]
-
-
-@app.post("/api/admin/panel-servers")
-async def api_admin_add_panel_server(body: PanelServerCreate, auth=Depends(require_full_access_admin)):
-    _, db, _ = auth
-    admin_id, _, _ = auth
-    body.api_username = (
-        body.api_username.strip()
-        or TOKEN_ONLY_PANEL_TYPES.get(body.panel_type, "")
-        or ("apikey" if body.panel_type == "pasarguard" and body.api_password.strip().startswith("pg_key_") else "")
-    )
-    if not body.name.strip() or not body.api_url.strip() or not body.api_username.strip() or not body.api_password.strip():
-        raise HTTPException(status_code=400, detail=tr("نام، آدرس، یوزرنیم و پسورد الزامی هستند."))
-    if body.panel_type not in PROVIDERS:
-        raise HTTPException(status_code=400, detail=tr("نوع پنل پشتیبانی نمی‌شود."))
-
-    if connect_needs_template(body.panel_type):
-        # Rebecca / IBSng: لیست زنده‌ی سرویس/گروه ندارند؛ فقط برای همین دو، «کاربر نمونه» لازم است.
-        if not body.template_username or not body.template_username.strip():
-            raise HTTPException(status_code=400, detail=tr("نام کاربری نمونه الزامی است."))
-        server_id = db.add_panel_server(
-            body.name.strip(), body.panel_type, body.api_url.strip(),
-            body.api_username.strip(), body.api_password,
-        )
-        server = db.get_panel_server(server_id)
-        try:
-            provider = get_provider(server)
-            template = await provider.fetch_template_from_user(body.template_username.strip())
-        except PanelError as e:
-            db.delete_panel_server(server_id)
-            raise HTTPException(status_code=400, detail=str(e))
-        db.update_panel_server(
-            server_id, group_ids=json.dumps(template["group_ids"]),
-            proxy_settings=json.dumps(template["proxy_settings"]),
-            template_username=body.template_username.strip(),
-        )
-        db.log_admin_action(admin_id, "panel_server_add", f"سرور «{body.name}» (#{server_id}) از مینی‌اپ")
-        import dedicated_sub as _ds
-        return {"id": server_id, "warning": _ds.wui_dsub_warning(db, body.panel_type)}
-
-    # بقیه‌ی پنل‌ها: بدون اینباند/گروه/کاربر نمونه؛ فقط تست اتصال و ذخیره.
-    # مقصد (گروه یا اینباند) موقع ساخت محصول از لیست زنده‌ی پنل انتخاب می‌شود.
-    server_id = db.add_panel_server(
-        body.name.strip(), body.panel_type, body.api_url.strip(),
-        body.api_username.strip(), body.api_password,
-    )
-    ok, err = await get_provider(db.get_panel_server(server_id)).check_connection()
-    if not ok:
-        db.delete_panel_server(server_id)
-        raise HTTPException(status_code=400, detail=tr("اتصال به پنل ناموفق بود: ") + str(err))
-    db.log_admin_action(admin_id, "panel_server_add", f"سرور «{body.name}» (#{server_id}) از مینی‌اپ")
-    import dedicated_sub as _ds
-    return {
-        "id": server_id,
-        "needs_sub_base_url": body.panel_type in SUB_BASE_URL_PANEL_TYPES,
-        "warning": _ds.wui_dsub_warning(db, body.panel_type),
-    }
-
-
-@app.get("/api/admin/panel-servers/{server_id}/xui-inbounds")
-async def api_admin_list_xui_inbounds(server_id: int, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    server = db.get_panel_server(server_id)
-    if not server:
-        raise HTTPException(status_code=404, detail=tr("سرور یافت نشد."))
-    if server["panel_type"] not in INBOUND_SELECT_PANEL_TYPES:
-        raise HTTPException(status_code=400, detail=tr("این سرور انتخاب inbound ندارد."))
-    try:
-        provider = get_provider(server)
-        inbounds = await provider.list_inbounds()
-    except PanelError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return inbounds
-
-
-@app.post("/api/admin/panel-servers/{server_id}/xui-config")
-async def api_admin_set_xui_config(server_id: int, body: PanelServerXuiConfig, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    server = db.get_panel_server(server_id)
-    if not server:
-        raise HTTPException(status_code=404, detail=tr("سرور یافت نشد."))
-    if server["panel_type"] not in SUB_BASE_URL_PANEL_TYPES:
-        raise HTTPException(status_code=400, detail=tr("این سرور به این تنظیمات نیاز ندارد."))
-    # انتخاب inbound دیگر اینجا نیست (در ساخت محصول انتخاب می‌شود)؛ inbound_ids فقط برای سازگاری با کلاینت‌های قدیمی پذیرفته می‌شود.
-    if server["panel_type"] in SINGLE_INBOUND_PANEL_TYPES and len(body.inbound_ids or []) > 1:
-        raise HTTPException(status_code=400, detail=tr("برای این نوع پنل فقط یک inbound قابل انتخاب است."))
-    url = body.sub_base_url.strip()
-    if not url.startswith("http://") and not url.startswith("https://"):
-        raise HTTPException(status_code=400, detail=tr("آدرس Subscription باید با http:// یا https:// شروع شود."))
-    update_kwargs = {"xui_sub_base_url": url}
-    if body.inbound_ids:
-        update_kwargs["xui_inbound_ids"] = json.dumps(body.inbound_ids)
-    db.update_panel_server(server_id, **update_kwargs)
-    return {"status": "ok"}
-
-
-@app.patch("/api/admin/panel-servers/{server_id}")
-def api_admin_edit_panel_server(server_id: int, body: PanelServerUpdate, auth=Depends(require_full_access_admin)):
-    _, db, _ = auth
-    if not db.get_panel_server(server_id):
-        raise HTTPException(status_code=404, detail=tr("سرور یافت نشد."))
-    db.update_panel_server(
-        server_id, name=body.name, api_url=body.api_url,
-        api_username=body.api_username, api_password=body.api_password,
-        max_services=(None if body.max_services == 0 else body.max_services),
-    )
-    return {"status": "ok"}
-
-
-@app.post("/api/admin/panel-servers/{server_id}/template")
-async def api_admin_set_panel_server_template(server_id: int, body: PanelServerSetTemplate, auth=Depends(require_full_access_admin)):
-    _, db, _ = auth
-    server = db.get_panel_server(server_id)
-    if not server:
-        raise HTTPException(status_code=404, detail=tr("سرور یافت نشد."))
-    try:
-        provider = get_provider(server)
-        template = await provider.fetch_template_from_user(body.template_username.strip())
-    except PanelError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    db.update_panel_server(
-        server_id, group_ids=json.dumps(template["group_ids"]),
-        proxy_settings=json.dumps(template["proxy_settings"]),
-        template_username=body.template_username.strip(),
-    )
-    return {"status": "ok"}
-
-
-@app.post("/api/admin/panel-servers/{server_id}/toggle")
-def api_admin_toggle_panel_server(server_id: int, auth=Depends(require_full_access_admin)):
-    _, db, _ = auth
-    server = db.get_panel_server(server_id)
-    if not server:
-        raise HTTPException(status_code=404, detail=tr("سرور یافت نشد."))
-    db.update_panel_server(server_id, is_active=0 if server["is_active"] else 1)
-    return {"status": "ok"}
-
-
-@app.post("/api/admin/panel-servers/{server_id}/usage/{kind}")
-def api_admin_toggle_panel_server_usage(server_id: int, kind: str, auth=Depends(require_full_access_admin)):
-    _, db, _ = auth
-    if kind not in ("custom", "test"):
-        raise HTTPException(status_code=400, detail=tr("نوع مصرف نامعتبر است."))
-    server = db.get_panel_server(server_id)
-    if not server:
-        raise HTTPException(status_code=404, detail=tr("سرور یافت نشد."))
-    field = "used_for_custom_config" if kind == "custom" else "used_for_test_config"
-    if kind == "custom" and not server[field]:
-        from panel_providers import server_has_default_target, CUSTOM_CONFIG_NEEDS_TARGET_MSG
-        if not server_has_default_target(server):
-            raise HTTPException(status_code=400, detail=tr(CUSTOM_CONFIG_NEEDS_TARGET_MSG))
-    db.update_panel_server(server_id, **{field: 0 if server[field] else 1})
-    return {"status": "ok"}
-
-
-@app.post("/api/admin/panel-servers/{server_id}/test")
-async def api_admin_test_panel_server(server_id: int, auth=Depends(require_full_access_admin)):
-    _, db, _ = auth
-    server = db.get_panel_server(server_id)
-    if not server:
-        raise HTTPException(status_code=404, detail=tr("سرور یافت نشد."))
-    try:
-        provider = get_provider(server)
-        ok = await provider.test_connection()
-    except PanelError as e:
-        return {"ok": False, "error": str(e)}
-    return {"ok": ok}
-
-
-@app.delete("/api/admin/panel-servers/{server_id}")
-def api_admin_delete_panel_server(server_id: int, auth=Depends(require_full_access_admin)):
-    _, db, _ = auth
-    admin_id, _, _ = auth
-    if not db.get_panel_server(server_id):
-        raise HTTPException(status_code=404, detail=tr("سرور یافت نشد."))
-    db.delete_panel_server(server_id)
-    db.log_admin_action(admin_id, "panel_server_delete", f"سرور #{server_id} از مینی‌اپ")
-    return {"status": "ok"}
-
-
-@app.get("/api/admin/custom-config/settings")
-def api_admin_get_custom_config_settings(auth=Depends(require_full_access_admin)):
-    _, db, _ = auth
-    return db.get_custom_config_settings()
-
-
-@app.post("/api/admin/custom-config/settings")
-def api_admin_update_custom_config_settings(body: CustomConfigSettingsUpdate, auth=Depends(require_full_access_admin)):
-    _, db, _ = auth
-    if body.enabled is not None:
-        db.set_setting("custom_config_enabled", "1" if body.enabled else "0")
-    if body.min_gb is not None:
-        if body.min_gb <= 0:
-            raise HTTPException(status_code=400, detail=tr("حداقل حجم باید بزرگ‌تر از صفر باشد."))
-        db.set_setting("custom_config_min_gb", str(body.min_gb))
-    if body.max_gb is not None:
-        min_gb = body.min_gb if body.min_gb is not None else db.get_custom_config_settings()["min_gb"]
-        if body.max_gb <= min_gb:
-            raise HTTPException(status_code=400, detail=tr("حداکثر حجم باید بزرگ‌تر از حداقل باشد."))
-        db.set_setting("custom_config_max_gb", str(body.max_gb))
-    return {"status": "ok"}
-
-
-def _serialize_test_plan(db, p) -> dict:
-    server = db.get_panel_server(p["panel_server_id"])
-    return {
-        "id": p["id"], "name": p["name"], "name_prefix": p["name_prefix"],
-        "panel_server_id": p["panel_server_id"], "panel_server_name": server["name"] if server else None,
-        "volume_mb": p["volume_mb"], "duration_hours": p["duration_hours"],
-        "is_active": bool(p["is_active"]), "sort_order": p["sort_order"],
-    }
-
-
-class TestPlanBody(BaseModel):
-    name: str
-    name_prefix: str
-    panel_server_id: int
-    volume_mb: int
-    duration_hours: int
-
-
-@app.get("/api/admin/test-config/plans")
-def api_admin_list_test_plans(auth=Depends(require_full_access_admin)):
-    _, db, _ = auth
-    return [_serialize_test_plan(db, p) for p in db.get_test_config_plans()]
-
-
-@app.post("/api/admin/test-config/plans")
-def api_admin_create_test_plan(body: TestPlanBody, auth=Depends(require_full_access_admin)):
-    _, db, _ = auth
-    if not body.name.strip():
-        raise HTTPException(status_code=400, detail=tr("نام پلن الزامی است."))
-    if not re.fullmatch(r"[A-Za-z0-9_]+", body.name_prefix.strip()):
-        raise HTTPException(status_code=400, detail=tr("پیشوند نام کاربری فقط باید شامل حروف/عدد انگلیسی و آندرلاین باشد."))
-    if body.volume_mb <= 0 or body.duration_hours <= 0:
-        raise HTTPException(status_code=400, detail=tr("حجم و مدت باید بزرگ‌تر از صفر باشند."))
-    server = db.get_panel_server(body.panel_server_id)
-    if not server or not server["is_active"]:
-        raise HTTPException(status_code=400, detail=tr("پنل انتخاب‌شده یافت نشد یا غیرفعال است."))
-    plan_id = db.create_test_config_plan(
-        body.name.strip(), body.name_prefix.strip(), body.panel_server_id, body.volume_mb, body.duration_hours,
-    )
-    return _serialize_test_plan(db, db.get_test_config_plan(plan_id))
-
-
-@app.put("/api/admin/test-config/plans/{plan_id}")
-def api_admin_update_test_plan(plan_id: int, body: TestPlanBody, auth=Depends(require_full_access_admin)):
-    _, db, _ = auth
-    if not db.get_test_config_plan(plan_id):
-        raise HTTPException(status_code=404, detail=tr("این پلن یافت نشد."))
-    if not body.name.strip():
-        raise HTTPException(status_code=400, detail=tr("نام پلن الزامی است."))
-    if not re.fullmatch(r"[A-Za-z0-9_]+", body.name_prefix.strip()):
-        raise HTTPException(status_code=400, detail=tr("پیشوند نام کاربری فقط باید شامل حروف/عدد انگلیسی و آندرلاین باشد."))
-    if body.volume_mb <= 0 or body.duration_hours <= 0:
-        raise HTTPException(status_code=400, detail=tr("حجم و مدت باید بزرگ‌تر از صفر باشند."))
-    server = db.get_panel_server(body.panel_server_id)
-    if not server or not server["is_active"]:
-        raise HTTPException(status_code=400, detail=tr("پنل انتخاب‌شده یافت نشد یا غیرفعال است."))
-    db.update_test_config_plan(
-        plan_id, name=body.name.strip(), name_prefix=body.name_prefix.strip(),
-        panel_server_id=body.panel_server_id, volume_mb=body.volume_mb, duration_hours=body.duration_hours,
-    )
-    return _serialize_test_plan(db, db.get_test_config_plan(plan_id))
-
-
-@app.post("/api/admin/test-config/plans/{plan_id}/toggle")
-def api_admin_toggle_test_plan(plan_id: int, auth=Depends(require_full_access_admin)):
-    _, db, _ = auth
-    if not db.get_test_config_plan(plan_id):
-        raise HTTPException(status_code=404, detail=tr("این پلن یافت نشد."))
-    db.toggle_test_config_plan(plan_id)
-    return _serialize_test_plan(db, db.get_test_config_plan(plan_id))
-
-
-@app.delete("/api/admin/test-config/plans/{plan_id}")
-def api_admin_delete_test_plan(plan_id: int, auth=Depends(require_full_access_admin)):
-    _, db, _ = auth
-    if not db.get_test_config_plan(plan_id):
-        raise HTTPException(status_code=404, detail=tr("این پلن یافت نشد."))
-    db.delete_test_config_plan(plan_id)
-    return {"status": "ok"}
-
-
-@app.get("/api/admin/custom-config/pricing-tiers")
-def api_admin_list_pricing_tiers(auth=Depends(require_full_access_admin)):
-    _, db, _ = auth
-    tiers = db.get_pricing_tiers()
-    return [
-        {"id": t["id"], "from_gb": t["from_gb"], "to_gb": t["to_gb"], "price_per_gb": t["price_per_gb"]}
-        for t in tiers
-    ]
-
-
-@app.post("/api/admin/custom-config/pricing-tiers")
-def api_admin_add_pricing_tier(body: PricingTierCreate, auth=Depends(require_full_access_admin)):
-    _, db, _ = auth
-    if body.from_gb <= 0 or body.price_per_gb <= 0:
-        raise HTTPException(status_code=400, detail=tr("مقادیر باید مثبت باشند."))
-    if body.to_gb is not None and body.to_gb <= body.from_gb:
-        raise HTTPException(status_code=400, detail=tr("انتهای بازه باید بزرگ‌تر از ابتدای آن باشد."))
-    tier_id = db.add_pricing_tier(body.from_gb, body.to_gb, body.price_per_gb)
-    return {"id": tier_id}
-
-
-@app.delete("/api/admin/custom-config/pricing-tiers/{tier_id}")
-def api_admin_delete_pricing_tier(tier_id: int, auth=Depends(require_full_access_admin)):
-    _, db, _ = auth
-    db.delete_pricing_tier(tier_id)
-    return {"status": "ok"}
-
-
-@app.get("/api/admin/panel-servers-lite")
-def api_admin_panel_servers_lite(auth=Depends(require_senior_admin)):
-    """لیست سبک پنل‌ها (فقط id/name) برای انتخاب پنل موقع ساخت محصول اتصال مستقیم.
-    مثل بات و پنل وب مستقل، این گزینه فقط برای بات اصلی است."""
-    _, db, tenant = auth
-    if not db.is_full_access_bot(not bool(tenant.tenant_id)):
-        raise HTTPException(status_code=403, detail=tr("این بخش فقط برای بات اصلی یا نمایندگی کامل در دسترس است."))
-    from panel_capabilities import provider_capabilities, USER_LIMIT
-    return [{"id": s["id"], "name": s["name"], "panel_type": s["panel_type"],
-             "supports_user_limit": provider_capabilities(s["panel_type"])[USER_LIMIT],
-             "onhold_supported": s["panel_type"] in _ONHOLD_PANEL_TYPES,
-             "start_on_first_use": bool(s["start_on_first_use"]) if "start_on_first_use" in s.keys() else False}
-            for s in db.get_panel_servers(active_only=True)]
-
-
-@app.get("/api/admin/catalog-capabilities")
-def api_admin_catalog_capabilities(auth=Depends(require_senior_admin)):
-    _, db, tenant = auth
-    return {"bank_allowed": not is_volume_credit_bot(db, not bool(tenant.tenant_id))}
-
-
-@app.get("/api/admin/categories/{cat_id}/products")
-def api_admin_list_products(cat_id: int, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    products = db.get_products(cat_id, active_only=False)
-    return [
-        {
-            "id": p["id"], "name": p["name"], "price": p["price"],
-            "compare_price": p["compare_price"] or 0,
-            "discount_expires_at": p["discount_expires_at"],
-            "discount_max_uses": p["discount_max_uses"] or 0,
-            "discount_used_count": p["discount_used_count"] or 0,
-            "description": p["description"], "duration_days": p["duration_days"],
-            "ai_description": (p["ai_description"] if "ai_description" in p.keys() else "") or "",
-            "is_active": bool(p["is_active"]),
-            "is_auto_provision": bool(p["is_auto_provision"]),
-            "provision_server_id": p["provision_server_id"],
-            "provision_target_config": p["provision_target_config"] if "provision_target_config" in p.keys() else None,
-            "auto_provision_volume_gb": p["auto_provision_volume_gb"],
-            "stock": None if p["is_auto_provision"] else db.count_available_configs(p["id"]),
-            "product_kind": (p["product_kind"] if "product_kind" in p.keys() else "config") or "config",
-            "base_users": p["base_users"] or 0, "extra_user_price": p["extra_user_price"] or 0, "max_users": p["max_users"] or 0,
-            "start_on_first_use": (p["start_on_first_use"] if "start_on_first_use" in p.keys() else None),
-            **renewal_rules.product_rules(p),
-        }
-        for p in products
-    ]
-
-
-@app.get("/api/admin/products/all")
-def api_admin_list_all_products(auth=Depends(require_senior_admin)):
-    """لیست همه‌ی محصولات (از همه‌ی دسته‌بندی‌ها، فعال و غیرفعال) - برای مصارفی مثل
-    انتخاب «محصول جایزه» در تنظیمات زیرمجموعه‌گیری."""
-    _, db, _ = auth
-    products = db.get_all_products()
-    return [
-        {
-            "id": p["id"], "name": p["name"], "category_name": p["category_name"],
-            "is_active": bool(p["is_active"]),
-            "is_auto_provision": bool(p["is_auto_provision"]),
-            "provision_server_id": p["provision_server_id"],
-        }
-        for p in products
-    ]
-
-
-@app.post("/api/admin/products")
-async def api_admin_create_product(body: ProductCreate, auth=Depends(require_senior_admin)):
-    _, db, tenant = auth
-    if not db.get_category(body.category_id):
-        raise HTTPException(status_code=404, detail=tr("دسته‌بندی یافت نشد."))
-    if not body.name.strip():
-        raise HTTPException(status_code=400, detail=tr("نام محصول نمی‌تواند خالی باشد."))
-    if body.price < 0:
-        raise HTTPException(status_code=400, detail=tr("قیمت نامعتبر است."))
-
-    is_full_access = db.is_full_access_bot(not bool(tenant.tenant_id))
-    provision_server_id = body.provision_server_id if is_full_access else None
-    is_auto_provision = bool(body.is_auto_provision or provision_server_id)
-    is_panel_kind = body.product_kind == "panel_account"
-    if is_panel_kind:
-        if not is_full_access or (tenant.tenant_id and not db.is_unrestricted_full()) or is_volume_credit_bot(db, True) or is_auto_provision:
-            raise HTTPException(status_code=403, detail=tr("فروش پنل فقط برای بات اصلی و به‌صورت بانک موجودی مجاز است."))
-        body.duration_days = 0
-    if not is_auto_provision and not is_panel_kind and is_volume_credit_bot(db, not bool(tenant.tenant_id)):
-        raise HTTPException(status_code=403, detail=tr("نمایندگی VIP بانک کانفیگ ندارد؛ محصول باید از اعتبار حجمی ساخته شود."))
-
-    if body.duration_days < 0:
-        raise HTTPException(status_code=400, detail=tr("مدت اعتبار نامعتبر است."))
-    if body.duration_days == 0 and not provision_server_id and not is_panel_kind:
-        raise HTTPException(status_code=400, detail=tr("مدت نامحدود فقط برای محصولات با اتصال مستقیم به پنل ممکن است."))
-
-    if is_auto_provision:
-        if body.auto_provision_volume_gb is None or body.auto_provision_volume_gb < 0:
-            raise HTTPException(status_code=400, detail=tr("برای اتصال مستقیم به پنل باید حجم (گیگابایت) را مشخص کنید."))
-        if body.auto_provision_volume_gb == 0 and not provision_server_id:
-            raise HTTPException(status_code=400, detail=tr("حجم نامحدود فقط برای محصولات با اتصال مستقیم به پنل ممکن است."))
-
-    panel_rows = [db.get_panel_server(provision_server_id)] if provision_server_id else []
-    supports_limit = all_panels_support(panel_rows, USER_LIMIT)
-    try:
-        base_users, extra_user_price, max_users = normalize_user_limit(
-            body.base_users, body.extra_user_price, body.max_users, supported=supports_limit
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-    target_config = None
-    if provision_server_id:
-        server = db.get_panel_server(provision_server_id)
-        try:
-            from product_targets import list_product_targets, build_target_config
-            target_info = await list_product_targets(server)
-            choices = target_info.get("choices") or []
-            if choices:
-                if not body.provision_target_values:
-                    raise ValueError("برای این پنل باید حداقل یک گروه یا Inbound انتخاب کنید.")
-                target_config = build_target_config(server, body.provision_target_values, target_info)
-            elif body.provision_target_values:
-                raise ValueError("این پنل مقصد قابل انتخابی ارائه نمی‌کند؛ از قالب ذخیره‌شده پنل استفاده می‌شود.")
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        except Exception as exc:
-            logger.warning("product target validation failed for panel %s: %s", provision_server_id, exc)
-            raise HTTPException(status_code=400, detail=tr(f"بررسی مقصدهای پنل ناموفق بود: {str(exc)[:220]}"))
-
-    extra_panel_ids = []
-    extra_panel_target_configs = {}
-    if provision_server_id and body.extra_panel_ids:
-        if not is_full_access:
-            raise HTTPException(status_code=403, detail=tr("چندپنلی فقط برای بات اصلی مجاز است."))
-        import dedicated_sub
-        if not dedicated_sub.is_enabled(db):
-            raise HTTPException(status_code=400, detail="برای محصول چندپنلی باید ساب اختصاصی فعال باشد.")
-        off_message = dedicated_sub.panels_dsub_off_message(db, [provision_server_id] + [int(x) for x in body.extra_panel_ids])
-        if off_message:
-            raise HTTPException(status_code=400, detail=off_message)
-        from product_targets import list_product_targets, build_target_config
-        for raw_sid in body.extra_panel_ids:
-            sid = int(raw_sid)
-            if sid <= 0 or sid == int(provision_server_id) or sid in extra_panel_ids:
-                continue
-            extra_server = db.get_panel_server(sid)
-            if not extra_server or not extra_server["is_active"]:
-                raise HTTPException(status_code=400, detail=f"پنل اضافه #{sid} فعال نیست.")
-            extra_panel_ids.append(sid)
-            try:
-                info = await list_product_targets(extra_server)
-                values = (body.extra_panel_target_values or {}).get(str(sid))
-                choices = info.get("choices") or []
-                if choices and not values:
-                    raise ValueError(f"برای پنل {extra_server['name']} باید مقصد مستقل انتخاب کنید.")
-                if values:
-                    extra_panel_target_configs[sid] = build_target_config(extra_server, values, info)
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
-            except Exception as exc:
-                raise HTTPException(status_code=400, detail=tr(f"دریافت مقصدهای پنل {sid} ناموفق بود: {str(exc)[:180]}"))
-
-    if extra_panel_ids and (base_users or extra_user_price or max_users):
-        from panel_capabilities import all_panels_support, USER_LIMIT
-        all_rows = [db.get_panel_server(sid) for sid in [provision_server_id] + extra_panel_ids]
-        try:
-            base_users, extra_user_price, max_users = normalize_user_limit(
-                base_users, extra_user_price, max_users,
-                supported=all_panels_support(all_rows, USER_LIMIT),
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-
-    product_id = db.add_product(
-        body.category_id, body.name.strip(), body.price, body.description, body.duration_days,
-        is_auto_provision=is_auto_provision, auto_provision_volume_gb=body.auto_provision_volume_gb,
-        provision_server_id=provision_server_id, payment_methods=body.payment_methods,
-        compare_price=max(int(body.compare_price or 0), 0),
-        base_users=base_users, extra_user_price=extra_user_price, max_users=max_users,
-        provision_target_config=target_config, extra_panel_ids=extra_panel_ids,
-        extra_panel_target_configs=extra_panel_target_configs,
-        renew_rules=body.renew_rules, ai_description=body.ai_description,
-        product_kind="panel_account" if is_panel_kind else "config",
-        start_on_first_use=_checked_product_first_use(
-            db, body.start_on_first_use, provision_server_id, multi=bool(extra_panel_ids),
-            extra_panel_ids=extra_panel_ids, ssh_node_id=getattr(body, "provision_ssh_node_id", None)),
-    )
-    if int(body.compare_price or 0) > 0 and (body.discount_days is not None or body.discount_max_uses is not None):
-        db.edit_product(product_id, compare_price=int(body.compare_price),
-                        discount_days=max(int(body.discount_days or 0), 0),
-                        discount_max_uses=max(int(body.discount_max_uses or 0), 0))
-    return {"id": product_id}
-
-
-@app.get("/api/admin/panel-servers/{server_id}/product-targets")
-async def api_admin_product_targets(server_id: int, auth=Depends(require_senior_admin)):
-    """Live target choices for product-scoped VPN destination selection."""
-    _, db, _ = auth
-    server = db.get_panel_server(server_id)
-    if not server or not server["is_active"]:
-        raise HTTPException(status_code=404, detail=tr("پنل فعال یافت نشد."))
-    try:
-        from product_targets import list_product_targets
-        info = await list_product_targets(server)
-    except Exception as exc:
-        logger.warning("product target discovery failed for panel %s: %s", server_id, exc)
-        raise HTTPException(status_code=400, detail=tr(f"دریافت فهرست مقصدهای پنل ناموفق بود: {str(exc)[:220]}"))
-    return info
-
-
-@app.get("/api/admin/payment-methods")
-def api_admin_payment_methods(auth=Depends(require_senior_admin)):
-    """لیست کامل روش‌های پرداخت (داخلی + درگاه‌های سفارشی) برای انتخاب حین ساخت محصول."""
-    _, db, _ = auth
-    return db.get_payment_methods_catalog()
-
-
-@app.patch("/api/admin/products/{product_id}")
-async def api_admin_edit_product(product_id: int, body: ProductUpdate, auth=Depends(require_senior_admin)):
-    admin_id, db, tenant = auth
-    old_product = db.get_product(product_id)
-    if not old_product:
-        raise HTTPException(status_code=404, detail=tr("محصول یافت نشد."))
-    if body.price is not None and body.price < 0:
-        raise HTTPException(status_code=400, detail=tr("قیمت نامعتبر است."))
-
-    if body.source is not None and body.source not in ("bank", "direct"):
-        raise HTTPException(status_code=400, detail=tr("منبع تأمین نامعتبر است."))
-    if body.source == "bank" and is_volume_credit_bot(db, not bool(tenant.tenant_id)):
-        raise HTTPException(status_code=403, detail=tr("نمایندگی VIP بانک کانفیگ ندارد."))
-
-    source_kwargs = {}
-    provision_server_id = None
-    if body.source is not None:
-        if not db.is_full_access_bot(not bool(tenant.tenant_id)):
-            raise HTTPException(status_code=403, detail=tr("تغییر منبع محصول فقط برای بات اصلی یا نمایندگی کامل مجاز است."))
-        if old_product["is_auto_provision"] and not old_product["provision_server_id"]:
-            raise HTTPException(status_code=400, detail=tr("تغییر منبع برای محصولات خودکارِ مبتنی بر اعتبار حجمی نماینده ممکن نیست."))
-    if body.source == "direct":
-        if not body.provision_server_id or not db.get_panel_server(body.provision_server_id):
-            raise HTTPException(status_code=404, detail=tr("سرور پنل یافت نشد."))
-        if body.auto_provision_volume_gb is None or body.auto_provision_volume_gb < 0:
-            raise HTTPException(status_code=400, detail=tr("برای اتصال مستقیم به پنل باید حجم (گیگابایت) را مشخص کنید."))
-        provision_server_id = body.provision_server_id
-        source_kwargs["is_auto_provision"] = True
-        source_kwargs["provision_ssh_node_id"] = None
-    elif body.source == "bank":
-        if body.duration_days is None and old_product["duration_days"] == 0:
-            raise HTTPException(status_code=400, detail=tr("برای برگرداندن به «بانک کانفیگ» باید مدت اعتبار (روز) را هم مشخص کنید."))
-        source_kwargs.update(is_auto_provision=False, provision_server_id=None, provision_ssh_node_id=None, auto_provision_volume_gb=None)
-    elif body.provision_server_id is not None:
-        if not old_product["is_auto_provision"]:
-            raise HTTPException(status_code=400, detail=tr("این محصول به‌صورت خودکار ساخته نمی‌شود."))
-        if not db.is_full_access_bot(not bool(tenant.tenant_id)):
-            raise HTTPException(status_code=403, detail=tr("تغییر پنل/اینباند فقط برای بات اصلی یا نمایندگی کامل مجاز است."))
-        if not db.get_panel_server(body.provision_server_id):
-            raise HTTPException(status_code=404, detail=tr("سرور پنل یافت نشد."))
-        provision_server_id = body.provision_server_id
-        source_kwargs["provision_ssh_node_id"] = None
-
-    if body.source == "bank":
-        effective_server_id = None
-    else:
-        effective_server_id = provision_server_id if provision_server_id is not None else old_product["provision_server_id"]
-
-    target_config_update = ...
-    if body.source == "bank":
-        target_config_update = None
-    elif effective_server_id:
-        server_changed = int(effective_server_id or 0) != int(old_product["provision_server_id"] or 0)
-        if body.provision_target_values is not None:
-            server = db.get_panel_server(effective_server_id)
-            try:
-                from product_targets import list_product_targets, build_target_config
-                target_info = await list_product_targets(server)
-                choices = target_info.get("choices") or []
-                if choices:
-                    target_config_update = build_target_config(server, body.provision_target_values, target_info)
-                elif body.provision_target_values:
-                    raise ValueError("این پنل مقصد قابل انتخابی ارائه نمی‌کند.")
+                name = type(exc).__name__
+                if "Certificate" in name or "SSL" in name:
+                    log.warning("upstream TLS verification failed (%s); set DEDICATED_SUB_VERIFY_TLS=0 in .env for self-signed panels", name)
                 else:
-                    target_config_update = None
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
-            except Exception as exc:
-                raise HTTPException(status_code=400, detail=tr(f"بررسی مقصدهای پنل ناموفق بود: {str(exc)[:220]}"))
-        elif server_changed:
-            # A changed panel must not silently fall back when that provider exposes
-            # selectable destinations; require the UI to submit a fresh selection.
-            try:
-                from product_targets import list_product_targets
-                changed_target_info = await list_product_targets(db.get_panel_server(effective_server_id))
-                if changed_target_info.get("choices"):
-                    raise ValueError("پنل محصول تغییر کرده است؛ فهرست مقصدها را بارگذاری و حداقل یک گروه یا Inbound انتخاب کنید.")
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
-            except Exception as exc:
-                raise HTTPException(status_code=400, detail=tr(f"بررسی مقصدهای پنل جدید ناموفق بود: {str(exc)[:220]}"))
-            target_config_update = None
-
-    if body.duration_days is not None:
-        if body.duration_days < 0:
-            raise HTTPException(status_code=400, detail=tr("مدت اعتبار نامعتبر است."))
-        if body.duration_days == 0 and not effective_server_id:
-            raise HTTPException(status_code=400, detail=tr("مدت نامحدود فقط برای محصولات با اتصال مستقیم به پنل ممکن است."))
-
-    if body.auto_provision_volume_gb is not None:
-        if body.auto_provision_volume_gb < 0:
-            raise HTTPException(status_code=400, detail=tr("حجم نامعتبر است."))
-        if body.auto_provision_volume_gb == 0 and not effective_server_id:
-            raise HTTPException(status_code=400, detail=tr("حجم نامحدود فقط برای محصولات با اتصال مستقیم به پنل ممکن است."))
-
-    # نکته: edit_product برای provision_server_id/auto_provision_volume_gb از سنتینل
-    # Ellipsis استفاده می‌کند (یعنی «بدون تغییر»)؛ پس این دو را فقط وقتی صراحتاً
-    # مقداردهی شده‌اند پاس می‌دهیم، وگرنه ممکن است به‌اشتباه NULL شوند.
-    edit_kwargs = dict(source_kwargs)
-    if body.compare_price is not None:
-        edit_kwargs["compare_price"] = max(int(body.compare_price), 0)
-    if body.discount_days is not None:
-        edit_kwargs["discount_days"] = max(int(body.discount_days), 0)
-    if body.discount_max_uses is not None:
-        edit_kwargs["discount_max_uses"] = max(int(body.discount_max_uses), 0)
-    if provision_server_id is not None:
-        edit_kwargs["provision_server_id"] = provision_server_id
-    if body.auto_provision_volume_gb is not None and body.source != "bank":
-        edit_kwargs["auto_provision_volume_gb"] = body.auto_provision_volume_gb
-    if target_config_update is not ...:
-        edit_kwargs["provision_target_config"] = target_config_update
-    if body.start_on_first_use is not None:
-        old_extra = db.get_product_extra_targets(product_id)
-        edit_kwargs["start_on_first_use"] = _checked_product_first_use(
-            db, body.start_on_first_use, effective_server_id,
-            multi=bool(old_extra.get("panels") or old_extra.get("ssh")),
-            extra_panel_ids=old_extra.get("panels"),
-            ssh_node_id=getattr(body, "provision_ssh_node_id", None) or old_product["provision_ssh_node_id"])
-    effective_product_server = provision_server_id if provision_server_id is not None else old_product["provision_server_id"]
-    desired_base = body.base_users if body.base_users is not None else old_product["base_users"]
-    desired_extra = body.extra_user_price if body.extra_user_price is not None else old_product["extra_user_price"]
-    desired_max = body.max_users if body.max_users is not None else old_product["max_users"]
-
-    db.edit_product(
-        product_id,
-        name=body.name.strip() if body.name else None,
-        price=body.price,
-        description=body.description,
-        duration_days=body.duration_days,
-        ai_description=body.ai_description,
-        **edit_kwargs,
-    )
-    saved_product = db.get_product(product_id)
-    panel_rows = [db.get_panel_server(effective_product_server)] if effective_product_server else []
-    try:
-        bu, eup, mu = normalize_user_limit(
-            desired_base, desired_extra, desired_max,
-            supported=all_panels_support(panel_rows, USER_LIMIT),
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    db.set_product_user_limit(product_id, eup, mu, bu)
-    if body.renew_rules is not None:
-        db.set_product_renew_rules(product_id, body.renew_rules)
-
-    if body.price is not None and body.price != old_product["price"]:
-        db.log_admin_action(
-            admin_id, "product_price_edit",
-            f"محصول «{old_product['name']}» (#{product_id}) | قیمت قبلی: {old_product['price']:,} | قیمت جدید: {body.price:,}",
-        )
-    if body.source is not None and (body.source == "direct") != bool(old_product["provision_server_id"]):
-        target = f"اتصال مستقیم به سرور #{provision_server_id}" if body.source == "direct" else "بانک کانفیگ"
-        db.log_admin_action(
-            admin_id, "product_source_edit",
-            f"محصول «{old_product['name']}» (#{product_id}) | منبع تغییر کرد به {target}",
-        )
-    elif provision_server_id is not None and provision_server_id != old_product["provision_server_id"]:
-        db.log_admin_action(
-            admin_id, "product_server_edit",
-            f"محصول «{old_product['name']}» (#{product_id}) | سرور/اینباند تغییر کرد به سرور #{provision_server_id}",
-        )
-    return {"status": "ok"}
+                    log.warning("upstream fetch failed: %s", name)
+                if ent and time.monotonic() - ent[0] < STALE_MAX_AGE:
+                    return Upstream(*ent[1], fresh=False, stale=True)
+                raise
+            if status == 200 and body:
+                if len(self._data) >= self._max:
+                    for old in sorted(self._data, key=lambda k: self._data[k][0])[: self._max // 4]:
+                        self._data.pop(old, None)
+                        self._locks.pop(old, None)
+                self._data[key] = (time.monotonic(), (status, headers, body))
+            elif status >= 500 and ent and time.monotonic() - ent[0] < STALE_MAX_AGE:
+                return Upstream(*ent[1], fresh=False, stale=True)
+            return Upstream(status, headers, body, fresh=True)
 
 
-@app.post("/api/admin/products/{product_id}/toggle")
-async def api_admin_toggle_product(product_id: int, auth=Depends(require_senior_admin)):
-    _, db, tenant = auth
-    if not await asyncio.to_thread(db.get_product, product_id):
-        raise HTTPException(status_code=404, detail=tr("محصول یافت نشد."))
-    new_state = await asyncio.to_thread(db.toggle_product, product_id)
-    if new_state:
-        import product_waitlist
-        from admin_panel.telegram_notify import send_message as tg_send
-        asyncio.create_task(product_waitlist.notify_waitlist(
-            db, product_id, product_waitlist.token_sender(tg_send, tenant.bot_token)
-        ))
-    return {"status": "ok"}
-
-
-@app.delete("/api/admin/products/{product_id}")
-def api_admin_delete_product(product_id: int, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    if not db.get_product(product_id):
-        raise HTTPException(status_code=404, detail=tr("محصول یافت نشد."))
-    db.delete_product(product_id)
-    return {"status": "ok"}
-
-
-@app.get("/api/admin/products/{product_id}/configs")
-def api_admin_list_configs(product_id: int, auth=Depends(require_bank_admin)):
-    _, db, _ = auth
-    if not db.get_product(product_id):
-        raise HTTPException(status_code=404, detail=tr("محصول یافت نشد."))
-    rows = db.get_unused_configs(product_id)
-    return [{"id": r["id"], "link": r["link"]} for r in rows]
-
-
-@app.post("/api/admin/products/{product_id}/configs")
-def api_admin_add_configs(product_id: int, body: ConfigsAdd, auth=Depends(require_bank_admin)):
-    _, db, _ = auth
-    if not db.get_product(product_id):
-        raise HTTPException(status_code=404, detail=tr("محصول یافت نشد."))
-    links = [l.strip() for l in body.links if l.strip()]
-    if not links:
-        raise HTTPException(status_code=400, detail=tr("هیچ لینک معتبری وارد نشده است."))
-    if db.is_panel_account_product(product_id):
-        items, invalid = [], 0
-        for line in links:
-            parts = [x.strip() for x in line.split("|")]
-            if len(parts) < 3 or not all(parts[:3]):
-                invalid += 1
-                continue
-            items.append({"url": parts[0], "user": parts[1], "password": parts[2], "info": " | ".join(parts[3:])})
-        if not items:
-            raise HTTPException(status_code=400, detail=tr("هیچ خط معتبری پیدا نشد. فرمت: آدرس | یوزر | پسورد | توضیحات"))
-        added, _dups = db.add_panel_accounts(product_id, items)
-        return {"added": added, "invalid": invalid}
-    db.add_configs(product_id, links)
-    return {"added": len(links)}
-
-
-@app.delete("/api/admin/configs/{config_id}")
-def api_admin_delete_config(config_id: int, auth=Depends(require_bank_admin)):
-    _, db, tenant = auth
-    row = db.get_config_by_id(config_id) if hasattr(db, "get_config_by_id") else None
-    db.delete_config(config_id)
-    if row:
-        send_service_alert_sync(tenant.bot_token, db, f"🗑 حذف کانفیگ توسط ادمین\n\n🔗 کانفیگ #{config_id}\n📦 محصول: {row['product_id']}")
-    return {"status": "ok"}
+cache = UpstreamCache()
 
 
 # ---------------------------------------------------------------------------
-# مدیریت نمایندگی‌ها (فقط بات اصلی)
+# پاسخ‌ها
 # ---------------------------------------------------------------------------
-
-class ResellerTokenCheck(BaseModel):
-    token: str
-
-
-class ResellerCreate(BaseModel):
-    token: str
-    username: str
-    owner_telegram_id: int
-    owner_name: str = ""
-
-
-class ResellerUpdate(BaseModel):
-    owner_telegram_id: Optional[int] = None
-    owner_name: Optional[str] = None
-
-
-class ResellerTokenUpdate(BaseModel):
-    token: str
-
-
-def _reseller_miniapp_link(reseller_row) -> Optional[str]:
-    """لینک اختصاصی مینی‌اپ همین نماینده (همان که در دکمه‌ی منوی بات نماینده استفاده می‌شود)."""
-    if not _runtime_miniapp_url():
-        return None
-    b_value = reseller_row["link_slug"] or str(reseller_row["id"])
-    sep = "&" if "?" in _runtime_miniapp_url() else "?"
-    return f"{MINIAPP_URL}{sep}b={b_value}"
-
-
-# ---------------------------------------------------------------------------
-# نمایندگان اعتباری (Credit Resellers) - معادل adm_credit_resellers_menu/
-# adm_cres_* در ربات؛ قبلاً این بخش فقط داخل ربات در دسترس بود.
-# متمایز از بخش «resellers» زیر که مربوط به بات‌های نمایندگی زیرمجموعه (white-label) است.
-# ---------------------------------------------------------------------------
-
-def _credit_reseller_to_dict(user_id: int, db: Database) -> dict:
-    user = db.get_user(user_id)
-    return {
-        "telegram_id": user_id,
-        "first_name": user["first_name"] if user else None,
-        "username": user["username"] if user else None,
-        "is_reseller": db.is_reseller(user_id),
-        "credit_gb": db.get_reseller_credit(user_id),
-        "panel_server_id": user["reseller_panel_id"] if user else None,
-    }
-
-
-@app.get("/api/admin/credit-resellers")
-def api_admin_list_credit_resellers(auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    rows = db.get_resellers()
-    return [
-        {
-            "telegram_id": r["telegram_id"], "first_name": r["first_name"],
-            "username": r["username"], "credit_gb": r["reseller_credit_gb"],
-            "panel_server_id": r["reseller_panel_id"], "is_reseller": True,
-        }
-        for r in rows
-    ]
-
-
-@app.get("/api/admin/credit-resellers/{telegram_id}")
-def api_admin_get_credit_reseller(telegram_id: int, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    user = db.get_user(telegram_id)
-    if not user:
-        raise HTTPException(status_code=404, detail=tr("این کاربر هنوز با /start بات را استارت نکرده است."))
-    info = _credit_reseller_to_dict(telegram_id, db)
-    info["credit_log"] = [
-        {"delta_gb": l["delta_gb"], "reason": l["reason"], "created_at": l["created_at"]}
-        for l in db.get_reseller_credit_log(telegram_id)
-    ]
-    return info
-
-
-@app.post("/api/admin/credit-resellers/{telegram_id}/toggle")
-def api_admin_toggle_credit_reseller(telegram_id: int, auth=Depends(require_senior_admin)):
-    admin_id, db, _ = auth
-    if not db.get_user(telegram_id):
-        raise HTTPException(status_code=404, detail=tr("این کاربر هنوز با /start بات را استارت نکرده است."))
-    db.set_reseller_status(telegram_id, not db.is_reseller(telegram_id))
-    db.log_admin_action(admin_id, "reseller_credit_toggle", f"کاربر {telegram_id} (مینی‌اپ)")
-    return _credit_reseller_to_dict(telegram_id, db)
-
-
-class CreditAdjust(BaseModel):
-    delta_gb: int
-    reason: Optional[str] = None
-
-
-@app.post("/api/admin/credit-resellers/{telegram_id}/credit")
-def api_admin_adjust_credit_reseller(telegram_id: int, body: CreditAdjust, auth=Depends(require_senior_admin)):
-    admin_id, db, _ = auth
-    if not db.get_user(telegram_id):
-        raise HTTPException(status_code=404, detail=tr("این کاربر هنوز با /start بات را استارت نکرده است."))
-    if body.delta_gb == 0:
-        raise HTTPException(status_code=400, detail=tr("مقدار تغییر نمی‌تواند صفر باشد."))
-    db.adjust_reseller_credit(
-        telegram_id, body.delta_gb, admin_id=admin_id,
-        reason=body.reason or "تنظیم دستی توسط ادمین (مینی‌اپ)",
-    )
-    db.log_admin_action(admin_id, "reseller_credit_adjust", f"کاربر {telegram_id} | {body.delta_gb:+} گیگ (مینی‌اپ)")
-    return _credit_reseller_to_dict(telegram_id, db)
-
-
-class CreditResellerPanelSet(BaseModel):
-    panel_server_id: Optional[int] = None
-
-
-@app.post("/api/admin/credit-resellers/{telegram_id}/panel")
-def api_admin_set_credit_reseller_panel(telegram_id: int, body: CreditResellerPanelSet, auth=Depends(require_senior_admin)):
-    admin_id, db, _ = auth
-    if not db.get_user(telegram_id):
-        raise HTTPException(status_code=404, detail=tr("این کاربر هنوز با /start بات را استارت نکرده است."))
-    if body.panel_server_id and not db.get_panel_server(body.panel_server_id):
-        raise HTTPException(status_code=404, detail=tr("سرور یافت نشد."))
-    db.set_reseller_panel(telegram_id, body.panel_server_id)
-    db.log_admin_action(admin_id, "reseller_credit_panel_set", f"کاربر {telegram_id} (مینی‌اپ)")
-    return _credit_reseller_to_dict(telegram_id, db)
-
-
-# ---------------------------------------------------------------------------
-# درخواست‌های نمایندگی (Reseller Requests) - معادل resreq_* در ربات و
-# /api/reseller-requests در پنل وب مستقل؛ قبلاً در مینی‌اپ اصلاً وجود نداشت.
-# فقط در بات اصلی معنا دارد (کاربر با آن صاحب یک بات نمایندگی زیرمجموعه‌ی
-# جدید می‌شود)، بنابراین require_main_admin.
-# ---------------------------------------------------------------------------
-
-def _set_bot_fsm_state(chat_id: int, state: Optional[str], data: Optional[dict] = None) -> bool:
-    """مستقیم روی فایل SQLite استوریج FSM بات اصلی می‌نویسد؛ همان تکنیکی که
-    admin_panel/server.py برای هدایت کاربر به مرحله‌ی بعدی فلوی نمایندگی
-    استفاده می‌کند (چون این پروسه هم Dispatcher زنده‌ی بات را در اختیار ندارد)."""
-    try:
-        bot_id = int(BOT_TOKEN.split(":")[0])
-        conn = sqlite3.connect(f"{DB_PATH}.fsm.sqlite3", timeout=10)
-        try:
-            conn.execute("PRAGMA busy_timeout=4000")
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS fsm_storage (
-                    bot_id INTEGER NOT NULL, chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
-                    thread_id INTEGER, business_connection_id TEXT, destiny TEXT NOT NULL DEFAULT 'default',
-                    state TEXT, data TEXT,
-                    PRIMARY KEY (bot_id, chat_id, user_id, thread_id, business_connection_id, destiny)
-                )
-                """
-            )
-            conn.execute(
-                "INSERT INTO fsm_storage "
-                "(bot_id, chat_id, user_id, thread_id, business_connection_id, destiny, state, data) "
-                "VALUES (?, ?, ?, 0, '', 'default', ?, ?) "
-                "ON CONFLICT (bot_id, chat_id, user_id, thread_id, business_connection_id, destiny) "
-                "DO UPDATE SET state=excluded.state, data=excluded.data",
-                (bot_id, chat_id, chat_id, state, json.dumps(data or {}, ensure_ascii=False)),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-        return True
-    except Exception:
-        logging.getLogger("miniapp.fsm").exception("تنظیم FSM state بات اصلی برای %s ناموفق بود.", chat_id)
-        return False
-
-
-@app.get("/api/admin/reseller-requests")
-def api_admin_reseller_requests(status: Optional[str] = None, auth=Depends(require_main_admin)):
-    _, db, _ = auth
-    out = []
-    for r in db.list_reseller_requests(status):
-        r = dict(r)
-        user = db.get_user(r["user_id"])
-        r["username"] = user["username"] if user else None
-        out.append(r)
+def _clean_headers(headers: Dict[str, str]) -> Dict[str, str]:
+    out = {}
+    for k, v in headers.items():
+        v = str(v).replace("\r", " ").replace("\n", " ")
+        out[k] = v.encode("latin-1", "ignore").decode("latin-1")
     return out
 
 
-@app.get("/api/admin/reseller-requests/{request_id}/receipt")
-async def api_admin_reseller_request_receipt(request_id: int, auth=Depends(require_main_admin)):
-    _, db, tenant = auth
-    req = db.get_reseller_request(request_id)
-    if not req or not req["receipt_file_id"]:
-        raise HTTPException(status_code=404, detail=tr("رسیدی برای این درخواست ثبت نشده است."))
-    result = await _tg_fetch_file(tenant.bot_token, req["receipt_file_id"])
-    if not result:
-        raise HTTPException(status_code=502, detail=tr("دریافت رسید از تلگرام ناموفق بود."))
-    content, content_type = result
-    return Response(content=content, media_type=content_type)
-
-
-class ResellerRequestQuote(BaseModel):
-    price_toman: int
-    panel_server_id: Optional[int] = None
-
-
-@app.post("/api/admin/reseller-requests/{request_id}/quote")
-async def api_admin_quote_reseller_request(request_id: int, body: ResellerRequestQuote, auth=Depends(require_main_admin)):
-    admin_id, db, tenant = auth
-    req = db.get_reseller_request(request_id)
-    if not req or req["status"] != "pending_review":
-        raise HTTPException(status_code=400, detail=tr("این درخواست دیگر معتبر نیست."))
-    if body.price_toman <= 0:
-        raise HTTPException(status_code=400, detail=tr("هزینه باید عددی مثبت باشد."))
-    db.quote_reseller_request(request_id, body.price_toman, body.panel_server_id, admin_id)
-    db.log_admin_action(admin_id, "reseller_request_quote", f"درخواست #{request_id} | کاربر {req['user_id']} | هزینه: {body.price_toman:,} (مینی‌اپ)")
-    await _tg_notify(
-        tenant.bot_token, req["user_id"],
-        f"🏪 درخواست نمایندگی #{request_id} شما تایید شد!\n\n"
-        f"💰 هزینه‌ی نمایندگی: {body.price_toman:,} تومان\n"
-        f"📦 حجم: {req['volume_gb']:,} گیگ\n\nدر صورت موافقت از داخل بات روی «پرداخت می‌کنم» بزنید.",
-    )
-    return {"ok": True}
-
-
-@app.post("/api/admin/reseller-requests/{request_id}/approve-payment")
-async def api_admin_approve_reseller_request_payment(request_id: int, auth=Depends(require_main_admin)):
-    admin_id, db, tenant = auth
-    req = db.get_reseller_request(request_id)
-    if not req or req["status"] != "awaiting_payment_review":
-        raise HTTPException(status_code=400, detail=tr("این درخواست دیگر معتبر نیست."))
-    # رفع باگ ریس‌کاندیشن: approve_reseller_request_payment حالا اتمیک است؛ اگر
-    # هم‌زمان از یک سطح دیگر (بات/پنل وب) همین درخواست تایید شده باشد، False
-    # برمی‌گردد و اینجا متوقف می‌شویم تا اعتبار/بات نماینده دوبار ساخته نشود.
-    if not db.approve_reseller_request_payment(request_id, admin_id):
-        raise HTTPException(status_code=400, detail=tr("این درخواست همین الان از جای دیگری تایید شد."))
-    db.log_admin_action(admin_id, "reseller_request_payment_approve", f"درخواست #{request_id} | کاربر {req['user_id']} (مینی‌اپ)")
-    _set_bot_fsm_state(req["user_id"], "ResellerRequestFlow:waiting_bot_token", {"resreq_request_id": request_id})
-    await _tg_notify(
-        tenant.bot_token, req["user_id"],
-        "✅ پرداخت شما تایید شد!\n\nحالا از داخل بات، توکن بات نماینده‌ی خودتان را ارسال کنید (همانی که از @BotFather گرفته‌اید):",
-    )
-    return {"ok": True}
-
-
-class ResellerRequestReject(BaseModel):
-    reason: str
-    kind: str = "rejected"
-
-
-@app.post("/api/admin/reseller-requests/{request_id}/reject")
-async def api_admin_reject_reseller_request(request_id: int, body: ResellerRequestReject, auth=Depends(require_main_admin)):
-    admin_id, db, tenant = auth
-    if body.kind not in ("rejected", "payment_rejected"):
-        raise HTTPException(status_code=400, detail=tr("نوع رد نامعتبر است."))
-    req = db.get_reseller_request(request_id)
-    if not req or not db.is_reseller_request_open(req["status"]):
-        raise HTTPException(status_code=400, detail=tr("این درخواست دیگر باز نیست."))
-    reason = (body.reason or "").strip()
-    if not reason:
-        raise HTTPException(status_code=400, detail=tr("دلیل رد الزامی است."))
-    db.reject_reseller_request(request_id, body.kind, admin_id, reason)
-    db.log_admin_action(admin_id, "reseller_request_reject", f"درخواست #{request_id} | کاربر {req['user_id']} | {body.kind}: {reason} (مینی‌اپ)")
-    label = "درخواست نمایندگی" if body.kind == "rejected" else "پرداخت درخواست نمایندگی"
-    await _tg_notify(tenant.bot_token, req["user_id"], f"❌ متاسفانه {label} شما (#{request_id}) رد شد.\n\nدلیل: {reason}")
-    return {"ok": True}
-
-
-@app.post("/api/admin/reseller-requests/{request_id}/cancel")
-async def api_admin_cancel_reseller_request(request_id: int, auth=Depends(require_main_admin)):
-    admin_id, db, tenant = auth
-    req = db.get_reseller_request(request_id)
-    if not req or not db.is_reseller_request_open(req["status"]):
-        raise HTTPException(status_code=400, detail=tr("این درخواست دیگر باز نیست."))
-    db.admin_cancel_reseller_request(request_id, admin_id)
-    if req["status"] == "awaiting_bot_info":
-        _set_bot_fsm_state(req["user_id"], None, {})
-    db.log_admin_action(admin_id, "reseller_request_admin_cancel", f"درخواست #{request_id} | کاربر {req['user_id']} (مینی‌اپ)")
-    await _tg_notify(tenant.bot_token, req["user_id"], f"⚪️ درخواست نمایندگی شما (#{request_id}) توسط مدیریت کنسل شد.")
-    return {"ok": True}
-
-
-@app.get("/api/admin/resellers")
-def api_admin_list_resellers(auth=Depends(require_main_admin)):
-    _, db, _ = auth
-    rows = db.list_reseller_bots()
-    return [
-        {
-            "id": r["id"], "bot_username": r["bot_username"], "owner_telegram_id": r["owner_telegram_id"],
-            "owner_name": r["owner_name"], "is_active": bool(r["is_active"]), "created_at": r["created_at"],
-            "miniapp_link": _reseller_miniapp_link(r),
-            "bot_link": f"https://t.me/{r['bot_username']}",
-        }
-        for r in rows
-    ]
-
-
-@app.post("/api/admin/resellers/validate")
-async def api_admin_validate_reseller_token(body: ResellerTokenCheck, auth=Depends(require_main_admin)):
-    _, db, _ = auth
-    token = body.token.strip()
-    if not token:
-        raise HTTPException(status_code=400, detail=tr("توکن نمی‌تواند خالی باشد."))
-    for r in db.list_reseller_bots():
-        if r["bot_token"] == token:
-            raise HTTPException(status_code=400, detail=tr("این توکن قبلاً ثبت شده است."))
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"https://api.telegram.org/bot{token}/getMe", timeout=10) as resp:
-                data = await resp.json()
-                if not data.get("ok"):
-                    raise HTTPException(status_code=400, detail=tr("این توکن معتبر نیست."))
-                username = data["result"]["username"]
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(status_code=400, detail=tr("این توکن معتبر نیست یا تلگرام در دسترس نیست."))
-    return {"username": username}
-
-
-@app.post("/api/admin/resellers")
-def api_admin_create_reseller(body: ResellerCreate, auth=Depends(require_main_admin)):
-    _, db, _ = auth
-    for r in db.list_reseller_bots():
-        if r["bot_token"] == body.token:
-            raise HTTPException(status_code=400, detail=tr("این توکن قبلاً ثبت شده است."))
-    os.makedirs(RESELLER_DBS_DIR, exist_ok=True)
-    db_path = os.path.join(RESELLER_DBS_DIR, f"{body.username}.db")
-    reseller_id = db.register_reseller_bot(body.token, body.username, body.owner_telegram_id, body.owner_name, db_path)
-
-    # دیتابیس همین نماینده باید بداند شناسه‌ی خودش را تا لینک مینی‌اپ اختصاصی بسازد
-    try:
-        reseller_db = Database(db_path)
-        reseller_db.init_db(owner_id=body.owner_telegram_id)
-        reseller_db.set_setting("miniapp_tenant_id", str(reseller_id))
-    except Exception:
-        logging.getLogger("miniapp.resellers").exception("مقداردهی اولیه دیتابیس نماینده‌ی جدید ناموفق بود.")
-
-    return {
-        "id": reseller_id,
-        "note": tr("بات نمایندگی ثبت شد. حداکثر تا ۱۰ ثانیه دیگر توسط بات اصلی خودکار روشن می‌شود."),
-    }
-
-
-@app.patch("/api/admin/resellers/{reseller_id}")
-def api_admin_edit_reseller(reseller_id: int, body: ResellerUpdate, auth=Depends(require_main_admin)):
-    _, db, _ = auth
-    if not db.get_reseller_bot(reseller_id):
-        raise HTTPException(status_code=404, detail=tr("نماینده یافت نشد."))
-    db.edit_reseller_bot(
-        reseller_id,
-        owner_telegram_id=body.owner_telegram_id,
-        owner_name=body.owner_name.strip() if body.owner_name else None,
-    )
-    return {"status": "ok"}
-
-
-@app.patch("/api/admin/resellers/{reseller_id}/token")
-async def api_admin_change_reseller_token(reseller_id: int, body: ResellerTokenUpdate, auth=Depends(require_main_admin)):
-    _, db, _ = auth
-    reseller_bot = db.get_reseller_bot(reseller_id)
-    if not reseller_bot:
-        raise HTTPException(status_code=404, detail=tr("نماینده یافت نشد."))
-    token = body.token.strip()
-    if not token:
-        raise HTTPException(status_code=400, detail=tr("توکن نمی‌تواند خالی باشد."))
-    for r in db.list_reseller_bots():
-        if r["id"] != reseller_id and r["bot_token"] == token:
-            raise HTTPException(status_code=400, detail=tr("این توکن قبلاً برای نماینده‌ی دیگری ثبت شده است."))
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"https://api.telegram.org/bot{token}/getMe", timeout=10) as resp:
-                data = await resp.json()
-                if not data.get("ok"):
-                    raise HTTPException(status_code=400, detail=tr("این توکن معتبر نیست."))
-                username = data["result"]["username"]
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(status_code=400, detail=tr("این توکن معتبر نیست یا تلگرام در دسترس نیست."))
-    db.edit_reseller_bot(reseller_id, bot_token=token, bot_username=username)
-    return {
-        "status": "ok",
-        "username": username,
-        "note": tr("توکن بات نماینده تغییر کرد. حداکثر تا ۱۰ ثانیه دیگر بات قدیمی متوقف و بات جدید روشن می‌شود."),
-    }
-
-
-@app.post("/api/admin/resellers/{reseller_id}/regenerate-link")
-def api_admin_regenerate_reseller_link(reseller_id: int, auth=Depends(require_main_admin)):
-    _, db, _ = auth
-    reseller_bot = db.get_reseller_bot(reseller_id)
-    if not reseller_bot:
-        raise HTTPException(status_code=404, detail=tr("نماینده یافت نشد."))
-    if not _runtime_miniapp_url():
-        raise HTTPException(status_code=400, detail=tr("آدرس MINIAPP_URL روی سرور تنظیم نشده است."))
-    for _ in range(5):
-        slug = secrets.token_urlsafe(8)
-        if not db.get_reseller_bot_by_slug(slug):
-            break
-    else:
-        raise HTTPException(status_code=500, detail=tr("ساخت لینک یکتا ممکن نشد، دوباره تلاش کن."))
-    db.set_reseller_link_slug(reseller_id, slug)
-    reseller_bot = db.get_reseller_bot(reseller_id)
-
-    # این پروسه (Mini App/FastAPI) از پروسه‌ی بات (bot_manager.py) جداست، پس
-    # نمی‌تواند مستقیماً Menu Button واقعی تلگرام بات نماینده را همین الان
-    # آپدیت کند - آن کار را حلقه‌ی reconcile_resellers_loop در پروسه‌ی بات
-    # (هر ۱۰ ثانیه) انجام می‌دهد. اما مقدار miniapp_tenant_id را همین‌جا هم
-    # به‌صورت best-effort روی دیتابیس خود نماینده به‌روز می‌کنیم تا هر
-    # درخواستی که از همین لحظه با اسلاگ جدید به مینی‌اپ برسد بلافاصله درست
-    # کار کند (بدون این‌که منتظر چرخه‌ی بعدی reconcile بمانیم).
-    try:
-        resolved_path = resolve_db_path(reseller_bot["db_path"])
-        reseller_db = Database(resolved_path)
-        reseller_db.set_setting("miniapp_tenant_id", slug)
-    except Exception:
-        logging.getLogger("miniapp.resellers").exception(
-            "همگام‌سازی فوری miniapp_tenant_id برای نماینده %s ناموفق بود.", reseller_id
-        )
-
-    return {
-        "status": "ok",
-        "miniapp_link": _reseller_miniapp_link(reseller_bot),
-        "note": tr(
-            "لینک قبلی مینی‌اپ این نماینده دیگر کار نمی‌کند؛ فقط لینک جدید معتبر است. "
-            "دکمه‌ی منوی بات نماینده هم حداکثر تا ۱۰ ثانیه دیگر با لینک جدید به‌روز می‌شود."
-        ),
-    }
-
-
-@app.post("/api/admin/resellers/{reseller_id}/toggle")
-def api_admin_toggle_reseller(reseller_id: int, auth=Depends(require_main_admin)):
-    _, db, _ = auth
-    if not db.get_reseller_bot(reseller_id):
-        raise HTTPException(status_code=404, detail=tr("نماینده یافت نشد."))
-    db.toggle_reseller_bot(reseller_id)
-    return {"status": "ok", "note": tr("تغییر وضعیت حداکثر تا ۱۰ ثانیه دیگر روی بات اعمال می‌شود.")}
-
-
-@app.delete("/api/admin/resellers/{reseller_id}")
-def api_admin_delete_reseller(reseller_id: int, purge_db: bool = Query(False), auth=Depends(require_main_admin)):
-    _, db, _ = auth
-    reseller_bot = db.get_reseller_bot(reseller_id)
-    if not reseller_bot:
-        raise HTTPException(status_code=404, detail=tr("نماینده یافت نشد."))
-    db.delete_reseller_bot(reseller_id)
-    # رفع باگ: برخلاف حذف از پنل بات تلگرام و پنل وب (که هر دو بلافاصله
-    # purge_reseller_leftovers را صدا می‌زنند)، این endpoint قبلاً فقط ردیف
-    # reseller_bots را حذف می‌کرد. فلگ is_reseller/اعتبار حجمی/reseller_panel_id/
-    # مدل تامین روی رکورد کاربر در دیتابیس اصلی دست‌نخورده باقی می‌ماند - یعنی
-    # بعد از حذف نماینده از مینی‌اپ، آن کاربر همچنان (بی‌سروصدا و ناسازگار با دو
-    # مسیر حذف دیگر) نماینده و صاحب اعتبار قدیمی‌اش تلقی می‌شد.
-    db.purge_reseller_leftovers(reseller_bot["owner_telegram_id"])
-
-    if purge_db:
-        resolved_path = resolve_db_path(reseller_bot["db_path"])
-        db.queue_db_purge(reseller_bot["bot_token"], resolved_path)
-
-    return {
-        "status": "ok",
-        # رفع باگ: این مقدار قبلاً همیشه False هاردکد شده بود، حتی وقتی
-        # purge_db=True بود و پاک‌سازی واقعاً صف شده بود.
-        "db_purged": bool(purge_db),
-        "note": "بات نماینده حداکثر تا ۱۰ ثانیه دیگر متوقف می‌شود"
-        + (" و بلافاصله بعد از توقف، فایل دیتابیسش پاک خواهد شد." if purge_db else "."),
-    }
-
-
-# ---------------------------------------------------------------------------
-# مدیریت تنظیمات - رفرال / گردونه شانس / یادآوری تمدید (ادمین)
-# ---------------------------------------------------------------------------
-
-class ReferralSettingsUpdate(BaseModel):
-    enabled: bool
-    percent: int
-    commission_max_count: int = 0
-    free_config_enabled: bool = False
-    free_config_threshold: int = 10
-    free_config_product_id: Optional[int] = None
-    invite_bonus_enabled: bool = False
-    invite_bonus_amount: int = 0
-    invite_bonus_max_count: int = 0
-
-
-class WheelSettingsUpdate(BaseModel):
-    enabled: bool
-    win_percent: int
-    prizes: list[int]
-    expiry_hours: int
-    cooldown_hours: int
-
-
-class RenewalSettingsUpdate(BaseModel):
-    enabled: bool
-    days_before: int
-    discount_percent: int
-    discount_expiry_hours: int
-    cashback_percent: int = 0
-
-
-class VolumeReminderSettingsUpdate(BaseModel):
-    enabled: bool
-    mode: str
-    percent: int
-    gb_left: float
-    discount_percent: int
-    discount_expiry_hours: int
-
-
-class CryptoSettingsUpdate(BaseModel):
-    enabled: bool
-    usd_to_toman_rate: int
-    api_key: Optional[str] = None
-    expire_min: Optional[int] = None
-    allowed_currencies: Optional[str] = None
-
-
-class CardSettingsUpdate(BaseModel):
-    card_number: str
-    card_holder: str
-    card_bank_name: Optional[str] = None
-
-
-class ExtraSettingsUpdate(BaseModel):
-    values: Dict[str, Any] = {}
-
-
-@app.get("/api/admin/settings/extra")
-def api_admin_get_extra_settings(auth=Depends(require_main_admin)):
-    from extra_settings_schema import groups_for, load_values
-    _, db, _ = auth
-    return {"groups": groups_for("mini", db), "values": load_values(db, "mini")}
-
-
-@app.post("/api/admin/settings/extra")
-def api_admin_set_extra_settings(body: ExtraSettingsUpdate, auth=Depends(require_main_admin)):
-    from extra_settings_schema import save_values, SettingsValidationError
-    _, db, tenant = auth
-    try:
-        changed = save_values(db, "mini", body.values or {})
-    except SettingsValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    if changed:
-        db.log_admin_action(auth[0], "setting_change", "extra settings updated (میناپ): " + ", ".join(changed), "setting", "extra")
-    resp = {"ok": True, "changed": changed}
-    if bot_profile.has_profile_keys(changed):
-        resp["profile"] = bot_profile.apply_profile_sync(tenant.bot_token, db)
+def _raw(status: int, headers: Dict[str, str], ctype: str, body: bytes) -> Response:
+    resp = Response(content=body, status_code=status, headers=headers)
+    resp.headers["content-type"] = ctype
+    resp.headers["x-content-type-options"] = "nosniff"
+    resp.headers["x-robots-tag"] = "noindex, nofollow"
     return resp
 
 
-# ---- رجیستری دکمه‌ها (button_registry.py): همان منطق تب «دکمه‌های ربات» پنل وب ----
-class ButtonItemIn(BaseModel):
-    group: str
-    key: str
-    text: Optional[str] = None
-    style: Optional[str] = None
-    enabled: Optional[bool] = None
+def _not_found() -> Response:
+    return PlainTextResponse("Not found", status_code=404, headers={"cache-control": "no-store"})
 
 
-class ButtonLayoutIn(BaseModel):
-    group: str
-    order: List[str]
-    breaks: List[str] = []
+_page_template: Optional[str] = None
 
 
-class AdminItemCategoriesIn(BaseModel):
-    overrides: Dict[str, str]
+def _load_template() -> str:
+    global _page_template
+    if _page_template is None:
+        with open(PAGE_TEMPLATE_PATH, "r", encoding="utf-8") as fh:
+            _page_template = fh.read()
+    return _page_template
 
 
-@app.get("/api/admin/buttons")
-def api_admin_buttons_registry(auth=Depends(require_senior_admin)):
-    import button_registry
-    _, db, _ = auth
-    return button_registry.build_registry(db)
-
-
-@app.post("/api/admin/buttons/item")
-def api_admin_buttons_item(body: ButtonItemIn, auth=Depends(require_senior_admin)):
-    import button_registry
-    admin_id, db, _ = auth
-    try:
-        button_registry.update_item(db, body.group, body.key, text=body.text, style=body.style, enabled=body.enabled)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    db.log_admin_action(admin_id, "button_customize",
-                        f"دکمه‌ی «{body.key}» در گروه «{body.group}» ویرایش شد (مینی‌اپ)",
-                        "setting", f"{body.group}:{body.key}")
-    return {"ok": True}
-
-
-@app.post("/api/admin/buttons/layout")
-def api_admin_buttons_layout(body: ButtonLayoutIn, auth=Depends(require_senior_admin)):
-    import button_registry
-    admin_id, db, _ = auth
-    try:
-        button_registry.update_layout(db, body.group, body.order, body.breaks)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    db.log_admin_action(admin_id, "button_reorder", f"چیدمان گروه «{body.group}» تغییر کرد (مینی‌اپ)",
-                        "setting", body.group)
-    return {"ok": True}
-
-
-@app.post("/api/admin/buttons/admin-item-categories")
-def api_admin_buttons_admin_item_categories(body: AdminItemCategoriesIn, auth=Depends(require_senior_admin)):
-    import button_registry
-    admin_id, db, _ = auth
-    try:
-        button_registry.set_admin_item_categories(db, body.overrides)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    db.log_admin_action(admin_id, "button_reorder", "دسته‌ی دکمه‌های پنل مدیریت جابجا شد (مینی‌اپ)",
-                        "setting", "admin_item_categories")
-    return {"ok": True}
-
-
-# ---- پس‌زمینه‌ی QR: فایل مشترک بات اصلی، پس فقط ادمین بات اصلی (نه نمایندگی‌ها) ----
-def _qr_bg_status(db):
-    import config_delivery as _cd
-    return {"has": _cd.has_qr_background(), "enabled": _cd.qr_background_enabled(db)}
-
-
-@app.get("/api/admin/settings/qr-background")
-def api_admin_get_qr_background(auth=Depends(require_main_admin)):
-    _, db, _ = auth
-    return _qr_bg_status(db)
-
-
-@app.get("/api/admin/settings/qr-background/preview")
-def api_admin_qr_background_preview(auth=Depends(require_main_admin)):
-    import config_delivery as _cd
-    _, db, _ = auth
-    if not _cd.has_qr_background():
-        raise HTTPException(status_code=404, detail=tr("هنوز تصویر پس‌زمینه‌ای آپلود نشده است."))
-    png = _cd.build_qr_bytes("https://t.me/", db=db)
-    return {"image": "data:image/png;base64," + base64.b64encode(png).decode("ascii")}
-
-
-@app.post("/api/admin/settings/qr-background")
-async def api_admin_set_qr_background(photo: UploadFile = File(...), auth=Depends(require_main_admin)):
-    import config_delivery as _cd
-    admin_id, db, _ = auth
-    if not photo.content_type or not photo.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail=tr("فقط فایل تصویری مجاز است."))
-    content = await photo.read(_cd.QR_BACKGROUND_MAX_BYTES + 1)
-    try:
-        await asyncio.to_thread(_cd.save_qr_background_bytes, content)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    db.set_setting("qr_background_enabled", "1")
-    db.log_admin_action(admin_id, "qr_background_change", "تصویر پس‌زمینه‌ی QR تغییر کرد (مینی‌اپ)")
-    return _qr_bg_status(db)
-
-
-@app.delete("/api/admin/settings/qr-background")
-def api_admin_delete_qr_background(auth=Depends(require_main_admin)):
-    import config_delivery as _cd
-    admin_id, db, _ = auth
-    _cd.remove_qr_background()
-    db.log_admin_action(admin_id, "qr_background_remove", "تصویر پس‌زمینه‌ی QR حذف شد (مینی‌اپ)")
-    return _qr_bg_status(db)
-
-
-@app.get("/api/admin/settings/referral")
-def api_admin_get_referral_settings(auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    fc_product_id = db.get_setting("referral_free_config_product_id", "") or ""
-    return {
-        "enabled": db.get_setting("referral_enabled", "1") == "1",
-        "percent": int(db.get_setting("referral_percent", "10") or 0),
-        "commission_max_count": int(db.get_setting("referral_commission_max_count", "0") or 0),
-        "free_config_enabled": db.get_setting("referral_free_config_enabled", "0") == "1",
-        "free_config_threshold": int(db.get_setting("referral_free_config_threshold", "10") or 0),
-        "free_config_product_id": int(fc_product_id) if fc_product_id else None,
-        "invite_bonus_enabled": db.get_setting("referral_invite_bonus_enabled", "0") == "1",
-        "invite_bonus_amount": int(db.get_setting("referral_invite_bonus_amount", "0") or 0),
-        "invite_bonus_max_count": int(db.get_setting("referral_invite_bonus_max_count", "0") or 0),
-    }
-
-
-@app.post("/api/admin/settings/referral")
-def api_admin_set_referral_settings(body: ReferralSettingsUpdate, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    if body.percent < 0 or body.percent > 100:
-        raise HTTPException(status_code=400, detail=tr("درصد باید بین ۰ تا ۱۰۰ باشد."))
-    if body.commission_max_count < 0:
-        raise HTTPException(status_code=400, detail=tr("سقف تعداد نفرات نمی‌تواند منفی باشد."))
-    if body.free_config_threshold < 0 or body.invite_bonus_amount < 0 or body.invite_bonus_max_count < 0:
-        raise HTTPException(status_code=400, detail=tr("مقادیر عددی نمی‌توانند منفی باشند."))
-
-    if body.free_config_product_id:
-        product = db.get_product(body.free_config_product_id)
-        if not product:
-            raise HTTPException(status_code=400, detail=tr("محصول جایزه یافت نشد."))
-        if not product["is_auto_provision"] or not product["provision_server_id"]:
-            raise HTTPException(status_code=400, detail=tr("محصول جایزه باید «تحویل خودکار» داشته باشد و به یک پنل وصل باشد."))
-    if body.free_config_enabled and (not body.free_config_product_id or body.free_config_threshold < 1):
-        raise HTTPException(status_code=400, detail=tr("برای فعال‌سازی کانفیگ رایگان، محصول جایزه و آستانه‌ی معتبر (حداقل ۱) لازم است."))
-    if body.invite_bonus_enabled and body.invite_bonus_amount <= 0:
-        raise HTTPException(status_code=400, detail=tr("برای فعال‌سازی شارژ به‌ازای دعوت، مبلغ باید بزرگ‌تر از صفر باشد."))
-
-    db.set_setting("referral_enabled", "1" if body.enabled else "0")
-    db.set_setting("referral_percent", str(body.percent))
-    db.set_setting("referral_commission_max_count", str(body.commission_max_count))
-    db.set_setting("referral_free_config_enabled", "1" if body.free_config_enabled else "0")
-    db.set_setting("referral_free_config_threshold", str(body.free_config_threshold))
-    db.set_setting("referral_free_config_product_id", str(body.free_config_product_id) if body.free_config_product_id else "")
-    db.set_setting("referral_invite_bonus_enabled", "1" if body.invite_bonus_enabled else "0")
-    db.set_setting("referral_invite_bonus_amount", str(body.invite_bonus_amount))
-    db.set_setting("referral_invite_bonus_max_count", str(body.invite_bonus_max_count))
-    if body.enabled or body.free_config_enabled or body.invite_bonus_enabled:
-        db.set_setting("referral_button_enabled", "1")
-    return {"status": "ok"}
-
-
-@app.get("/api/admin/settings/wheel")
-def api_admin_get_wheel_settings(auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    return db.get_wheel_settings()
-
-
-@app.post("/api/admin/settings/wheel")
-def api_admin_set_wheel_settings(body: WheelSettingsUpdate, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    if body.win_percent < 0 or body.win_percent > 100:
-        raise HTTPException(status_code=400, detail=tr("درصد برد باید بین ۰ تا ۱۰۰ باشد."))
-    if not body.prizes or any(p <= 0 for p in body.prizes):
-        raise HTTPException(status_code=400, detail=tr("حداقل یک جایزه‌ی معتبر (بزرگ‌تر از صفر) لازم است."))
-    if body.expiry_hours <= 0 or body.cooldown_hours <= 0:
-        raise HTTPException(status_code=400, detail=tr("مقادیر ساعت باید بزرگ‌تر از صفر باشند."))
-    db.set_setting("wheel_enabled", "1" if body.enabled else "0")
-    db.set_setting("wheel_win_percent", str(body.win_percent))
-    db.set_wheel_prizes(body.prizes)
-    db.set_setting("wheel_code_expiry_hours", str(body.expiry_hours))
-    db.set_setting("wheel_cooldown_hours", str(body.cooldown_hours))
-    return {"status": "ok"}
-
-
-@app.get("/api/admin/settings/crypto")
-def api_admin_get_crypto_settings(auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    api_key = _resolve_plisio_key(db)
-    return {
-        "enabled": db.get_setting("crypto_payment_enabled", "0") == "1",
-        "usd_to_toman_rate": int(float(db.get_setting("usd_to_toman_rate", "0") or 0)),
-        "has_own_key": bool(db.get_setting("plisio_api_key", "")),
-        "masked_key": (f"...{api_key[-4:]}" if api_key else ""),
-        "gateway_configured": bool(api_key) and bool(_runtime_api_base_url()),
-        "key_source": crypto_payment.resolve_plisio_key_source(db),
-        "expire_min": crypto_payment.resolve_expire_min(db),
-        "allowed_currencies": crypto_payment.resolve_allowed_currencies(db),
-    }
-
-
-@app.post("/api/admin/settings/crypto")
-def api_admin_set_crypto_settings(body: CryptoSettingsUpdate, auth=Depends(require_senior_admin)):
-    admin_id, db, _ = auth
-    if body.usd_to_toman_rate < 0:
-        raise HTTPException(status_code=400, detail=tr("نرخ تبدیل نمی‌تواند منفی باشد."))
-    if body.expire_min is not None and body.expire_min <= 0:
-        raise HTTPException(status_code=400, detail=tr("مهلت انقضا باید عددی بزرگ‌تر از صفر باشد."))
-    if body.api_key is not None:
-        new_key = body.api_key.strip()
-        db.set_setting("plisio_api_key", new_key)
-        db.log_admin_action(admin_id, "plisio_key_change", "API Key کریپتو از مینی‌اپ تغییر کرد." if new_key else "API Key کریپتو از مینی‌اپ حذف شد.")
-    api_key = _resolve_plisio_key(db)
-    if body.enabled and (not api_key or not _runtime_api_base_url()):
-        raise HTTPException(status_code=400, detail=tr("ابتدا کلید API درگاه کریپتو را تنظیم کن. (اگر بازم فعال نمی‌شه، یعنی MINIAPP_URL روی سرور تنظیم نشده.)"))
-    db.set_setting("crypto_payment_enabled", "1" if body.enabled else "0")
-    db.set_setting("usd_to_toman_rate", str(body.usd_to_toman_rate))
-    if body.expire_min is not None:
-        db.set_setting("crypto_expire_min", str(body.expire_min))
-    if body.allowed_currencies is not None:
-        cleaned = ",".join(p.strip().upper() for p in body.allowed_currencies.split(",") if p.strip())
-        db.set_setting("crypto_allowed_currencies", cleaned)
-    return {"status": "ok"}
-
-
-@app.get("/api/admin/payment-webhook-logs")
-def api_admin_payment_webhook_logs(gateway: str = "", limit: int = 50, auth=Depends(require_senior_admin)):
-    """لاگ آخرین کال‌بک‌های دریافتی از درگاه‌ها؛ برای دیباگ سریع مشکلاتی مثل
-    رد شدن امضا یا برنگشتن تایید پرداخت به بات."""
-    _, db, _ = auth
-    rows = db.get_recent_webhook_logs(limit=limit, gateway=(gateway or None))
-    return {"logs": [dict(r) for r in rows]}
-
-
-@app.get("/api/admin/reports/gateway-revenue")
-def api_admin_gateway_revenue_report(auth=Depends(require_senior_admin)):
-    """جمع تراکنش‌های تکمیل‌شده به تفکیک درگاه پرداخت (کریپتو/آبان/سفارشی).
-    کارت‌به‌کارت دستی چون invoice مجزا ندارد در این گزارش نیست."""
-    _, db, _ = auth
-    return {"gateways": db.get_gateway_revenue_report()}
-
-
-@app.post("/api/admin/settings/crypto/self-test")
-def api_admin_crypto_self_test(auth=Depends(require_senior_admin)):
-    """بدون نیاز به تراکنش واقعی، بررسی می‌کند که الگوریتم محاسبه‌ی verify_hash با
-    یک بدنه‌ی نمونه‌ی حاوی متن فارسی (دقیقاً مثل order_name واقعی) درست کار می‌کند.
-    اگر این false برگرداند یعنی هنوز مشکل escape یونیکد وجود دارد."""
-    _, db, _ = auth
-    api_key = _resolve_plisio_key(db)
-    if not api_key:
-        raise HTTPException(status_code=400, detail=tr("ابتدا کلید API کریپتو را تنظیم کن."))
-    sample = {
-        "txn_id": "self-test-000",
-        "order_number": "self-test-000",
-        "order_name": "سفارش #۰ - تست خودکار امضا",
-        "status": "completed",
-    }
-    payload = json.dumps(sample, separators=(",", ":"), ensure_ascii=False)
-    verify_hash = hmac.new(api_key.encode(), payload.encode("utf-8"), hashlib.sha1).hexdigest()
-    sample_with_hash = dict(sample)
-    sample_with_hash["verify_hash"] = verify_hash
-    ok = plisio_client.verify_callback(api_key, sample_with_hash)
-    return {"ok": ok, "message": api_message("امضا با متن فارسی درست تایید شد ✅") if ok else api_message("امضا رد شد ❌ (این خودش یعنی مشکل باقی مانده)")}
-
-
-@app.get("/api/admin/settings/card")
-def api_admin_get_card_settings(auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    return {
-        "card_number": db.get_setting("card_number", "") or "",
-        "card_holder": db.get_setting("card_holder", "") or "",
-        "card_bank_name": db.get_setting("card_bank_name", "") or "",
-    }
-
-
-@app.post("/api/admin/settings/card")
-def api_admin_set_card_settings(body: CardSettingsUpdate, auth=Depends(require_senior_admin)):
-    admin_id, db, _ = auth
-    card_number = body.card_number.strip()
-    card_holder = body.card_holder.strip()
-    if not card_number or not card_holder:
-        raise HTTPException(status_code=400, detail=tr("شماره کارت و نام صاحب کارت نمی‌توانند خالی باشند."))
-    db.set_setting("card_number", card_number)
-    db.set_setting("card_holder", card_holder)
-    if body.card_bank_name is not None:
-        db.set_setting("card_bank_name", body.card_bank_name.strip())
-    db.log_admin_action(admin_id, "card_change", f"شماره کارت جدید: {card_number} | به نام: {card_holder} (مینی‌اپ)")
-    return {"status": "ok"}
-
-
-class AbanGatewaySettingsUpdate(BaseModel):
-    enabled: bool
-    api_key: Optional[str] = None
-
-
-@app.get("/api/admin/settings/abangateway")
-def api_admin_get_abangateway_settings(auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    api_key = _resolve_abangateway_key(db)
-    return {
-        "enabled": db.get_setting("abangateway_payment_enabled", "0") == "1",
-        "has_own_key": bool(db.get_setting("abangateway_api_key", "")),
-        "masked_key": (f"...{api_key[-4:]}" if api_key else ""),
-        "gateway_configured": bool(api_key) and bool(_runtime_api_base_url()),
-        "key_source": abangateway_payment.resolve_api_key_source(db),
-        "problems": abangateway_payment.availability_problems(db),
-    }
-
-
-@app.post("/api/admin/settings/abangateway")
-def api_admin_set_abangateway_settings(body: AbanGatewaySettingsUpdate, auth=Depends(require_senior_admin)):
-    admin_id, db, _ = auth
-    if body.api_key is not None:
-        new_key = body.api_key.strip()
-        db.set_setting("abangateway_api_key", new_key)
-        db.log_admin_action(admin_id, "abangateway_key_change", "API Key آبان گیت وی از مینی‌اپ تغییر کرد." if new_key else "API Key آبان گیت وی از مینی‌اپ حذف شد.")
-    api_key = _resolve_abangateway_key(db)
-    if body.enabled and not api_key:
-        raise HTTPException(status_code=400, detail=tr("ابتدا کلید API آبان گیت وی را تنظیم کن."))
-    if body.enabled and not _runtime_api_base_url():
-        raise HTTPException(status_code=400, detail=tr("آدرس مینی‌اپ روی سرور تنظیم نشده است؛ MINIAPP_URL (یا API_BASE_URL) را در فایل .env پر کن و سرویس را ری‌استارت کن."))
-    db.set_setting("abangateway_payment_enabled", "1" if body.enabled else "0")
-    return {"status": "ok"}
-
-
-class BluPalSettingsUpdate(BaseModel):
-    enabled: bool
-    api_key: Optional[str] = None
-
-
-@app.get("/api/admin/settings/blupal")
-def api_admin_get_blupal_settings(auth=Depends(require_senior_admin)):
-    _, db, tenant = auth
-    api_key = _resolve_blupal_key(db)
-    tenant_id = db.get_setting("miniapp_tenant_id", "") or (tenant.tenant_id if tenant else "")
-    return {
-        "enabled": db.get_setting("blupal_payment_enabled", "0") == "1",
-        "has_own_key": bool(db.get_setting("blupal_api_key", "")),
-        "masked_key": (f"...{api_key[-4:]}" if api_key else ""),
-        "gateway_configured": bool(api_key),
-        "key_source": blupal_payment.resolve_api_key_source(db),
-        "webhook_url": blupal_payment.webhook_url_hint(tenant_id),
-    }
-
-
-@app.post("/api/admin/settings/blupal")
-def api_admin_set_blupal_settings(body: BluPalSettingsUpdate, auth=Depends(require_senior_admin)):
-    admin_id, db, _ = auth
-    if body.api_key is not None:
-        new_key = body.api_key.strip()
-        db.set_setting("blupal_api_key", new_key)
-        db.log_admin_action(admin_id, "blupal_key_change", "API Key بلوپال از مینی‌اپ تغییر کرد." if new_key else "API Key بلوپال از مینی‌اپ حذف شد.")
-    api_key = _resolve_blupal_key(db)
-    if body.enabled and not api_key:
-        raise HTTPException(status_code=400, detail=tr("ابتدا کلید API بلوپال را تنظیم کن."))
-    db.set_setting("blupal_payment_enabled", "1" if body.enabled else "0")
-    return {"status": "ok"}
-
-
-class NoapaySettingsUpdate(BaseModel):
-    enabled: bool
-    api_key: Optional[str] = None
-    webhook_secret: Optional[str] = None
-    rate_toman_per_star: Optional[int] = None
-
-
-@app.get("/api/admin/settings/noapay")
-def api_admin_get_noapay_settings(auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    api_key = noapay_payment.resolve_api_key(db)
-    return {
-        "enabled": db.get_setting("noapay_payment_enabled", "0") == "1",
-        "has_own_key": bool(db.get_setting("noapay_api_key", "")),
-        "masked_key": (f"...{api_key[-4:]}" if api_key else ""),
-        "has_webhook_secret": bool(db.get_setting("noapay_webhook_secret", "")),
-        "rate_toman_per_star": noapay_payment.resolve_rate(db),
-        "gateway_configured": noapay_payment.noapay_payment_available(db),
-        "key_source": noapay_payment.resolve_api_key_source(db),
-    }
-
-
-@app.post("/api/admin/settings/noapay")
-def api_admin_set_noapay_settings(body: NoapaySettingsUpdate, auth=Depends(require_senior_admin)):
-    admin_id, db, _ = auth
-    if body.api_key is not None:
-        new_key = body.api_key.strip()
-        db.set_setting("noapay_api_key", new_key)
-        db.log_admin_action(admin_id, "noapay_key_change", "کلید API NoapayBot از مینی‌اپ تغییر کرد." if new_key else "کلید API NoapayBot از مینی‌اپ حذف شد.")
-    if body.webhook_secret is not None:
-        db.set_setting("noapay_webhook_secret", body.webhook_secret.strip())
-        db.log_admin_action(admin_id, "noapay_key_change", "رمز وب‌هوک NoapayBot از مینی‌اپ تغییر کرد.")
-    if body.rate_toman_per_star is not None:
-        if body.rate_toman_per_star <= 0:
-            raise HTTPException(status_code=400, detail=tr("نرخ تبدیل باید عددی بزرگ‌تر از صفر باشد."))
-        db.set_setting("noapay_rate_toman_per_star", str(int(body.rate_toman_per_star)))
-        db.log_admin_action(admin_id, "noapay_key_change", f"نرخ استارز NoapayBot از مینی‌اپ: {body.rate_toman_per_star} تومان")
-    if body.enabled:
-        _key_ok = bool(noapay_payment.resolve_api_key(db))
-        _secret_ok = bool(noapay_payment.resolve_webhook_secret(db))
-        _rate_ok = noapay_payment.resolve_rate(db) > 0
-        if not (_key_ok and _secret_ok and _rate_ok and _runtime_api_base_url()):
-            raise HTTPException(status_code=400, detail=tr("ابتدا کلید API، رمز وب‌هوک و نرخ تبدیل NoapayBot را تنظیم کن. (اگر بازم فعال نمی‌شه، یعنی MINIAPP_URL روی سرور تنظیم نشده.)"))
-    db.set_setting("noapay_payment_enabled", "1" if body.enabled else "0")
-    return {"status": "ok"}
-
-
-class ExtraGatewaySettingsUpdate(BaseModel):
-    gateway: str
-    enabled: bool
-    values: Optional[dict] = None
-
-
-@app.get("/api/admin/settings/extra-gateways")
-def api_admin_get_extra_gateways(auth=Depends(require_senior_admin)):
-    _, db, tenant = auth
-    if tenant.tenant_id:
-        return {"supported": False, "gateways": []}
-    gateways = []
-    for key in extra_gateway_registry.GATEWAY_ORDER:
-        meta = extra_gateway_registry.GATEWAYS[key]
-        fields = []
-        for field in meta["fields"]:
-            raw = (db.get_setting(field["setting"], "") or "").strip()
-            has_value = bool(raw) and not (field["numeric"] and extra_gateway_payment._to_float(raw) <= 0)
-            fields.append({
-                "setting": field["setting"], "label": field["label"], "secret": field["secret"],
-                "numeric": field["numeric"], "required": field["required"], "has_value": has_value,
-                "masked": (f"...{raw[-4:]}" if len(raw) > 4 else "•••") if field["secret"] and raw else "",
-                "value": "" if field["secret"] else raw,
-            })
-        hint_url = ""
-        if _runtime_api_base_url() and meta["needs_base_url"]:
-            hint_url = (
-                extra_gateway_payment.ipn_url(tenant.tenant_id) if key == "nowpayments"
-                else extra_gateway_payment.callback_url(tenant.tenant_id, key)
-            )
-        gateways.append({
-            "key": key, "title": meta["title"], "icon": meta["icon"], "help": meta["help"],
-            "enabled": db.get_setting(extra_gateway_registry.enable_setting(key), "0") == "1",
-            "configured": extra_gateway_payment.is_configured(db, key),
-            "needs_base_url": meta["needs_base_url"], "hint_url": hint_url, "fields": fields,
-        })
-    return {"supported": True, "base_url_ok": bool(_runtime_api_base_url()), "gateways": gateways}
-
-
-@app.post("/api/admin/settings/extra-gateways")
-def api_admin_set_extra_gateway(body: ExtraGatewaySettingsUpdate, auth=Depends(require_senior_admin)):
-    admin_id, db, tenant = auth
-    if tenant.tenant_id:
-        raise HTTPException(status_code=400, detail=tr("این درگاه‌ها فقط برای بات اصلی در دسترس هستند."))
-    meta = extra_gateway_registry.GATEWAYS.get(body.gateway)
-    if not meta:
-        raise HTTPException(status_code=404, detail=tr("درگاه نامعتبر است."))
-    fields = {f["setting"]: f for f in meta["fields"]}
-    for setting, raw in (body.values or {}).items():
-        field = fields.get(setting)
-        if not field:
-            raise HTTPException(status_code=400, detail=tr("فیلد نامعتبر است."))
-        if raw is None:
-            continue
-        value = str(raw).strip()
-        if field["numeric"]:
-            number = extra_gateway_payment._to_float(value) if value else 0.0
-            if number < 0:
-                raise HTTPException(status_code=400, detail=tr(f"«{field['label']}» باید عددی بزرگ‌تر یا مساوی صفر باشد."))
-            value = str(int(number)) if number == int(number) else str(number)
-        db.set_setting(setting, value)
-        db.log_admin_action(admin_id, "extra_gateway_setting", f"{body.gateway}: {setting} از مینی‌اپ تغییر کرد.")
-    if body.enabled:
-        missing = extra_gateway_payment.missing_fields(db, body.gateway)
-        if missing:
-            raise HTTPException(status_code=400, detail=tr("ابتدا این موارد را تنظیم کن: ") + tr("، ").join(missing))
-        if not extra_gateway_payment.is_configured(db, body.gateway):
-            raise HTTPException(status_code=400, detail=tr("MINIAPP_URL روی سرور تنظیم نشده است."))
-    setting = extra_gateway_registry.enable_setting(body.gateway)
-    if (db.get_setting(setting, "0") == "1") != body.enabled:
-        db.log_admin_action(admin_id, "extra_gateway_toggle", f"{body.gateway}: {'فعال' if body.enabled else 'غیرفعال'} (مینی‌اپ)")
-    db.set_setting(setting, "1" if body.enabled else "0")
-    return {"status": "ok"}
-
-
-@app.get("/api/admin/settings/renewal")
-def api_admin_get_renewal_settings(auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    return db.get_renewal_settings()
-
-
-@app.get("/api/admin/settings/cashback")
-def api_admin_get_cashback_settings(auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    return {
-        "renewal_cashback_percent": int(db.get_setting("renewal_cashback_percent", "0") or 0),
-        "topup_cashback_percent": int(db.get_setting("topup_cashback_percent", "0") or 0),
-    }
-
-
-class CashbackSettingsUpdate(BaseModel):
-    renewal_cashback_percent: int = 0
-    topup_cashback_percent: int = 0
-
-
-@app.post("/api/admin/settings/cashback")
-def api_admin_set_cashback_settings(body: CashbackSettingsUpdate, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    for name, value in (("renewal_cashback_percent", body.renewal_cashback_percent), ("topup_cashback_percent", body.topup_cashback_percent)):
-        if value < 0 or value > 100:
-            raise HTTPException(status_code=400, detail=tr("درصد کش‌بک باید بین ۰ تا ۱۰۰ باشد."))
-        db.set_setting(name, str(value))
-    return {"status": "ok"}
-
-
-@app.post("/api/admin/settings/renewal")
-def api_admin_set_renewal_settings(body: RenewalSettingsUpdate, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    if body.discount_percent < 0 or body.discount_percent > 100:
-        raise HTTPException(status_code=400, detail=tr("درصد تخفیف باید بین ۰ تا ۱۰۰ باشد."))
-    if body.days_before <= 0 or body.discount_expiry_hours <= 0:
-        raise HTTPException(status_code=400, detail=tr("مقادیر روز/ساعت باید بزرگ‌تر از صفر باشند."))
-    if body.cashback_percent < 0 or body.cashback_percent > 100:
-        raise HTTPException(status_code=400, detail=tr("درصد کش‌بک باید بین ۰ تا ۱۰۰ باشد."))
-    db.set_setting("renewal_reminder_enabled", "1" if body.enabled else "0")
-    db.set_setting("renewal_reminder_days_before", str(body.days_before))
-    db.set_setting("renewal_discount_percent", str(body.discount_percent))
-    db.set_setting("renewal_discount_expiry_hours", str(body.discount_expiry_hours))
-    db.set_setting("renewal_cashback_percent", str(body.cashback_percent))
-    return {"status": "ok"}
-
-
-class ConnectAlertSettingsUpdate(BaseModel):
-    connect_enabled: bool = False
-    connect_threshold_mb: float = 1
-    connect_text: str = ""
-    no_connect_enabled: bool = False
-    no_connect_hours: int = 24
-    no_connect_threshold_mb: float = 1
-    no_connect_text: str = ""
-
-
-@app.get("/api/admin/settings/connect-alert")
-def api_admin_get_connect_alert_settings(auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    return db.get_connect_alert_settings()
-
-
-@app.post("/api/admin/settings/connect-alert")
-def api_admin_set_connect_alert_settings(body: ConnectAlertSettingsUpdate, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    if body.connect_threshold_mb <= 0 or body.no_connect_threshold_mb <= 0:
-        raise HTTPException(status_code=400, detail=tr("آستانه‌ی مصرف باید بزرگ‌تر از صفر باشد."))
-    if body.no_connect_hours <= 0:
-        raise HTTPException(status_code=400, detail=tr("مهلت هشدار عدم‌اتصال باید بزرگ‌تر از صفر باشد."))
-    if not body.connect_text.strip() or not body.no_connect_text.strip():
-        raise HTTPException(status_code=400, detail=tr("متن پیام‌ها نمی‌توانند خالی باشند."))
-    db.set_connect_alert_settings(
-        connect_enabled=body.connect_enabled,
-        connect_threshold_mb=body.connect_threshold_mb,
-        connect_text=body.connect_text,
-        no_connect_enabled=body.no_connect_enabled,
-        no_connect_hours=body.no_connect_hours,
-        no_connect_threshold_mb=body.no_connect_threshold_mb,
-        no_connect_text=body.no_connect_text,
-    )
-    db.log_admin_action(auth[0], "setting_change", "connect alert settings updated (میناپ)", "setting", "connect_alert")
-    return {"status": "ok"}
-
-
-class EarlyRenewalDiscountSettingsUpdate(BaseModel):
-    enabled: bool = False
-    days_before: int = 5
-    percent: int = 10
-
-
-@app.get("/api/admin/settings/early-renewal-discount")
-def api_admin_get_early_renewal_discount_settings(auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    return db.get_early_full_renewal_discount_settings()
-
-
-@app.post("/api/admin/settings/early-renewal-discount")
-def api_admin_set_early_renewal_discount_settings(body: EarlyRenewalDiscountSettingsUpdate, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    if body.days_before <= 0:
-        raise HTTPException(status_code=400, detail=tr("تعداد روز باید بزرگ‌تر از صفر باشد."))
-    if not (0 < body.percent <= 100):
-        raise HTTPException(status_code=400, detail=tr("درصد تخفیف باید بین ۱ تا ۱۰۰ باشد."))
-    db.set_early_full_renewal_discount_settings(body.enabled, body.days_before, body.percent)
-    db.log_admin_action(auth[0], "setting_change", "early renewal discount settings updated (میناپ)", "setting", "early_renewal_discount")
-    return {"status": "ok"}
-
-
-@app.get("/api/admin/settings/volume-reminder")
-def api_admin_get_volume_reminder_settings(auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    return db.get_volume_reminder_settings()
-
-
-@app.post("/api/admin/settings/volume-reminder")
-def api_admin_set_volume_reminder_settings(body: VolumeReminderSettingsUpdate, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    if body.mode not in ("percent", "gb"):
-        raise HTTPException(status_code=400, detail=tr("مبنای آستانه باید percent یا gb باشد."))
-    if body.discount_percent < 0 or body.discount_percent > 100:
-        raise HTTPException(status_code=400, detail=tr("درصد تخفیف باید بین ۰ تا ۱۰۰ باشد."))
-    if not (0 < body.percent < 100):
-        raise HTTPException(status_code=400, detail=tr("درصد آستانه باید بین ۱ تا ۹۹ باشد."))
-    if body.gb_left <= 0:
-        raise HTTPException(status_code=400, detail=tr("آستانه‌ی گیگابایت باید بزرگ‌تر از صفر باشد."))
-    if body.discount_expiry_hours <= 0:
-        raise HTTPException(status_code=400, detail=tr("اعتبار کد تخفیف باید بزرگ‌تر از صفر باشد."))
-    db.set_setting("volume_reminder_enabled", "1" if body.enabled else "0")
-    db.set_setting("volume_reminder_mode", body.mode)
-    db.set_setting("volume_reminder_percent", str(body.percent))
-    db.set_setting("volume_reminder_gb_left", str(body.gb_left))
-    db.set_setting("volume_discount_percent", str(body.discount_percent))
-    db.set_setting("volume_discount_expiry_hours", str(body.discount_expiry_hours))
-    return {"status": "ok"}
-
-
-# ---------------------------------------------------------------------------
-# مدیریت کدهای تخفیف (ادمین)
-# ---------------------------------------------------------------------------
-
-class DiscountCreate(BaseModel):
-    code: str
-    percent: Optional[int] = None
-    fixed_amount: Optional[int] = None
-    max_discount_amount: Optional[int] = None
-    max_uses: int = 0
-    expires_at: Optional[str] = None
-    min_purchase: Optional[int] = None
-    max_purchase: Optional[int] = None
-    product_id: Optional[int] = None
-    category_id: Optional[int] = None
-    product_ids: Optional[List[int]] = None
-    per_user_limit: Optional[int] = None
-    first_purchase_only: bool = False
-    audience: str = "all"
-
-
-def _discount_to_dict(d):
-    keys = d.keys()
-    product_ids_raw = d["product_ids"] if "product_ids" in keys else None
-    try:
-        product_ids = json.loads(product_ids_raw) if product_ids_raw else []
-    except (ValueError, TypeError):
-        product_ids = []
-    return {
-        "id": d["id"], "code": d["code"], "percent": d["percent"], "fixed_amount": d["fixed_amount"],
-        "max_discount_amount": d["max_discount_amount"] if "max_discount_amount" in keys else None,
-        "max_uses": d["max_uses"], "used_count": d["used_count"], "is_active": bool(d["is_active"]),
-        "created_at": d["created_at"],
-        "expires_at": d["expires_at"] if "expires_at" in keys else None,
-        "min_purchase": d["min_purchase"] if "min_purchase" in keys else None,
-        "max_purchase": d["max_purchase"] if "max_purchase" in keys else None,
-        "product_id": d["product_id"] if "product_id" in keys else None,
-        "category_id": d["category_id"] if "category_id" in keys else None,
-        "product_ids": product_ids,
-        "per_user_limit": d["per_user_limit"] if "per_user_limit" in keys else None,
-        "first_purchase_only": bool(d["first_purchase_only"]) if "first_purchase_only" in keys else False,
-        "audience": (d["audience"] if "audience" in keys else None) or "all",
-    }
-
-
-@app.get("/api/admin/discounts")
-def api_admin_list_discounts(auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    return [_discount_to_dict(d) for d in db.list_discount_codes()]
-
-
-@app.post("/api/admin/discounts")
-def api_admin_create_discount(body: DiscountCreate, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    code = (body.code or "").strip().upper()
-    if not code:
-        raise HTTPException(status_code=400, detail=tr("کد تخفیف نمی‌تواند خالی باشد."))
-    if db.get_discount_code(code):
-        raise HTTPException(status_code=400, detail=tr("این کد قبلاً ثبت شده است."))
-    if body.percent is None and body.fixed_amount is None:
-        raise HTTPException(status_code=400, detail=tr("باید درصد یا مبلغ ثابت تخفیف را مشخص کنی."))
-    if body.percent is not None and (body.percent <= 0 or body.percent > 100):
-        raise HTTPException(status_code=400, detail=tr("درصد باید بین ۱ تا ۱۰۰ باشد."))
-    discount_id = db.create_discount_code(
-        code, percent=body.percent, fixed_amount=body.fixed_amount,
-        max_uses=body.max_uses, expires_at=body.expires_at, source="admin",
-        min_purchase=body.min_purchase, max_purchase=body.max_purchase,
-        product_id=body.product_id, category_id=body.category_id,
-        per_user_limit=body.per_user_limit, first_purchase_only=body.first_purchase_only,
-        audience=body.audience, max_discount_amount=body.max_discount_amount,
-        product_ids=body.product_ids,
-    )
-    return _discount_to_dict(db.get_discount_code_by_id(discount_id))
-
-
-@app.post("/api/admin/discounts/{discount_id}/toggle")
-def api_admin_toggle_discount(discount_id: int, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    if not db.get_discount_code_by_id(discount_id):
-        raise HTTPException(status_code=404, detail=tr("کد تخفیف یافت نشد."))
-    db.toggle_discount_code(discount_id)
-    return {"status": "ok"}
-
-
-@app.delete("/api/admin/discounts/{discount_id}")
-def api_admin_delete_discount(discount_id: int, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    if not db.get_discount_code_by_id(discount_id):
-        raise HTTPException(status_code=404, detail=tr("کد تخفیف یافت نشد."))
-    db.delete_discount_code(discount_id)
-    return {"status": "ok"}
-
-
-# ---------------------------------------------------------------------------
-# داشبورد آماری (ادمین)
-# ---------------------------------------------------------------------------
-
-@app.get("/api/admin/dashboard")
-def api_admin_dashboard(
-    start_date: str = Query(None), end_date: str = Query(None), auth=Depends(require_senior_admin)
-):
-    _, db, _ = auth
-    return db.get_full_stats(start_date=start_date, end_date=end_date)
-
-
-@app.get("/api/admin/dashboard/advanced")
-def api_admin_dashboard_advanced(
-    start_date: str = Query(None), end_date: str = Query(None),
-    granularity: str = Query("day"), auth=Depends(require_senior_admin)
-):
-    """معادل مینی‌اپی /api/dashboard/advanced پنل وب - همان db.get_advanced_stats،
-    تا بات/مینی‌اپ/پنل وب همیشه دقیقاً یک عدد نشان بدهند."""
-    _, db, _ = auth
-    if granularity not in ("day", "week", "month"):
-        raise HTTPException(400, tr("granularity باید یکی از day/week/month باشد."))
-    return db.get_advanced_stats(start_date=start_date, end_date=end_date, granularity=granularity)
-
-
-@app.get("/api/admin/orders/export")
-def api_admin_orders_export(
-    start_date: str = Query(None), end_date: str = Query(None), auth=Depends(require_senior_admin)
-):
-    _, db, _ = auth
-    rows = db.get_orders_for_export(start_date=start_date, end_date=end_date)
-
-    status_fa = {"approved": "تاییدشده", "pending": "در انتظار", "rejected": "ردشده"}
-    lines = [
-        "\ufeff" + ",".join([
-            "شناسه سفارش", "تاریخ ثبت (شمسی)", "وضعیت", "آیدی کاربر", "یوزرنیم", "نام",
-            "محصول", "تعداد", "مبلغ نهایی", "مبلغ از کیف‌پول", "تخفیف",
-        ])
-    ]
-    for r in rows:
-        row = [
-            str(r["id"]),
-            to_jalali_str(r["created_at"], with_time=True),
-            status_fa.get(r["status"], r["status"]),
-            str(r["user_id"]),
-            (r["username"] or ""),
-            (r["first_name"] or ""),
-            (r["product_name"] or ""),
-            str(r["quantity"] or 1),
-            str(r["amount"] or 0),
-            str(r["wallet_used"] or 0),
-            str(r["discount_amount"] or 0),
-        ]
-
-        def _csv_cell(v):
-            v = v.replace('"', '""')
-            return f'"{v}"' if ("," in v or '"' in v) else v
-
-        lines.append(",".join(_csv_cell(c) for c in row))
-
-    csv_content = "\n".join(lines)
-    filename = f"orders_{rows[0]['created_at'][:10] if rows else 'export'}.csv"
-    return Response(
-        content=csv_content,
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
-# ---------------------------------------------------------------------------
-# مدیریت تیکت‌ها (ادمین)
-# ---------------------------------------------------------------------------
-
-class AdminTicketMessageCreate(BaseModel):
-    message: str
-
-
-@app.get("/api/admin/tickets")
-def api_admin_list_tickets(status: Optional[str] = None, auth=Depends(require_admin)):
-    tg_id, db, _ = auth
-    is_owner = db.is_owner(tg_id)
-    rows = db.get_all_tickets(status=status)
-    result = []
-    for t in rows:
-        user = db.get_user(t["user_id"])
-        result.append({
-            **_ticket_to_dict(t),
-            "user_id": t["user_id"],
-            "user_name": (user["first_name"] if user else "") or "",
-            "user_username": (user["username"] if user else "") or "",
-            "claimed_by_me": t["claimed_by"] == tg_id,
-            "locked_for_me": bool(t["claimed_by"]) and t["claimed_by"] != tg_id and not is_owner,
-        })
-    return result
-
-
-@app.get("/api/admin/tickets/{ticket_id}/messages")
-def api_admin_get_ticket_messages(ticket_id: int, since_id: int = 0, auth=Depends(require_admin)):
-    tg_id, db, _ = auth
-    ticket = db.get_ticket(ticket_id)
-    if not ticket:
-        raise HTTPException(status_code=404, detail=tr("تیکت یافت نشد."))
-    db.mark_ticket_read_by_admin(ticket_id)
-    rows = db.get_ticket_messages(ticket_id, since_id=since_id)
-    user = db.get_user(ticket["user_id"])
-    is_owner = db.is_owner(tg_id)
-    return {
-        "ticket": {
-            **_ticket_to_dict(ticket),
-            "user_id": ticket["user_id"],
-            "user_name": (user["first_name"] if user else "") or "",
-            "user_username": (user["username"] if user else "") or "",
-            "claimed_by_me": ticket["claimed_by"] == tg_id,
-            "locked_for_me": bool(ticket["claimed_by"]) and ticket["claimed_by"] != tg_id and not is_owner,
-        },
-        "messages": [
-            {"id": m["id"], "sender": m["sender"], "message": m["message"], "created_at": m["created_at"]}
-            for m in rows
-        ],
-    }
-
-
-@app.post("/api/admin/tickets/{ticket_id}/messages")
-async def api_admin_send_ticket_message(ticket_id: int, body: AdminTicketMessageCreate, auth=Depends(require_admin)):
-    tg_id, db, tenant = auth
-    ticket = db.get_ticket(ticket_id)
-    if not ticket:
-        raise HTTPException(status_code=404, detail=tr("تیکت یافت نشد."))
-    if ticket["claimed_by"] and ticket["claimed_by"] != tg_id and not db.is_owner(tg_id):
-        raise HTTPException(status_code=403, detail=tr("این تیکت قبلاً توسط ادمین دیگری پاسخ داده شده و فقط برای او (و مالک) فعال است."))
-    text = (body.message or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail=tr("پیام نمی‌تواند خالی باشد."))
-    if len(text) > 2000:
-        raise HTTPException(status_code=400, detail=tr("پیام بیش از حد طولانی است."))
-
-    db.claim_ticket_if_open(ticket_id, tg_id)
-    msg_id = db.add_ticket_message(ticket_id, "admin", text)
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            await session.post(
-                f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                json={
-                    "chat_id": ticket["user_id"],
-                    "text": f"🎫 پاسخ پشتیبانی به تیکت «{ticket['subject']}»:\n\n{text}",
-                },
-            )
-    except Exception:
-        pass
-
-    return {"id": msg_id, "sender": "admin", "message": text}
-
-
-@app.post("/api/admin/tickets/{ticket_id}/close")
-def api_admin_close_ticket(ticket_id: int, auth=Depends(require_admin)):
-    _, db, _ = auth
-    if not db.get_ticket(ticket_id):
-        raise HTTPException(status_code=404, detail=tr("تیکت یافت نشد."))
-    db.close_ticket(ticket_id)
-    return {"status": "ok"}
-
-
-# ---------------------------------------------------------------------------
-# چت زنده پشتیبانی - سمت ادمین (پاسخ‌دادن از داخل مینی‌اپ)
-# ---------------------------------------------------------------------------
-
-class AdminSupportMessageCreate(BaseModel):
-    message: str
-
-
-@app.get("/api/admin/support/conversations")
-def api_admin_list_support_conversations(auth=Depends(require_admin)):
-    tg_id, db, _ = auth
-    is_owner = db.is_owner(tg_id)
-    convs = db.list_support_conversations()
-    result = []
-    for c in convs:
-        user = db.get_user(c["user_id"])
-        result.append({
-            **c,
-            "user_name": (user["first_name"] if user else "") or "",
-            "user_username": (user["username"] if user else "") or "",
-            "assigned_to_me": c["assigned_admin_id"] == tg_id,
-            "locked_for_me": bool(c["assigned_admin_id"]) and c["assigned_admin_id"] != tg_id and not is_owner,
-        })
-    return result
-
-
-@app.get("/api/admin/support/{user_id}/messages")
-def api_admin_get_support_messages(user_id: int, since_id: int = 0, auth=Depends(require_admin)):
-    tg_id, db, _ = auth
-    is_owner = db.is_owner(tg_id)
-    user = db.get_user(user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail=tr("کاربر یافت نشد."))
-    db.mark_support_read_by_admin(user_id)
-    rows = db.get_support_messages(user_id, since_id=since_id)
-    conv = db.get_support_conversation(user_id)
-    assigned_admin_id = conv["assigned_admin_id"] if conv else None
-    return {
-        "user": {
-            "user_id": user_id,
-            "user_name": (user["first_name"] if user else "") or "",
-            "user_username": (user["username"] if user else "") or "",
-            "assigned_admin_id": assigned_admin_id,
-            "assigned_to_me": assigned_admin_id == tg_id,
-            "locked_for_me": bool(assigned_admin_id) and assigned_admin_id != tg_id and not is_owner,
-        },
-        "messages": [
-            {"id": m["id"], "sender": m["sender"], "message": m["message"], "created_at": m["created_at"]}
-            for m in rows
-        ],
-    }
-
-
-@app.post("/api/admin/support/{user_id}/messages")
-async def api_admin_send_support_message(user_id: int, body: AdminSupportMessageCreate, auth=Depends(require_admin)):
-    tg_id, db, tenant = auth
-    user = db.get_user(user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail=tr("کاربر یافت نشد."))
-    conv = db.get_support_conversation(user_id)
-    assigned_admin_id = conv["assigned_admin_id"] if conv else None
-    if assigned_admin_id and assigned_admin_id != tg_id and not db.is_owner(tg_id):
-        raise HTTPException(
-            status_code=403,
-            detail=tr("این گفتگو در حال حاضر توسط ادمین دیگری پاسخ داده می‌شود و فقط برای او (و مالک) فعال است."),
-        )
-    text = (body.message or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail=tr("پیام نمی‌تواند خالی باشد."))
-    if len(text) > 2000:
-        raise HTTPException(status_code=400, detail=tr("پیام بیش از حد طولانی است."))
-
-    # پاسخ‌دادن یعنی از این پس این مکالمه مال همین ادمین است (مگر مالک باشد که
-    # همیشه بدون قفل‌شدن مکالمه اجازه‌ی پاسخ دارد).
-    if not db.is_owner(tg_id):
-        db.set_support_conversation_admin(user_id, tg_id)
-
-    dup_id = db.find_recent_duplicate_admin_reply(user_id, text)
-    if dup_id:
-        return {"id": dup_id, "sender": "admin", "message": text}
-    msg_id = db.add_support_message(user_id, "admin", text)
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            await session.post(
-                f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                json={"chat_id": user_id, "text": f"📩 پاسخ پشتیبانی:\n\n{text}"},
-            )
-    except Exception:
-        pass
-
-    return {"id": msg_id, "sender": "admin", "message": text}
-
-
-# ---------------------------------------------------------------------------
-# مدیریت برندینگ Mini App (نام فروشگاه / متن بنر) - ادمین
-# ---------------------------------------------------------------------------
-
-class BrandingUpdate(BaseModel):
-    store_name: str
-    banner_text: str
-
-
-@app.get("/api/admin/settings/branding")
-def api_admin_get_branding(auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    theme = db.get_setting("miniapp_theme", "clean-light")
-    if theme not in MINIAPP_THEMES:
-        theme = "clean-light"
-    return {
-        "store_name": render_stored_setting("store_name", db.get_setting("store_name", "⚡ SHOP VPN")),
-        "banner_text": render_stored_setting("miniapp_banner_text", db.get_setting("miniapp_banner_text", "اتصال امن و پایدار برقرار است")),
-        "theme": theme,
-        "themes": [{"id": k, "label": v} for k, v in MINIAPP_THEMES.items()],
-        "header_image": db.get_setting("header_image_data", "") or None,
-    }
-
-
-@app.post("/api/admin/settings/branding")
-def api_admin_set_branding(body: BrandingUpdate, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    store_name = body.store_name.strip()
-    banner_text = body.banner_text.strip()
-    if not store_name:
-        raise HTTPException(status_code=400, detail=tr("نام فروشگاه نمی‌تواند خالی باشد."))
-    if not banner_text:
-        raise HTTPException(status_code=400, detail=tr("متن بنر نمی‌تواند خالی باشد."))
-    if len(store_name) > 40:
-        raise HTTPException(status_code=400, detail=tr("نام فروشگاه بیش از حد طولانی است."))
-    if len(banner_text) > 80:
-        raise HTTPException(status_code=400, detail=tr("متن بنر بیش از حد طولانی است."))
-    db.set_setting("store_name", store_name)
-    db.set_setting("miniapp_banner_text", banner_text)
-    return {"status": "ok"}
-
-
-class ThemeUpdate(BaseModel):
-    theme: str
-
-
-@app.post("/api/admin/settings/theme")
-def api_admin_set_theme(body: ThemeUpdate, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    if body.theme not in MINIAPP_THEMES:
-        raise HTTPException(status_code=400, detail=tr("این تم معتبر نیست."))
-    db.set_setting("miniapp_theme", body.theme)
-    return {"status": "ok", "theme": body.theme}
-
-
-@app.post("/api/admin/settings/header-image")
-async def api_admin_set_header_image(photo: UploadFile = File(...), auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    if not photo.content_type or not photo.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail=tr("فقط فایل عکس پذیرفته می‌شود."))
-    photo_bytes = await photo.read()
-    if len(photo_bytes) > MAX_HEADER_IMAGE_BYTES:
-        raise HTTPException(status_code=400, detail=tr("حجم عکس نباید بیشتر از ۲ مگابایت باشد."))
-    data_uri = f"data:{photo.content_type};base64,{base64.b64encode(photo_bytes).decode('ascii')}"
-    db.set_setting("header_image_data", data_uri)
-    return {"status": "ok", "header_image": data_uri}
-
-
-@app.delete("/api/admin/settings/header-image")
-def api_admin_delete_header_image(auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    db.set_setting("header_image_data", "")
-    return {"status": "ok"}
-
-
-# ---------------------------------------------------------------------------
-# مدیریت کاربران (جستجو/فیلتر/بلاک/تاریخچه/پیام) — ادمین
-# ---------------------------------------------------------------------------
-
-@app.get("/api/admin/users")
-def api_admin_list_users(
-    query: str = "", status: str = "all", limit: int = 30, offset: int = 0,
-    auth=Depends(require_full_admin),
-):
-    _, db, _ = auth
-    if status not in ("all", "active", "expired", "blocked", "none"):
-        status = "all"
-    limit = max(1, min(limit, 100))
-    rows, total = db.search_users(query=query.strip(), status_filter=status, limit=limit, offset=offset)
-    users = []
-    for u in rows:
-        users.append({
-            "telegram_id": u["telegram_id"],
-            "username": u["username"] or "",
-            "first_name": u["first_name"] or "",
-            "is_blocked": bool(u["is_blocked"]),
-            "joined_at": u["joined_at"],
-            "wallet_credit": db.get_wallet_credit(u["telegram_id"]),
-            "status": db.get_user_status(u["telegram_id"]),
-        })
-    return {"users": users, "total": total, "limit": limit, "offset": offset}
-
-
-@app.get("/api/admin/users/{telegram_id}")
-def api_admin_get_user(telegram_id: int, auth=Depends(require_full_admin)):
-    _, db, _ = auth
-    user = db.get_user(telegram_id)
-    if not user:
-        raise HTTPException(status_code=404, detail=tr("کاربری با این آیدی عددی پیدا نشد."))
-    history = db.get_user_full_history(telegram_id)
-    return {
-        "telegram_id": user["telegram_id"],
-        "username": user["username"] or "",
-        "first_name": user["first_name"] or "",
-        "is_blocked": bool(user["is_blocked"]),
-        "joined_at": user["joined_at"],
-        "wallet_credit": db.get_wallet_credit(telegram_id),
-        "status": db.get_user_status(telegram_id),
-        "orders": [dict(o) for o in history["orders"]],
-        "topups": [dict(t) for t in history["topups"]],
-        "wallet_transactions": db.get_wallet_transaction_entries(telegram_id, 50),
-    }
-
-
-def _admin_referrals_payload(db, telegram_id: int) -> dict:
-    items = db.list_referrals_for_admin(telegram_id)
-    return {
-        "items": items,
-        "total": len(items),
-        "pending_bonus_count": sum(1 for r in items if not r["bonus_given"]),
-        "bonus_amount": int(db.get_setting("referral_invite_bonus_amount", "0") or 0),
-        "bonus_enabled": db.get_setting("referral_invite_bonus_enabled", "0") == "1",
-        "suspended": db.is_referral_fraud_suspended(telegram_id),
-    }
-
-
-@app.get("/api/admin/users/{telegram_id}/referrals")
-def api_admin_user_referrals(telegram_id: int, auth=Depends(require_full_admin)):
-    _, db, _ = auth
-    if not db.get_user(telegram_id):
-        raise HTTPException(status_code=404, detail=tr("کاربری با این آیدی عددی پیدا نشد."))
-    return _admin_referrals_payload(db, telegram_id)
-
-
-@app.post("/api/admin/users/{telegram_id}/referrals/pay-pending")
-async def api_admin_pay_pending_referral_bonus(telegram_id: int, tenant: Tenant = Depends(get_tenant), auth=Depends(require_full_admin)):
-    admin_id, db, _ = auth
-    if not db.get_user(telegram_id):
-        raise HTTPException(status_code=404, detail=tr("کاربری با این آیدی عددی پیدا نشد."))
-    res = await asyncio.to_thread(db.pay_pending_invite_bonuses, telegram_id)
-    if res["paid_count"] <= 0:
-        raise HTTPException(status_code=400, detail=tr("پاداشی برای پرداخت وجود ندارد (مبلغ پاداش صفر است، سقف پر شده یا همه پرداخت شده‌اند)."))
-    db.log_admin_action(
-        admin_id, "referral_bonus_manual",
-        f"پاداش دعوت {res['paid_count']} زیرمجموعه ({res['total']:,} تومان) برای کاربر {telegram_id} پرداخت شد (مینی‌اپ)",
-        "user", telegram_id,
-    )
-    try:
-        async with aiohttp.ClientSession() as session:
-            await session.post(
-                f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                json={"chat_id": telegram_id, "text": f"🤝 پاداش دعوت {res['paid_count']} زیرمجموعه‌ی شما پرداخت شد.\n💰 {res['total']:,} تومان به کیف پول شما اضافه شد."},
-            )
-    except Exception:
-        pass
-    return {"status": "ok", **res, **_admin_referrals_payload(db, telegram_id)}
-
-
-class UserBlockUpdate(BaseModel):
-    blocked: bool
-
-
-async def _notify_block_change_from_miniapp(tenant, db, telegram_id: int, blocked: bool, actor_id: int) -> None:
-    try:
-        user_row = db.get_user(telegram_id)
-        actor_row = db.get_user(actor_id)
-        actor_label = (f"@{actor_row['username']}" if actor_row and actor_row["username"] else str(actor_id)) + " (مینی‌اپ)"
-        text = report_router.build_block_toggle_text(user_row, telegram_id, blocked, actor_label)
-        await report_router.send_raw_to_group(tenant.bot_token, db, "security", text, "HTML")
-    except Exception:
-        logging.getLogger("miniapp").warning("ارسال کارت بلاک/آنبلاک (مینی‌اپ) به گروه گزارش ناموفق بود.", exc_info=True)
-
-
-@app.post("/api/admin/users/{telegram_id}/block")
-async def api_admin_set_user_blocked(telegram_id: int, body: UserBlockUpdate, auth=Depends(require_full_admin)):
-    admin_tg_id, db, tenant = auth
-    user = db.get_user(telegram_id)
-    if not user:
-        raise HTTPException(status_code=404, detail=tr("کاربری با این آیدی عددی پیدا نشد."))
-    db.set_user_blocked(telegram_id, body.blocked)
-    (await asyncio.to_thread(
-        db.log_admin_action, admin_tg_id, "user_block_toggle",
-        f"کاربر {telegram_id} ← {'بلاک' if body.blocked else 'آنبلاک'} (مینی‌اپ)",
-    ))
-    await _notify_block_change_from_miniapp(tenant, db, telegram_id, body.blocked, admin_tg_id)
-    return {"status": "ok", "is_blocked": body.blocked}
-
-
-class UserMessageSend(BaseModel):
-    text: str
-
-
-@app.post("/api/admin/users/{telegram_id}/message")
-async def api_admin_message_user(telegram_id: int, body: UserMessageSend, tenant: Tenant = Depends(get_tenant), auth=Depends(require_admin)):
-    admin_id, db, _ = auth
-    text = (body.text or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail=tr("متن پیام خالی است."))
-    user = db.get_user(telegram_id)
-    if not user:
-        raise HTTPException(status_code=404, detail=tr("کاربری با این آیدی عددی پیدا نشد."))
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-            json={"chat_id": telegram_id, "text": f"📩 پیام از پشتیبانی:\n\n{text}"},
-        ) as resp:
-            if resp.status != 200:
-                raise HTTPException(status_code=502, detail=tr("ارسال پیام به کاربر ناموفق بود (شاید بات را بلاک کرده)."))
-    db.log_admin_action(
-        admin_id, "user_message", f"پیام مستقیم به کاربر {telegram_id} ارسال شد (مینی‌اپ)",
-        "user", telegram_id,
-    )
-    return {"status": "ok"}
-
-
-@app.get("/api/admin/users/{telegram_id}/configs")
-def api_admin_user_bank_configs(telegram_id: int, auth=Depends(require_full_admin)):
-    """لینک‌های اشتراک «بانک محصول» (کانفیگ‌های ساده، نه سرویس‌های مستقیم-پنل)
-    که تا امروز به این کاربر اختصاص یافته - برای مشاهده/غیرفعال‌سازی/حذف."""
-    _, db, _ = auth
-    user = db.get_user(telegram_id)
-    if not user:
-        raise HTTPException(status_code=404, detail=tr("کاربری با این آیدی عددی پیدا نشد."))
-    rows = db.get_bank_configs_for_user(telegram_id)
-    return [
-        {
-            "id": c["id"],
-            "product_name": c["product_name"] or "نامشخص",
-            "order_id": c["order_display_id"],
-            "link": c["link"],
-            "assigned_at": c["assigned_at"],
-            "expires_at": c["expires_at"] if "expires_at" in c.keys() else None,
-            "is_used": bool(c["is_used"]),
-            "is_disabled": bool(c["is_disabled"]) if "is_disabled" in c.keys() else False,
-            "last_activity": (lambda a: {"action": a["action"], "details": a["details"], "created_at": a["created_at"]} if a else None)(db.get_last_config_activity(c["id"])),
-        }
-        for c in rows
-    ]
-
-
-@app.get("/api/admin/user-configs/{config_id}/activity")
-def api_admin_config_activity(config_id: int, auth=Depends(require_full_admin)):
-    _, db, _ = auth
-    row = db.get_config_by_id(config_id)
-    if not row:
-        raise HTTPException(status_code=404, detail=tr("کانفیگ یافت نشد."))
-    return [dict(a) for a in db.get_config_activity(config_id)]
-
-
-class ConfigDisableBody(BaseModel):
-    disabled: bool
-
-
-@app.post("/api/admin/user-configs/{config_id}/disable")
-def api_admin_config_disable(config_id: int, body: ConfigDisableBody, auth=Depends(require_full_admin)):
-    admin_id, db, _ = auth
-    row = db.get_config_by_id(config_id)
-    if not row:
-        raise HTTPException(status_code=404, detail=tr("کانفیگ یافت نشد."))
-    db.set_config_disabled(config_id, body.disabled)
-    db.log_admin_action(
-        admin_id, "config_disable" if body.disabled else "config_enable",
-        f"کانفیگ #{config_id} کاربر {row['assigned_user_id']} {'غیرفعال' if body.disabled else 'فعال'} شد (مینی‌اپ)",
-        "user", row["assigned_user_id"],
-    )
-    return {"status": "ok", "is_disabled": body.disabled}
-
-
-@app.delete("/api/admin/user-configs/{config_id}")
-def api_admin_config_delete(config_id: int, auth=Depends(require_full_admin)):
-    admin_id, db, _ = auth
-    row = db.admin_delete_bank_config(config_id)
-    if not row:
-        raise HTTPException(status_code=404, detail=tr("کانفیگ یافت نشد."))
-    db.log_admin_action(
-        admin_id, "config_delete_admin",
-        f"کانفیگ #{config_id} کاربر {row['assigned_user_id']} حذف شد (مینی‌اپ)",
-        "user", row["assigned_user_id"],
-    )
-    return {"status": "ok"}
-
-
-@app.get("/api/admin/users/{telegram_id}/custom-configs")
-def api_admin_user_custom_configs(telegram_id: int, auth=Depends(require_full_admin)):
-    """سرویس‌های مستقیم-پنل (کانفیگ شخصی/خرید مستقیم) این کاربر - معادل چیزی
-    که پیش‌تر فقط از پنل وب مستقل (admin_panel) در دسترس بود."""
-    _, db, _ = auth
-    user = db.get_user(telegram_id)
-    if not user:
-        raise HTTPException(status_code=404, detail=tr("کاربری با این آیدی عددی پیدا نشد."))
-    configs = db.get_custom_configs_for_user(telegram_id)
-    return [
-        {
-            "id": c["id"],
-            "username": c["username"],
-            "display_name": c["display_name"] or c["username"],
-            "volume_gb": c["volume_gb"],
-            "duration_days": c["duration_days"],
-            "subscription_url": c["subscription_url"],
-            "created_at": c["created_at"],
-            "expires_at": c["expires_at"],
-            "is_test": c["source"] == "test",
-            "enabled": (c["enabled"] if "enabled" in c.keys() else 1) == 1,
-        }
-        for c in configs
-    ]
-
-
-def _admin_custom_config_or_404(db: Database, custom_config_id: int):
-    cc = db.get_custom_config_by_id(custom_config_id)
-    if not cc:
-        raise HTTPException(status_code=404, detail=tr("کانفیگ یافت نشد."))
-    return cc
-
-
-@app.post("/api/admin/custom-configs/{custom_config_id}/toggle")
-async def api_admin_custom_config_toggle(custom_config_id: int, auth=Depends(require_full_admin)):
-    admin_id, db, _ = auth
-    cc = _admin_custom_config_or_404(db, custom_config_id)
-    if cc["source"] == "test":
-        raise HTTPException(status_code=403, detail=tr("این قابلیت برای کانفیگ تست در دسترس نیست."))
-    new_enabled = not ((cc["enabled"] if "enabled" in cc.keys() else 1) == 1)
-    server = db.get_panel_server(cc["panel_server_id"]) if cc["panel_server_id"] else None
-    if not server or not server["is_active"]:
-        raise HTTPException(status_code=409, detail=tr("سرور پنل مربوط به این سرویس یافت نشد یا غیرفعال است."))
-    try:
-        provider = get_provider(server)
-        await provider.set_enabled(cc["username"], new_enabled)
-    except PanelError as e:
-        raise HTTPException(status_code=502, detail=tr(f"ناموفق بود: {e}"))
-    db.set_custom_config_enabled(cc["id"], cc["user_id"], new_enabled)
-    db.add_custom_config_history(cc["id"], "toggle", f"{'فعال' if new_enabled else 'غیرفعال'} شد (ادمین - مینی‌اپ)")
-    db.log_admin_action(
-        admin_id, "custom_config_toggle",
-        f"سرویس «{cc['username']}» کاربر {cc['user_id']} {'فعال' if new_enabled else 'غیرفعال'} شد (مینی‌اپ)",
-        "user", cc["user_id"],
-    )
-    return {"status": "ok", "enabled": new_enabled}
-
-
-@app.delete("/api/admin/custom-configs/{custom_config_id}")
-async def api_admin_custom_config_delete(custom_config_id: int, auth=Depends(require_full_admin)):
-    admin_id, db, _ = auth
-    cc = _admin_custom_config_or_404(db, custom_config_id)
-    if cc["panel_server_id"]:
-        server = db.get_panel_server(cc["panel_server_id"])
-        if server:
-            try:
-                provider = get_provider(server)
-                await provider.delete_user(cc["username"])
-            except Exception:
-                logging.getLogger("miniapp").exception(
-                    "حذف کاربر «%s» از پنل سرور #%s ناموفق بود؛ در هر صورت از دیتابیس حذف می‌شود.",
-                    cc["username"], cc["panel_server_id"],
-                )
-    from multi_target import delete_linked_panel_users
-    await delete_linked_panel_users(db, custom_config_id)
-    db.delete_owned_custom_config(custom_config_id, cc["user_id"])
-    db.log_admin_action(
-        admin_id, "custom_config_delete_admin",
-        f"سرویس «{cc['username']}» کاربر {cc['user_id']} حذف شد (مینی‌اپ)",
-        "user", cc["user_id"],
-    )
-    return {"status": "ok"}
-
-
-class BroadcastExpiredSend(BaseModel):
-    text: str
-
-
-@app.post("/api/admin/users/broadcast-expired")
-async def api_admin_broadcast_expired(body: BroadcastExpiredSend, tenant: Tenant = Depends(get_tenant), auth=Depends(require_full_admin)):
-    admin_id, db, _ = auth
-    text = (body.text or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail=tr("متن پیام خالی است."))
-    user_ids = db.get_expired_user_ids()
-    success, failed = 0, 0
-    async with aiohttp.ClientSession() as session:
-        for uid in user_ids:
-            try:
-                async with session.post(
-                    f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                    json={"chat_id": uid, "text": text},
-                ) as resp:
-                    if resp.status == 200:
-                        success += 1
-                    else:
-                        failed += 1
-            except Exception:
-                failed += 1
-    db.log_admin_action(
-        admin_id, "broadcast_expired",
-        f"پیام گروهی به {len(user_ids)} کاربر منقضی‌شده ارسال شد | موفق: {success} | ناموفق: {failed} (مینی‌اپ)",
-    )
-    return {"status": "ok", "total": len(user_ids), "success": success, "failed": failed}
-
-
-class BroadcastAllSend(BaseModel):
-    text: str
-
-
-@app.post("/api/admin/users/broadcast-all")
-async def api_admin_broadcast_all(body: BroadcastAllSend, tenant: Tenant = Depends(get_tenant), auth=Depends(require_full_admin)):
-    """پیام همگانی واقعی: برخلاف broadcast-expired که فقط کاربران منقضی‌شده را
-    هدف می‌گیرد، این یکی معادل «پیام همگانی» پنل وب است و به همه‌ی کاربران بات
-    (چه فعال چه منقضی) ارسال می‌شود. با Semaphore هم‌زمان (نه صف کند تک‌به‌تک)
-    ارسال می‌کند تا برای بات‌های پرکاربر هم در زمان معقول تمام شود."""
-    admin_id, db, _ = auth
-    text = (body.text or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail=tr("متن پیام خالی است."))
-    if len(text) > 4000:
-        raise HTTPException(status_code=400, detail=tr("متن پیام بیش از حد طولانی است."))
-    user_ids = db.get_all_user_ids()
-    sem = asyncio.Semaphore(20)
-    counters = {"success": 0, "failed": 0}
-    async with aiohttp.ClientSession() as session:
-        async def _send(uid):
-            async with sem:
-                try:
-                    async with session.post(
-                        f"https://api.telegram.org/bot{tenant.bot_token}/sendMessage",
-                        json={"chat_id": uid, "text": text},
-                    ) as resp:
-                        counters["success" if resp.status == 200 else "failed"] += 1
-                except Exception:
-                    counters["failed"] += 1
-        await asyncio.gather(*[_send(uid) for uid in user_ids])
-    db.log_admin_action(
-        admin_id, "broadcast",
-        f"پیام همگانی به {len(user_ids)} کاربر ارسال شد | موفق: {counters['success']} | ناموفق: {counters['failed']} (مینی‌اپ)",
-    )
-    return {"status": "ok", "total": len(user_ids), "success": counters["success"], "failed": counters["failed"]}
-
-
-# ---------------------------------------------------------------------------
-# لاگ فعالیت ادمین (audit log)
-# ---------------------------------------------------------------------------
-
-@app.get("/api/admin/logs")
-def api_admin_logs(limit: int = 50, offset: int = 0, admin_id: int = None, auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    limit = max(1, min(limit, 100))
-    rows, total = db.get_admin_logs(limit=limit, offset=offset, admin_id=admin_id)
-    logs = []
-    for r in rows:
-        admin_user = db.get_user(r["admin_id"])
-        logs.append({
-            "id": r["id"],
-            "admin_id": r["admin_id"],
-            "admin_name": (admin_user["first_name"] if admin_user else "") or str(r["admin_id"]),
-            "action": r["action"],
-            "details": r["details"],
-            "created_at": r["created_at"],
-        })
-    return {"logs": logs, "total": total, "limit": limit, "offset": offset}
-
-
-@app.get("/api/admin/logs/admins")
-def api_admin_logs_admin_list(auth=Depends(require_senior_admin)):
-    _, db, _ = auth
-    admins = db.list_admins_with_roles()
-    out = []
-    for a in admins:
-        u = db.get_user(a["telegram_id"])
-        out.append({
-            "telegram_id": a["telegram_id"],
-            "role": a["role"],
-            "name": (u["first_name"] if u else "") or "",
-        })
-    return {"admins": out}
-
-
-
-@app.get("/api/admin/wallet/lookup")
-def api_admin_wallet_lookup(telegram_id: int, auth=Depends(require_full_admin)):
-    _, db, _ = auth
-    user = db.get_user(telegram_id)
-    if not user:
-        raise HTTPException(status_code=404, detail=tr("کاربری با این آیدی عددی پیدا نشد."))
-    return {
-        "user_name": user["first_name"] or "",
-        "username": user["username"] or "",
-        "wallet_credit": db.get_wallet_credit(telegram_id),
-    }
-
-
-class WalletAdjust(BaseModel):
-    telegram_id: int
-    amount: int  # مثبت = افزایش، منفی = کاهش
-
-
-@app.post("/api/admin/wallet/adjust")
-def api_admin_adjust_wallet(body: WalletAdjust, auth=Depends(require_full_admin)):
-    admin_id, db, _ = auth
-    if body.amount == 0:
-        raise HTTPException(status_code=400, detail=tr("مقدار تغییر نمی‌تواند صفر باشد."))
-    user = db.get_user(body.telegram_id)
-    if not user:
-        raise HTTPException(status_code=404, detail=tr("کاربری با این آیدی عددی پیدا نشد."))
-    db.add_wallet_credit(body.telegram_id, body.amount, "admin_adjust", f"تنظیم دستی توسط ادمین {admin_id}")
-    new_balance = db.get_wallet_credit(body.telegram_id)
-    db.log_admin_action(
-        admin_id, "wallet_adjust",
-        f"کاربر {body.telegram_id} ({user['first_name'] or ''}) | تغییر: {body.amount:+} | موجودی جدید: {new_balance}",
-    )
-    return {
-        "status": "ok",
-        "user_name": user["first_name"] or "",
-        "new_balance": new_balance,
-    }
-
-
-# ---------------------------------------------------------------------------
-# دریافت یک کانفیگ رندوم آزاد (ادمین)
-# ---------------------------------------------------------------------------
-
-@app.post("/api/admin/products/{product_id}/take-random-config")
-def api_admin_take_random_config(product_id: int, auth=Depends(require_bank_admin)):
-    tg_id, db, _ = auth
-    if not db.get_product(product_id):
-        raise HTTPException(status_code=404, detail=tr("محصول یافت نشد."))
-    result = db.admin_take_random_config(product_id, tg_id)
-    if not result:
-        raise HTTPException(status_code=400, detail=tr("کانفیگ آزادی برای این محصول موجود نیست."))
-    return result
-
-
-# ---------------------------------------------------------------------------
-# بکاپ و بازیابی دیتابیس (فقط مالک اصلی همین مستأجر)
-# ---------------------------------------------------------------------------
-
-@app.post("/api/admin/backup/create")
-async def api_admin_backup_create(auth=Depends(require_owner)):
-    tg_id, db, tenant = auth
-    backup_dir = os.path.join(os.path.dirname(os.path.abspath(db.db_path)), "backups")
-    backup_path = create_backup(db.db_path, backup_dir, keep=14)
-    if not backup_path:
-        raise HTTPException(status_code=404, detail=tr("فایل دیتابیس پیدا نشد."))
-
-    filename = os.path.basename(backup_path)
-    with open(backup_path, "rb") as f:
-        file_bytes = f.read()
-
-    form = aiohttp.FormData()
-    form.add_field("chat_id", str(tg_id))
-    form.add_field("caption", "🗄 بکاپ فوری دیتابیس")
-    form.add_field("document", file_bytes, filename=filename, content_type="application/octet-stream")
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"https://api.telegram.org/bot{tenant.bot_token}/sendDocument", data=form
-            ) as resp:
-                data = await resp.json()
-    except Exception:
-        raise HTTPException(status_code=502, detail=tr("ارسال فایل بکاپ به تلگرام ناموفق بود. دوباره تلاش کن."))
-
-    if not data.get("ok"):
-        raise HTTPException(status_code=502, detail=f"{tr('ارسال فایل بکاپ ناموفق بود:')} {data.get('description', '')}")
-
-    db.log_admin_action(tg_id, "backup_create", "دریافت بکاپ فوری از طریق میان‌اپ")
-    return {"status": "ok", "filename": filename}
-
-
-@app.post("/api/admin/backup/restore")
-async def api_admin_backup_restore(file: UploadFile = File(...), auth=Depends(require_owner)):
-    _, db, _ = auth
-    if not file.filename or not file.filename.lower().endswith((".db", ".sqlite", ".sqlite3")):
-        raise HTTPException(status_code=400, detail=tr("فایل باید پسوند .db یا .sqlite داشته باشد."))
-
-    tmp_dir = tempfile.mkdtemp(prefix="restore_")
-    tmp_path = os.path.join(tmp_dir, "uploaded.db")
-    content = await file.read()
-    with open(tmp_path, "wb") as f:
-        f.write(content)
-
-    if not is_valid_sqlite_db(tmp_path):
-        os.remove(tmp_path)
-        os.rmdir(tmp_dir)
-        raise HTTPException(status_code=400, detail=tr("این فایل یک دیتابیس sqlite معتبر نیست."))
-
-    try:
-        pre_restore_path = await asyncio.to_thread(restore_backup, db, db.db_path, tmp_path)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=tr(f"بازیابی ناموفق بود: {e}"))
-    finally:
+def render_page(data: dict, title: str, settings: Optional[Dict[str, str]] = None) -> Response:
+    nonce = secrets.token_urlsafe(12)
+    html = None
+    custom = ds.pick_template(settings or {})
+    if custom:
         try:
-            os.remove(tmp_path)
-            os.rmdir(tmp_dir)
-        except OSError:
-            pass
-
-    return {"status": "ok", "pre_restore_backup": os.path.basename(pre_restore_path)}
-
-
-@app.post("/api/admin/factory-reset")
-async def api_admin_factory_reset(confirm_phrase: str = Form(""), auth=Depends(require_owner)):
-    """بازگشت این بات (اصلی یا نمایندگی) به وضعیت روز اول نصب: همه‌ی داده‌ی
-    فروشگاه پاک می‌شود، فقط خودِ owner باقی می‌ماند. قبل از پاک‌سازی یک بکاپ
-    ایمنی خودکار گرفته می‌شود."""
-    tg_id, db, tenant = auth
-    if confirm_phrase.strip().upper() != "RESET":
-        raise HTTPException(status_code=400, detail=tr("برای تایید بازگشت به حالت کارخانه، عبارت RESET را دقیقاً وارد کن."))
-
-    backup_dir = os.path.join(os.path.dirname(os.path.abspath(db.db_path)), "backups")
-    safety_backup = await asyncio.to_thread(create_backup, db.db_path, backup_dir, 14)
-
-    await asyncio.to_thread(db.factory_reset)
-
-    db.log_admin_action(tg_id, "factory_reset",
-        f"بازگشت کامل به حالت کارخانه از طریق میان‌اپ؛ بکاپ ایمنی: "
-        f"{os.path.basename(safety_backup) if safety_backup else 'ناموفق'}")
-    return {"status": "ok", "safety_backup": os.path.basename(safety_backup) if safety_backup else None}
+            html = ds.render_page_html(custom, data, title, nonce)
+        except Exception:
+            log.exception("custom sub page template failed; falling back to default")
+    if html is None:
+        html = ds.render_page_html(_load_template(), data, title, nonce)
+    csp = ("default-src 'none'; script-src 'nonce-%s'; style-src 'unsafe-inline' https://fonts.googleapis.com; "
+           "font-src https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self'; "
+           "frame-ancestors 'none'; base-uri 'none'; form-action 'none'" % nonce)
+    return HTMLResponse(html, headers={
+        "content-security-policy": csp, "cache-control": "no-store", "referrer-policy": "no-referrer",
+        "x-content-type-options": "nosniff", "x-robots-tag": "noindex, nofollow",
+    })
 
 
-# ---------------------------------------------------------------------------
-# ابزارهای مشترک ورود/خرید از وب (فروشگاه وب سرویس جداست: web_store/server.py)
-# ---------------------------------------------------------------------------
-def _client_ip(request: Request) -> str:
-    """Use X-Forwarded-For only when request came from a local/private reverse proxy."""
-    peer = request.client.host if request.client else ""
+def _brand(settings: Dict[str, str]) -> str:
+    return (settings.get("dsub_brand") or db.get_setting("brand_name", "") or db.get_setting("shop_name", "")
+            or "ShopVPN").strip()
+
+
+def _query(request: Request) -> Dict[str, str]:
+    return {k: v for k, v in request.query_params.items()}
+
+
+def _forward_query(url: str, query: Dict[str, str]) -> str:
+    extra = {k: v for k, v in query.items() if k not in ("raw", "view")}
+    if not extra:
+        return url
+    from urllib.parse import urlencode
+    return url + ("&" if "?" in url else "?") + urlencode(extra)
+
+
+async def _cc_for(request: Request):
+    """سرویسِ این درخواست؛ روی مسیر /p/{panel_id} فقط به همان پنل محدود می‌شود (None اگر پنل جزو سرویس نیست)."""
+    cc = await asyncio.to_thread(db.ds_get_config_by_token, request.path_params["token"])
+    pid = request.path_params.get("pid")
+    if cc is None or pid is None:
+        return cc
+    return await asyncio.to_thread(ds.scoped_config, db, cc, int(pid))
+
+
+def _scope_suffix(cc) -> str:
+    return f"/p/{int(cc[ds.SCOPE_KEY])}" if ds.is_scoped(cc) else ""
+
+
+async def _page_panels(cc, request: Request) -> List[dict]:
+    """لینک‌های جدای پنل‌ها برای صفحه (فقط سرویس چندپنلی)."""
     try:
-        addr = ipaddress.ip_address(peer)
-        trusted_proxy = addr.is_loopback or addr.is_private or addr.is_link_local
-    except ValueError:
-        trusted_proxy = False
-    forwarded = request.headers.get("x-forwarded-for", "") if trusted_proxy else ""
-    return forwarded.split(",")[0].strip() or peer
-
-
-def _verify_web_turnstile(request: Request) -> None:
-    """Verify Cloudflare Turnstile when configured; no-op for existing installs without keys."""
-    secret = os.getenv("SHOPVPN_TURNSTILE_SECRET_KEY", "").strip()
-    site_key = os.getenv("SHOPVPN_TURNSTILE_SITE_KEY", "").strip()
-    # Keep older deployments working when Turnstile is entirely disabled, but fail
-    # closed if only one half of the configuration is present.
-    if not secret and not site_key:
-        if os.getenv("SHOPVPN_WEB_ALLOW_NO_TURNSTILE", "").strip() == "1":
-            return
-        raise HTTPException(status_code=503, detail=tr("سرویس ورود و خرید از وب موقتاً فعال نیست."))
-    if not secret or not site_key:
-        raise HTTPException(status_code=503, detail=tr("تنظیمات بررسی امنیتی ناقص است؛ کلید عمومی و محرمانه را تنظیم کنید."))
-    token = request.headers.get("x-turnstile-token", "").strip()
-    if not token:
-        raise HTTPException(status_code=403, detail=tr("برای ادامه، بررسی امنیتی را کامل کنید."))
-    import urllib.parse
-    import urllib.request
-    payload = urllib.parse.urlencode({
-        "secret": secret,
-        "response": token,
-        "remoteip": _client_ip(request),
-    }).encode()
-    req = urllib.request.Request("https://challenges.cloudflare.com/turnstile/v0/siteverify", data=payload, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-        if not result.get("success"):
-            raise HTTPException(status_code=403, detail=tr("بررسی امنیتی ناموفق بود؛ دوباره تلاش کنید."))
-    except HTTPException:
-        raise
+        return await asyncio.to_thread(ds.panel_page_links, db, cc, request.path_params["token"])
     except Exception:
-        logging.getLogger("web_auth").warning("Turnstile verification unavailable", exc_info=True)
-        raise HTTPException(status_code=503, detail=tr("سرویس بررسی امنیتی موقتاً در دسترس نیست."))
+        log.exception("panel links failed")
+        return []
 
 
-@app.on_event("startup")
-def _log_turnstile_mode():
-    log = logging.getLogger("web_store")
-    site = os.getenv("SHOPVPN_TURNSTILE_SITE_KEY", "").strip()
-    secret = os.getenv("SHOPVPN_TURNSTILE_SECRET_KEY", "").strip()
-    if site and secret:
-        log.info("Turnstile enabled")
-    elif not site and not secret:
-        if os.getenv("SHOPVPN_WEB_ALLOW_NO_TURNSTILE", "").strip() == "1":
-            log.warning("Turnstile bypass mode (ALLOW_NO_TURNSTILE=1); do not use in production")
-        else:
-            log.error("Turnstile keys missing and bypass off: web login/checkout will return 503")
+async def _linked_panel_uris(cc, query: Dict[str, str], ua: str, ttl: int) -> List[str]:
+    """کانفیگ‌های پنل‌های اضافه‌ی همین سرویس (محصول چندپنلی)؛ فقط وقتی ساب اختصاصی روشن است."""
+    if ds.is_scoped(cc):
+        return []
+    try:
+        links = await asyncio.to_thread(db.panel_links_for_config, cc["id"])
+    except Exception:
+        return []
+    if not links:
+        return []
+    own_page = {e["panel_id"] for e in await asyncio.to_thread(ds.panel_entries, db, cc)
+                if e["panel_type"] in ds.PANEL_DSUB_REQUIRED_TYPES}
+    links = [l for l in links if int(l["panel_server_id"]) not in own_page]
+    if not links:
+        return []
+
+    async def one(link):
+        # فرمت کلاینت (Clash/sing-box/JSON) قابل ادغام نیست؛ پنل‌های اضافه همیشه به‌صورت لیست لینک گرفته می‌شوند.
+        try:
+            up = await cache.get(_forward_query(link["subscription_url"], query), PAGE_UA, ttl)
+        except Exception as exc:
+            log.warning("linked panel fetch failed cc=%s link=%s: %s", cc["id"], link["id"], type(exc).__name__)
+            return []
+        uris = ds.extract_uris(up.body) if up.status == 200 and up.body else []
+        if not uris:
+            log.warning("linked panel returned no configs cc=%s link=%s status=%s", cc["id"], link["id"], up.status)
+        return uris
+
+    out, seen = [], set()
+    for part in await asyncio.gather(*[one(l) for l in links]):
+        for uri in part:
+            if uri not in seen:
+                seen.add(uri)
+                out.append(uri)
+    return out
+
+
+async def _mergeable_primary(up, upstream_url: str, ttl: int, extra_uris, fetcher=None) -> "Upstream":
+    """اگر کلاینت فرمت غیرلینکی (Clash/JSON) خواسته و سرویس چندپنلی است، ساب پنل اصلی هم به‌صورت لیست لینک گرفته می‌شود
+    تا ادغام با پنل‌های اضافه ممکن باشد (وگرنه فقط پنل اول برمی‌گشت)."""
+    if not extra_uris or up is None or up.status != 200 or not up.body:
+        return up
+    if ds.parse_body(up.body).kind == "uris" or ds.extract_uris(up.body):
+        return up
+    try:
+        alt = await cache.get(upstream_url, PAGE_UA, ttl, fetcher=fetcher)
+    except Exception:
+        return up
+    if alt.status == 200 and alt.body and ds.extract_uris(alt.body):
+        return Upstream(alt.status, dict(up.headers), alt.body, fresh=alt.fresh, stale=alt.stale)
+    return up
+
+
+_WUI_LABELS = {"wireguard": "WireGuard", "amneziawg": "AmneziaWG", "openvpn": "OpenVPN"}
+_WUI_TTL = 30
+_wui_cache: Dict[tuple, tuple] = {}
+
+
+async def _wui_server(cc):
+    """ردیف پنل این سرویس اگر W-UI باشد، وگرنه None."""
+    try:
+        server = await asyncio.to_thread(panel_resync._server_for, db, cc)
+    except Exception:
+        return None
+    if server and str(server["panel_type"] or "").lower() == "wui":
+        return server
+    return None
+
+
+def _merge_files(base: List[dict], extra: List[dict]) -> List[dict]:
+    offset = max([f["index"] for f in base], default=0)
+    return list(base) + [dict(f, index=offset + f["index"]) for f in extra]
+
+
+async def _wui_bundle(cc, ttl: float = _WUI_TTL) -> Optional[dict]:
+    """فایل‌های WireGuard/AmneziaWG/OpenVPN و مصرف یک سرویس W-UI؛ None یعنی سرویس W-UI نیست."""
+    server = await _wui_server(cc)
+    if server is None:
+        return None
+    cid = int(cc["id"])
+    # مقصدهای انتخاب‌شده‌ی محصول باید در تمام مسیرهای اشتراک نیز اعمال شوند.
+    # در غیر این صورت W-UI با مجموعه‌ی interfaceهای قالب/کاربر نمونه‌ی پنل
+    # کار می‌کند و ZIP تمام حساب‌های آن مجموعه را برمی‌گرداند.
+    try:
+        effective_server = panel_resync._effective_server(server, cc)
+    except Exception:
+        effective_server = server
+    target_snapshot = cc["panel_target_config"] if "panel_target_config" in cc.keys() else None
+    key = (cid, str(cc["username"]), str(target_snapshot or ""))
+    hit = _wui_cache.get(key)
+    now = time.monotonic()
+    if hit and now - hit[0] < ttl:
+        return hit[1]
+    stale = hit[1] if hit and now - hit[0] < STALE_MAX_AGE else None
+    has_product_snapshot = bool(target_snapshot)
+
+    def _fail(part: str, exc: Exception):
+        # متن خطا هم لاگ می‌شود تا علت واقعی (کد HTTP، زیپ خالی، توکن...) از لاگ دیده شود
+        log.warning("wui %s failed cc=%s: %s: %s", part, cid, type(exc).__name__, str(exc)[:300])
+
+    try:
+        provider = get_provider(effective_server)
+    except Exception as exc:
+        _fail("provider", exc)
+        return {"wg": [], "ovpn": [], "vpn": [], "info": {}, "live": False}
+
+    # W-UI's /clients/{id}/configs endpoint intentionally returns every
+    # account currently attached to that client. Reconcile the client to
+    # the product snapshot first, otherwise the first/sample user's panel
+    # template can leak additional interfaces into the subscription ZIP.
+    # Legacy services without a saved product snapshot remain untouched.
+    # اگر همگام‌سازی شکست بخورد، فایل‌ها/ورودی‌های حساب نمایش داده نمیشوند (ممکن است interface اضافه داشته باشند)،
+    # ولی مصرف/انقضا همچنان نشان داده میشود؛ قبلاً یک خطا کل صفحه را خالی میکرد.
+    synced = True
+    if getattr(provider, "resync_needs_snapshot", False) and panel_resync._snapshot_ok(provider, cc):
+        try:
+            await provider.resync_user_template(cc["username"])
+        except Exception as exc:
+            _fail("resync", exc)
+            synced = False
+
+    async def _part(name, coro, default):
+        try:
+            return await coro, True
+        except Exception as exc:
+            _fail(name, exc)
+            return default, False
+
+    info, info_ok = await _part("info", provider.get_sub_info(cc["username"]), {})
+    if synced:
+        files, files_ok = await _part("configs", provider.get_config_files(cc["username"]), [])
+        vpn, vpn_ok = await _part("logins", provider.get_login_profiles(cc["username"]),
+                                  list(stale.get("vpn") or []) if stale and not has_product_snapshot else [])
     else:
-        log.error("Turnstile config incomplete: set both SITE_KEY and SECRET_KEY")
+        files, files_ok, vpn, vpn_ok = [], False, [], False
+    if not (info_ok or files_ok or vpn_ok):
+        # A stale bundle is unsafe when this service has a product snapshot:
+        # it may contain interfaces that the product did not purchase.
+        if stale and not has_product_snapshot:
+            return stale
+        return {"wg": [], "ovpn": [], "vpn": [], "info": {}, "live": False}
+    if not info_ok and stale:
+        info = stale.get("info") or {}
+    wg, ovpn = [], []
+    for item in files:
+        label = _WUI_LABELS.get(item["kind"])
+        if not label:
+            continue
+        target = ovpn if item["kind"] == "openvpn" else wg
+        target.append({"index": len(target) + 1, "remark": f"{item['filename'].rsplit('.', 1)[0]} ({label})",
+                       "filename": item["filename"], "profile": item["text"]})
+    bundle = {"wg": wg, "ovpn": ovpn, "vpn": vpn, "info": info, "live": bool(info_ok or files_ok)}
+    if len(_wui_cache) > 2000:
+        _wui_cache.clear()
+    _wui_cache[key] = (now, bundle)
+    return bundle
 
 
-# Register web-store API routes before the catch-all static mount.
-from web_store.routes import router as web_router
-app.include_router(web_router)
+_dns_cache: Dict[tuple, tuple] = {}
 
-app.mount("/", NoCacheStaticFiles(directory=STATIC_DIR, html=True), name="static")
-#‍​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌​​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​‍
-# 		   		 		  	 	 		 		   		  	 	 		 			  		 				 			  	 
+
+async def _dns_server(cc):
+    try:
+        server = await asyncio.to_thread(panel_resync._server_for, db, cc)
+    except Exception:
+        return None
+    if server and str(server["panel_type"] or "").lower() == "doctordns":
+        return server
+    return None
+
+
+async def _dns_bundle(cc, ttl: float = _WUI_TTL) -> Optional[dict]:
+    """داده‌ی سرویس Doctor DNS؛ None یعنی سرویس DNS نیست."""
+    server = await _dns_server(cc)
+    if server is None:
+        return None
+    cid = int(cc["id"])
+    key = (cid, str(cc["username"]))
+    hit = _dns_cache.get(key)
+    now = time.monotonic()
+    if hit and now - hit[0] < ttl:
+        return hit[1]
+    try:
+        bundle = dict(await get_provider(server).get_dns_bundle(cc["username"]), live=True)
+    except Exception as exc:
+        log.warning("dns bundle failed cc=%s: %s", cid, type(exc).__name__)
+        if hit and now - hit[0] < STALE_MAX_AGE:
+            return hit[1]
+        return {"servers": [], "ips": [], "max_ips": 0, "wg": [], "info": {}, "live": False}
+    for pos, item in enumerate(bundle["wg"], start=1):
+        item["index"] = pos
+    if len(_dns_cache) > 2000:
+        _dns_cache.clear()
+    _dns_cache[key] = (now, bundle)
+    return bundle
+
+
+async def _wg_files(cc) -> List[dict]:
+    base = await asyncio.to_thread(ds.wg_files_for_config, db, cc["id"], cc)
+    wui = await _wui_bundle(cc)
+    if wui:
+        return _merge_files(base, wui["wg"])
+    dns = await _dns_bundle(cc)
+    return _merge_files(base, dns["wg"]) if dns else base
+
+
+async def _dns_page(request: Request, cc, dns: dict, settings, brand: str, page_url: str, ttl: float) -> Response:
+    pool_info = await asyncio.to_thread(ds.quota_info_for_config, db, cc["id"])
+    info = pool_info or dns["info"]
+    if dns.get("live") and info and not ds.is_scoped(cc):
+        try:
+            await asyncio.to_thread(db.ds_record_usage, cc["id"], (info.get("upload") or 0) + (info.get("download") or 0))
+        except Exception:
+            log.exception("usage snapshot failed")
+    wg = _merge_files(await asyncio.to_thread(ds.wg_files_for_config, db, cc["id"], cc), dns["wg"])
+    series = None
+    if settings["dsub_show_chart"] == "1" and not ds.is_scoped(cc):
+        now = int(time.time())
+        points = await asyncio.to_thread(db.ds_usage_points, cc["id"], now - 31 * 86400)
+        series = ds.build_series(points, now)
+    uris = list(await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc))
+    uris.extend(await _linked_panel_uris(cc, {}, PAGE_UA, ttl))
+    data = ds.build_page_data(cc, info, uris, settings, brand, page_url or str(request.url).split("?")[0],
+                              series, wg=wg, dns=dns, panels=await _page_panels(cc, request))
+    data["live"] = bool(dns.get("live"))
+    await _log(cc["id"], request, "page", 200, settings)
+    return render_page(data, f"{brand} · اشتراک {ds.service_name(cc)}".strip(" ·"), settings)
+
+
+async def _ovpn_files(cc) -> List[dict]:
+    base = await asyncio.to_thread(ds.ovpn_files_for_config, db, cc["id"], cc)
+    wui = await _wui_bundle(cc)
+    return _merge_files(base, wui["ovpn"]) if wui else base
+
+
+async def _wui_page(request: Request, cc, wui: dict, settings, brand: str, page_url: str, ttl: float) -> Response:
+    pool_info = await asyncio.to_thread(ds.quota_info_for_config, db, cc["id"])
+    info = pool_info or wui["info"]
+    if wui.get("live") and info and not ds.is_scoped(cc):
+        try:
+            await asyncio.to_thread(db.ds_record_usage, cc["id"], (info.get("upload") or 0) + (info.get("download") or 0))
+        except Exception:
+            log.exception("usage snapshot failed")
+    wg = _merge_files(await asyncio.to_thread(ds.wg_files_for_config, db, cc["id"], cc), wui["wg"])
+    ovpn = _merge_files(await asyncio.to_thread(ds.ovpn_files_for_config, db, cc["id"], cc), wui["ovpn"])
+    uris = list(await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc))
+    uris.extend(await _linked_panel_uris(cc, {}, PAGE_UA, ttl))
+    series = None
+    if settings["dsub_show_chart"] == "1" and not ds.is_scoped(cc):
+        now = int(time.time())
+        points = await asyncio.to_thread(db.ds_usage_points, cc["id"], now - 31 * 86400)
+        series = ds.build_series(points, now)
+    data = ds.build_page_data(cc, info, uris, settings, brand, page_url or str(request.url).split("?")[0],
+                              series, ovpn=ovpn, wg=wg, vpn=wui.get("vpn"), panels=await _page_panels(cc, request))
+    data["live"] = bool(wui.get("live"))
+    await _log(cc["id"], request, "page", 200, settings)
+    return render_page(data, f"{brand} · اشتراک {ds.service_name(cc)}".strip(" ·"), settings)
+
+
+async def _log(config_id, request: Request, kind: str, status: int, settings: Dict[str, str]):
+    if settings.get("dsub_log_enabled") != "1":
+        return
+    try:
+        await asyncio.to_thread(db.ds_log_access, config_id, client_ip(request),
+                                request.headers.get("user-agent", ""), kind, status)
+    except Exception:
+        log.exception("access log failed")
+
+
+async def _snapshot_usage(cc, headers: Dict[str, str]):
+    if ds.is_scoped(cc):
+        return
+    info = ds.parse_userinfo({k.lower(): v for k, v in headers.items()}.get("subscription-userinfo"))
+    if info:
+        try:
+            await asyncio.to_thread(db.ds_record_usage, cc["id"],
+                                    (info.get("upload") or 0) + (info.get("download") or 0))
+        except Exception:
+            log.exception("usage snapshot failed")
+
+
+# ---------------------------------------------------------------------------
+# /s/{token}
+# ---------------------------------------------------------------------------
+async def _profile(request: Request):
+    """پروفایل ساب اختصاصیِ دامنه‌ای که درخواست روی آن آمده (None = ساب مرکزی)."""
+    host = request.headers.get("host", "")
+    return await asyncio.to_thread(ds.profile_for_host, db, host)
+
+
+async def sub_endpoint(request: Request) -> Response:
+    prof = await _profile(request)
+    ip = client_ip(request)
+    if not limiter.allow("ok:" + ip, RATE_OK):
+        return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
+    token = request.path_params["token"]
+    cc = await _cc_for(request)
+    is_node_subscription = bool(cc and isinstance(cc, dict) and cc.get("is_node_subscription"))
+    if cc is None or str(cc["status"] or "").lower() == "deleted" or (
+            not is_node_subscription and not str(cc["subscription_url"] or "").startswith(("http://", "https://"))):
+        if not limiter.allow("miss:" + ip, RATE_MISS):
+            return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
+        return _not_found()
+
+    settings = await asyncio.to_thread(ds.all_settings, db, prof)
+    enabled = ds.is_enabled(db, prof)
+    query = _query(request)
+    ua = request.headers.get("user-agent", "")
+    try:
+        ttl = max(0, min(600, int(settings["dsub_cache_ttl"] or 30)))
+    except ValueError:
+        ttl = 30
+
+    # Node-only products have no upstream panel subscription URL. Their dedicated
+    # token serves the active SSH/OpenVPN/WireGuard accounts attached to the node bundle.
+    if is_node_subscription:
+        info = await asyncio.to_thread(db.node_subscription_quota_info, int(cc["node_subscription_id"])) or {}
+        uris = await asyncio.to_thread(ds.ssh_uris_for_config, db, int(cc["id"]), cc)
+        ovpn_files = await asyncio.to_thread(ds.ovpn_files_for_config, db, int(cc["id"]), cc)
+        wg_files = await asyncio.to_thread(ds.wg_files_for_config, db, int(cc["id"]), cc)
+        page_url = ds.link_for_token(db, token, None) if ds.base_url(db) else ""
+        if settings.get("dsub_web_page") == "1" and ds.wants_page(ua, request.headers.get("accept", ""), query):
+            series = None
+            if settings.get("dsub_show_chart") == "1":
+                points = await asyncio.to_thread(db.ds_usage_points, int(cc["id"]), int(time.time()) - 31 * 86400)
+                series = ds.build_series(points, int(time.time()))
+            data = ds.build_page_data(cc, info, uris, settings, _brand(settings), page_url or str(request.url).split("?")[0],
+                                      series, ovpn=ovpn_files, wg=wg_files, panels=[])
+            data["live"] = True
+            await _log(int(cc["id"]), request, "page", 200, settings)
+            return render_page(data, f"{_brand(settings)} · اشتراک {ds.service_name(cc)}".strip(" ·"), settings)
+        payload = ds.merge_extra_uris(b"", uris)
+        if payload is None:
+            payload = b""
+        headers = {"cache-control": "no-store"}
+        if info:
+            headers["subscription-userinfo"] = "; ".join(
+                f"{key}={int(info.get(key) or 0)}" for key in ("upload", "download", "total", "expire") if key in info)
+        title = ds.render_template(settings.get("dsub_profile_title") or "", name=ds.service_name(cc),
+                                   user=cc.get("username", ""), brand=_brand(settings)).strip()
+        if title:
+            headers["profile-title"] = ds.b64_header(title[:80])
+        if page_url and settings.get("dsub_web_page") == "1":
+            headers["profile-web-page-url"] = page_url
+        if (settings.get("dsub_notice") or "").strip():
+            headers["announce"] = ds.b64_header(settings["dsub_notice"].strip()[:200])
+        if settings.get("dsub_support_url"):
+            headers["support-url"] = settings["dsub_support_url"]
+        await _log(int(cc["id"]), request, "sub", 200, settings)
+        return _raw(200, headers, "text/plain; charset=utf-8", payload)
+
+    upstream_url = _forward_query(cc["subscription_url"], query)
+
+    # --- حالت خاموش: عبور خام بدون هیچ تغییری (لینک‌های قبلی کاربران قطع نمی‌شوند)
+    if not enabled:
+        try:
+            up = await cache.get(upstream_url, ua, ttl, fetcher=_config_fetcher(cc))
+        except Exception:
+            up = None
+        extra_uris = await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc)
+        extra_uris = list(extra_uris) + await _linked_panel_uris(cc, query, ua, ttl)
+        up = await _mergeable_primary(up, upstream_url, ttl, extra_uris, fetcher=_config_fetcher(cc))
+        if extra_uris:
+            primary_ok = up is not None and up.status == 200 and bool(up.body)
+            merged = ds.merge_extra_uris(up.body if primary_ok else b"", extra_uris)
+            if merged is not None:
+                headers = _clean_headers(
+                    {k: v for k, v in up.headers.items() if k in ds._PASS_HEADERS} if primary_ok else {})
+                headers["cache-control"] = "no-store"
+                await _log(cc["id"], request, "sub", 200, settings)
+                return _raw(200, headers, "text/plain; charset=utf-8", merged)
+        if up is None:
+            return PlainTextResponse("Upstream unavailable", status_code=502)
+        headers = _clean_headers({k: v for k, v in up.headers.items() if k in ds._PASS_HEADERS or k == "content-type"})
+        ctype = headers.pop("content-type", "text/plain; charset=utf-8")
+        headers["cache-control"] = "no-store"
+        await _log(cc["id"], request, "sub", up.status, settings)
+        return _raw(up.status, headers, ctype, up.body)
+
+    brand = _brand(settings)
+    page_url = ds.link_for_token(db, token, prof) + _scope_suffix(cc) if ds.base_url(db, prof) else ""
+
+    # --- صفحه‌ی وب برای مرورگر
+    if settings["dsub_web_page"] == "1" and ds.wants_page(ua, request.headers.get("accept", ""), query):
+        wui = await _wui_bundle(cc, ttl)
+        if wui is not None:
+            return await _wui_page(request, cc, wui, settings, brand, page_url, ttl)
+        dns = await _dns_bundle(cc, ttl)
+        if dns is not None:
+            return await _dns_page(request, cc, dns, settings, brand, page_url, ttl)
+        try:
+            up = await cache.get(_forward_query(cc["subscription_url"], {}), PAGE_UA, ttl, fetcher=_config_fetcher(cc))
+        except Exception:
+            up = Upstream(0, {}, b"", fresh=False)
+        ok = up.status == 200 and bool(up.body)
+        info = ds.parse_userinfo(up.headers.get("subscription-userinfo")) if ok else {}
+        # For combined VPN+SSH products, the shared quota pool is authoritative;
+        # panel headers can otherwise incorrectly show unlimited usage/expiry.
+        pool_info = await asyncio.to_thread(ds.quota_info_for_config, db, cc["id"])
+        if pool_info:
+            info = pool_info
+        uris = ds.extract_uris(up.body) if ok else []
+        if not uris and up.status == 200 and await panel_resync.heal_config(db, cc):
+            try:
+                up = await cache.get(_forward_query(cc["subscription_url"], {}), PAGE_UA, ttl, force=True, fetcher=_config_fetcher(cc))
+            except Exception:
+                pass
+            ok = up.status == 200 and bool(up.body)
+            if ok and not pool_info:
+                info = ds.parse_userinfo(up.headers.get("subscription-userinfo"))
+            uris = ds.extract_uris(up.body) if ok else []
+        if not uris:
+            # تشخیص: چرا هیچ کانفیگی از پنل استخراج نشد؟ (وضعیت، نوع پاسخ و ابتدای بدنه)
+            log.warning("sub-diag: no uris cc=%s url=%s status=%s ok=%s fresh=%s stale=%s ctype=%s len=%s head=%r",
+                        cc["id"], str(cc["subscription_url"])[:80], up.status, ok, up.fresh, up.stale,
+                        (up.headers or {}).get("content-type"), len(up.body or b""),
+                        (up.body or b"")[:160])
+        ovpn_files = await asyncio.to_thread(ds.ovpn_files_for_config, db, cc["id"], cc)
+        wg_files = await asyncio.to_thread(ds.wg_files_for_config, db, cc["id"], cc)
+        uris.extend(await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc))
+        uris.extend(await _linked_panel_uris(cc, {}, PAGE_UA, ttl))
+        if ok and up.fresh:
+            await _snapshot_usage(cc, up.headers)
+        series = None
+        if settings["dsub_show_chart"] == "1":
+            now = int(time.time())
+            points = await asyncio.to_thread(db.ds_usage_points, cc["id"], now - 31 * 86400)
+            series = ds.build_series(points, now)
+        data = ds.build_page_data(cc, info, uris, settings, brand, page_url or str(request.url).split("?")[0],
+                                  series, ovpn=ovpn_files, wg=wg_files, panels=await _page_panels(cc, request))
+        data["live"] = ok
+        await _log(cc["id"], request, "page", 200, settings)
+        return render_page(data, f"{brand} · اشتراک {ds.service_name(cc)}".strip(" ·"), settings)
+
+    dns = await _dns_bundle(cc, ttl)
+    if dns is not None:
+        lines = [f"{'DNS' if k == 'ip' else k.upper()} {s['n']}: {s[k]}"
+                 for s in ds.dns_for_page(dns)["servers"] for k in ("ip", "dot", "doh") if s[k]]
+        extra = list(await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc))
+        extra.extend(await _linked_panel_uris(cc, query, ua, ttl))
+        await _log(cc["id"], request, "sub", 200, settings)
+        return _raw(200, {"cache-control": "no-store"}, "text/plain; charset=utf-8", "\n".join(lines + extra).encode("utf-8"))
+
+    # --- اپ VPN
+    try:
+        up = await cache.get(upstream_url, ua, ttl, fetcher=_config_fetcher(cc))
+    except Exception:
+        up = Upstream(0, {}, b"", fresh=False)
+    if up.status == 200 and not ds.extract_uris(up.body or b"") and await panel_resync.heal_config(db, cc):
+        try:
+            up = await cache.get(upstream_url, ua, ttl, force=True, fetcher=_config_fetcher(cc))
+        except Exception:
+            pass
+    if up.status == 200 and up.fresh:
+        await _snapshot_usage(cc, up.headers)
+    # Keep the VPN client subscription headers consistent with the shared quota
+    # displayed on the web page and in the bot (including the SSH side's usage).
+    pool_info = await asyncio.to_thread(ds.quota_info_for_config, db, cc["id"])
+    if pool_info:
+        up.headers = dict(up.headers)
+        up.headers["subscription-userinfo"] = "; ".join(
+            f"{key}={int(pool_info.get(key) or 0)}"
+            for key in ("upload", "download", "total", "expire") if key in pool_info
+        )
+    extra_uris = await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc)
+    extra_uris = list(extra_uris) + await _linked_panel_uris(cc, query, ua, ttl)
+    up = await _mergeable_primary(up, upstream_url, ttl, extra_uris, fetcher=_config_fetcher(cc))
+    reply = ds.compose_client_reply(up.status, up.headers, up.body, cc, settings, brand, page_url,
+                                    extra_uris=extra_uris)
+    if reply is None:
+        status = 404 if up.status == 404 else 502
+        await _log(cc["id"], request, "sub", status, settings)
+        return PlainTextResponse("Upstream unavailable" if status == 502 else "Not found", status_code=status,
+                                 headers={"cache-control": "no-store"})
+    await _log(cc["id"], request, "sub", 200, settings)
+    headers = _clean_headers(reply.headers)
+    ctype = headers.pop("content-type", "text/plain; charset=utf-8")
+    return _raw(200, headers, ctype, reply.body)
+
+
+# ---------------------------------------------------------------------------
+# /s/{token}/qr.png
+# ---------------------------------------------------------------------------
+def _qr_png(text: str) -> bytes:
+    import qrcode
+    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=8, border=2)
+    qr.add_data(text)
+    qr.make(fit=True)
+    buf = BytesIO()
+    qr.make_image(fill_color="black", back_color="white").save(buf, format="PNG")
+    return buf.getvalue()
+
+
+async def qr_endpoint(request: Request) -> Response:
+    prof = await _profile(request)
+    ip = client_ip(request)
+    if not limiter.allow("ok:" + ip, RATE_OK):
+        return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
+    token = request.path_params["token"]
+    cc = await _cc_for(request)
+    settings = await asyncio.to_thread(ds.all_settings, db, prof)
+    if cc is None or not ds.is_enabled(db, prof) or settings["dsub_show_qr"] != "1":
+        if not limiter.allow("miss:" + ip, RATE_MISS):
+            return PlainTextResponse("Too many requests", status_code=429)
+        return _not_found()
+    idx = request.query_params.get("i")
+    if idx is None:
+        text = ds.link_for_token(db, token, prof) + _scope_suffix(cc)
+    else:
+        try:
+            n = int(idx)
+        except ValueError:
+            return _not_found()
+        if isinstance(cc, dict) and cc.get("is_node_subscription"):
+            uris = await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc)
+        else:
+            try:
+                up = await cache.get(cc["subscription_url"], PAGE_UA, 30)
+            except Exception:
+                return PlainTextResponse("Upstream unavailable", status_code=502)
+            uris = ds.extract_uris(up.body) if up.status == 200 else []
+            if up.status == 200:
+                uris.extend(await asyncio.to_thread(ds.ssh_uris_for_config, db, cc["id"], cc))
+        if not 0 <= n < min(len(uris), 60):
+            return _not_found()
+        text = uris[n]
+    try:
+        png = await asyncio.to_thread(_qr_png, text)
+    except Exception:
+        log.exception("qr generation failed")
+        return PlainTextResponse("QR unavailable", status_code=503)
+    return Response(png, media_type="image/png", headers={"cache-control": "private, max-age=300"})
+
+
+# ---------------------------------------------------------------------------
+# /s/{token}/ovpn/{n}
+# ---------------------------------------------------------------------------
+async def ovpn_endpoint(request: Request) -> Response:
+    prof = await _profile(request)
+    ip = client_ip(request)
+    if not limiter.allow("ok:" + ip, RATE_OK):
+        return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
+    cc = await _cc_for(request)
+    if cc is None or str(cc["status"] or "").lower() == "deleted" or not ds.is_enabled(db, prof):
+        if not limiter.allow("miss:" + ip, RATE_MISS):
+            return PlainTextResponse("Too many requests", status_code=429)
+        return _not_found()
+    files = await _ovpn_files(cc)
+    item = next((f for f in files if f["index"] == request.path_params["n"]), None)
+    if item is None:
+        if not limiter.allow("miss:" + ip, RATE_MISS):
+            return PlainTextResponse("Too many requests", status_code=429)
+        return _not_found()
+    settings = await asyncio.to_thread(ds.all_settings, db, prof)
+    await _log(cc["id"], request, "ovpn", 200, settings)
+    headers = {"cache-control": "no-store", "content-disposition": f'attachment; filename="{item["filename"]}"'}
+    return _raw(200, headers, "application/x-openvpn-profile", item["profile"].encode("utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# /s/{token}/wg/{n}
+# ---------------------------------------------------------------------------
+async def wg_endpoint(request: Request) -> Response:
+    prof = await _profile(request)
+    ip = client_ip(request)
+    if not limiter.allow("ok:" + ip, RATE_OK):
+        return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
+    cc = await _cc_for(request)
+    if cc is None or str(cc["status"] or "").lower() == "deleted" or not ds.is_enabled(db, prof):
+        if not limiter.allow("miss:" + ip, RATE_MISS):
+            return PlainTextResponse("Too many requests", status_code=429)
+        return _not_found()
+    files = await _wg_files(cc)
+    item = next((f for f in files if f["index"] == request.path_params["n"]), None)
+    if item is None:
+        if not limiter.allow("miss:" + ip, RATE_MISS):
+            return PlainTextResponse("Too many requests", status_code=429)
+        return _not_found()
+    settings = await asyncio.to_thread(ds.all_settings, db, prof)
+    await _log(cc["id"], request, "wg", 200, settings)
+    headers = {"cache-control": "no-store", "content-disposition": f'attachment; filename="{item["filename"]}"'}
+    return _raw(200, headers, "application/x-wireguard-profile", item["profile"].encode("utf-8"))
+
+
+async def dns_login_endpoint(request: Request) -> Response:
+    prof = await _profile(request)
+    ip = client_ip(request)
+    if not limiter.allow("ok:" + ip, RATE_OK):
+        return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
+    cc = await _cc_for(request)
+    server = await _dns_server(cc) if cc is not None and str(cc["status"] or "").lower() != "deleted" else None
+    if server is None or not ds.is_enabled(db, prof):
+        if not limiter.allow("miss:" + ip, RATE_MISS):
+            return PlainTextResponse("Too many requests", status_code=429)
+        return _not_found()
+    if not limiter.allow(f"dnslogin:{cc['id']}", 10):
+        return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
+    try:
+        url = await get_provider(server).login_link(cc["username"])
+    except Exception as exc:
+        log.warning("dns login link failed cc=%s: %s", cc["id"], type(exc).__name__)
+        return PlainTextResponse("Upstream unavailable", status_code=502, headers={"cache-control": "no-store"})
+    settings = await asyncio.to_thread(ds.all_settings, db, prof)
+    await _log(cc["id"], request, "dns-login", 302, settings)
+    return RedirectResponse(url, status_code=302, headers={"cache-control": "no-store", "referrer-policy": "no-referrer"})
+
+
+# ---------------------------------------------------------------------------
+# /s/{token}/reveal  (POST)  — مقدار نام‌کاربری/رمز/PSK یک ورودی OpenConnect/L2TP/PPTP/IKEv2
+# ---------------------------------------------------------------------------
+REVEAL_PER_TOKEN = 30   # در دقیقه برای هر لینک
+REVEAL_PER_IP = 60      # در دقیقه برای هر IP
+
+
+def _same_origin(request: Request) -> bool:
+    """فقط درخواست خودِ صفحه: سایت دیگر نمی‌تواند این را بزند (Sec-Fetch-Site/Origin + هدر سفارشی که preflight می‌خواهد)."""
+    if request.headers.get("x-sub-reveal") != "1":
+        return False
+    site = request.headers.get("sec-fetch-site", "")
+    if site:
+        # مرورگرهای جدید: خودِ مرورگر می‌گوید درخواست از کجاست (پشت پروکسی هم جواب می‌دهد)
+        return site in ("same-origin", "none")
+    origin = request.headers.get("origin", "")
+    if origin:
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+        if origin.split("://", 1)[-1].rstrip("/") != host.split(",")[0].strip():
+            return False
+    return True
+
+
+async def vpn_reveal_endpoint(request: Request) -> Response:
+    prof = await _profile(request)
+    ip = client_ip(request)
+    token = request.path_params["token"]
+    if not limiter.allow("ok:" + ip, RATE_OK) or not limiter.allow("rv-ip:" + ip, REVEAL_PER_IP) \
+            or not limiter.allow("rv-tok:" + token, REVEAL_PER_TOKEN):
+        return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
+    if not _same_origin(request):
+        return PlainTextResponse("Forbidden", status_code=403, headers={"cache-control": "no-store"})
+    cc = await _cc_for(request)
+    if cc is None or str(cc["status"] or "").lower() == "deleted" or not ds.is_enabled(db, prof):
+        if not limiter.allow("miss:" + ip, RATE_MISS):
+            return PlainTextResponse("Too many requests", status_code=429)
+        return _not_found()
+    try:
+        body = await request.json()
+        index, what = int(body.get("i")), str(body.get("w"))
+    except Exception:
+        return PlainTextResponse("Bad request", status_code=400, headers={"cache-control": "no-store"})
+    wui = await _wui_bundle(cc)
+    value = ds.vpn_secret((wui or {}).get("vpn"), index, what)
+    if value is None:
+        if not limiter.allow("miss:" + ip, RATE_MISS):
+            return PlainTextResponse("Too many requests", status_code=429)
+        return _not_found()
+    settings = await asyncio.to_thread(ds.all_settings, db, prof)
+    await _log(cc["id"], request, "reveal", 200, settings)
+    return JSONResponse({"v": value}, headers={"cache-control": "no-store", "x-robots-tag": "noindex, nofollow"})
+
+
+# ---------------------------------------------------------------------------
+# /s/{token}/vpn/{n}/ca  (گواهی CA تونل IKEv2؛ عمومی است)
+# ---------------------------------------------------------------------------
+async def vpn_ca_endpoint(request: Request) -> Response:
+    prof = await _profile(request)
+    ip = client_ip(request)
+    if not limiter.allow("ok:" + ip, RATE_OK):
+        return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
+    cc = await _cc_for(request)
+    if cc is None or str(cc["status"] or "").lower() == "deleted" or not ds.is_enabled(db, prof):
+        if not limiter.allow("miss:" + ip, RATE_MISS):
+            return PlainTextResponse("Too many requests", status_code=429)
+        return _not_found()
+    wui = await _wui_bundle(cc)
+    item = ds.vpn_ca_file((wui or {}).get("vpn"), request.path_params["n"])
+    if item is None:
+        if not limiter.allow("miss:" + ip, RATE_MISS):
+            return PlainTextResponse("Too many requests", status_code=429)
+        return _not_found()
+    settings = await asyncio.to_thread(ds.all_settings, db, prof)
+    await _log(cc["id"], request, "vpnca", 200, settings)
+    headers = {"cache-control": "no-store", "content-disposition": f'attachment; filename="{item["filename"]}"'}
+    return _raw(200, headers, "application/x-x509-ca-cert", item["pem"].encode("utf-8"))
+
+
+
+# ---------------------------------------------------------------------------
+# /sub/smart/{token}  (ادغام چند سرویس در یک لینک)
+# ---------------------------------------------------------------------------
+async def smart_endpoint(request: Request) -> Response:
+    prof = await _profile(request)
+    ip = client_ip(request)
+    if not limiter.allow("ok:" + ip, RATE_OK):
+        return PlainTextResponse("Too many requests", status_code=429, headers={"retry-after": "60"})
+    row = await asyncio.to_thread(db.get_smart_subscription, request.path_params["token"])
+    if row is None or db.get_setting("smart_subscription_enabled", "1") != "1":
+        if not limiter.allow("miss:" + ip, RATE_MISS):
+            return PlainTextResponse("Too many requests", status_code=429)
+        return _not_found()
+    try:
+        urls = [u for u in json.loads(row["source_urls_json"]) if str(u).startswith(("http://", "https://"))]
+    except ValueError:
+        urls = []
+    settings = await asyncio.to_thread(ds.all_settings, db, prof)
+    ua = request.headers.get("user-agent", "")
+    ttl = 30
+
+    async def one(url):
+        try:
+            up = await cache.get(url, ua, ttl)
+            return up.status, up.headers, up.body
+        except Exception:
+            return 0, {}, b""
+
+    parts = await asyncio.gather(*[one(u) for u in urls[:20]])
+    body, userinfo, count = ds.merge_smart(list(parts))
+    await _log(None, request, "smart", 200 if count else 502, settings)
+    if not count:
+        return PlainTextResponse("Upstream unavailable", status_code=502)
+    headers = {"cache-control": "no-store"}
+    if userinfo:
+        headers["subscription-userinfo"] = userinfo
+    title = _brand(settings)
+    headers["profile-title"] = ds.b64_header(title[:80])
+    try:
+        interval = int(settings["dsub_update_interval"] or 0)
+    except ValueError:
+        interval = 0
+    if interval > 0:
+        headers["profile-update-interval"] = str(interval)
+    return _raw(200, headers, "text/plain; charset=utf-8", body)
+
+
+async def healthz(request: Request) -> Response:
+    return JSONResponse({"ok": True})
+
+
+async def robots(request: Request) -> Response:
+    return PlainTextResponse("User-agent: *\nDisallow: /\n")
+
+
+# ---------------------------------------------------------------------------
+# نمونه‌بردار مصرف (برای نمودار صفحه‌ی وب) و پاک‌سازی لاگ‌ها
+# ---------------------------------------------------------------------------
+async def _sampler_round():
+    settings = await asyncio.to_thread(ds.all_settings, db)
+    if ds.is_enabled(db) and settings["dsub_usage_sampling"] == "1":
+        ids = await asyncio.to_thread(db.ds_recent_config_ids, int(time.time()) - 21 * 86400)
+        sem = asyncio.Semaphore(4)
+
+        async def one(cid):
+            async with sem:
+                cc = await asyncio.to_thread(db.ds_get_config, cid)
+                if cc is None or str(cc["status"] or "") != "active" or \
+                        not str(cc["subscription_url"] or "").startswith(("http://", "https://")):
+                    return
+                wui_server = await _wui_server(cc)
+                if wui_server is not None:
+                    try:
+                        info = await get_provider(wui_server).get_sub_info(cc["username"])
+                        await asyncio.to_thread(db.ds_record_usage, cc["id"],
+                                                (info.get("upload") or 0) + (info.get("download") or 0))
+                    except Exception:
+                        log.warning("wui usage sample failed cc=%s", cid)
+                    return
+                try:
+                    up = await cache.get(cc["subscription_url"], PAGE_UA, 0, force=True)
+                except Exception:
+                    return
+                if up.status == 200:
+                    await _snapshot_usage(cc, up.headers)
+
+        await asyncio.gather(*[one(c) for c in ids])
+    await asyncio.to_thread(db.ds_prune)
+
+
+async def _sampler_loop():
+    await asyncio.sleep(60)
+    while True:
+        try:
+            await _sampler_round()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("usage sampler failed")
+        await asyncio.sleep(1800)
+
+
+@asynccontextmanager
+async def lifespan(app):
+    global _session
+    import aiohttp
+    try:
+        await asyncio.to_thread(db.init_db, OWNER_ID)  # مطمئن می‌شود ستون/جدول‌های ساب اختصاصی وجود دارند
+    except Exception:
+        log.exception("init_db failed")
+    _session = aiohttp.ClientSession(
+        connector=aiohttp.TCPConnector(ssl=None if VERIFY_TLS else False, limit=64),
+        timeout=aiohttp.ClientTimeout(total=15),
+    )
+    task = asyncio.create_task(_sampler_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+        await _session.close()
+
+
+app = Starlette(
+    routes=[
+        Route("/s/{token}", sub_endpoint, methods=["GET", "HEAD"]),
+        Route("/s/{token}/qr.png", qr_endpoint, methods=["GET"]),
+        Route("/s/{token}/ovpn/{n:int}", ovpn_endpoint, methods=["GET"]),
+        Route("/s/{token}/wg/{n:int}", wg_endpoint, methods=["GET"]),
+        Route("/s/{token}/dns/login", dns_login_endpoint, methods=["GET"]),
+        Route("/s/{token}/vpn/{n:int}/ca", vpn_ca_endpoint, methods=["GET"]),
+        Route("/s/{token}/p/{pid:int}", sub_endpoint, methods=["GET", "HEAD"]),
+        Route("/s/{token}/p/{pid:int}/qr.png", qr_endpoint, methods=["GET"]),
+        Route("/s/{token}/p/{pid:int}/ovpn/{n:int}", ovpn_endpoint, methods=["GET"]),
+        Route("/s/{token}/p/{pid:int}/wg/{n:int}", wg_endpoint, methods=["GET"]),
+        Route("/s/{token}/p/{pid:int}/dns/login", dns_login_endpoint, methods=["GET"]),
+        Route("/s/{token}/p/{pid:int}/vpn/{n:int}/ca", vpn_ca_endpoint, methods=["GET"]),
+        Route("/s/{token}/p/{pid:int}/reveal", vpn_reveal_endpoint, methods=["POST"]),
+        Route("/s/{token}/reveal", vpn_reveal_endpoint, methods=["POST"]),
+        Route("/sub/smart/{token}", smart_endpoint, methods=["GET", "HEAD"]),
+        Route("/healthz", healthz, methods=["GET"]),
+        Route("/robots.txt", robots, methods=["GET"]),
+    ],
+    lifespan=lifespan,
+)
