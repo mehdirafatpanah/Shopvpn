@@ -1293,8 +1293,8 @@ def build_page_data(cc, info: dict, uris: List[str], settings: Dict[str, str], b
     if not logo.lower().startswith("https://"):
         logo = ""
     theme = settings.get("dsub_theme") or "auto"
-    ovpn_items = [{"n": f["remark"], "f": f["filename"], "i": f["index"]} for f in (ovpn or [])[:20]]
-    wg_items = [{"n": f["remark"], "f": f["filename"], "i": f["index"]} for f in (wg or [])[:20]]
+    ovpn_items = [{"n": f["remark"], "f": f["filename"], "i": f["index"]} for f in (ovpn or [])[:100]]
+    wg_items = [{"n": f["remark"], "f": f["filename"], "i": f["index"]} for f in (wg or [])[:100]]
     vpn_items = vpn_items_for_page(vpn)
     dns_item = dns_for_page(dns)
     panel_items = [{"n": p["name"], "t": p.get("type") or "", "u": p["url"], "c": bool(p.get("cur"))}
