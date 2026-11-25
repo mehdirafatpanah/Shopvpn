@@ -15033,6 +15033,10 @@ async function bindDsubProfiles(root) {
           if (own.has(key) && !reset.has(key)) values[key] = readVal(el);
         });
         for (const k of ['dsub_accent_color', 'dsub_secondary_color']) { if (k in values) { const h = normalizeHex(values[k]); if (!h) { toast('رنگ نامعتبر است؛ مثل #6366F1 بنویس.', true); return; } values[k] = h; } }
+        const saveBtn = $('#dsp-set-save', body);
+        const previousLabel = saveBtn.textContent;
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'در حال ذخیره...';
         try {
           const tplVal = values.dsub_custom_template;
           if (tplVal && new Blob([tplVal]).size > SUB_TPL_INLINE_BYTES) {
@@ -15040,13 +15044,39 @@ async function bindDsubProfiles(root) {
             delete values.dsub_custom_template;
             synced.dsub_custom_template = tplVal;
           }
-          await apiPut(`/dsub-profiles/${p.id}/settings`, { values, reset: [...reset] });
-          toast('تنظیمات ساب ذخیره شد.');
-          els().forEach(el => { initial[el.dataset.key] = readVal(el); });
+
+          // ارسال مستقل کلیدهای اختصاصی و کلیدهای بازگشتی؛ سپس دریافت مجدد از DB
+          // تا وضعیت دکمه‌ها و مقادیر فرم دقیقاً با داده‌ی ذخیره‌شده هماهنگ شود.
+          const payload = { values, reset: [...reset] };
+          const saved = await apiPut(`/dsub-profiles/${p.id}/settings`, payload);
+          if (!saved || saved.ok !== true) throw new Error('سرور ذخیره تنظیمات را تأیید نکرد.');
+          const fresh = await apiGet(`/dsub-profiles/${p.id}/settings`);
+          if (!fresh || !fresh.settings || !Array.isArray(fresh.own_keys)) {
+            throw new Error('ذخیره ارسال شد، اما تأیید مجدد تنظیمات از سرور ناموفق بود.');
+          }
+
+          // وضعیت واقعی ذخیره‌شده مبنای فرم بعدی است، نه وضعیت موقت مرورگر.
+          own.clear();
+          fresh.own_keys.forEach(k => own.add(k));
           reset.clear();
+          els().forEach(el => {
+            const key = el.dataset.key;
+            if (!(key in fresh.settings)) return;
+            const value = String(fresh.settings[key] ?? '');
+            if (el.classList.contains('switch')) el.dataset.on = value === '1' ? '1' : '0';
+            else el.value = value;
+            initial[key] = readVal(el);
+          });
           Object.keys(badges).forEach(paint);
-          const fr = $('#sub-page-preview-frame', body); if (fr) { try { fr.contentWindow.location.reload(); } catch (e) {} }
-        } catch (e) { handleErr(e); }
+          toast('تنظیمات این ساب با موفقیت ذخیره و تأیید شد.');
+          const fr = $('#sub-page-preview-frame', body);
+          if (fr) { try { fr.contentWindow.location.reload(); } catch (e) {} }
+        } catch (e) {
+          handleErr(e);
+        } finally {
+          saveBtn.disabled = false;
+          saveBtn.textContent = previousLabel;
+        }
       };
     }, { wide: true });
   };
