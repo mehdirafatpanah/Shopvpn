@@ -344,7 +344,9 @@ async def _wui_server(cc):
     except Exception:
         return None
     if server and str(server["panel_type"] or "").lower() == "wui":
-        return server
+        # مقصد انتخاب‌شده‌ی همین سرویس را روی نمونه‌ی سرور اعمال کن؛
+        # استفاده از قالب عمومی پنل باعث می‌شود تمام Interfaceها در خروجی دیده شوند.
+        return panel_resync._effective_server(server, cc)
     return None
 
 
@@ -359,7 +361,9 @@ async def _wui_bundle(cc, ttl: float = _WUI_TTL) -> Optional[dict]:
     if server is None:
         return None
     cid = int(cc["id"])
-    key = (cid, str(cc["username"]))
+    # Snapshot مقصد بخشی از هویت کش است؛ تغییر مقصد نباید خروجی قدیمی را برگرداند.
+    target_snapshot = str(cc["panel_target_config"] or "")
+    key = (cid, str(cc["username"]), target_snapshot)
     hit = _wui_cache.get(key)
     now = time.monotonic()
     if hit and now - hit[0] < ttl:
@@ -373,6 +377,9 @@ async def _wui_bundle(cc, ttl: float = _WUI_TTL) -> Optional[dict]:
             return list(hit[1].get("vpn") or []) if hit else []
 
     try:
+        # قبل از خواندن فایل‌ها، Interfaceهای Client را با مقصد ثبت‌شده‌ی محصول
+        # همگام کن. این کار برای لینک خام W-UI هم پایین‌تر انجام می‌شود.
+        await panel_resync.heal_config(db, cc)
         provider = get_provider(server)
         files, info, vpn = await asyncio.gather(
             provider.get_config_files(cc["username"]), provider.get_sub_info(cc["username"]), _logins(provider))
@@ -545,6 +552,12 @@ async def sub_endpoint(request: Request) -> Response:
     settings = await asyncio.to_thread(ds.all_settings, db, prof)
     enabled = ds.is_enabled(db, prof)
     query = _query(request)
+
+    # لینک خام خود W-UI در حالت عبور مستقیم هم باید فقط Interfaceهای همین محصول
+    # را برگرداند؛ در غیر این صورت مسیر خام، فیلتر صفحه/ساب اختصاصی را دور می‌زند.
+    wui_server = await _wui_server(cc)
+    if wui_server is not None:
+        await panel_resync.heal_config(db, cc)
     ua = request.headers.get("user-agent", "")
     try:
         ttl = max(0, min(600, int(settings["dsub_cache_ttl"] or 30)))
