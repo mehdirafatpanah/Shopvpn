@@ -4285,6 +4285,102 @@ async def api_user_discount_code(tg_id: int, body: UserDiscountBody, admin=Depen
     return {"ok": True, "code": code, "value": value_txt, "sent": bool(sent)}
 
 
+class UserAssignProductBody(BaseModel):
+    product_id: int
+    quantity: int = 1
+
+
+def _grant_product_kind(product) -> str:
+    """panel = ساخت روی پنل/SSH، stock = برداشتن از بانک کانفیگ، unsupported = قابل اختصاص از پنل وب نیست."""
+    targets = db.product_target_counts(product)
+    if targets["panels"] or targets["ssh"]:
+        return "panel"
+    if product["is_auto_provision"]:
+        return "unsupported"
+    return "stock"
+
+
+@app.get("/api/users/{tg_id}/assignable-products")
+def api_user_assignable_products(tg_id: int, admin=Depends(require_permission("users"))):
+    if not db.get_user(tg_id):
+        raise HTTPException(404, tr("کاربر یافت نشد."))
+    owned = db.get_user_approved_product_ids(tg_id)
+    paths = db.get_category_path_names()
+    items = []
+    for product in db.get_all_products():
+        if not product["is_active"]:
+            continue
+        kind = _grant_product_kind(product)
+        if kind == "unsupported":
+            continue
+        stock = db.count_available_configs(product["id"]) if kind == "stock" else None
+        if stock is not None and stock <= 0:
+            continue
+        items.append({
+            "id": product["id"],
+            "name": product["name"],
+            "category": paths.get(product["category_id"], product["category_name"]),
+            "kind": kind,
+            "stock": stock,
+            "owned": int(product["id"]) in owned,
+        })
+    return items
+
+
+@app.post("/api/users/{tg_id}/assign-product")
+async def api_user_assign_product(tg_id: int, body: UserAssignProductBody, admin=Depends(require_permission("users"))):
+    """اختصاص رایگان یک محصول به کاربر؛ مثل خرید تاییدشده‌ی صفر تومانی تحویل می‌شود (بدون امتیاز خرید و پاداش دعوت)."""
+    if not await asyncio.to_thread(db.get_user, tg_id):
+        raise HTTPException(404, tr("کاربر یافت نشد."))
+    product = await asyncio.to_thread(db.get_product, body.product_id)
+    if not product or not product["is_active"]:
+        raise HTTPException(404, tr("محصول یافت نشد یا غیرفعال است."))
+    quantity = body.quantity
+    if not 1 <= quantity <= 20:
+        raise HTTPException(400, tr("تعداد باید بین ۱ تا ۲۰ باشد."))
+    kind = await asyncio.to_thread(_grant_product_kind, product)
+    if kind == "unsupported":
+        raise HTTPException(400, tr("این محصول به پنل یا نود وصل نیست و بانک کانفیگ ندارد؛ از اینجا قابل اختصاص نیست."))
+    if kind == "stock":
+        stock = await asyncio.to_thread(db.count_available_configs, product["id"])
+        if stock < quantity:
+            raise HTTPException(400, tr(f"موجودی بانک کانفیگ کافی نیست (موجودی: {stock})."))
+
+    order_id = await asyncio.to_thread(db.create_admin_grant_order, tg_id, product["id"], quantity)
+    try:
+        if kind == "panel":
+            results = await provision_direct(db, product, quantity, user_id=tg_id, order_id=order_id)
+            links = [r["subscription_url"] for r in results]
+            await asyncio.to_thread(db.finish_admin_grant_order, order_id)
+        else:
+            rows = await asyncio.to_thread(db.take_unused_configs, product["id"], tg_id, quantity)
+            if not rows:
+                raise HTTPException(400, tr("موجودی این محصول تمام شده است."))
+            await asyncio.to_thread(db.finish_admin_grant_order, order_id, [r["id"] for r in rows])
+            links = [r["link"] for r in rows]
+    except (ProvisionError, DirectProvisionError) as e:
+        await asyncio.to_thread(db.discard_admin_grant_order, order_id)
+        raise HTTPException(400, str(e))
+    except Exception:
+        await asyncio.to_thread(db.discard_admin_grant_order, order_id)
+        raise
+
+    await asyncio.to_thread(
+        db.log_admin_action, admin["id"], "user_assign_product",
+        f"کاربر {tg_id} | محصول «{product['name']}» × {quantity} | سفارش #{order_id} (پنل وب - {admin['username']})",
+        "user", tg_id,
+    )
+    await notify_user(tg_id, "🎁 یک محصول توسط مدیر برای شما فعال شد!")
+    asyncio.create_task(deliver_config_to_user_web(
+        tg_id, product["name"], links, final_price=0, order_id=order_id, db=db, bot_token=_bot_token(),
+    ))
+    if kind == "stock":
+        await check_and_notify_low_stock(
+            lambda aid, text: tg_send(_bot_token(), aid, text), db, product["id"], bot_token=_bot_token(),
+        )
+    return {"ok": True, "order_id": order_id, "count": len(links)}
+
+
 @app.get("/api/users/{tg_id}/invoice-items")
 def api_user_invoice_items(tg_id: int, admin=Depends(get_current_admin)):
     if not db.get_user(tg_id):
@@ -10187,6 +10283,46 @@ def api_sub_page_default_template(admin=Depends(require_permission("settings")))
     """متن قالب پیش‌فرض صفحه‌ی ساب؛ نقطه‌ی شروع برای ساخت قالب اختصاصی."""
     with open(_sub_page_default_template_path(), "r", encoding="utf-8") as fh:
         return PlainTextResponse(fh.read())
+
+
+_SUBTPL_CHUNK_MAX = 512 * 1024
+_SUBTPL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+
+
+@app.post("/api/settings/sub-page-template/chunk")
+async def api_sub_page_template_chunk(
+    upload_id: str = Form(...), index: int = Form(...), total: int = Form(...),
+    profile_id: Optional[int] = Form(None), chunk: UploadFile = File(...),
+    admin=Depends(require_permission("settings")),
+):
+    """آپلود تکه‌تکه‌ی قالب HTML ساب؛ با آخرین تکه، قالب اعتبارسنجی و ذخیره می‌شود."""
+    import dedicated_sub as ds
+    if not _SUBTPL_ID_RE.match(upload_id or ""):
+        raise HTTPException(400, tr("شناسه‌ی آپلود نامعتبر است."))
+    prof = None
+    if profile_id:
+        _dsp_guard(admin)
+        prof = ds.get_profile(db, profile_id)
+        if not prof:
+            raise HTTPException(404, tr("ساب پیدا نشد."))
+    data = await chunk.read(_SUBTPL_CHUNK_MAX + 1)
+    if len(data) > _SUBTPL_CHUNK_MAX:
+        raise HTTPException(400, tr("اندازه‌ی هر تکه بیش از حد مجاز است."))
+    owner = f"{admin['id']}:{profile_id or 0}"
+    done, text, err = ds.TEMPLATE_UPLOADS.add(owner, upload_id, index, total, data)
+    if err:
+        raise HTTPException(400, tr(err))
+    if not done:
+        return {"ok": True, "done": False}
+    if prof:
+        own = ds.merge_profile_settings(prof["settings"], {"dsub_custom_template": text})
+        db.dsp_set_settings(profile_id, own)
+        target = f"dsub:{profile_id}"
+    else:
+        db.set_setting("dsub_custom_template", text)
+        target = "dsub_custom_template"
+    db.log_admin_action(admin["id"], "setting_change", f"dsub_custom_template=<{len(text)} chars> (آپلود تکه‌ای - {admin['username']})", "setting", target)
+    return {"ok": True, "done": True, "chars": len(text)}
 
 
 @app.get("/api/settings/sub-page-preview")
