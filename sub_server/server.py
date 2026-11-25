@@ -372,34 +372,56 @@ async def _wui_bundle(cc, ttl: float = _WUI_TTL) -> Optional[dict]:
     now = time.monotonic()
     if hit and now - hit[0] < ttl:
         return hit[1]
-    async def _logins(provider):
-        # ورودی‌های OpenConnect/L2TP/PPTP/IKEv2؛ خطا نباید فایل‌های WireGuard/OpenVPN و صفحه را خراب کند
-        try:
-            return await provider.get_login_profiles(cc["username"])
-        except Exception as exc:
-            log.warning("wui login profiles failed cc=%s: %s", cid, type(exc).__name__)
-            return list(hit[1].get("vpn") or []) if hit else []
+    stale = hit[1] if hit and now - hit[0] < STALE_MAX_AGE else None
+    has_product_snapshot = bool(target_snapshot)
+
+    def _fail(part: str, exc: Exception):
+        # متن خطا هم لاگ می‌شود تا علت واقعی (کد HTTP، زیپ خالی، توکن...) از لاگ دیده شود
+        log.warning("wui %s failed cc=%s: %s: %s", part, cid, type(exc).__name__, str(exc)[:300])
 
     try:
         provider = get_provider(effective_server)
-        # W-UI's /clients/{id}/configs endpoint intentionally returns every
-        # account currently attached to that client. Reconcile the client to
-        # the product snapshot first, otherwise the first/sample user's panel
-        # template can leak additional interfaces into the subscription ZIP.
-        # Legacy services without a saved product snapshot remain untouched.
-        if (getattr(provider, "resync_needs_snapshot", False)
-                and panel_resync._snapshot_ok(provider, cc)):
-            await provider.resync_user_template(cc["username"])
-        files, info, vpn = await asyncio.gather(
-            provider.get_config_files(cc["username"]), provider.get_sub_info(cc["username"]), _logins(provider))
     except Exception as exc:
-        log.warning("wui bundle failed cc=%s: %s", cid, type(exc).__name__)
+        _fail("provider", exc)
+        return {"wg": [], "ovpn": [], "vpn": [], "info": {}, "live": False}
+
+    # W-UI's /clients/{id}/configs endpoint intentionally returns every
+    # account currently attached to that client. Reconcile the client to
+    # the product snapshot first, otherwise the first/sample user's panel
+    # template can leak additional interfaces into the subscription ZIP.
+    # Legacy services without a saved product snapshot remain untouched.
+    # اگر همگام‌سازی شکست بخورد، فایل‌ها/ورودی‌های حساب نمایش داده نمیشوند (ممکن است interface اضافه داشته باشند)،
+    # ولی مصرف/انقضا همچنان نشان داده میشود؛ قبلاً یک خطا کل صفحه را خالی میکرد.
+    synced = True
+    if getattr(provider, "resync_needs_snapshot", False) and panel_resync._snapshot_ok(provider, cc):
+        try:
+            await provider.resync_user_template(cc["username"])
+        except Exception as exc:
+            _fail("resync", exc)
+            synced = False
+
+    async def _part(name, coro, default):
+        try:
+            return await coro, True
+        except Exception as exc:
+            _fail(name, exc)
+            return default, False
+
+    info, info_ok = await _part("info", provider.get_sub_info(cc["username"]), {})
+    if synced:
+        files, files_ok = await _part("configs", provider.get_config_files(cc["username"]), [])
+        vpn, vpn_ok = await _part("logins", provider.get_login_profiles(cc["username"]),
+                                  list(stale.get("vpn") or []) if stale and not has_product_snapshot else [])
+    else:
+        files, files_ok, vpn, vpn_ok = [], False, [], False
+    if not (info_ok or files_ok or vpn_ok):
         # A stale bundle is unsafe when this service has a product snapshot:
         # it may contain interfaces that the product did not purchase.
-        has_product_snapshot = bool(target_snapshot)
-        if hit and now - hit[0] < STALE_MAX_AGE and not has_product_snapshot:
-            return hit[1]
+        if stale and not has_product_snapshot:
+            return stale
         return {"wg": [], "ovpn": [], "vpn": [], "info": {}, "live": False}
+    if not info_ok and stale:
+        info = stale.get("info") or {}
     wg, ovpn = [], []
     for item in files:
         label = _WUI_LABELS.get(item["kind"])
@@ -408,7 +430,7 @@ async def _wui_bundle(cc, ttl: float = _WUI_TTL) -> Optional[dict]:
         target = ovpn if item["kind"] == "openvpn" else wg
         target.append({"index": len(target) + 1, "remark": f"{item['filename'].rsplit('.', 1)[0]} ({label})",
                        "filename": item["filename"], "profile": item["text"]})
-    bundle = {"wg": wg, "ovpn": ovpn, "vpn": vpn, "info": info, "live": True}
+    bundle = {"wg": wg, "ovpn": ovpn, "vpn": vpn, "info": info, "live": bool(info_ok or files_ok)}
     if len(_wui_cache) > 2000:
         _wui_cache.clear()
     _wui_cache[key] = (now, bundle)
