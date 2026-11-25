@@ -5,6 +5,7 @@ import logging
 import time
 
 from panel_providers import get_provider
+from panel_providers._http import load_json
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +38,15 @@ def _snapshot_ok(provider, cc) -> bool:
     if not getattr(provider, "resync_needs_snapshot", False):
         return True
     try:
-        return bool(cc["panel_target_config"])
+        if not cc["panel_target_config"]:
+            return False
     except (KeyError, IndexError, TypeError):
         return False
+    try:
+        ids = load_json(provider.server["group_ids"], None)
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return False
+    return isinstance(ids, list) and bool(ids)
 
 
 async def heal_config(db, cc) -> bool:
